@@ -444,7 +444,7 @@ def _exercise_postgres_transport(
             f"{base}/api/workflow/visibility", headers=headers, timeout=10
         )
         visibility.raise_for_status()
-        assert visibility.json()["current_role"] == "ro"
+        assert visibility.json()["current_role"] == "rw"
         assert visibility.json()["namespaces"] == {
             "storage_namespace": "workflow",
             "execution_namespace": "workflow",
@@ -461,7 +461,7 @@ def _exercise_postgres_transport(
         assert capabilities.json()["current_subject"] == "anonymous"
         assert capabilities.json()["audit_log"][-1]["action"] == "project_view"
         assert capabilities.json()["audit_log"][-1]["outcome"] == "allow"
-        assert httpx.post(
+        replay_response = httpx.post(
             f"{base}/mcp/workflow",
             headers=headers,
             json={
@@ -477,7 +477,9 @@ def _exercise_postgres_transport(
                 },
             },
             timeout=10,
-        ).json()["result"]["state"]["fanout_join"] is True
+        )
+        assert replay_response.status_code == 200, replay_response.text
+        assert replay_response.json()["result"]["state"]["fanout_join"] is True
         mcp_visibility = httpx.post(
             f"{base}/mcp/workflow",
             headers=headers,

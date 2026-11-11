@@ -176,6 +176,19 @@ async fn mcp_handler(
             });
             (accepts_json, accepts_sse)
         });
+    let response_mode = response_mode.filter(|_| {
+        !headers
+            .get(header::ACCEPT)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|accept| {
+                accept.split(',').any(|item| {
+                    item.trim()
+                        .split(';')
+                        .next()
+                        .is_some_and(|mime| mime.trim() == "*/*")
+                })
+            })
+    });
     if response_mode.is_some_and(|(json, sse)| !json || !sse) {
         return StatusCode::NOT_ACCEPTABLE.into_response();
     }

@@ -1329,6 +1329,29 @@
         let unadvertised_value = serde_json::from_slice::<Value>(&unadvertised_body).unwrap();
         assert_eq!(unadvertised_value["error"]["code"], -32602);
 
+        let wildcard_accept_mcp_call = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("accept", "*/*")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"wildcard","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"rid":"node-1"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wildcard_accept_mcp_call.status(), StatusCode::OK);
+        let wildcard_body = to_bytes(wildcard_accept_mcp_call.into_body(), 65_536)
+            .await
+            .unwrap();
+        let wildcard_value = serde_json::from_slice::<Value>(&wildcard_body).unwrap();
+        assert_eq!(wildcard_value["error"]["code"], -32602);
+
         let negotiated_tool_error = app
             .clone()
             .oneshot(

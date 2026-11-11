@@ -1314,6 +1314,16 @@ impl PostgresRunApplicationService {
         &self,
         request_principal: &Value,
     ) -> Result<Vec<GraphRecord>, String> {
+        // Match Python's empty-graph read behavior without implicitly creating
+        // the optional graph projection schema during an operator read.
+        if !self
+            .conversation_store
+            .has_graph_projection_rows()
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Ok(Vec::new());
+        }
         let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(request_principal);
         let records = graph_projection_records_all(
             self.graph_store_for_type("conversation"),
