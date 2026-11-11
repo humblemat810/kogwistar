@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "operation": "workflow.run_checkpoint_get",
+  "request_fields": ["run_id", "step_seq"],
+  "response_fields": ["run_id", "step_seq", "state"],
+  "state_type": "object"
+}

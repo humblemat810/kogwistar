@@ -2655,11 +2655,24 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
     conversation_engine.write.add_node(checkpoint)
 
     with _claims("ro", "workflow"):
+        checkpoint_args = {"run_id": "diag-run", "step_seq": 0}
         got = _structured(
             await server.mcp.call_tool(
-                "workflow.run_checkpoint_get", {"run_id": "diag-run", "step_seq": 0}
+                "workflow.run_checkpoint_get", checkpoint_args
             )
         )
+        checkpoint_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-run-checkpoint-get-mcp-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert checkpoint_contract["operation"] == "workflow.run_checkpoint_get"
+        assert set(checkpoint_args) == set(checkpoint_contract["request_fields"])
+        assert set(got) == set(checkpoint_contract["response_fields"])
+        assert got["run_id"] == "diag-run"
+        assert got["step_seq"] == 0
+        assert isinstance(got["state"], dict)
         assert got["state"]["answer"] == "draft"
 
         # replay_to needs at least one checkpoint and no subsequent steps for target=0

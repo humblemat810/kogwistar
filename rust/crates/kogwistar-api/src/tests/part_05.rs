@@ -4018,6 +4018,28 @@
                 value["result"].get(expected_key).is_some(),
                 "{tool_name} failed: {value}"
             );
+            if tool_name == "workflow.run_checkpoint_get" {
+                let contract: Value = serde_json::from_str(include_str!(
+                    "../../../../../contracts/golden/workflow-run-checkpoint-get-mcp-v1.json"
+                ))
+                .unwrap();
+                let request_fields = arguments.as_object().unwrap().keys().cloned().collect::<std::collections::BTreeSet<_>>();
+                let expected_request_fields = contract["request_fields"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|field| field.as_str().unwrap().to_owned())
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(request_fields, expected_request_fields);
+                for field in contract["response_fields"].as_array().unwrap() {
+                    let field = field.as_str().unwrap();
+                    assert!(value["result"].get(field).is_some(), "missing {field}");
+                }
+                assert_eq!(contract["operation"], tool_name);
+                assert_eq!(value["result"]["run_id"], submitted_run_id);
+                assert_eq!(value["result"]["step_seq"], 0);
+                assert!(value["result"]["state"].is_object());
+            }
         }
         store
             .project_lane_message(dead_lane("dead-mcp-message", "dead-mcp-run"))
