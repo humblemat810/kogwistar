@@ -817,16 +817,19 @@
         }
         assert_eq!(enabled["lifecycle_status"], "degraded");
         assert_eq!(enabled["health_status"], "degraded");
+        let heartbeat_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-service-heartbeat-http-v1.json"
+        ))
+        .unwrap();
         let heartbeat = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/api/workflow/services/svc-repair/heartbeat".to_owned(),
-                body: serde_json::to_vec(&json!({
-                    "instance_id": "worker-1",
-                    "payload": {"last_error": "recovering"},
-                }))
-                .unwrap(),
+                method: heartbeat_contract["method"].as_str().unwrap().to_owned(),
+                path_and_query: heartbeat_contract["path"]
+                    .as_str()
+                    .unwrap()
+                    .replace("{service_id}", "svc-repair"),
+                body: serde_json::to_vec(&heartbeat_contract["request_body"]).unwrap(),
                 principal: json!({
                     "sub": "worker",
                     "role": "rw",
@@ -834,11 +837,24 @@
                 }),
             })
             .await;
-        assert_eq!(heartbeat.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            heartbeat.status,
+            heartbeat_contract["success_status"].as_u64().unwrap() as u16
+        );
         let heartbeat = serde_json::from_slice::<Value>(&heartbeat.body).unwrap();
-        assert_eq!(heartbeat["instance_id"], "worker-1");
-        assert_eq!(heartbeat["health_status"], "healthy");
-        assert_eq!(heartbeat["last_error"], "recovering");
+        for (field, expected) in heartbeat_contract["expected_response_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&heartbeat[field], expected);
+        }
+        for field in heartbeat_contract["required_timestamp_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(heartbeat[field].as_i64().is_some(), "missing integer {field}");
+        }
         let history = store.replay_raw_events("workflow", 0, usize::MAX).unwrap();
         assert!(history.iter().any(|event| {
             event.payload_json.contains("service.enabled")

@@ -567,6 +567,12 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
     created = _create_conversation(service)
     _build_minimal_workflow(service, workflow_id="wf.service.rest")
     _attach_fake_service_spawn(service, statuses=["succeeded"])
+    heartbeat_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-heartbeat-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     with TestClient(server.app) as client:
         headers = _token_header(
@@ -594,12 +600,16 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         assert declared.json()["service_id"] == "svc.rest.demo"
 
         beat = client.post(
-            "/api/workflow/services/svc.rest.demo/heartbeat",
-            json={"instance_id": "rest-1", "payload": {"ok": True}},
+            heartbeat_contract["path"].replace("{service_id}", "svc.rest.demo"),
+            json=heartbeat_contract["request_body"],
             headers=headers,
         )
-        beat.raise_for_status()
-        assert beat.json()["health_status"] == "healthy"
+        assert beat.status_code == heartbeat_contract["success_status"], beat.text
+        heartbeat = beat.json()
+        for field, expected in heartbeat_contract["expected_response_fields"].items():
+            assert heartbeat[field] == expected
+        for field in heartbeat_contract["required_timestamp_fields"]:
+            assert isinstance(heartbeat[field], int)
 
         listed = client.get("/api/workflow/services", headers=headers)
         listed.raise_for_status()
