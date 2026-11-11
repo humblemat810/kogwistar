@@ -1194,6 +1194,28 @@ async def test_callback_guard_propagates_through_asyncio_to_thread(
     assert store.current_user_seq("callback-user") == 7
 
 
+def test_retained_sqlite_uow_connection_cannot_write_after_owner_scope(
+    tmp_path: Path,
+) -> None:
+    store = EngineSQLite(tmp_path / "retained-uow.sqlite")
+    store.ensure_initialized()
+
+    with store.transaction() as conn:
+        conn.execute("CREATE TABLE retained_handle_probe (value TEXT NOT NULL)")
+        retained_conn = conn
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        retained_conn.execute(
+            "INSERT INTO retained_handle_probe (value) VALUES ('late')"
+        )
+
+    with store.transaction() as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM retained_handle_probe"
+        ).fetchone()[0]
+    assert count == 0
+
+
 @pytest.mark.parametrize("async_dispatch", [False, True])
 def test_framework_hook_thread_preserves_callback_write_guard(
     tmp_path: Path, async_dispatch: bool
