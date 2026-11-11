@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.service_list",
+  "arguments": {
+    "limit": 7
+  },
+  "python_service_arguments": {
+    "limit": 7
+  },
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/services?limit=7"
+  },
+  "result": {
+    "services": [
+      {
+        "service_id": "svc-contract",
+        "enabled": true
+      }
+    ]
+  }
+}

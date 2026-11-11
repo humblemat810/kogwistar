@@ -1328,6 +1328,7 @@ async fn mcp_dispatch(
                     principal: principal.clone(),
                 })
             }
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_list; fixture=contracts/golden/workflow-service-list-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_workflow_service_list_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_list_matches_shared_contract
             "workflow.service_list" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
