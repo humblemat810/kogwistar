@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.run_replay",
+  "arguments": {
+    "run_id": "replay-contract-run",
+    "target_step_seq": 3
+  },
+  "result": {
+    "run_id": "replay-contract-run",
+    "target_step_seq": 3,
+    "state": {
+      "answer": "replayed"
+    }
+  }
+}

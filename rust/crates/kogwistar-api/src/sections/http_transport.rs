@@ -1026,6 +1026,7 @@ async fn mcp_dispatch(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_replay; fixture=contracts/golden/workflow-run-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_workflow_run_replay_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_replay_matches_shared_contract
             "workflow.run_replay" if !run_id.is_empty() => arguments
                 .get("target_step_seq")
                 .and_then(Value::as_i64)
