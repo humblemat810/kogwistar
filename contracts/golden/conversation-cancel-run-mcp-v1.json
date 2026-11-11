@@ -1,0 +1,24 @@
+{
+  "version": "v1",
+  "tool": "conversation.cancel_run",
+  "arguments": {
+    "run_id": "run-cancel-contract"
+  },
+  "result": {
+    "run_id": "run-cancel-contract",
+    "conversation_id": "conv-cancel-contract",
+    "workflow_id": "agentic_answering.v2",
+    "user_id": "alice",
+    "user_turn_node_id": "turn-cancel-contract",
+    "assistant_turn_node_id": null,
+    "status": "cancelling",
+    "cancel_requested": true,
+    "result": null,
+    "error": null,
+    "created_at_ms": "<generated>",
+    "updated_at_ms": "<generated>",
+    "started_at_ms": null,
+    "finished_at_ms": null,
+    "terminal": false
+  }
+}

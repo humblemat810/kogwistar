@@ -1135,6 +1135,46 @@ async def test_mcp_conversation_ask_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_cancel_run_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-cancel-run-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims("rw", "conversation"):
+        await server.mcp.call_tool(
+            "conversation.create",
+            {"user_id": "alice", "conversation_id": "conv-cancel-contract"},
+        )
+        service.run_registry.create_run(
+            run_id=contract["arguments"]["run_id"],
+            conversation_id="conv-cancel-contract",
+            workflow_id="agentic_answering.v2",
+            user_id="alice",
+            user_turn_node_id="turn-cancel-contract",
+        )
+        result = _structured(
+            await server.mcp.call_tool(
+                contract["tool"], contract["arguments"]
+            )
+        )
+
+    assert result["status"] == "cancelling"
+    assert result["cancel_requested"] is True
+    result["created_at_ms"] = "<generated>"
+    result["updated_at_ms"] = "<generated>"
+    assert result == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_denies_unauthorized_effects(
     monkeypatch, engine_triplet
 ):

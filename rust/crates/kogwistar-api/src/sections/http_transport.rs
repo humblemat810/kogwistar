@@ -868,7 +868,16 @@ async fn mcp_dispatch(
                     }
                 })
             }
-            "workflow.run_cancel" | "conversation.cancel_run" if !run_id.is_empty() => {
+            "workflow.run_cancel" if !run_id.is_empty() => {
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/runs/{run_id}/cancel"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
+            "conversation.cancel_run" if !run_id.is_empty() && arguments.len() == 1 => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
                     method: "POST".to_owned(),

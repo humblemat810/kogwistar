@@ -1016,6 +1016,109 @@
     }
 
     #[tokio::test]
+    async fn mcp_conversation_cancel_run_matches_shared_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-cancel-run-mcp-v1.json"
+        ))
+        .unwrap();
+        let seen = Arc::new(Mutex::new(None));
+
+        #[derive(Clone)]
+        struct CancelRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
+
+        impl ApplicationService for CancelRecorder {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "conversation" && name == "conversation.cancel_run"
+            }
+
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let seen = Arc::clone(&self.0);
+                Box::pin(async move {
+                    *seen.lock().unwrap() = Some(request);
+                    ApiEffectResponse {
+                        status: StatusCode::ACCEPTED.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: br#"{"run_id":"run-cancel-contract","conversation_id":"conv-cancel-contract","workflow_id":"agentic_answering.v2","user_id":"alice","user_turn_node_id":"turn-cancel-contract","assistant_turn_node_id":null,"status":"cancelling","cancel_requested":true,"result":null,"error":null,"created_at_ms":1700000000000,"updated_at_ms":1700000000001,"started_at_ms":null,"finished_at_ms":null,"terminal":false}"#.to_vec(),
+                    }
+                })
+            }
+        }
+
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(CancelRecorder(Arc::clone(&seen))),
+        );
+        let malformed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"cancel-invalid","method":"tools/call","params":{"name":"conversation.cancel_run","arguments":{"run_id":"run-cancel-contract","unexpected":true}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let malformed_body = to_bytes(malformed.into_body(), 4096).await.unwrap();
+        let malformed_value: Value = serde_json::from_slice(&malformed_body).unwrap();
+        assert_eq!(malformed_value["error"]["code"], -32602);
+        assert!(seen.lock().unwrap().is_none());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":"cancel-1",
+                            "method":"tools/call",
+                            "params":{
+                                "name":contract["tool"],
+                                "arguments":{"run_id":"run-cancel-contract"}
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        let mut normalized = value["result"].clone();
+        normalized["created_at_ms"] = json!("<generated>");
+        normalized["updated_at_ms"] = json!("<generated>");
+        assert_eq!(normalized, contract["result"]);
+
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path_and_query, "/api/workflow/runs/run-cancel-contract/cancel");
+        assert!(request.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn mcp_conversation_transcript_uses_authorized_postgres_read_route() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
