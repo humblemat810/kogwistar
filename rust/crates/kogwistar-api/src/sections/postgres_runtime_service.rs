@@ -6346,6 +6346,18 @@ impl PostgresRunApplicationService {
         if request.method == "POST"
             && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
         {
+            if !capability_allowed(
+                &request,
+                &self.capabilities,
+                "spawn_process",
+                &["spawn_process", "workflow.run.write"],
+            ) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Submitting workflow run requires spawn_process and workflow.run.write capabilities",
+                );
+            }
             return self.submit_run(&request).await;
         }
         if request.method == "GET"

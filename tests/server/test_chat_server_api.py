@@ -777,6 +777,61 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
     assert service is not None
 
 
+def test_workflow_run_submit_requires_both_admission_capabilities(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-submit-auth-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with TestClient(server.app) as client:
+        full_capability_headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow,conversation",
+            username="run-auth-owner",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
+        conversation = client.post(
+            "/api/conversations",
+            json={"user_id": "run-auth-owner"},
+            headers=full_capability_headers,
+        )
+        assert conversation.status_code == 200, conversation.text
+        conversation_id = conversation.json()["conversation_id"]
+
+        for missing_capability in contract["required_capabilities"]:
+            granted = [
+                capability
+                for capability in contract["required_capabilities"]
+                if capability != missing_capability
+            ]
+            headers = _token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username="run-auth-owner",
+                capabilities=",".join(granted),
+            )
+            response = client.post(
+                "/api/workflow/runs",
+                json={
+                    "workflow_id": "wf.run.auth.contract",
+                    "conversation_id": conversation_id,
+                    "initial_state": {},
+                },
+                headers=headers,
+            )
+            assert response.status_code == contract["denied_status"], response.text
+
+
 def test_default_runtime_runner_uses_async_or_sync_runtime_by_kind(
     monkeypatch, engine_triplet
 ):

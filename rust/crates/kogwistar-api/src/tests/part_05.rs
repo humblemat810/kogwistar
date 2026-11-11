@@ -1325,6 +1325,49 @@
         store
             .append_server_run_event("run-1", "run.started", r#"{"source":"test"}"#.to_owned())
             .unwrap();
+        let sqlite_service = SqliteRunApplicationService::open(&path).unwrap();
+        let submit_auth_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-submit-auth-v1.json"
+        ))
+        .unwrap();
+        for missing_capability in submit_auth_contract["required_capabilities"]
+            .as_array()
+            .unwrap()
+        {
+            let capabilities = submit_auth_contract["required_capabilities"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|capability| *capability != missing_capability)
+                .cloned()
+                .collect::<Vec<_>>();
+            let run_id = format!("sqlite-missing-{}", missing_capability.as_str().unwrap());
+            let response = sqlite_service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/workflow/runs".to_owned(),
+                    body: serde_json::to_vec(&json!({
+                        "run_id": run_id.clone(),
+                        "workflow_id": "workflow-denied",
+                        "conversation_id": "conversation-denied"
+                    }))
+                    .unwrap(),
+                    principal: json!({
+                        "sub": "sqlite-auth-owner",
+                        "user_id": "sqlite-auth-owner",
+                        "role": "rw",
+                        "ns": ["workflow"],
+                        "capabilities": capabilities
+                    }),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                submit_auth_contract["denied_status"].as_u64().unwrap() as u16
+            );
+            assert!(sqlite_service.store.get_server_run(&run_id).unwrap().is_none());
+        }
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -1332,8 +1375,25 @@
                 implementation: ImplementationSnapshot::default(),
                 auth: AuthConfig::default(),
             },
-            Arc::new(SqliteRunApplicationService::open(&path).unwrap()),
+            Arc::new(sqlite_service),
         );
+
+        let denied_submit = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"workflow_id":"workflow-denied","conversation_id":"conversation-denied"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_submit.status(), StatusCode::FORBIDDEN);
 
         let submit = app
             .clone()
@@ -1342,7 +1402,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1,"effective_capabilities":["admin"],"_rt_effective_capabilities":["admin"]},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
                     ))
@@ -1437,7 +1497,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":1,"effective_capabilities":["admin"],"_rt_effective_capabilities":["admin"]},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
                     ))
@@ -1460,7 +1520,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"run_id":"caller-run-id","workflow_id":"workflow-submit","conversation_id":"conversation-submit","initial_state":{"seed":2,"effective_capabilities":["admin"],"_rt_effective_capabilities":["admin"]},"priority_class":"foreground","runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"begin"}}"#,
                     ))
@@ -2275,7 +2335,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"workflow_id":"workflow-two-step","conversation_id":"conversation-two-step","initial_state":{"seed":2}}"#,
                     ))
@@ -2589,7 +2649,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"workflow_id":"workflow-effect","conversation_id":"conversation-effect","join_node_ids":["join"],"start_join_mask":1,"runtime_routes":[{"source_node_id":"start","target_node_id":"left","join_mask":1},{"source_node_id":"start","target_node_id":"right","join_mask":1},{"source_node_id":"left","target_node_id":"join","join_mask":1},{"source_node_id":"right","target_node_id":"join","join_mask":1}]}"#,
                     ))
@@ -2976,7 +3036,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"workflow_id":"workflow-cancel","conversation_id":"conversation-cancel"}"#,
                     ))
@@ -3076,7 +3136,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"workflow_id":"workflow-claimed-cancel","conversation_id":"conversation-claimed-cancel"}"#,
                     ))

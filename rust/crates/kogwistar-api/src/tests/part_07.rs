@@ -3675,7 +3675,7 @@ async fn sqlite_run_admission_persists_authenticated_owner_binding() {
         "role": "rw",
         "ns": ["workflow"],
         "storage_ns": "workflow",
-        "capabilities": ["workflow.run.write", "write_graph"]
+        "capabilities": ["spawn_process", "workflow.run.write", "write_graph"]
     });
     let response = service
         .execute(ApiEffectRequest {
@@ -6369,7 +6369,7 @@ async fn sqlite_chroma_runtime_result_commits_graph_batch_with_worker_effect() {
         "sub": "runtime-owner", "user_id": "runtime-owner", "role": "rw",
         "ns": ["conversation"], "storage_ns": "conversation",
         "workspace": "workspace-a", "graph_space": "conversation",
-        "capabilities": ["write_graph"]
+        "capabilities": ["spawn_process", "workflow.run.write", "write_graph"]
     });
     let submitted = service
         .execute(ApiEffectRequest {
@@ -6941,7 +6941,7 @@ async fn sqlite_native_provider_event_request_persists_semantic_events() {
         "sub": "sqlite-event-owner", "user_id": "sqlite-event-owner", "role": "rw",
         "ns": ["conversation"], "storage_ns": "conversation",
         "workspace": "workspace-a", "graph_space": "conversation",
-        "capabilities": ["read_graph", "write_graph", "workflow.run.write"]
+        "capabilities": ["read_graph", "write_graph", "spawn_process", "workflow.run.write"]
     });
     let run_id = "sqlite-native-provider-event-run";
     let conversation_id = "sqlite-native-provider-event-conversation";

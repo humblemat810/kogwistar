@@ -4081,7 +4081,7 @@
                 Request::builder()
                     .method("POST")
                     .uri("/api/workflow/runs")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .header("content-type", "application/json")
                     .body(Body::from(
                         json!({
@@ -4278,7 +4278,7 @@
         ] {
             let response = client
                 .post(format!("{base_url}/api/workflow/runs"))
-                .header("x-kogwistar-roles", "reader")
+                .header("x-kogwistar-roles", "reader,rw")
                 .json(&json!({
                     "run_id": run_id,
                     "workflow_id": "native-admission-workflow",
@@ -4313,7 +4313,7 @@
 
         let submit = client
             .post(format!("{base_url}/api/workflow/runs"))
-            .header("x-kogwistar-roles", "reader")
+            .header("x-kogwistar-roles", "reader,rw")
             .header("content-type", "application/json")
             .body(
                 r#"{"run_id":"native-run","workflow_id":"native-workflow","conversation_id":"native-conversation","initial_state":{"counter":1},"runtime_kind":"sync","start_node_id":"entry","node_ops":{"entry":"rust-native/increment-counter","finish":"rust-native/emit-result","custom":"rust-native/app/custom-result"},"node_versions":{"custom":"v2"},"runtime_routes":[{"source_node_id":"entry","target_node_id":"finish","join_mask":0},{"source_node_id":"finish","target_node_id":"custom","join_mask":0}]}"#,
@@ -4580,7 +4580,7 @@
         // Rust-native execution and back without changing its state contract.
         let mixed_submit = client
             .post(format!("{base_url}/api/workflow/runs"))
-            .header("x-kogwistar-roles", "reader")
+            .header("x-kogwistar-roles", "reader,rw")
             .json(&json!({
                 "run_id": "mixed-language-run",
                 "workflow_id": "mixed-language-workflow",
@@ -4939,7 +4939,7 @@
         // must not acquire native executor metadata implicitly.
         let legacy_submit = client
             .post(format!("{base_url}/api/workflow/runs"))
-            .header("x-kogwistar-roles", "reader")
+            .header("x-kogwistar-roles", "reader,rw")
             .header("content-type", "application/json")
             .json(&json!({
                 "run_id": "legacy-run",

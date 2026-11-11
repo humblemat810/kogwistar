@@ -1054,8 +1054,10 @@
                 "storage_ns": namespace, "capabilities": caps, "exp": 4102444800_u64}),
             &EncodingKey::from_secret(secret.as_bytes()),
         ).unwrap();
-        let owner = token("alice", "alpha", &["workflow.run.write", "write_graph"]);
-        let owner_read = token("alice", "alpha", &["workflow.run.write", "write_graph", "read_graph"]);
+        let owner = token("alice", "alpha", &["spawn_process", "workflow.run.write", "write_graph"]);
+        let owner_read = token("alice", "alpha", &["spawn_process", "workflow.run.write", "write_graph", "read_graph"]);
+        let missing_spawn_process = token("alice", "alpha", &["workflow.run.write"]);
+        let missing_run_write = token("alice", "alpha", &["spawn_process"]);
         let other = token("bob", "alpha", &["workflow.run.write", "write_graph"]);
         let other_read = token("bob", "alpha", &["workflow.run.write", "read_graph"]);
         let wrong_scope = token("alice", "beta", &["workflow.run.write", "write_graph"]);
@@ -1071,6 +1073,31 @@
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let client = reqwest::Client::new();
         let base = format!("http://{address}");
+        let submit_auth_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-submit-auth-v1.json"
+        ))
+        .unwrap();
+        for (token, run_id) in [
+            (&missing_spawn_process, "pg-missing-spawn"),
+            (&missing_run_write, "pg-missing-write"),
+        ] {
+            let denied = client
+                .post(format!("{base}/api/workflow/runs"))
+                .bearer_auth(token)
+                .json(&json!({
+                    "run_id": run_id,
+                    "workflow_id": "wf",
+                    "conversation_id": "conv"
+                }))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                denied.status().as_u16(),
+                submit_auth_contract["denied_status"].as_u64().unwrap() as u16
+            );
+            assert!(service.store.get_server_run(run_id).await.unwrap().is_none());
+        }
         let submit = client.post(format!("{base}/api/workflow/runs")).bearer_auth(&owner)
             .json(&json!({"run_id":"native-graph-run", "workflow_id":"wf", "conversation_id":"conv",
                 "start_node_id":"entry", "node_ops":{"entry":"rust-native/app/graph"}}))
@@ -2672,7 +2699,7 @@
                 "role": "rw",
                 "ns": "alpha",
                 "storage_ns": "alpha",
-                "capabilities": ["workflow.run.write", "write_graph"]
+                "capabilities": ["spawn_process", "workflow.run.write", "write_graph"]
             }),
         };
         let submit_v2 = |run_id: &str| {
@@ -3749,7 +3776,7 @@
                 .method("POST")
                 .uri("/api/workflow/runs")
                 .header("content-type", "application/json")
-                .header("x-kogwistar-roles", "reader")
+                .header("x-kogwistar-roles", "reader,rw")
                 .body(Body::from(
                     serde_json::to_vec(&json!({
                         "workflow_id": "backpressure-wf",
@@ -3769,7 +3796,7 @@
                     .method("POST")
                     .uri("/internal/runtime/claim")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"claimed_by":"backpressure-worker","limit":1,"lease_seconds":60}"#,
                     ))
@@ -3840,7 +3867,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"workflow_id":"agentic_answering.v2","conversation_id":"answer-conversation"}"#,
                     ))
@@ -4687,7 +4714,7 @@
                         .method(method)
                         .uri(uri)
                         .header("content-type", "application/json")
-                        .header("x-kogwistar-roles", "reader")
+                        .header("x-kogwistar-roles", "reader,rw")
                         .body(Body::from(if body.is_null() {
                             Vec::new()
                         } else {
@@ -4925,7 +4952,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"workflow_id":"graph-wf","conversation_id":"graph-conv","initial_state":{"_rt_node_executor_targets":{"graph-end":"rust-native"}},"runtime_routes":[{"source_node_id":"start","target_node_id":"forged","join_mask":0}]}"#,
                     ))
@@ -4941,7 +4968,7 @@
                     .method("POST")
                     .uri("/internal/runtime/claim")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"claimed_by":"graph-worker","limit":1,"lease_seconds":60}"#,
                     ))
@@ -5146,7 +5173,7 @@
                         .method(method)
                         .uri(uri)
                         .header("content-type", "application/json")
-                        .header("x-kogwistar-roles", "reader")
+                        .header("x-kogwistar-roles", "reader,rw")
                         .body(Body::from(serde_json::to_vec(&body).unwrap()))
                         .unwrap(),
                 )
@@ -5373,7 +5400,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         json!({"workflow_id":workflow_id,"conversation_id":"invalid-pin-conv"})
                             .to_string(),
@@ -5441,6 +5468,7 @@
             let mut claims = json!({
                 "sub":"identity-worker",
                 "role":"reader",
+                "capabilities":["spawn_process", "workflow.run.write"],
                 "iss":"test-worker-registry",
                 "aud":"kogwistar-runtime",
                 "exp": now + 600
@@ -5666,7 +5694,7 @@
                     .method("POST")
                     .uri("/api/workflow/runs")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
                         r#"{"workflow_id":"predicate-wf","conversation_id":"predicate-conv"}"#,
                     ))
@@ -9298,7 +9326,7 @@
             &json!({
                 "sub":"alice","user_id":"alice","actor_id":"alice","role":"rw","roles":["rw"],
                 "ns":"alpha","storage_ns":"alpha",
-                "capabilities":["workflow.run.write","workflow.design.write","workflow.design.inspect","read_graph","write_graph"],
+                "capabilities":["spawn_process","workflow.run.write","workflow.design.write","workflow.design.inspect","read_graph","write_graph"],
                 "exp": now_seconds + 300
             }),
             &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),

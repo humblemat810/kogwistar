@@ -458,7 +458,7 @@
             "sub": "operator",
             "role": "rw",
             "ns": "workflow",
-            "capabilities": ["service.manage", "service.inspect", "project_view"],
+            "capabilities": ["service.manage", "service.inspect", "project_view", "read_security_scope"],
         });
         let declared = service
             .execute(ApiEffectRequest {

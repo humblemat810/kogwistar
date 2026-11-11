@@ -20,7 +20,7 @@
                 "sub": "native-worker",
                 "role": "rw",
                 "ns": "workflow",
-                "capabilities": ["workflow.run.write"]
+                "capabilities": ["spawn_process", "workflow.run.write"]
             }),
         };
         let submit = service

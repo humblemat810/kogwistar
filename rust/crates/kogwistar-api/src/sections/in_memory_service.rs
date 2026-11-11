@@ -2725,13 +2725,13 @@ impl InMemoryGraphApplicationService {
         if !capability_allowed(
             request,
             &self.capabilities,
-            "workflow.run.write",
-            &["workflow.run.write"],
+            "spawn_process",
+            &["spawn_process", "workflow.run.write"],
         ) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Workflow run admission requires workflow.run.write capability",
+                "Submitting workflow run requires spawn_process and workflow.run.write capabilities",
             );
         }
         let mut input: RuntimeSubmitRun = match serde_json::from_slice(&request.body) {

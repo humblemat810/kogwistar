@@ -407,6 +407,10 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
         "node_ops": {"start": "noop"},
         "node_executor_targets": {"start": "rust-native"}
     });
+    let admission_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-submit-auth-v1.json"
+    ))
+    .unwrap();
     let unauthorized = service
         .execute(request(
             json!({"sub":"owner","role":"rw","ns":["workflow"],"capabilities":["workflow.run.read"]}),
@@ -421,11 +425,48 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
             .is_none()
     );
 
+    for missing_capability in admission_contract["required_capabilities"]
+        .as_array()
+        .unwrap()
+    {
+        let granted = admission_contract["required_capabilities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|capability| *capability != missing_capability)
+            .cloned()
+            .collect::<Vec<_>>();
+        let denied_run_id = format!("missing-{}", missing_capability.as_str().unwrap());
+        let mut denied_body = body.clone();
+        denied_body["run_id"] = json!(denied_run_id);
+        let response = service
+            .execute(request(
+                json!({
+                    "sub":"owner",
+                    "role":"rw",
+                    "ns":["workflow"],
+                    "capabilities":granted
+                }),
+                denied_body,
+            ))
+            .await;
+        assert_eq!(
+            response.status,
+            admission_contract["denied_status"].as_u64().unwrap() as u16
+        );
+        assert!(
+            kogwistar_store::ServerRunReadStore::server_run(&service.store, &denied_run_id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     let principal = json!({
         "sub":"owner",
         "role":"rw",
         "ns":["workflow"],
-        "capabilities":["workflow.run.write", "workflow.run.read"]
+        "capabilities":["spawn_process", "workflow.run.write", "workflow.run.read"]
     });
     let admitted = service
         .execute(request(principal.clone(), body.clone()))
@@ -595,7 +636,7 @@ async fn in_memory_native_admission_uses_authoritative_design_and_rejects_confli
         "sub":"design-owner",
         "role":"rw",
         "ns":["workflow"],
-        "capabilities":["workflow.run.write"]
+        "capabilities":["spawn_process", "workflow.run.write"]
     });
     let submit = |workflow_id: &str, run_id: &str, node_ops: Value| ApiEffectRequest {
         contract_version: 1,
@@ -744,7 +785,7 @@ async fn in_memory_run_owner_revalidation_rejects_revoked_inactive_and_changed_s
         "role":"rw",
         "ns":["workflow", "alpha"],
         "storage_ns":"alpha",
-        "capabilities":["workflow.run.write", "write_graph"]
+        "capabilities":["spawn_process", "workflow.run.write", "write_graph"]
     });
     let admitted = service
         .execute(ApiEffectRequest {
@@ -936,7 +977,7 @@ async fn in_memory_native_provider_request_persists_semantic_events_and_keeps_de
         "user_id":"memory-provider-owner", "sub":"memory-provider-owner", "role":"rw",
         "ns":["workflow", "conversation"], "storage_ns":"conversation",
         "workspace":"workspace-a", "graph_space":"conversation",
-        "capabilities":["workflow.run.write", "workflow.run.read", "write_graph"]
+        "capabilities":["spawn_process", "workflow.run.write", "workflow.run.read", "write_graph"]
     });
     let admission = service
         .execute(ApiEffectRequest {
@@ -1061,7 +1102,7 @@ async fn in_memory_native_run_admission_is_reachable_through_authenticated_http(
             "sub": "runtime-http-owner",
             "role": "rw",
             "ns": ["workflow"],
-            "capabilities": ["workflow.run.write", "workflow.run.read"],
+            "capabilities": ["spawn_process", "workflow.run.write", "workflow.run.read"],
             "exp": now + 300
         }),
         &EncodingKey::from_secret(secret.as_bytes()),
@@ -1593,7 +1634,7 @@ async fn in_memory_native_receive_claims_visible_event_and_routes_it() {
         "role":"rw",
         "ns":["workflow", "alpha"],
         "storage_ns":"alpha",
-        "capabilities":["workflow.run.write", "read_graph", "write_graph"]
+        "capabilities":["spawn_process", "workflow.run.write", "read_graph", "write_graph"]
     });
     let admitted = service
         .execute(ApiEffectRequest {
@@ -2990,7 +3031,7 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
                 "role": "rw",
                 "ns": "alpha",
                 "storage_ns": "alpha",
-                "capabilities": ["workflow.run.write", "write_graph"]
+                "capabilities": ["spawn_process", "workflow.run.write", "write_graph"]
             }),
         })
         .await;
@@ -3068,7 +3109,7 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
                 "role": "rw",
                 "ns": "alpha",
                 "storage_ns": "alpha",
-                "capabilities": ["workflow.run.write", "write_graph"]
+                "capabilities": ["spawn_process", "workflow.run.write", "write_graph"]
             }),
         })
         .await;

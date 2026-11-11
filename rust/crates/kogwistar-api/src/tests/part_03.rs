@@ -726,7 +726,7 @@
             key: Some(key.to_owned()),
             ..AuthConfig::default()
         };
-        let claims = json!({"sub":"alice","role":"rw","roles":["reader","rw"],"ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"],"exp":4102444800_u64});
+        let claims = json!({"sub":"alice","role":"rw","roles":["reader","rw"],"ns":"workflow","capabilities":["spawn_process","workflow.run.write","workflow.design.write","workflow.design.inspect"],"exp":4102444800_u64});
         let token = encode(
             &Header::new(Algorithm::HS256),
             &claims,
