@@ -640,6 +640,125 @@ def _exercise_postgres_transport(
         assert stale_result.status_code == 409, stale_result.text
 
 
+def _exercise_postgres_synchronous_resume(
+    *, base: str, headers: dict[str, str], tmp_path: Path
+) -> None:
+    contract = json.loads(
+        (ROOT / "contracts/golden/workflow-run-resume-result-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    submitted = httpx.post(
+        f"{base}/api/workflow/runs",
+        headers=headers,
+        json={
+            "workflow_id": "pg-sync-resume-workflow",
+            "conversation_id": "pg-sync-resume-conversation",
+        },
+        timeout=10,
+    )
+    assert submitted.status_code == 202, submitted.text
+    run_id = submitted.json()["run_id"]
+
+    def suspend(_work: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": "suspended",
+            "state_update": [["u", {"before_suspend": True}]],
+            "successors": [],
+            "wait_reason": "approval",
+            "resume_payload": {"question": "continue?"},
+        }
+
+    with RustRuntimeWorker(
+        base_url=base,
+        worker_id="pg-sync-resume-suspender",
+        journal_path=tmp_path / "pg-sync-resume-suspender.sqlite",
+        execute=suspend,
+        headers=headers,
+    ) as worker:
+        work = worker.claim()
+        assert len(work) == 1
+        worker.process(work[0])
+
+    resume_contract = httpx.get(
+        f"{base}/api/workflow/runs/{run_id}/resume-contract",
+        headers=headers,
+        timeout=10,
+    )
+    assert resume_contract.status_code == 200, resume_contract.text
+    token_id = resume_contract.json()["suspended"][0][2]
+    resume_body = {
+        "workflow_id": "pg-sync-resume-workflow",
+        "conversation_id": "pg-sync-resume-conversation",
+        "suspended_node_id": "start",
+        "suspended_token_id": token_id,
+        "client_result": {
+            "status": "success",
+            "state_update": [["u", {"approved": True}]],
+            "successors": [],
+            "route_next": [],
+            "result": {"workflow_status": "succeeded"},
+        },
+    }
+    denied = httpx.post(
+        f"{base}/api/workflow/runs/{run_id}/resume?wait_for_completion=true",
+        headers={"x-kogwistar-roles": "reader"},
+        json=resume_body,
+        timeout=10,
+    )
+    assert denied.status_code == 403, denied.text
+
+    def finish(work: dict[str, object]) -> dict[str, object]:
+        payload = work["payload"]
+        assert isinstance(payload, dict)
+        assert payload["resume_effect"]["status"] == "success"
+        return {
+            "state_update": [["u", {"after_resume": True}]],
+            "successors": [],
+            "result": {"resumed": True},
+        }
+
+    worker_errors: list[Exception] = []
+
+    def run_finisher() -> None:
+        try:
+            with RustRuntimeWorker(
+                base_url=base,
+                worker_id="pg-sync-resume-finisher",
+                journal_path=tmp_path / "pg-sync-resume-finisher.sqlite",
+                execute=finish,
+                headers=headers,
+            ) as worker:
+                deadline = time.monotonic() + 10
+                work: list[dict[str, object]] = []
+                while not work and time.monotonic() < deadline:
+                    work = worker.claim()
+                    if not work:
+                        time.sleep(0.05)
+                assert len(work) == 1
+                worker.process(work[0])
+        except Exception as error:
+            worker_errors.append(error)
+
+    finisher = threading.Thread(target=run_finisher, daemon=True)
+    finisher.start()
+    resumed = httpx.post(
+        f"{base}/api/workflow/runs/{run_id}/resume?wait_for_completion=true",
+        headers=headers,
+        json=resume_body,
+        timeout=15,
+    )
+    finisher.join(timeout=10)
+    assert not finisher.is_alive(), "PostgreSQL resume worker did not stop"
+    assert not worker_errors, worker_errors
+    assert resumed.status_code == 200, resumed.text
+    result = resumed.json()
+    assert set(result) == set(contract["required_fields"])
+    assert result["workflow_status"] == "succeeded"
+    assert result["final_state"]["after_resume"] is True
+    assert result["budget"] == {}
+
+
 def test_rust_postgres_server_submit_claim_read_cancel_true_socket(
     pg_dsn: str | None,
     tmp_path: Path,
@@ -687,6 +806,66 @@ def test_rust_postgres_server_submit_claim_read_cancel_true_socket(
         else:
             raise AssertionError("Rust PostgreSQL server did not become ready")
         _exercise_postgres_transport(
+            base=base,
+            headers={"x-kogwistar-roles": "reader,rw"},
+            tmp_path=tmp_path,
+        )
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_rust_postgres_synchronous_resume_matches_shared_contract(
+    pg_dsn: str | None,
+    tmp_path: Path,
+) -> None:
+    if not pg_dsn:
+        pytest.skip("PostgreSQL fixture unavailable")
+    if not SERVER.exists():
+        pytest.skip("build kogwistar-server before live transport test")
+    if any(source.stat().st_mtime > SERVER.stat().st_mtime for source in SERVER_SOURCES):
+        pytest.skip("rebuild current kogwistar-server before live transport test")
+    port = _port()
+    schema = f"rust_resume_{uuid.uuid4().hex}"
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "KOGWISTAR_BACKEND": "pg",
+            "KOGWISTAR_PG_DSN": pg_dsn,
+            "KOGWISTAR_PG_SCHEMA_BASE": schema,
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+        }
+    )
+    process = subprocess.Popen(
+        [str(SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base = f"http://127.0.0.1:{port}"
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                raise AssertionError(f"Rust server exited\nstdout={stdout}\nstderr={stderr}")
+            try:
+                if httpx.get(f"{base}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("Rust PostgreSQL server did not become ready")
+        _exercise_postgres_synchronous_resume(
             base=base,
             headers={"x-kogwistar-roles": "reader,rw"},
             tmp_path=tmp_path,
