@@ -2172,6 +2172,34 @@
             &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
         )
         .unwrap();
+        let transcript_read_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "ro",
+                "ns": ["conversation"],
+                "storage_ns": "conversation",
+                "capabilities": ["read_graph"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let wrong_namespace_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "ro",
+                "ns": ["workflow"],
+                "storage_ns": "workflow",
+                "capabilities": ["read_graph"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
         let application = Arc::new(service);
         let app = router_with_application(
             ApiState {
@@ -2230,6 +2258,7 @@
             .unwrap();
         assert!(denied_start.is_empty());
         let mcp_create = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -2268,6 +2297,64 @@
             serde_json::from_slice::<Value>(&mcp_created_details.body).unwrap()["start_node_id"],
             "conv-create-mcp-start"
         );
+
+        let transcript_call = |token: &str, request_id: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/conversation")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0",
+                        "id":request_id,
+                        "method":"tools/call",
+                        "params": {
+                            "name":"conversation.get_transcript",
+                            "arguments":{"conversation_id":"conv-create-mcp"}
+                        }
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap()
+        };
+        let mcp_transcript = app
+            .clone()
+            .oneshot(transcript_call(&transcript_read_token, "transcript-allowed"))
+            .await
+            .unwrap();
+        assert_eq!(mcp_transcript.status(), StatusCode::OK);
+        let mcp_transcript: Value = serde_json::from_slice(
+            &to_bytes(mcp_transcript.into_body(), 8192).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mcp_transcript["result"],
+            json!({"conversation_id":"conv-create-mcp", "turns":[]})
+        );
+
+        let denied_missing_capability = app
+            .clone()
+            .oneshot(transcript_call(&no_spawn_process_token, "transcript-no-capability"))
+            .await
+            .unwrap();
+        let denied_body = to_bytes(denied_missing_capability.into_body(), 8192)
+            .await
+            .unwrap();
+        let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_value["error"]["code"], -32000);
+        assert!(denied_value.get("result").is_none());
+
+        let denied_wrong_namespace = app
+            .oneshot(transcript_call(&wrong_namespace_token, "transcript-wrong-namespace"))
+            .await
+            .unwrap();
+        let denied_body = to_bytes(denied_wrong_namespace.into_body(), 8192)
+            .await
+            .unwrap();
+        let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_value["error"]["code"], -32000);
+        assert!(denied_value.get("result").is_none());
 
         drop(application);
         let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)

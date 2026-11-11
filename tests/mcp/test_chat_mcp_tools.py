@@ -1185,6 +1185,49 @@ async def test_mcp_conversation_get_transcript_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    conversation_id = "transcript-authorization-check"
+    owner = "transcript-authorization-owner"
+    with _claims(
+        "rw",
+        "conversation",
+        sub=owner,
+        scope_parts={"capabilities": ["spawn_process"]},
+    ):
+        await server.mcp.call_tool(
+            "conversation.create",
+            {"user_id": owner, "conversation_id": conversation_id},
+        )
+
+    arguments = {"conversation_id": conversation_id}
+    with _claims(
+        "ro", "conversation", sub=owner, scope_parts={"capabilities": []}
+    ):
+        with pytest.raises(HTTPException) as missing_capability:
+            await server.mcp._execute(
+                "conversation.get_transcript", arguments, enforce_visibility=True
+            )
+        assert missing_capability.value.status_code == 403
+
+    with _claims(
+        "ro", "workflow", sub=owner, scope_parts={"capabilities": ["read_graph"]}
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "conversation.get_transcript", arguments, enforce_visibility=True
+            )
+
+
+@pytest.mark.asyncio
 async def test_wisdom_graph_upsert_mcp_requires_authorized_wisdom_writer(
     monkeypatch, engine_triplet
 ):
