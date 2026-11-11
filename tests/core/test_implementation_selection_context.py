@@ -1544,6 +1544,25 @@ def test_python_transaction_entry_fails_closed_for_rust_owner(
         assert_python_transaction_entry_allowed()
 
 
+def test_rust_transaction_authority_propagates_to_asyncio_tasks_and_threads() -> None:
+    def assert_python_entry_denied() -> None:
+        with pytest.raises(
+            RuntimeError,
+            match="forbidden while Rust owns transaction authority",
+        ):
+            assert_python_transaction_entry_allowed()
+
+    async def child_task() -> None:
+        assert_python_entry_denied()
+
+    async def verify_propagation() -> None:
+        with transaction_authority_scope("rust"):
+            await asyncio.create_task(child_task())
+            await asyncio.to_thread(assert_python_entry_denied)
+
+    asyncio.run(verify_propagation())
+
+
 def test_python_transaction_entry_remains_available_for_python_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
