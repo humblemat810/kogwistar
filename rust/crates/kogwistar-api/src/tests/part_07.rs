@@ -1023,6 +1023,52 @@ async fn workflow_lineage_checks_authority_before_run_lookup() {
 }
 
 #[tokio::test]
+async fn resume_contract_checks_authority_before_run_lookup() {
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-resume-contract-auth-order-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+    let postgres = PostgresRunApplicationService::from_dsn(
+        "postgres://unused:unused@127.0.0.1:1/unused",
+        "resume_contract_auth_order",
+    )
+    .unwrap();
+
+    for service in [&sqlite as &dyn ApplicationService, &postgres] {
+        for (principal, expected_code) in [
+            (
+                json!({"ns": ["conversation"], "capabilities": ["workflow.run.read"]}),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+            (
+                json!({"ns": ["workflow"], "capabilities": []}),
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            ),
+        ] {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query:
+                        "/api/workflow/runs/missing/resume-contract".to_owned(),
+                    body: Vec::new(),
+                    principal,
+                })
+                .await;
+            assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+                expected_code
+            );
+        }
+    }
+
+    drop(sqlite);
+    remove_test_sqlite(&sqlite_path);
+}
+
+#[tokio::test]
 async fn run_evidence_checks_authority_before_run_lookup() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-evidence-auth-order-{}.sqlite",

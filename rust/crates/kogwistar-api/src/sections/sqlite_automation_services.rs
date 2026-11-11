@@ -1654,6 +1654,31 @@ impl SqliteRunApplicationService {
                 );
             }
         }
+        // PYTHON_PARITY_V1: resume-contract reads require workflow.run.read before run lookup; python=kogwistar/server/chat_service.py#ChatRunService.resume_contract
+        if request.method == "GET" && tail == ["resume-contract"] {
+            if !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "*" || namespace == "workflow")
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                    "Resume-contract reads require workflow namespace",
+                );
+            }
+            if !capability_allowed(
+                &request,
+                &self.capabilities,
+                "workflow.run.read",
+                &["workflow.run.read"],
+            ) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading resume contract requires workflow.run.read capability",
+                );
+            }
+        }
         let run = match self.get_run(&run_id) {
             Ok(Some(run)) => run,
             Ok(None) => {

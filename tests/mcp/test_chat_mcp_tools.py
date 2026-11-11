@@ -1683,6 +1683,68 @@ async def test_mcp_workflow_replay_denies_wrong_namespace_before_read(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_resume_contract_denies_scope_and_missing_capability(
+    monkeypatch, engine_triplet
+):
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[str] = []
+
+    def resume_contract(run_id: str) -> dict:
+        reads.append(run_id)
+        return {"run_id": run_id}
+
+    monkeypatch.setattr(service._run_inspection, "resume_contract", resume_contract)
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda _workflow_id, _role: None,
+    )
+
+    with _claims("ro", "conversation", sub="alice"):
+        wrong_scope = await workflow_mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_resume_contract",
+                arguments={"run_id": "private-run"},
+            ),
+        )
+    assert wrong_scope.is_error is True
+    assert "403 Forbidden" in wrong_scope.content[0].text
+    assert reads == []
+
+    with _claims("ro", "workflow", sub="alice", scope_parts={"capabilities": []}):
+        missing_capability = await workflow_mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_resume_contract",
+                arguments={"run_id": "private-run"},
+            ),
+        )
+    assert missing_capability.is_error is True
+    assert "403" in missing_capability.content[0].text
+    assert reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_replay_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
