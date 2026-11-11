@@ -1465,6 +1465,27 @@ fn server_run_value(run: ServerRun) -> Value {
     })
 }
 
+fn resumed_run_result(
+    run: ServerRun,
+    state: Option<kogwistar_runtime::RecordedRuntimeState>,
+) -> Value {
+    let mut final_state = state
+        .map(|state| Value::Object(state.state))
+        .unwrap_or_else(|| json!({}));
+    if let Some(fields) = final_state.as_object_mut() {
+        fields.remove("_deps");
+    }
+    let budget = final_state
+        .get("budget")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    json!({
+        "workflow_status": run.status,
+        "final_state": final_state,
+        "budget": budget,
+    })
+}
+
 fn server_run_event_value(event: ServerRunEvent) -> Value {
     json!({
         "seq": event.seq,

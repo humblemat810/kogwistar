@@ -1935,6 +1935,12 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
 def test_resume_route_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
+    resume_result_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-resume-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -1988,6 +1994,7 @@ def test_resume_route_uses_python_defaults_and_checks_namespace(
             headers=workflow_headers,
         )
         assert response.status_code == 200, response.text
+        assert set(response.json()) == set(resume_result_contract["required_fields"])
         assert response.json() == {
             "workflow_status": "succeeded",
             "final_state": {"resumed_value": "approved"},

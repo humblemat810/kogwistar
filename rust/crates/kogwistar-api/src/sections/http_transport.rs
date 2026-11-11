@@ -1026,7 +1026,9 @@ async fn mcp_dispatch(
             "workflow.run_resume" if !run_id.is_empty() => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
-                path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
+                path_and_query: format!(
+                    "/api/workflow/runs/{run_id}/resume?wait_for_completion=true"
+                ),
                 body: serde_json::to_vec(&json!({
                     "suspended_node_id": arguments.get("suspended_node_id"),
                     "suspended_token_id": arguments.get("suspended_token_id"),

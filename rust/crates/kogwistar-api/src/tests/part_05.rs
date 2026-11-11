@@ -243,6 +243,7 @@
                             | "workflow.process_table"
                             | "workflow.blocked_runs"
                             | "workflow.operator_inbox"
+                            | "workflow.run_resume"
                     )
             }
 
@@ -303,6 +304,36 @@
         assert_eq!(request.contract_version, 1);
         assert_eq!(request.method, "GET");
         assert!(request.body.is_empty());
+
+        let response = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workflow.run_resume","arguments":{"run_id":"run-6","suspended_node_id":"approve","suspended_token_id":"token-6","client_result":{"status":"success"},"workflow_id":"wf-6","conversation_id":"conv-6","turn_node_id":"turn-6"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            value["result"]["path_and_query"],
+            "/api/workflow/runs/run-6/resume?wait_for_completion=true"
+        );
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.contract_version, 1);
+        assert_eq!(request.method, "POST");
+        let request_body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(request_body["suspended_node_id"], "approve");
+        assert_eq!(request_body["suspended_token_id"], "token-6");
+        assert_eq!(request_body["client_result"]["status"], "success");
+        assert_eq!(request_body["workflow_id"], "wf-6");
+        assert_eq!(request_body["conversation_id"], "conv-6");
 
         let response = make_app()
             .oneshot(

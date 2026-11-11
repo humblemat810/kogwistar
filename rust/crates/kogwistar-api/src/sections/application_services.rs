@@ -1580,6 +1580,93 @@ impl ApplicationService for SqliteRunApplicationService {
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
             if request.method == "POST"
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["resume"]
+                && query_parameter_present(&request.path_and_query, "wait_for_completion")
+            {
+                if !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "*" || namespace == "workflow")
+                {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                        "Resuming workflow runs requires workflow namespace",
+                    );
+                }
+                if !capability_any_allowed(
+                    &request,
+                    &self.capabilities,
+                    "workflow.run.write",
+                    &["workflow.run.write", "approve_action"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "Resuming workflow runs requires workflow.run.write capability",
+                    );
+                }
+                let input: RuntimeResumeRequest = match serde_json::from_slice(&request.body) {
+                    Ok(input) => input,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_REQUEST",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let mut handoff = request.clone();
+                handoff.path_and_query = format!("/api/workflow/runs/{run_id}/resume");
+                let admitted = self.execute_sync(handoff);
+                if !(200..300).contains(&admitted.status) {
+                    return admitted;
+                }
+                loop {
+                    let run = match self.store.get_server_run(&run_id) {
+                        Ok(Some(run)) => run,
+                        Ok(None) => {
+                            return effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Unknown run_id: {run_id}"),
+                            );
+                        }
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                    if matches!(
+                        run.status.as_str(),
+                        "succeeded" | "failed" | "cancelled" | "suspended"
+                    ) {
+                        let state = match self.store.read_recorded_runtime_state(
+                            &run_id,
+                            &input.workflow_id,
+                            &input.conversation_id,
+                        ) {
+                            Ok(state) => state,
+                            Err(error) => {
+                                return effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_STORE_ERROR",
+                                    error.to_string(),
+                                );
+                            }
+                        };
+                        return json_effect(
+                            StatusCode::OK,
+                            resumed_run_result(run, state),
+                        );
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+            }
+            if request.method == "POST"
                 && request.path_and_query.split('?').next() == Some("/api/add_index_entries")
                 && self.supports_http_operation("POST", "/api/add_index_entries")
             {

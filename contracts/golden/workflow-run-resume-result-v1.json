@@ -1,0 +1,6 @@
+{
+  "contract_version": 1,
+  "required_fields": ["workflow_status", "final_state", "budget"],
+  "completed_statuses": ["succeeded", "failed", "cancelled", "suspended"],
+  "private_final_state_keys": ["_deps"]
+}

@@ -168,8 +168,45 @@ def _exercise_postgres_transport(
         assert contract["suspended"][0][0] == "start"
         suspended_token_id = contract["suspended"][0][2]
 
+        def finish(work: dict[str, object]) -> dict[str, object]:
+            payload = work["payload"]
+            assert isinstance(payload, dict)
+            assert payload["resume_effect"]["status"] == "success"
+            assert payload["resume_effect"]["state_update"] == [
+                ["u", {"approved": True}]
+            ]
+            return {
+                "state_update": [["u", {"after_resume": True}]],
+                "successors": [],
+                "result": {"resumed": True},
+            }
+
+        worker_errors: list[Exception] = []
+
+        def finish_resumed_run() -> None:
+            try:
+                with RustRuntimeWorker(
+                    base_url=base,
+                    worker_id="pg-python-resume-finisher",
+                    journal_path=tmp_path / "pg-resume-finisher.sqlite",
+                    execute=finish,
+                    headers=headers,
+                ) as worker:
+                    deadline = time.monotonic() + 10
+                    resumed_work: list[dict[str, object]] = []
+                    while not resumed_work and time.monotonic() < deadline:
+                        resumed_work = worker.claim()
+                        if not resumed_work:
+                            time.sleep(0.05)
+                    assert len(resumed_work) == 1
+                    worker.process(resumed_work[0])
+            except Exception as error:
+                worker_errors.append(error)
+
+        finisher = threading.Thread(target=finish_resumed_run, daemon=True)
+        finisher.start()
         resumed = httpx.post(
-            f"{base}/api/workflow/runs/{suspended_run['run_id']}/resume",
+            f"{base}/api/workflow/runs/{suspended_run['run_id']}/resume?wait_for_completion=true",
             headers=headers,
             json={
                 "workflow_id": "pg-resume-workflow",
@@ -186,32 +223,19 @@ def _exercise_postgres_transport(
             },
             timeout=10,
         )
+        finisher.join(timeout=10)
+        assert not finisher.is_alive(), "PostgreSQL resume worker did not stop"
+        assert not worker_errors, worker_errors
         assert resumed.status_code == 200, resumed.text
-        assert resumed.json()["state"]["status"] == "running"
-
-        def finish(work: dict[str, object]) -> dict[str, object]:
-            payload = work["payload"]
-            assert isinstance(payload, dict)
-            assert payload["resume_effect"]["status"] == "success"
-            assert payload["resume_effect"]["state_update"] == [
-                ["u", {"approved": True}]
-            ]
-            return {
-                "state_update": [["u", {"after_resume": True}]],
-                "successors": [],
-                "result": {"resumed": True},
-            }
-
-        with RustRuntimeWorker(
-            base_url=base,
-            worker_id="pg-python-resume-finisher",
-            journal_path=tmp_path / "pg-resume-finisher.sqlite",
-            execute=finish,
-            headers=headers,
-        ) as worker:
-            resumed_work = worker.claim()
-            assert len(resumed_work) == 1
-            worker.process(resumed_work[0])
+        resume_result_contract = json.loads(
+            (ROOT / "contracts/golden/workflow-run-resume-result-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        resumed_result = resumed.json()
+        assert set(resumed_result) == set(resume_result_contract["required_fields"])
+        assert resumed_result["workflow_status"] == "succeeded"
+        assert resumed_result["final_state"]["after_resume"] is True
 
         resumed_status = httpx.get(
             f"{base}/api/workflow/runs/{suspended_run['run_id']}",
@@ -664,7 +688,7 @@ def test_rust_postgres_server_submit_claim_read_cancel_true_socket(
             raise AssertionError("Rust PostgreSQL server did not become ready")
         _exercise_postgres_transport(
             base=base,
-            headers={"x-kogwistar-roles": "reader"},
+            headers={"x-kogwistar-roles": "reader,rw"},
             tmp_path=tmp_path,
         )
     finally:

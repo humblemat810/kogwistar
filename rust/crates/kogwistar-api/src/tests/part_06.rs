@@ -4743,6 +4743,10 @@
             "../../../../../contracts/golden/run-resume-contract-v1.json"
         ))
         .unwrap();
+        let resume_result_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+        ))
+        .unwrap();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -4871,18 +4875,30 @@
             "conversation_id": "resume-conv",
             "turn_node_id": "unused-compatible-field",
         });
-        let (status, resumed) = call(
-            app.clone(),
-            "POST",
-            format!("/api/workflow/runs/{run_id}/resume"),
-            resume_body,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(resumed["state"]["status"], "running");
-        assert_eq!(resumed["state"]["wait_reason"], Value::Null);
-        drop(app);
-        app = reopen();
+        let denied_resume = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!(
+                        "/api/workflow/runs/{run_id}/resume?wait_for_completion=true"
+                    ))
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(serde_json::to_vec(&resume_body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_resume.status(), StatusCode::FORBIDDEN);
+        let resume_app = app.clone();
+        let resume_uri = format!(
+            "/api/workflow/runs/{run_id}/resume?wait_for_completion=true"
+        );
+        let resume_future = tokio::spawn(async move {
+            call(resume_app, "POST", resume_uri, resume_body).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         let (_, claimed) = call(
             app.clone(),
             "POST",
@@ -4921,6 +4937,29 @@
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        let (resume_status, resumed) = resume_future.await.unwrap();
+        assert_eq!(resume_status, StatusCode::OK);
+        let result_fields = resume_result_fixture["required_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_fields = resumed
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_fields, result_fields);
+        assert!(resume_result_fixture["completed_statuses"]
+            .as_array()
+            .unwrap()
+            .contains(&resumed["workflow_status"]));
+        assert_eq!(resumed["workflow_status"], "succeeded");
+        assert_eq!(resumed["final_state"]["before_suspend"], true);
+        assert_eq!(resumed["final_state"]["after_resume"], true);
+        assert_eq!(resumed["budget"], json!({}));
         drop(app);
         app = reopen();
         let (status, run) = call(
