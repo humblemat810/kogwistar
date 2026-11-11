@@ -1,0 +1,25 @@
+{
+  "version": "v1",
+  "tool": "conversation.run_status",
+  "arguments": {
+    "run_id": "run-status-contract"
+  },
+  "rust_route": "GET /api/runs/{run_id}",
+  "result": {
+    "run_id": "run-status-contract",
+    "conversation_id": "conversation-status-contract",
+    "workflow_id": "agentic_answering.v2",
+    "user_id": "alice",
+    "user_turn_node_id": "turn-status-contract",
+    "assistant_turn_node_id": null,
+    "status": "running",
+    "cancel_requested": false,
+    "result": null,
+    "error": null,
+    "created_at_ms": "<generated>",
+    "updated_at_ms": "<generated>",
+    "started_at_ms": null,
+    "finished_at_ms": null,
+    "terminal": false
+  }
+}

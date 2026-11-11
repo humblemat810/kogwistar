@@ -1889,6 +1889,50 @@
     }
 
     #[test]
+    fn conversation_run_status_mcp_admission_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-status-mcp-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_status_mcp_admission",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+
+        for service in services {
+            assert!(service.supports_mcp_tool_for_principal(
+                "conversation",
+                "conversation.run_status",
+                &json!({"role":"ro", "ns":["conversation"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "conversation",
+                "conversation.run_status",
+                &json!({"role":"rw", "ns":["workflow"]})
+            ));
+            assert!(service.supports_mcp_tool_for_principal(
+                "conversation",
+                "conversation.run_status",
+                &json!({"role":"anonymous", "ns":["conversation"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                "conversation.run_status",
+                &json!({"role":"ro", "ns":["conversation"]})
+            ));
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn conversation_cancel_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -2533,8 +2577,193 @@
 
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.method, "POST");
-        assert_eq!(request.path_and_query, "/api/workflow/runs/run-cancel-contract/cancel");
+        assert_eq!(request.path_and_query, "/api/runs/run-cancel-contract/cancel");
         assert!(request.body.is_empty());
+    }
+
+    #[tokio::test]
+    async fn mcp_conversation_run_operations_use_conversation_scope_end_to_end() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let status_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-run-status-mcp-v1.json"
+        ))
+        .unwrap();
+        let cancel_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-cancel-run-mcp-v1.json"
+        ))
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-mcp-conversation-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let denied_run = json!({
+            "run_id":"cancel-denied-run",
+            "conversation_id":"cancel-denied-conversation",
+            "workflow_id":"agentic_answering.v2",
+            "user_id":"alice",
+            "user_turn_node_id":"cancel-denied-turn",
+            "status":"running"
+        });
+        for run in [
+            &status_contract["result"],
+            &cancel_contract["result"],
+            &denied_run,
+        ] {
+            service
+                .store
+                .create_server_run(kogwistar_store::ServerRunCreate {
+                    run_id: run["run_id"].as_str().unwrap().to_owned(),
+                    conversation_id: run["conversation_id"].as_str().unwrap().to_owned(),
+                    workflow_id: run["workflow_id"].as_str().unwrap().to_owned(),
+                    user_id: run["user_id"].as_str().map(str::to_owned),
+                    user_turn_node_id: run["user_turn_node_id"].as_str().unwrap().to_owned(),
+                    status: run["status"].as_str().unwrap().to_owned(),
+                })
+                .unwrap();
+        }
+
+        let key = b"conversation-mcp-auth-secret";
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let make_token = |role: &str, namespace: &str, capabilities: &[&str]| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub":"alice",
+                    "role":role,
+                    "ns":[namespace],
+                    "capabilities":capabilities,
+                    "iss":"local",
+                    "exp":now + 300
+                }),
+                &EncodingKey::from_secret(key),
+            )
+            .unwrap()
+        };
+        let request = |id: &str, tool: &str, arguments: Value, bearer: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/conversation")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":id,
+                        "method":"tools/call",
+                        "params":{"name":tool,"arguments":arguments}
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(String::from_utf8_lossy(key).into_owned()),
+                    jwks_json: None,
+                    issuer: Some("local".to_owned()),
+                    audience: None,
+                    oidc_providers_json: None,
+                    auth_db_url: None,
+                },
+            },
+            Arc::new(service.clone()),
+        );
+
+        let status_response = app
+            .clone()
+            .oneshot(request(
+                "status-allowed",
+                status_contract["tool"].as_str().unwrap(),
+                status_contract["arguments"].clone(),
+                &make_token("ro", "conversation", &["workflow.run.read"]),
+            ))
+            .await
+            .unwrap();
+        let status_body = to_bytes(status_response.into_body(), 8192).await.unwrap();
+        let status_value: Value = serde_json::from_slice(&status_body).unwrap();
+        let mut status_result = status_value["result"].clone();
+        status_result["created_at_ms"] = json!("<generated>");
+        status_result["updated_at_ms"] = json!("<generated>");
+        assert_eq!(status_result, status_contract["result"]);
+
+        for (denied_token, expected_code) in [
+            (make_token("ro", "conversation", &[]), -32000),
+            (
+                make_token("ro", "workflow", &["workflow.run.read"]),
+                -32602,
+            ),
+        ] {
+            let denied = app
+                .clone()
+                .oneshot(request(
+                    "status-denied",
+                    status_contract["tool"].as_str().unwrap(),
+                    status_contract["arguments"].clone(),
+                    &denied_token,
+                ))
+                .await
+                .unwrap();
+            let body = to_bytes(denied.into_body(), 8192).await.unwrap();
+            let value: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["error"]["code"], expected_code);
+            assert!(value.get("result").is_none());
+        }
+
+        let denied_cancel = app
+            .clone()
+            .oneshot(request(
+                "cancel-denied",
+                "conversation.cancel_run",
+                json!({"run_id":"cancel-denied-run"}),
+                &make_token("rw", "conversation", &[]),
+            ))
+            .await
+            .unwrap();
+        let denied_body = to_bytes(denied_cancel.into_body(), 8192).await.unwrap();
+        let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_value["error"]["code"], -32000);
+        let unchanged = service
+            .store
+            .get_server_run("cancel-denied-run")
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.status, "running");
+        assert!(!unchanged.cancel_requested);
+
+        let cancel_response = app
+            .oneshot(request(
+                "cancel-allowed",
+                cancel_contract["tool"].as_str().unwrap(),
+                cancel_contract["arguments"].clone(),
+                &make_token("rw", "conversation", &["workflow.run.write"]),
+            ))
+            .await
+            .unwrap();
+        let cancel_body = to_bytes(cancel_response.into_body(), 8192).await.unwrap();
+        let cancel_value: Value = serde_json::from_slice(&cancel_body).unwrap();
+        let mut cancel_result = cancel_value["result"].clone();
+        cancel_result["created_at_ms"] = json!("<generated>");
+        cancel_result["updated_at_ms"] = json!("<generated>");
+        assert_eq!(cancel_result, cancel_contract["result"]);
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

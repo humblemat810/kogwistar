@@ -1840,6 +1840,93 @@ async def test_mcp_conversation_cancel_run_denies_unauthorized_effects(
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_run_status_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-run-status-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service.run_registry.create_run(
+        run_id=contract["arguments"]["run_id"],
+        conversation_id=contract["result"]["conversation_id"],
+        workflow_id=contract["result"]["workflow_id"],
+        user_id=contract["result"]["user_id"],
+        user_turn_node_id=contract["result"]["user_turn_node_id"],
+        status=contract["result"]["status"],
+    )
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        result = _structured(
+            await server.mcp.call_tool(contract["tool"], contract["arguments"])
+        )
+
+    result["created_at_ms"] = "<generated>"
+    result["updated_at_ms"] = "<generated>"
+    assert result == contract["result"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_conversation_run_status_denies_unauthorized_effects(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    service.run_registry.create_run(
+        run_id="status-auth-run",
+        conversation_id="status-auth-conversation",
+        workflow_id="agentic_answering.v2",
+        user_id="status-auth-owner",
+        user_turn_node_id="status-auth-turn",
+        status="running",
+    )
+    args = {"run_id": "status-auth-run"}
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="status-auth-owner",
+        scope_parts={"capabilities": []},
+    ):
+        with pytest.raises(HTTPException) as missing_capability:
+            await server.mcp._execute(
+                "conversation.run_status", args, enforce_visibility=True
+            )
+        assert missing_capability.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="status-auth-owner",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "conversation.run_status", args, enforce_visibility=True
+            )
+
+    run = service.run_registry.get_run("status-auth-run")
+    assert run is not None
+    assert run["status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_denies_unauthorized_effects(
     monkeypatch, engine_triplet
 ):

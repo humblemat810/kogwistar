@@ -1178,6 +1178,107 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+async fn postgres_conversation_run_routes_enforce_conversation_scope() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_conversation_run_scope_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: "conversation-scope-run".to_owned(),
+            conversation_id: "conversation-scope-conversation".to_owned(),
+            workflow_id: "agentic_answering.v2".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "conversation-scope-turn".to_owned(),
+            status: "running".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    let status = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/runs/conversation-scope-run".to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
+        })
+        .await;
+    assert_eq!(status.status, StatusCode::OK.as_u16());
+    assert_eq!(serde_json::from_slice::<Value>(&status.body).unwrap()["status"], "running");
+
+    let denied_status = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/runs/conversation-scope-run".to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice", "ns":["conversation"], "capabilities":[]}),
+        })
+        .await;
+    assert_eq!(denied_status.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&denied_status.body).unwrap()["code"],
+        "KOGWISTAR_CAPABILITY_FORBIDDEN"
+    );
+
+    let wrong_route = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/conversation-scope-run".to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
+        })
+        .await;
+    assert_eq!(wrong_route.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&wrong_route.body).unwrap()["code"],
+        "KOGWISTAR_NAMESPACE_FORBIDDEN"
+    );
+
+    let denied_cancel = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/runs/conversation-scope-run/cancel".to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice", "ns":["conversation"], "capabilities":[]}),
+        })
+        .await;
+    assert_eq!(denied_cancel.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&denied_cancel.body).unwrap()["code"],
+        "KOGWISTAR_CAPABILITY_FORBIDDEN"
+    );
+    let unchanged = service
+        .store
+        .get_server_run("conversation-scope-run")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.status, "running");
+    assert!(!unchanged.cancel_requested);
+
+    let accepted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/runs/conversation-scope-run/cancel".to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice", "ns":["conversation"], "capabilities":["workflow.run.write"]}),
+        })
+        .await;
+    assert_eq!(accepted.status, StatusCode::ACCEPTED.as_u16());
+    let cancelled: Value = serde_json::from_slice(&accepted.body).unwrap();
+    assert_eq!(cancelled["status"], "cancelling");
+    assert_eq!(cancelled["cancel_requested"], true);
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");

@@ -843,11 +843,21 @@ async fn mcp_dispatch(
                     .expect("MCP graph semantic arguments serialize"),
                 principal: principal.clone(),
             }),
-            "workflow.run_status" | "conversation.run_status" if !run_id.is_empty() => {
+            // PYTHON_PARITY_V1: conversation status must use the conversation-scoped route; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/conversation-run-status-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_conversation_run_status_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_run_status_matches_shared_contract
+            "workflow.run_status" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
                     method: "GET".to_owned(),
                     path_and_query: format!("/api/workflow/runs/{run_id}"),
+                    body: Vec::new(),
+                    principal: principal.clone(),
+                })
+            }
+            "conversation.run_status" if !run_id.is_empty() => {
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: format!("/api/runs/{run_id}"),
                     body: Vec::new(),
                     principal: principal.clone(),
                 })
@@ -891,11 +901,12 @@ async fn mcp_dispatch(
                     principal: principal.clone(),
                 })
             }
+            // PYTHON_PARITY_V1: conversation cancellation must use the conversation-scoped route; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_api.py#create_chat_router.cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_conversation_run_operations_use_conversation_scope_end_to_end; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
             "conversation.cancel_run" if !run_id.is_empty() && arguments.len() == 1 => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
                     method: "POST".to_owned(),
-                    path_and_query: format!("/api/workflow/runs/{run_id}/cancel"),
+                    path_and_query: format!("/api/runs/{run_id}/cancel"),
                     body: Vec::new(),
                     principal: principal.clone(),
                 })
