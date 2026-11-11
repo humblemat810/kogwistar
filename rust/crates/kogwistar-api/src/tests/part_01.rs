@@ -2601,6 +2601,76 @@
     }
 
     #[tokio::test]
+    async fn deferred_admin_document_delete_preserves_graph_events() {
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-deferred-admin-delete-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        let node_id = "admin-delete-retained-node";
+        let doc_id = "admin-delete-retained-doc";
+        let metadata = json!({
+            "entity_type": "node",
+            "label": "Retained node",
+            "namespace": "docs",
+            "doc_id": doc_id,
+            "lifecycle_status": "active"
+        });
+        service
+            .store
+            .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: vec![GraphMutation {
+                    scope: GraphScope {
+                        namespace: "docs".to_owned(),
+                        workspace_id: None,
+                        graph_space: None,
+                    },
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: "admin-delete-retained-event".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload: json!({"id": node_id, "doc_id": doc_id, "metadata": metadata}),
+                    record: GraphRecord {
+                        id: node_id.to_owned(),
+                        document: None,
+                        metadata: serde_json::from_value(metadata).unwrap(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                }],
+                index_jobs: Vec::new(),
+            })
+            .unwrap();
+        let before = service.store.replay_raw_events("docs", 0, 10).unwrap();
+        assert_eq!(before.len(), 1);
+        assert!(!service.supports_http_operation("DELETE", "/admin/doc/{doc_id}"));
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "DELETE".to_owned(),
+                path_and_query: format!("/admin/doc/{doc_id}"),
+                body: Vec::new(),
+                principal: json!({"sub": "admin", "role": "rw", "ns": ["docs"]}),
+            })
+            .await;
+
+        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_ROUTE_DEFERRED"
+        );
+        assert_eq!(
+            service.store.replay_raw_events("docs", 0, 10).unwrap(),
+            before,
+            "the unsupported Rust route must not tombstone or mutate canonical graph events"
+        );
+
+        drop(service);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[tokio::test]
     async fn sqlite_metadata_store_cannot_advertise_or_route_graph_authority() {
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-api-sqlite-graph-authority-{}.sqlite",
