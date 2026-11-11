@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model_class": "workflow_node",
+  "canonical_json_sha256": "fa6c2411b55ba64babc806b7c68eecb44f920932b73b7eb23303eee36d44fcb4",
   "payload": {
     "label": "Python node",
     "type": "entity",

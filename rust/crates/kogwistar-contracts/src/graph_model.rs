@@ -5062,6 +5062,12 @@ mod tests {
             round_trip["payload"]["metadata"]["vendor_extension"],
             fixture["payload"]["metadata"]["vendor_extension"]
         );
+        use sha2::Digest;
+        let canonical_payload = crate::canonical_json(&round_trip["payload"], false);
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(canonical_payload.as_bytes())),
+            fixture["canonical_json_sha256"]
+        );
     }
 
     #[test]
