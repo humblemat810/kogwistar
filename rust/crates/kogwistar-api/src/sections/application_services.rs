@@ -2158,6 +2158,63 @@ impl ApplicationService for SqliteRunApplicationService {
                 };
                 return operator_inbox_effect(&request, &lanes, graph.nodes());
             }
+            if request.method == "GET"
+                && request.path_and_query.split('?').next().is_some_and(|path| {
+                    path.starts_with("/api/workflow/runs/") && path.ends_with("/steps")
+                })
+                && let (Some(auth_store), Some(user_id)) = (
+                    self.owner_auth_store.as_ref(),
+                    authenticated_run_owner_id(&request.principal),
+                )
+            {
+                let Some((run_id, _)) = runtime_run_route(&request.path_and_query) else {
+                    return self.execute_sync(request);
+                };
+                if !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "*" || namespace == "workflow")
+                {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                        "Run reads require workflow namespace",
+                    );
+                }
+                if !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "workflow.run.read",
+                    &["workflow.run.read"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "Reading workflow runs requires workflow.run.read capability",
+                    );
+                }
+                if let Ok(Some(run)) = self.get_run(&run_id) {
+                    match auth_store
+                        .workflow_access_allowed(&run.workflow_id, user_id, "ro")
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return effect_error(
+                                StatusCode::FORBIDDEN,
+                                "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                                "User does not have read access to this workflow",
+                            );
+                        }
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_AUTH_STORE_ERROR",
+                                error,
+                            );
+                        }
+                    }
+                }
+            }
             self.execute_sync(request)
         })
     }
@@ -3717,7 +3774,11 @@ impl SqliteRunApplicationService {
         };
         let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
         if request.method == "GET"
-            && (tail.is_empty() || tail.as_slice() == ["events", "poll"])
+            && (tail.is_empty()
+                || (tail.as_slice() == ["events", "poll"]
+                    && request.path_and_query.starts_with("/api/workflow/runs/"))
+                || (tail.as_slice() == ["steps"]
+                    && request.path_and_query.starts_with("/api/workflow/runs/")))
         {
             let required_namespace =
                 runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
