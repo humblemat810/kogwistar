@@ -1428,6 +1428,7 @@ async fn mcp_dispatch(
                     .expect("MCP arguments serialize"),
                     principal: principal.clone(),
                 }),
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_workflow_service_declare_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_declare_matches_shared_contract
             "workflow.service_declare" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
