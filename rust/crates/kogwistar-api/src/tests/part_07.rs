@@ -1100,6 +1100,10 @@ fn rust_run_evidence_projection_matches_shared_v1_contract() {
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = format!("rust_run_cancel_{}", uuid::Uuid::new_v4().simple());
@@ -1151,6 +1155,74 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .unwrap();
     assert_eq!(unchanged.status, "running");
     assert!(!unchanged.cancel_requested);
+
+    let secret = "workflow-run-cancel-mcp-test-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice",
+            "role": "rw",
+            "ns": ["workflow"],
+            "capabilities": [],
+            "iss": "local",
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let mcp_denied = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"cancel-denied","method":"tools/call","params":{"name":"workflow.run_cancel","arguments":{"run_id":"cancel-auth-run"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_denied.status(), StatusCode::OK);
+    let mcp_wire = String::from_utf8(
+        to_bytes(mcp_denied.into_body(), 8192).await.unwrap().to_vec(),
+    )
+    .unwrap();
+    let mcp_data = mcp_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("MCP Streamable HTTP result data");
+    let mcp_denied: Value = serde_json::from_str(mcp_data).unwrap();
+    assert_eq!(mcp_denied["result"]["isError"], true);
+    assert!(!mcp_denied["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .is_empty());
+    let unchanged_after_mcp = service
+        .store
+        .get_server_run("cancel-auth-run")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged_after_mcp.status, "running");
+    assert!(!unchanged_after_mcp.cancel_requested);
 
     let accepted = service
         .execute(ApiEffectRequest {

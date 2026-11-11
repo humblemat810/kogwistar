@@ -2760,6 +2760,40 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_cancel_denies_missing_write_capability(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    service.run_registry.create_run(
+        run_id="mcp-cancel-auth-run",
+        conversation_id="mcp-cancel-auth-conversation",
+        workflow_id="mcp-cancel-auth-workflow",
+        user_id="alice",
+        user_turn_node_id="mcp-cancel-auth-turn",
+        status="running",
+    )
+
+    with _claims("rw", "workflow", sub="alice", scope_parts={"capabilities": []}):
+        with pytest.raises(HTTPException) as denied:
+            await server.mcp._execute(
+                "workflow.run_cancel",
+                {"run_id": "mcp-cancel-auth-run"},
+                enforce_visibility=True,
+            )
+    assert denied.value.status_code == 403
+
+    run = service.run_registry.get_run("mcp-cancel-auth-run")
+    assert run is not None
+    assert run["status"] == "running"
+    assert run["cancel_requested"] is False
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_undo_redo(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
