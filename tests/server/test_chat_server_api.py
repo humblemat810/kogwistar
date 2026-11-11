@@ -47,6 +47,7 @@ from kogwistar.server.chat_service import (
     RunCancelledError,
     RuntimeRunRequest,
 )
+from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.run_registry import RunRegistry, RunRegistryLaneMessageEventSink
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.server_fixtures import build_engine_triplet
@@ -3229,6 +3230,85 @@ def test_workflow_lane_progress_matches_shared_contract(monkeypatch, engine_trip
     for field, expected in contract["expected_item_fields"].items():
         assert item[field] == expected
     assert isinstance(item["created_at_ms"], int)
+
+
+def test_workflow_repair_orphans_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-repair-orphans-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    meta_store = conversation_engine.meta_sqlite
+    claims_token = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "role": "rw",
+            "storage_ns": "workflow",
+            "security_scope": "tenant/demo",
+        }
+    )
+    try:
+        for message_id, inbox_id in (
+            ("expired-orphan", contract["inbox_id"]),
+            (contract["active_message_id"], "repair-active"),
+        ):
+            meta_store.project_lane_message(
+                message_id=message_id,
+                namespace="workflow",
+                purpose="system",
+                inbox_id=inbox_id,
+                conversation_id="repair-contract-conversation",
+                recipient_id="python-worker",
+                sender_id="rust-scheduler",
+                msg_type="workflow.run.execute",
+                status="pending",
+                created_at=1,
+                available_at=0,
+                run_id=f"run-{message_id}",
+                step_id="start",
+                correlation_id=f"corr-{message_id}",
+                payload_json="{}",
+            )
+            claimed = meta_store.claim_projected_lane_messages(
+                namespace="workflow",
+                inbox_id=inbox_id,
+                claimed_by="repair-contract-worker",
+                limit=1,
+                lease_seconds=(
+                    -1 if message_id == "expired-orphan" else 60
+                ),
+                message_ids=[message_id],
+            )
+            assert [row.message_id for row in claimed] == [message_id]
+    finally:
+        claims_ctx.reset(claims_token)
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="rw", ns="workflow")
+        response = client.post(
+            "/api/workflow/messages/repair-orphans"
+            f"?inbox_id={contract['inbox_id']}&limit={contract['limit']}",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == {
+        "repaired_message_ids": contract["expected_repaired_message_ids"]
+    }
+    active_rows = meta_store.list_projected_lane_messages(
+        namespace="workflow",
+        inbox_id="repair-active",
+        status="claimed",
+        limit=10,
+    )
+    assert [row.message_id for row in active_rows] == [
+        contract["active_message_id"]
+    ]
 
 
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):

@@ -974,6 +974,7 @@ impl SqliteRunApplicationService {
     }
 
     fn repair_orphaned_messages(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#repair_orphaned_messages; python=kogwistar/server/runtime_api.py#repair_orphaned_claimed_messages+kogwistar/server/chat_service.py#repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_repair_orphans_matches_shared_contract; note=only expired claims in the selected inbox are requeued; active leases remain claimed.
         if !capability_allowed(
             request,
             &self.capabilities,

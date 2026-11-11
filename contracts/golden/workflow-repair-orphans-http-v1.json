@@ -1,0 +1,9 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "inbox_id": "repair-rest",
+  "limit": 10,
+  "expected_repaired_message_ids": ["expired-orphan"],
+  "active_message_id": "active-claim",
+  "active_message_status": "claimed"
+}

@@ -2092,30 +2092,50 @@
         store
             .claim_projected_lane_messages("workflow", "repair-mcp", "mcp-owner", 1, -1)
             .unwrap();
+        let repair_orphans_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-repair-orphans-http-v1.json"
+        ))
+        .unwrap();
         let repaired = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/workflow/messages/repair-orphans?inbox_id=repair-rest&limit=10")
+                    .uri(format!(
+                        "/api/workflow/messages/repair-orphans?inbox_id={}&limit={}",
+                        repair_orphans_contract["inbox_id"].as_str().unwrap(),
+                        repair_orphans_contract["limit"].as_u64().unwrap()
+                    ))
                     .header("x-kogwistar-roles", "reader")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(repaired.status(), StatusCode::OK);
+        assert_eq!(
+            repaired.status().as_u16(),
+            repair_orphans_contract["success_status"].as_u64().unwrap() as u16
+        );
         let repaired =
             serde_json::from_slice::<Value>(&to_bytes(repaired.into_body(), 16_384).await.unwrap())
                 .unwrap();
-        assert_eq!(repaired["repaired_message_ids"], json!(["expired-orphan"]));
+        assert_eq!(
+            repaired["repaired_message_ids"],
+            repair_orphans_contract["expected_repaired_message_ids"]
+        );
         assert_eq!(
             store
-                .get_projected_lane_message("active-claim")
+                .get_projected_lane_message(
+                    repair_orphans_contract["active_message_id"]
+                        .as_str()
+                        .unwrap()
+                )
                 .unwrap()
                 .unwrap()
                 .status,
-            "claimed"
+            repair_orphans_contract["active_message_status"]
+                .as_str()
+                .unwrap()
         );
         let repaired = app
             .clone()
