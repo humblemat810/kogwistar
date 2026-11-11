@@ -1210,6 +1210,126 @@ async def test_mcp_workflow_run_events_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_evidence_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    fixture = (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/run-evidence-v1.json"
+    )
+    expected = json.loads(fixture.read_text(encoding="utf-8"))
+    snapshot = {
+        "snapshot_node_id": expected["snapshot_node_id"],
+        "metadata": expected["snapshot_metadata"],
+        "properties": {
+            "evidence_pack_digest": json.dumps(
+                expected["source_summary"]["evidence_pack_digest"]
+            )
+        },
+    }
+    monkeypatch.setattr(
+        service._run_execution,
+        "get_run",
+        lambda run_id: {
+            "run_id": run_id,
+            "workflow_id": "evidence-workflow",
+            "conversation_id": expected["conversation_id"],
+        },
+    )
+    monkeypatch.setattr(
+        service._conversation_queries,
+        "latest_snapshot",
+        lambda conversation_id, *, run_id, stage=None: snapshot,
+    )
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.run.read", "project_view"]},
+    ):
+        result = _structured(
+            await server.mcp.call_tool(
+                "workflow.run_evidence", {"run_id": expected["run_id"]}
+            )
+        )
+
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_run_evidence_denies_scope_and_missing_capabilities(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_reads: list[str] = []
+    snapshot_reads: list[str] = []
+    monkeypatch.setattr(
+        service._run_execution,
+        "get_run",
+        lambda run_id: run_reads.append(run_id)
+        or {
+            "workflow_id": "evidence-workflow",
+            "conversation_id": "conversation-1",
+        },
+    )
+    monkeypatch.setattr(
+        service._conversation_queries,
+        "latest_snapshot",
+        lambda conversation_id, **_kwargs: snapshot_reads.append(conversation_id)
+        or {},
+    )
+
+    with _claims("ro", "conversation", sub="outsider"):
+        wrong_scope = await server.mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_evidence", arguments={"run_id": "private-run"}
+            ),
+        )
+    assert wrong_scope.is_error is True
+    assert "403 Forbidden" in wrong_scope.content[0].text
+    assert run_reads == []
+
+    with _claims("ro", "workflow", sub="alice", scope_parts={"capabilities": []}):
+        with pytest.raises(HTTPException) as missing_run_read:
+            await server.mcp._execute(
+                "workflow.run_evidence",
+                {"run_id": "private-run"},
+                enforce_visibility=True,
+            )
+    assert missing_run_read.value.status_code == 403
+    assert run_reads == []
+
+    run_reads.clear()
+    with _claims(
+        "ro",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        with pytest.raises(HTTPException) as missing_project_view:
+            await server.mcp._execute(
+                "workflow.run_evidence",
+                {"run_id": "private-run"},
+                enforce_visibility=True,
+            )
+    assert missing_project_view.value.status_code == 403
+    assert run_reads == ["private-run", "private-run"]
+    assert snapshot_reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_process_timeline_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

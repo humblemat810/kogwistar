@@ -755,10 +755,10 @@
             ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
                 let seen = Arc::clone(&self.0);
                 Box::pin(async move {
-                    let result = json!({
-                        "method": request.method.clone(),
-                        "path_and_query": request.path_and_query.clone(),
-                    });
+                    let result: Value = serde_json::from_str(include_str!(
+                        "../../../../../contracts/golden/run-evidence-v1.json"
+                    ))
+                    .unwrap();
                     *seen.lock().unwrap() = Some(request);
                     ApiEffectResponse {
                         status: StatusCode::OK.as_u16(),
@@ -796,13 +796,18 @@
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["result"]["method"], "GET");
-        assert_eq!(
-            value["result"]["path_and_query"],
-            "/api/runs/run%2F42%3Fx/evidence"
-        );
+        let expected: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-evidence-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(value["result"], expected);
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.contract_version, 1);
+        assert_eq!(request.method, "GET");
+        assert_eq!(
+            request.path_and_query,
+            "/api/workflow/runs/run%2F42%3Fx/evidence"
+        );
         assert!(request.body.is_empty());
 
         let invalid = app
@@ -823,7 +828,11 @@
             serde_json::from_slice::<Value>(&invalid_body).unwrap()["error"]["code"],
             -32602
         );
-        assert_eq!(seen.lock().unwrap().as_ref().unwrap().path_and_query, "/api/runs/run%2F42%3Fx/evidence");
+        let seen_request = seen.lock().unwrap();
+        assert_eq!(
+            seen_request.as_ref().unwrap().path_and_query,
+            "/api/workflow/runs/run%2F42%3Fx/evidence"
+        );
     }
 
     #[tokio::test]

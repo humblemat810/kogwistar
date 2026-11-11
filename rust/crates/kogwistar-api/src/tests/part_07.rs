@@ -1036,11 +1036,32 @@ async fn run_evidence_checks_authority_before_run_lookup() {
     .unwrap();
 
     for service in [&sqlite as &dyn ApplicationService, &postgres] {
+        let conversation_scope = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/runs/missing/evidence".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "ns": ["conversation"],
+                    "capabilities": ["workflow.run.read", "project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            conversation_scope.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&conversation_scope.body).unwrap()["code"],
+            "KOGWISTAR_NAMESPACE_FORBIDDEN"
+        );
+
         let response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
-                path_and_query: "/api/runs/missing/evidence".to_owned(),
+                path_and_query: "/api/workflow/runs/missing/evidence".to_owned(),
                 body: Vec::new(),
                 principal: json!({"ns": ["docs"], "capabilities": []}),
             })
@@ -1055,7 +1076,25 @@ async fn run_evidence_checks_authority_before_run_lookup() {
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
-                path_and_query: "/api/runs/missing/evidence".to_owned(),
+                path_and_query: "/api/workflow/runs/missing/evidence".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "ns": ["workflow"],
+                    "capabilities": ["workflow.run.read"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/runs/missing/evidence".to_owned(),
                 body: Vec::new(),
                 principal: json!({
                     "ns": ["workflow"],
@@ -1074,7 +1113,7 @@ async fn run_evidence_checks_authority_before_run_lookup() {
         .execute(ApiEffectRequest {
             contract_version: 1,
             method: "GET".to_owned(),
-            path_and_query: "/api/runs/missing/evidence".to_owned(),
+            path_and_query: "/api/workflow/runs/missing/evidence".to_owned(),
             body: Vec::new(),
             principal: json!({
                 "ns": ["workflow"],

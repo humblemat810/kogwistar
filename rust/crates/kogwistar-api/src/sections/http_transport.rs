@@ -982,7 +982,7 @@ async fn mcp_dispatch(
                 Some(ApiEffectRequest {
                     contract_version: 1,
                     method: "GET".to_owned(),
-                    path_and_query: format!("/api/runs/{encoded_run_id}/evidence"),
+                    path_and_query: format!("/api/workflow/runs/{encoded_run_id}/evidence"),
                     body: Vec::new(),
                     principal: principal.clone(),
                 })

@@ -951,12 +951,12 @@ impl PostgresRunApplicationService {
             let namespaces = principal_strings(&request.principal, "ns");
             if !namespaces
                 .iter()
-                .any(|namespace| matches!(namespace.as_str(), "*" | "workflow" | "conversation"))
+                .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
             {
                 return effect_error(
                     StatusCode::FORBIDDEN,
                     "KOGWISTAR_NAMESPACE_FORBIDDEN",
-                    "Run evidence reads require workflow or conversation namespace",
+                    "Run evidence reads require workflow namespace",
                 );
             }
             for (action, message) in [
