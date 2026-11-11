@@ -1225,6 +1225,36 @@ async def test_mcp_workflow_run_submit_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_scheduler_timeline_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-scheduler-timeline-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[dict[str, object]] = []
+
+    def list_scheduler_timeline(**kwargs):
+        calls.append(kwargs)
+        return contract["result"]["events"]
+
+    monkeypatch.setattr(service, "list_scheduler_timeline", list_scheduler_timeline)
+
+    with _claims("ro", "workflow"):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert calls == [contract["python_service_arguments"]]
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

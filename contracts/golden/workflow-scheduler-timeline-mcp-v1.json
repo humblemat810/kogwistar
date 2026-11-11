@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.scheduler_timeline",
+  "arguments": {
+    "limit": 20
+  },
+  "python_service_arguments": {
+    "run_id": null,
+    "limit": 20
+  },
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/scheduler/timeline?limit=20"
+  },
+  "result": {
+    "run_id": null,
+    "events": []
+  }
+}
