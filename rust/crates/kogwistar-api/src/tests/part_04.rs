@@ -317,12 +317,27 @@
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-service-events-http-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
         let body =
             serde_json::from_slice::<Value>(&to_bytes(response.into_body(), 16_384).await.unwrap())
                 .unwrap();
+        for field in contract["required_envelope_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body.get(field).is_some(), "missing {field}");
+        }
         assert_eq!(body["service_id"], "svc-a");
         assert_eq!(body["events"].as_array().unwrap().len(), 1);
+        for field in contract["required_event_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body["events"][0].get(field).is_some(), "missing {field}");
+        }
         assert_eq!(body["events"][0]["event_type"], "service.started");
         assert_eq!(body["events"][0]["payload"]["phase"], "new");
 

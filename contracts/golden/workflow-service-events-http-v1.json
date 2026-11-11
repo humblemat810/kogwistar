@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "default_limit": 500,
+  "required_envelope_fields": ["service_id", "events"],
+  "required_event_fields": [
+    "event_id",
+    "service_id",
+    "event_type",
+    "ts_ms",
+    "payload"
+  ]
+}

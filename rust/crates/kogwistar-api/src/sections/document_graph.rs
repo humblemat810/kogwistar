@@ -3055,6 +3055,7 @@ fn service_definition_node(input: &ServiceDeclareInput, timestamp: u64) -> (Stri
     )
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#service_event_values; python=kogwistar/server/service_daemon.py#ServiceSupervisor.list_service_events; fixture=contracts/golden/workflow-service-events-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_service_events_fold_authoritative_history_for_rest_and_mcp; python_test=tests/server/test_service_daemon_model.py#test_service_runtime_api_round_trip
 fn service_event_values(
     events: impl IntoIterator<Item = (i64, String, String, String, String)>,
     service_id: &str,

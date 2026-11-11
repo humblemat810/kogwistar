@@ -634,8 +634,20 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         events = client.get(
             "/api/workflow/services/svc.rest.demo/events", headers=headers
         )
-        events.raise_for_status()
-        names = [evt["event_type"] for evt in events.json()["events"]]
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-service-events-http-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert events.status_code == contract["success_status"], events.text
+        event_payload = events.json()
+        assert set(contract["required_envelope_fields"]).issubset(event_payload)
+        assert event_payload["service_id"] == "svc.rest.demo"
+        assert isinstance(event_payload["events"], list)
+        for event in event_payload["events"]:
+            assert set(contract["required_event_fields"]).issubset(event)
+        names = [evt["event_type"] for evt in event_payload["events"]]
         assert "service.heartbeat" not in names
         assert "service.triggered" in names
 
