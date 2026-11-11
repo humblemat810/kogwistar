@@ -1573,6 +1573,41 @@ async def test_mcp_workflow_tool_audit_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_visibility_snapshot_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-visibility-snapshot-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[None] = []
+
+    def visibility_snapshot():
+        calls.append(None)
+        return contract["result"]
+
+    monkeypatch.setattr(service, "visibility_snapshot", visibility_snapshot)
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub=contract["result"]["current_subject"],
+        scope_parts={"capabilities": contract["result"]["current_capabilities"]},
+    ):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert calls == [None]
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_trigger_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

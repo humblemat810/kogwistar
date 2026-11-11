@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.visibility_snapshot",
+  "arguments": {},
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/visibility",
+    "body": ""
+  },
+  "result": {
+    "current_subject": "reader-1",
+    "current_role": "ro",
+    "current_capabilities": [
+      "project_view",
+      "read_security_scope"
+    ],
+    "namespaces": {
+      "storage_namespace": "default",
+      "execution_namespace": "workflow"
+    },
+    "security_scope": "tenant-a",
+    "storage_security_mapping": {
+      "storage_namespace": "default",
+      "execution_namespace": "workflow",
+      "security_scope": "tenant-a",
+      "security_scope_path": "tenant-a/workspace-b/project-c",
+      "tenant": "tenant-a",
+      "workspace": "workspace-b",
+      "project": "project-c"
+    },
+    "can_access_public": true
+  }
+}
