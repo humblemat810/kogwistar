@@ -881,6 +881,11 @@
         use std::sync::{Arc, Mutex};
         use tower::ServiceExt;
 
+        let ask_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-ask-mcp-v1.json"
+        ))
+        .unwrap();
+
         #[derive(Clone)]
         struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
 
@@ -899,7 +904,7 @@
                     ApiEffectResponse {
                         status: StatusCode::OK.as_u16(),
                         content_type: "application/json".to_owned(),
-                        body: br#"{"version":"v1","op":"send_message","status":"ok","result":{"run_id":"run-1","turn_node_id":"turn-1"}}"#.to_vec(),
+                        body: br#"{"version":"v1","op":"send_message","status":"ok","result":{"run_id":"run-1","conversation_id":"conv-ask-contract","workflow_id":"agentic_answering.v2","turn_node_id":"turn-1","status":"queued","admission":"accepted","lane_message_id":"lane-1"}}"#.to_vec(),
                     }
                 })
             }
@@ -967,7 +972,16 @@
                     .uri("/mcp/conversation")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"ask-1","method":"tools/call","params":{"name":"conversation.ask","arguments":{"conversation_id":"conv-1","text":"hello","user_id":"alice"}}}"#,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "ask-1",
+                            "method": "tools/call",
+                            "params": {
+                                "name": ask_contract["tool"],
+                                "arguments": ask_contract["arguments"],
+                            }
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -977,7 +991,10 @@
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(value["result"], json!({"run_id":"run-1","turn_node_id":"turn-1"}));
+        let mut normalized = value["result"].clone();
+        normalized["run_id"] = json!("<generated>");
+        normalized["user_turn_node_id"] = json!("<generated>");
+        assert_eq!(normalized, ask_contract["result"]);
 
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.contract_version, 1);
@@ -989,9 +1006,9 @@
                 "version":"v1",
                 "op":"send_message",
                 "args": {
-                    "conversation_id":"conv-1",
-                    "text":"hello",
-                    "user_id":"alice",
+                    "conversation_id": ask_contract["arguments"]["conversation_id"],
+                    "text": ask_contract["arguments"]["text"],
+                    "user_id": ask_contract["arguments"]["user_id"],
                     "workflow_id":"agentic_answering.v2"
                 }
             })

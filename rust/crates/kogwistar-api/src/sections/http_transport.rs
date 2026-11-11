@@ -1580,8 +1580,60 @@ async fn mcp_dispatch(
             };
             result = json!({"node_ids": mapped_nodes, "edge_ids": mapped_edges});
         }
-        if matches!(tool_name, "conversation.create" | "conversation.ask") {
+        if tool_name == "conversation.create" {
             result = result.get("result").cloned().unwrap_or(result);
+        } else if tool_name == "conversation.ask" {
+            let Some(admission) = result.get("result") else {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Invalid conversation ask response from Rust application service"},
+                }))
+                .into_response();
+            };
+            let requested_conversation_id = arguments
+                .get("conversation_id")
+                .and_then(Value::as_str);
+            let requested_workflow_id = arguments
+                .get("workflow_id")
+                .and_then(Value::as_str)
+                .unwrap_or("agentic_answering.v2");
+            let run_id = admission.get("run_id").and_then(Value::as_str);
+            let turn_node_id = admission.get("turn_node_id").and_then(Value::as_str);
+            let accepted = admission.get("status").and_then(Value::as_str) == Some("queued")
+                && admission
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| Some(value) == requested_conversation_id)
+                && admission
+                    .get("workflow_id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|value| value == requested_workflow_id);
+            let (Some(conversation_id), Some(run_id), Some(turn_node_id)) =
+                (requested_conversation_id, run_id, turn_node_id)
+            else {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Invalid conversation ask response from Rust application service"},
+                }))
+                .into_response();
+            };
+            if !accepted {
+                return Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32000, "message": "Conversation ask admission does not match the request"},
+                }))
+                .into_response();
+            }
+            result = json!({
+                "run_id": run_id,
+                "conversation_id": conversation_id,
+                "workflow_id": requested_workflow_id,
+                "status": "queued",
+                "user_turn_node_id": turn_node_id,
+            });
         } else if tool_name == "conversation.get_transcript" {
             let conversation_id = arguments.get("conversation_id").and_then(Value::as_str);
             let transcript_id = result.get("conversation_id").and_then(Value::as_str);

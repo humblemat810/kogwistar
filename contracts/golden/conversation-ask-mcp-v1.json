@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "tool": "conversation.ask",
+  "arguments": {
+    "conversation_id": "conv-ask-contract",
+    "text": "hello from the shared MCP contract",
+    "user_id": "alice"
+  },
+  "result": {
+    "run_id": "<generated>",
+    "conversation_id": "conv-ask-contract",
+    "workflow_id": "agentic_answering.v2",
+    "status": "queued",
+    "user_turn_node_id": "<generated>"
+  }
+}

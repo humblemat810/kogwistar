@@ -10,7 +10,7 @@ DL-08C is closed: Python and Rust now have evidenced graph/vector read parity ac
 
 Current inventory: **177 items** (**168 PASS, 9 IN PROGRESS; 94.9% PASS**). The original baseline remains 130 items: 122 PASS and 8 open. The 47 later-added IDs are 46 PASS and 1 IN PROGRESS. Do not interpret the combined ratio as progress against the original baseline.
 
-Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 10 currently open IDs and do not change this inventory or denominator.
+Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the 9 currently open IDs and do not change this inventory or denominator.
 
 Latest DL-03 leaf closures are the paired authenticated service disable/enable HTTP success contracts; re-enable without a live worker returns degraded health and durably records `service.degraded` in both implementations. See the two PASS leaves in the worklist. DL-03 remains open; these route checks do not establish its remaining operation, MCP, authorization, and backend conformance requirements.
 

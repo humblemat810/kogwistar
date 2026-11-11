@@ -1101,6 +1101,40 @@ async def test_mcp_conversation_create_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_ask_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-ask-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims("rw", "conversation"):
+        await server.mcp.call_tool(
+            "conversation.create",
+            {
+                "user_id": contract["arguments"]["user_id"],
+                "conversation_id": contract["arguments"]["conversation_id"],
+            },
+        )
+        result = _structured(
+            await server.mcp.call_tool(contract["tool"], contract["arguments"])
+        )
+
+    assert result["run_id"]
+    assert result["user_turn_node_id"]
+    result["run_id"] = "<generated>"
+    result["user_turn_node_id"] = "<generated>"
+    assert result == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_denies_unauthorized_effects(
     monkeypatch, engine_triplet
 ):
