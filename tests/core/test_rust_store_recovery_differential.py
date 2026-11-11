@@ -361,6 +361,52 @@ def test_sqlite_rebuild_recovers_python_persisted_workflow_run_node(tmp_path: Pa
     assert restored["entities"][entity_key]["entity"] == payload
 
 
+def test_sqlite_rebuild_recovers_python_persisted_workflow_runtime_edge(tmp_path: Path) -> None:
+    """Rust recovery preserves Python WorkflowRuntimeEdge endpoint identity."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-runtime-edge-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    event_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id="python-workflow-runtime-edge",
+        entity_kind="edge",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=event_payload,
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer="workflow-runtime-edge-recovery",
+        projection_namespace="derived-edge-projection",
+        projection_key="workflow-runtime",
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps(["edge", payload["id"]], separators=(",", ":"))
+    recovered_payload = restored["entities"][entity_key]["entity"]
+    assert recovered_payload == payload
+    assert recovered_payload["source_ids"] == ["parity-node"]
+    assert recovered_payload["target_ids"] == ["external:target"]
+
+
 def _assert_python_projection_recovery_over_rust_owned_store(
     open_store: Callable[[], RustEngineSQLite],
 ) -> None:
