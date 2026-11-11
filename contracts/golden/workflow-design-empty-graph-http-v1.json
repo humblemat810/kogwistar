@@ -1,0 +1,15 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-empty-graph",
+  "response_body": {
+    "workflow_id": "wf-empty-graph",
+    "current_version": 0,
+    "active_tip_version": 0,
+    "can_undo": false,
+    "can_redo": false,
+    "materialization_status": "ready",
+    "nodes": [],
+    "edges": []
+  }
+}

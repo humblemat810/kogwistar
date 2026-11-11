@@ -758,6 +758,29 @@
                     .unwrap()
             }};
         }
+        let empty_graph_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-empty-graph-http-v1.json"
+        )))
+        .unwrap();
+        let empty_graph_response = public_call!(
+            "GET",
+            "/api/workflow/design/wf-empty-graph/graph",
+            json!({})
+        );
+        assert_eq!(
+            empty_graph_response.status().as_u16(),
+            empty_graph_contract["success_status"]
+                .as_u64()
+                .unwrap() as u16
+        );
+        let empty_graph: Value = serde_json::from_slice(
+            &to_bytes(empty_graph_response.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(empty_graph, empty_graph_contract["response_body"]);
         let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
         let call = |method: &str, path: &str, body: Value| {
             service.execute_sync(ApiEffectRequest {
