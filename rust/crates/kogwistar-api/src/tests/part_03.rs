@@ -712,6 +712,11 @@
             "kogwistar-design-write-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));
+        let edge_delete_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-edge-delete-http-v1.json"
+        )))
+        .unwrap();
         let service = SqliteRunApplicationService::open(&path).unwrap();
         let store = SqliteStore::open(&path).unwrap();
         let key = "design-secret";
@@ -1014,11 +1019,33 @@
             "/api/workflow/design/wf-write/edges/edge",
             json!({"designer_id":"alice"})
         );
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.status().as_u16(),
+            edge_delete_contract["success_status"].as_u64().unwrap() as u16
+        );
         let deleted: Value =
             serde_json::from_slice(&to_bytes(response.into_body(), 32_768).await.unwrap())
                 .unwrap();
-        assert_eq!(deleted["deleted"], true);
+        for (field, expected) in edge_delete_contract["fixed_response_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&deleted[field], expected, "field {field}");
+        }
+        for field in edge_delete_contract["integer_response_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(deleted[field].as_i64().is_some(), "field {field}");
+        }
+        for field in edge_delete_contract["absent_response_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(deleted.get(field).is_none(), "field {field}");
+        }
         let mcp = app.clone().oneshot(Request::builder().method("POST").uri("/mcp/workflow")
             .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
             .body(Body::from(r#"{"jsonrpc":"2.0","id":"node","method":"tools/call","params":{"name":"workflow.design_node_upsert","arguments":{"workflow_id":"wf-mcp-design","designer_id":"alice","node_id":"mcp-node","label":"MCP"}}}"#)).unwrap()).await.unwrap();

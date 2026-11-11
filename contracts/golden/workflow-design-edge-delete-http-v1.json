@@ -1,0 +1,19 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-write",
+  "designer_id": "alice",
+  "edge_id": "edge",
+  "fixed_response_fields": {
+    "workflow_id": "wf-write",
+    "namespace": "wf_design:wf-write",
+    "edge_id": "edge",
+    "designer_id": "alice",
+    "deleted": true,
+    "version": 4,
+    "can_undo": true,
+    "can_redo": false
+  },
+  "integer_response_fields": ["seq"],
+  "absent_response_fields": []
+}

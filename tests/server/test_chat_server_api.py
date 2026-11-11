@@ -2877,6 +2877,76 @@ def test_workflow_design_edge_upsert_matches_shared_contract(
         assert field not in body
 
 
+def test_workflow_design_edge_delete_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-edge-delete-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        for node in (
+            {
+                "node_id": "start",
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            {
+                "node_id": "end",
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
+        ):
+            node_response = client.post(
+                f"/api/workflow/design/{contract['workflow_id']}/nodes",
+                json={"designer_id": contract["designer_id"], **node},
+                headers=headers,
+            )
+            assert node_response.status_code == 200, node_response.text
+        edge_response = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/edges",
+            json={
+                "designer_id": contract["designer_id"],
+                "edge_id": contract["edge_id"],
+                "src": "start",
+                "dst": "end",
+                "is_default": True,
+            },
+            headers=headers,
+        )
+        assert edge_response.status_code == 200, edge_response.text
+        response = client.request(
+            "DELETE",
+            f"/api/workflow/design/{contract['workflow_id']}/edges/"
+            f"{contract['edge_id']}",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    for field, expected in contract["fixed_response_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_response_fields"]:
+        assert isinstance(body[field], int)
+    for field in contract["absent_response_fields"]:
+        assert field not in body
+
+
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
