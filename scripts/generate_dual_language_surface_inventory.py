@@ -20,7 +20,8 @@ RUST_MCP = RUST_API / "sections" / "contracts_and_runtime.rs"
 RUST_PORT_MANIFEST = ROOT / "contracts" / "rust-port-v1.json"
 PYTHON_SYSCALLS = ROOT / "kogwistar" / "server" / "syscall_api.py"
 RUST_SYSCALLS = RUST_API / "sections" / "response_policy.rs"
-RUST_SQLITE_SERVICE = RUST_API / "sections" / "application_services.rs"
+RUST_SQLITE_SERVICE = RUST_API / "sections" / "sqlite_automation_services.rs"
+RUST_SQLITE_CHROMA_SERVICE = RUST_API / "sections" / "sqlite_application_service.rs"
 RUST_MEMORY_SERVICE = RUST_API / "sections" / "in_memory_service.rs"
 RUST_POSTGRES_SERVICE = RUST_API / "sections" / "postgres_graph_service.rs"
 
@@ -125,6 +126,7 @@ def _rust_syscall_route_literals(region: str, operations: set[str]) -> set[str]:
 def _rust_backend_syscall_inventory(operations: list[str]) -> dict[str, Any]:
     operation_set = set(operations)
     sqlite_source = RUST_SQLITE_SERVICE.read_text(encoding="utf-8")
+    sqlite_chroma_source = RUST_SQLITE_CHROMA_SERVICE.read_text(encoding="utf-8")
     postgres_source = RUST_POSTGRES_SERVICE.read_text(encoding="utf-8")
     memory_source = RUST_MEMORY_SERVICE.read_text(encoding="utf-8")
 
@@ -134,7 +136,7 @@ def _rust_backend_syscall_inventory(operations: list[str]) -> dict[str, Any]:
     sqlite_explicitly_unavailable = {"receive_message", "mount_memory"}
     sqlite_metadata = sqlite_generic - sqlite_explicitly_unavailable
     chroma_routes = _rust_syscall_route_literals(
-        _rust_method_region(sqlite_source, "execute", occurrence=1), operation_set
+        _rust_method_region(sqlite_chroma_source, "execute"), operation_set
     )
     sqlite_chroma = sqlite_metadata | chroma_routes
     postgres = _rust_syscall_match_arms(
@@ -150,13 +152,13 @@ def _rust_backend_syscall_inventory(operations: list[str]) -> dict[str, Any]:
             "unavailable": sorted(operation_set - postgres),
         },
         "sqlite-metadata": {
-            "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteRunApplicationService.syscall_effect",
+            "source": "rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#SqliteRunApplicationService.syscall_effect",
             "dispatches": sorted(sqlite_metadata),
             "unavailable": sorted(operation_set - sqlite_metadata),
             "explicit_unavailable": sorted(sqlite_explicitly_unavailable & operation_set),
         },
         "sqlite-chroma": {
-            "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteChromaRunApplicationService.execute",
+            "source": "rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#SqliteChromaRunApplicationService.execute",
             "dispatches": sorted(sqlite_chroma),
             "unavailable": sorted(operation_set - sqlite_chroma),
         },

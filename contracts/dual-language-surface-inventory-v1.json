@@ -965,7 +965,7 @@
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     },
     "sqlite-metadata": {
-      "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteRunApplicationService.syscall_effect",
+      "source": "rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#SqliteRunApplicationService.syscall_effect",
       "dispatches": [
         "checkpoint",
         "project_view",
@@ -989,7 +989,7 @@
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     },
     "sqlite-chroma": {
-      "source": "rust/crates/kogwistar-api/src/sections/application_services.rs#SqliteChromaRunApplicationService.execute",
+      "source": "rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#SqliteChromaRunApplicationService.execute",
       "dispatches": [
         "checkpoint",
         "create_conversation",
