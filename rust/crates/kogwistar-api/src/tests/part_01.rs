@@ -2158,6 +2158,20 @@
             &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
         )
         .unwrap();
+        let no_spawn_process_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "rw",
+                "ns": ["conversation"],
+                "storage_ns": "conversation",
+                "capabilities": [],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
         let application = Arc::new(service);
         let app = router_with_application(
             ApiState {
@@ -2177,6 +2191,44 @@
             },
             application.clone(),
         );
+        let denied_create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {no_spawn_process_token}"),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"create-denied","method":"tools/call","params":{"name":"conversation.create","arguments":{"user_id":"alice","conversation_id":"conv-create-denied","start_node_id":"conv-create-denied-start"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_create.status(), StatusCode::OK);
+        let denied_body = to_bytes(denied_create.into_body(), 8192).await.unwrap();
+        let denied_result: Value = serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_result["error"]["code"], -32000);
+        let denied_start = application
+            .conversation_store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "conversation".to_owned(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["conv-create-denied-start".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+            .unwrap();
+        assert!(denied_start.is_empty());
         let mcp_create = app
             .oneshot(
                 Request::builder()

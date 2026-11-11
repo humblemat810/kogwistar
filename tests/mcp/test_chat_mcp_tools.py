@@ -1101,6 +1101,49 @@ async def test_mcp_conversation_create_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_create_denies_unauthorized_effects(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    tool_args = {
+        "user_id": "unauthorized-create",
+        "conversation_id": "unauthorized-create-conversation",
+        "start_node_id": "unauthorized-create-start",
+    }
+
+    with _claims(
+        "rw",
+        "conversation",
+        sub="unauthorized-create",
+        scope_parts={"capabilities": []},
+    ):
+        with pytest.raises(HTTPException):
+            await server.mcp._execute(
+                "conversation.create", tool_args, enforce_visibility=True
+            )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="unauthorized-create",
+        scope_parts={"capabilities": ["spawn_process"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "conversation.create", tool_args, enforce_visibility=True
+            )
+
+    assert not conversation_engine.read.get_nodes(
+        where={"conversation_id": tool_args["conversation_id"]}, limit=10
+    )
+
+
+@pytest.mark.asyncio
 async def test_wisdom_graph_upsert_mcp_requires_authorized_wisdom_writer(
     monkeypatch, engine_triplet
 ):
