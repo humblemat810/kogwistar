@@ -2426,22 +2426,47 @@
                 },
             )
             .unwrap();
+        let service_list_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-services-list-http-v1.json"
+        ))
+        .unwrap();
         let services = app
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/workflow/services?limit=1")
+                    .uri(format!(
+                        "/api/workflow/services?limit={}",
+                        service_list_contract["limit"].as_u64().unwrap()
+                    ))
                     .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(services.status(), StatusCode::OK);
+        assert_eq!(
+            services.status().as_u16(),
+            service_list_contract["http_status"].as_u64().unwrap() as u16
+        );
         let services =
             serde_json::from_slice::<Value>(&to_bytes(services.into_body(), 16_384).await.unwrap())
                 .unwrap();
-        assert_eq!(services["services"][0]["service_id"], "svc-a");
+        for field in service_list_contract["required_body_fields"]
+            .as_array()
+            .unwrap()
+        {
+            assert!(services.get(field.as_str().unwrap()).is_some());
+        }
+        for (field, expected) in service_list_contract["expected_first_service"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&services["services"][0][field], expected);
+        }
+        assert_eq!(
+            services["services"].as_array().unwrap().len(),
+            service_list_contract["limit"].as_u64().unwrap() as usize
+        );
         let service = app
             .clone()
             .oneshot(

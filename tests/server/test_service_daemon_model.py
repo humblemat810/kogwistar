@@ -687,6 +687,55 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         )
 
 
+def test_service_list_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-services-list-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            capabilities="service.manage,service.inspect,project_view",
+        )
+        for service_id, enabled in (("svc-b", True), ("svc-a", False)):
+            created = client.post(
+                "/api/workflow/services",
+                json={
+                    "service_id": service_id,
+                    "target_ref": "wf.service.list",
+                    "enabled": enabled,
+                },
+                headers=headers,
+            )
+            assert created.status_code == 200, created.text
+
+        response = client.get(
+            f"/api/workflow/services?limit={contract['limit']}",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert set(contract["required_body_fields"]).issubset(payload)
+    assert len(payload["services"]) == contract["limit"]
+    for field, expected in contract["expected_first_service"].items():
+        assert payload["services"][0][field] == expected
+
+
 def test_supervisor_flow_does_not_touch_service_health_projection(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     service, _registry = _configure_server(
