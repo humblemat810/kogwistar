@@ -688,17 +688,36 @@
                 .len(),
             1
         );
+        let repair_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-service-repair-http-v1.json"
+        ))
+        .unwrap();
         let repaired = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/api/workflow/services/svc-repair/repair".to_owned(),
+                method: repair_contract["method"].as_str().unwrap().to_owned(),
+                path_and_query: repair_contract["path"]
+                    .as_str()
+                    .unwrap()
+                    .replace("{service_id}", "svc-repair"),
                 body: Vec::new(),
                 principal: principal.clone(),
             })
             .await;
-        assert_eq!(repaired.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            repaired.status,
+            repair_contract["success_status"].as_u64().unwrap() as u16
+        );
         let body = serde_json::from_slice::<Value>(&repaired.body).unwrap();
+        for field in repair_contract["required_body_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(body["service_id"], "svc-repair");
+        for field in repair_contract["required_projection_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body["projection"].get(field).is_some(), "missing projection.{field}");
+        }
         assert_eq!(body["projection"]["service_id"], "svc-repair");
         assert_eq!(body["projection"]["enabled"], false);
         assert_eq!(body["projection"]["lifecycle_status"], "stopped");

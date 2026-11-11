@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "method": "POST",
+  "path": "/api/workflow/services/{service_id}/repair",
+  "success_status": 200,
+  "required_body_fields": [
+    "service_id",
+    "projection"
+  ],
+  "required_projection_fields": [
+    "service_id",
+    "enabled",
+    "lifecycle_status",
+    "health_status"
+  ]
+}

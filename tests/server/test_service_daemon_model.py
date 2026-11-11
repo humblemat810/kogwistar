@@ -573,6 +573,12 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
             / "contracts/golden/workflow-service-heartbeat-http-v1.json"
         ).read_text(encoding="utf-8")
     )
+    repair_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-repair-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     with TestClient(server.app) as client:
         headers = _token_header(
@@ -610,6 +616,19 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
             assert heartbeat[field] == expected
         for field in heartbeat_contract["required_timestamp_fields"]:
             assert isinstance(heartbeat[field], int)
+
+        repaired = client.post(
+            repair_contract["path"].replace("{service_id}", "svc.rest.demo"),
+            headers=headers,
+        )
+        assert repaired.status_code == repair_contract["success_status"], repaired.text
+        repair_body = repaired.json()
+        for field in repair_contract["required_body_fields"]:
+            assert field in repair_body
+        assert repair_body["service_id"] == "svc.rest.demo"
+        for field in repair_contract["required_projection_fields"]:
+            assert field in repair_body["projection"]
+        assert repair_body["projection"]["service_id"] == "svc.rest.demo"
 
         listed = client.get("/api/workflow/services", headers=headers)
         listed.raise_for_status()
