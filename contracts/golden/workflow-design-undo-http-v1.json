@@ -1,0 +1,28 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-undo-contract",
+  "designer_id": "alice",
+  "node_id": "undo-node-contract",
+  "fixed_response_fields": {
+    "workflow_id": "wf-undo-contract",
+    "namespace": "wf_design:wf-undo-contract",
+    "current_version": 0,
+    "active_tip_version": 1,
+    "max_version": 1,
+    "allocated_max_version": 1,
+    "current_seq": 0,
+    "can_undo": false,
+    "can_redo": true,
+    "status": "ok"
+  },
+  "integer_response_fields": ["latest_seq"],
+  "array_lengths": {
+    "versions": 2,
+    "selected_versions": 1,
+    "dropped_ranges": 0,
+    "timeline": 2
+  },
+  "version_one_action": "node_upsert",
+  "absent_response_fields": ["materialization_status"]
+}

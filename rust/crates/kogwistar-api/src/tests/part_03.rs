@@ -963,6 +963,57 @@
             let field = field.as_str().unwrap();
             assert!(redo.get(field).is_none(), "field {field}");
         }
+        let undo_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-undo-http-v1.json"
+        )))
+        .unwrap();
+        let undo_workflow = undo_contract["workflow_id"].as_str().unwrap();
+        let undo_node = undo_contract["node_id"].as_str().unwrap();
+        let undo_create = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{undo_workflow}/nodes"),
+            json!({
+                "designer_id":"alice",
+                "node_id":undo_node,
+                "label":"Start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(undo_create.status(), StatusCode::OK);
+        let undo_response = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{undo_workflow}/undo"),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(
+            undo_response.status().as_u16(),
+            undo_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let undo: Value = serde_json::from_slice(
+            &to_bytes(undo_response.into_body(), 32_768).await.unwrap(),
+        )
+        .unwrap();
+        for (field, expected) in undo_contract["fixed_response_fields"].as_object().unwrap() {
+            assert_eq!(&undo[field], expected, "field {field}");
+        }
+        for field in undo_contract["integer_response_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(undo[field].as_i64().is_some(), "field {field}");
+        }
+        for (field, expected_length) in undo_contract["array_lengths"].as_object().unwrap() {
+            assert_eq!(
+                undo[field].as_array().unwrap().len(),
+                expected_length.as_u64().unwrap() as usize,
+                "field {field}"
+            );
+        }
+        assert_eq!(undo["commits"]["1"]["action"], undo_contract["version_one_action"]);
+        for field in undo_contract["absent_response_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(undo.get(field).is_none(), "field {field}");
+        }
         let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
         let call = |method: &str, path: &str, body: Value| {
             service.execute_sync(ApiEffectRequest {
