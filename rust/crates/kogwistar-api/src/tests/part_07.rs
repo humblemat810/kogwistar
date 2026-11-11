@@ -41,30 +41,35 @@ async fn workflow_checkpoint_get_denies_wrong_scope_before_storage_access() {
     )
     .unwrap();
 
-    for (principal, expected_code) in [
-        (
-            json!({"role":"ro", "ns":["workflow"], "capabilities":[]}),
-            "KOGWISTAR_CAPABILITY_FORBIDDEN",
-        ),
-        (
-            json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
-            "KOGWISTAR_NAMESPACE_FORBIDDEN",
-        ),
+    for path in [
+        "/api/workflow/runs/private-run/checkpoints/0",
+        "/api/workflow/runs/private-run/replay?target_step_seq=0",
     ] {
-        let response = service
-            .execute(ApiEffectRequest {
-                contract_version: 1,
-                method: "GET".to_owned(),
-                path_and_query: "/api/workflow/runs/private-run/checkpoints/0".to_owned(),
-                body: Vec::new(),
-                principal,
-            })
-            .await;
-        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
-        assert_eq!(
-            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
-            expected_code
-        );
+        for (principal, expected_code) in [
+            (
+                json!({"role":"ro", "ns":["workflow"], "capabilities":[]}),
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            ),
+            (
+                json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+        ] {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: path.to_owned(),
+                    body: Vec::new(),
+                    principal,
+                })
+                .await;
+            assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+                expected_code
+            );
+        }
     }
 }
 

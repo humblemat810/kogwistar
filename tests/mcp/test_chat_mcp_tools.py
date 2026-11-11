@@ -1191,6 +1191,37 @@ async def test_mcp_workflow_checkpoint_get_denies_wrong_namespace_before_read(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_replay_denies_wrong_namespace_before_read(
+    monkeypatch, engine_triplet
+):
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[tuple[str, int]] = []
+
+    def replay_run(run_id: str, target_step_seq: int) -> dict[str, Any]:
+        reads.append((run_id, target_step_seq))
+        return {}
+
+    monkeypatch.setattr(service, "replay_run", replay_run)
+    with _claims("ro", "conversation", sub="outsider"):
+        result = await server.mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_replay",
+                arguments={"run_id": "private-run", "target_step_seq": 4},
+            ),
+        )
+
+    assert result.is_error is True
+    assert "403 Forbidden" in result.content[0].text
+    assert reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_steps_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
