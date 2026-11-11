@@ -1,0 +1,26 @@
+{
+  "http_status": 200,
+  "request": {
+    "service_id": "svc-contract",
+    "service_kind": "daemon",
+    "target_kind": "workflow",
+    "target_ref": "wf.contract",
+    "target_config": {
+      "runtime_kind": "sync"
+    },
+    "enabled": false,
+    "autostart": false,
+    "restart_policy": {},
+    "heartbeat_ttl_ms": 1234,
+    "trigger_specs": []
+  },
+  "expected_body_fields": {
+    "service_id": "svc-contract",
+    "service_kind": "daemon",
+    "target_kind": "workflow",
+    "target_ref": "wf.contract",
+    "enabled": false,
+    "autostart": false,
+    "heartbeat_ttl_ms": 1234
+  }
+}

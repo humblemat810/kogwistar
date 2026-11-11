@@ -687,6 +687,41 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         )
 
 
+def test_service_declare_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-service-declare-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/workflow/services",
+            json=contract["request"],
+            headers=_token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                capabilities="service.manage,service.inspect,project_view",
+            ),
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    for field, expected in contract["expected_body_fields"].items():
+        assert payload[field] == expected
+
+
 def test_service_list_route_matches_shared_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(

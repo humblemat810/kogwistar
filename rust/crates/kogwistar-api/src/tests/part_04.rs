@@ -380,6 +380,47 @@
     }
 
     #[tokio::test]
+    async fn sqlite_service_declare_matches_shared_http_contract() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-service-declare-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-service-declare-http-v1.json"
+        ))
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&contract["request"]).unwrap(),
+                principal: json!({
+                    "sub": "operator",
+                    "role": "rw",
+                    "ns": "workflow",
+                    "capabilities": ["service.manage"],
+                }),
+            })
+            .await;
+        assert_eq!(
+            response.status,
+            contract["http_status"].as_u64().unwrap() as u16
+        );
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        for (field, expected) in contract["expected_body_fields"].as_object().unwrap() {
+            assert_eq!(&payload[field], expected);
+        }
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn sqlite_service_repair_rebuilds_disposable_projection_for_rest_and_mcp() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
