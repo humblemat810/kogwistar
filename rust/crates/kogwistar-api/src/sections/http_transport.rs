@@ -1074,6 +1074,7 @@ async fn mcp_dispatch(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_tool_audit; fixture=contracts/golden/workflow-tool-audit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_workflow_tool_audit_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_tool_audit_matches_shared_contract
             "workflow.tool_audit" => {
                 let conversation_id =
                     match arguments.get("conversation_id") {
