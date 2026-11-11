@@ -2629,6 +2629,17 @@ fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
     None
 }
 
+fn runtime_run_namespace(path_and_query: &str) -> Option<&'static str> {
+    let path = path_and_query.split('?').next().unwrap_or(path_and_query);
+    if path.starts_with("/api/workflow/runs/") {
+        Some("workflow")
+    } else if path.starts_with("/api/runs/") {
+        Some("conversation")
+    } else {
+        None
+    }
+}
+
 fn dead_letter_replay_run_id(path_and_query: &str) -> Option<String> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     let rest = path.strip_prefix("/api/workflow/dead-letters/")?;

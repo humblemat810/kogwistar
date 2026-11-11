@@ -3398,6 +3398,12 @@ def test_workflow_repair_orphans_matches_shared_contract(monkeypatch, engine_tri
 
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-status-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     _configure_server(
         monkeypatch,
         engine,
@@ -3442,6 +3448,9 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert final_run["result"]["workflow_status"] == "succeeded"
         assert "last_step_seq" not in final_run
         assert "step_count" not in final_run
+        assert contract["success_status"] == 200
+        assert set(contract["required_fields"]).issubset(final_run)
+        assert final_run["terminal"] is True
 
         events = _collect_sse_events(
             client,

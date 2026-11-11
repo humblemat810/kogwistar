@@ -6570,6 +6570,32 @@ impl PostgresRunApplicationService {
             return unavailable_effect(request);
         };
         let tail = tail.iter().map(String::as_str).collect::<Vec<_>>();
+        if request.method == "GET" && tail.is_empty() {
+            let required_namespace =
+                runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
+            if !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "*" || namespace == required_namespace)
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                    format!("Run reads require {required_namespace} namespace"),
+                );
+            }
+            if !capability_allowed(
+                &request,
+                &self.capabilities,
+                "workflow.run.read",
+                &["workflow.run.read"],
+            ) {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading workflow runs requires workflow.run.read capability",
+                );
+            }
+        }
         if request.method == "GET" && tail == ["evidence"] {
             let namespaces = principal_strings(&request.principal, "ns");
             if !namespaces
@@ -6643,6 +6669,33 @@ impl PostgresRunApplicationService {
                 );
             }
         };
+        if request.method == "GET" && tail.is_empty() {
+            if let (Some(auth_store), Some(user_id)) = (
+                self.owner_auth_store.as_ref(),
+                authenticated_run_owner_id(&request.principal),
+            ) {
+                match auth_store
+                    .workflow_access_allowed(&run.workflow_id, user_id, "ro")
+                    .await
+                {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return effect_error(
+                            StatusCode::FORBIDDEN,
+                            "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                            "User does not have read access to this workflow",
+                        );
+                    }
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_AUTH_STORE_ERROR",
+                            error,
+                        );
+                    }
+                }
+            }
+        }
         if request.method == "GET" && tail == ["lineage"] {
             let user_id = request
                 .principal

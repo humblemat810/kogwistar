@@ -1326,6 +1326,43 @@
             .append_server_run_event("run-1", "run.started", r#"{"source":"test"}"#.to_owned())
             .unwrap();
         let sqlite_service = SqliteRunApplicationService::open(&path).unwrap();
+        for (principal, expected_code) in [
+            (
+                json!({
+                    "sub": "user-1",
+                    "user_id": "user-1",
+                    "role": "ro",
+                    "ns": ["workflow"],
+                    "capabilities": []
+                }),
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            ),
+            (
+                json!({
+                    "sub": "user-1",
+                    "user_id": "user-1",
+                    "role": "ro",
+                    "ns": ["conversation"],
+                    "capabilities": ["workflow.run.read"]
+                }),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+        ] {
+            let denied = sqlite_service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: "/api/workflow/runs/run-1".to_owned(),
+                    body: Vec::new(),
+                    principal,
+                })
+                .await;
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&denied.body).unwrap()["code"],
+                expected_code
+            );
+        }
         let submit_auth_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/workflow-run-submit-auth-v1.json"
         ))
@@ -3252,12 +3289,22 @@
             )
             .await
             .unwrap();
-        assert_eq!(get.status(), StatusCode::OK);
-        let get_body = to_bytes(get.into_body(), 8192).await.unwrap();
+        let run_status_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-status-http-v1.json"
+        ))
+        .unwrap();
         assert_eq!(
-            serde_json::from_slice::<Value>(&get_body).unwrap()["status"],
-            "running"
+            get.status().as_u16(),
+            run_status_contract["success_status"].as_u64().unwrap() as u16
         );
+        let get_body = to_bytes(get.into_body(), 8192).await.unwrap();
+        let run_status: Value = serde_json::from_slice(&get_body).unwrap();
+        for field in run_status_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(run_status.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(run_status["status"], "running");
+        assert_eq!(run_status["terminal"], false);
 
         let events = app
             .clone()

@@ -3077,14 +3077,16 @@ impl InMemoryGraphApplicationService {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());
         };
+        let required_namespace =
+            runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
         if !principal_strings(&request.principal, "ns")
             .iter()
-            .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+            .any(|namespace| namespace == "*" || namespace == required_namespace)
         {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_NAMESPACE_FORBIDDEN",
-                "Workflow run reads require workflow namespace",
+                format!("Run reads require {required_namespace} namespace"),
             );
         }
         if !capability_allowed(

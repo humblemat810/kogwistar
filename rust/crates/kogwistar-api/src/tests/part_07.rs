@@ -879,6 +879,14 @@ async fn run_evidence_checks_authority_before_run_lookup() {
 #[test]
 fn runtime_run_route_decodes_encoded_run_id_without_splitting_it() {
     assert_eq!(
+        runtime_run_namespace("/api/runs/legacy-run?include=events"),
+        Some("conversation")
+    );
+    assert_eq!(
+        runtime_run_namespace("/api/workflow/runs/workflow-run"),
+        Some("workflow")
+    );
+    assert_eq!(
         runtime_run_route("/api/runs/run%2F42%3Fx/evidence"),
         Some(("run/42?x".to_owned(), vec!["evidence".to_owned()]))
     );
@@ -938,6 +946,66 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
         })
         .await
         .unwrap();
+
+    for (principal, expected_code) in [
+        (
+            json!({
+                "sub":"alice", "user_id":"alice", "role":"ro",
+                "ns":["workflow"], "capabilities":[]
+            }),
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+        ),
+        (
+            json!({
+                "sub":"alice", "user_id":"alice", "role":"ro",
+                "ns":["conversation"], "capabilities":["workflow.run.read"]
+            }),
+            "KOGWISTAR_NAMESPACE_FORBIDDEN",
+        ),
+    ] {
+        let denied = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/runs/evidence-run".to_owned(),
+                body: Vec::new(),
+                principal,
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&denied.body).unwrap()["code"],
+            expected_code
+        );
+    }
+    let status = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/evidence-run".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "user_id":"alice", "role":"ro",
+                "ns":["workflow"], "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    let status_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-status-http-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        status.status,
+        status_contract["success_status"].as_u64().unwrap() as u16
+    );
+    let status_body: Value = serde_json::from_slice(&status.body).unwrap();
+    for field in status_contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(status_body.get(field).is_some(), "missing {field}");
+    }
+    assert_eq!(status_body["run_id"], "evidence-run");
+    assert_eq!(status_body["status"], "succeeded");
+    assert_eq!(status_body["terminal"], true);
 
     let scope = GraphScope {
         namespace: "conversation".to_owned(),
@@ -5948,21 +6016,56 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         .expect("completed MCP run has durable runtime state");
     assert_eq!(mcp_runtime.state["turn_index"], 2);
 
+    let workflow_read_token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &json!({
+            "sub":"conversation-owner", "user_id":"conversation-owner",
+            "actor_id":"conversation-owner", "role":"ro", "roles":["reader"],
+            "ns":"workflow", "storage_ns":"workflow",
+            "workspace":"workspace-a", "graph_space":"workflow",
+            "capabilities":["workflow.run.read"],
+            "exp":4102444800_u64
+        }),
+        &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+    )
+    .unwrap();
+    let conversation_run_read_token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+        &json!({
+            "sub":"conversation-owner", "user_id":"conversation-owner",
+            "actor_id":"conversation-owner", "role":"ro", "roles":["reader"],
+            "ns":"conversation", "storage_ns":"conversation",
+            "workspace":"workspace-a", "graph_space":"conversation",
+            "capabilities":["workflow.run.read"],
+            "exp":4102444800_u64
+        }),
+        &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+    )
+    .unwrap();
     let run_status = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
                 .uri(format!("/api/workflow/runs/{run_id}"))
-                .header("authorization", format!("Bearer {token}"))
+                .header(
+                    "authorization",
+                    format!("Bearer {workflow_read_token}"),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(run_status.status(), StatusCode::OK);
-    let run_status_body: Value =
-        serde_json::from_slice(&to_bytes(run_status.into_body(), 65_536).await.unwrap()).unwrap();
+    let run_status_status = run_status.status();
+    let run_status_body = to_bytes(run_status.into_body(), 65_536).await.unwrap();
+    assert_eq!(
+        run_status_status,
+        StatusCode::OK,
+        "unexpected run-status response: {}",
+        String::from_utf8_lossy(&run_status_body)
+    );
+    let run_status_body: Value = serde_json::from_slice(&run_status_body).unwrap();
     assert_eq!(run_status_body["run_id"], run_id);
     assert_eq!(run_status_body["status"], "succeeded");
     assert_eq!(
@@ -5980,7 +6083,10 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             Request::builder()
                 .method("GET")
                 .uri(format!("/api/runs/{run_id}"))
-                .header("authorization", format!("Bearer {token}"))
+                .header(
+                    "authorization",
+                    format!("Bearer {conversation_run_read_token}"),
+                )
                 .body(Body::empty())
                 .unwrap(),
         )
