@@ -1144,6 +1144,63 @@ async def test_mcp_conversation_create_denies_unauthorized_effects(
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_ask_denies_unauthorized_effects(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    owner = "unauthorized-ask-owner"
+    conversation_id = "unauthorized-ask-conversation"
+    with _claims(
+        "rw",
+        "conversation",
+        sub=owner,
+        scope_parts={"capabilities": ["spawn_process"]},
+    ):
+        await server.mcp.call_tool(
+            "conversation.create",
+            {"user_id": owner, "conversation_id": conversation_id},
+        )
+
+    ask_args = {
+        "conversation_id": conversation_id,
+        "user_id": owner,
+        "text": "This must not be admitted",
+    }
+    with _claims(
+        "rw", "conversation", sub=owner, scope_parts={"capabilities": []}
+    ):
+        with pytest.raises(HTTPException) as missing_capability:
+            await server.mcp._execute(
+                "conversation.ask", ask_args, enforce_visibility=True
+            )
+        assert missing_capability.value.status_code == 403
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub=owner,
+        scope_parts={"capabilities": ["send_message"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "conversation.ask", ask_args, enforce_visibility=True
+            )
+
+    conversation_nodes = conversation_engine.read.get_nodes(
+        where={"conversation_id": conversation_id}, limit=10
+    )
+    assert len(conversation_nodes) == 1
+    assert service.run_registry.meta_store.list_server_runs(
+        conversation_id=conversation_id, limit=10
+    ) == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_get_transcript_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

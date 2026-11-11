@@ -3551,50 +3551,103 @@
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let token = jsonwebtoken::encode(
-            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
-            &json!({
+        let make_token = |namespace: &str, capabilities: &[&str]| {
+            jsonwebtoken::encode(
+                &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+                &json!({
                 "sub":"conversation-owner@example.test",
                 "user_id":"conversation-owner",
                 "actor_id":"conversation-owner",
                 "role":"rw",
                 "roles":["rw"],
-                "ns":"conversation",
+                "ns":namespace,
                 "storage_ns":"alpha",
                 "workspace":"workspace-a",
                 "graph_space":"conversation",
                 "security_scope":"team-alpha",
-                "capabilities":["send_message"],
+                "capabilities":capabilities,
                 "exp":now_seconds + 300
             }),
-            &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
-        )
-        .unwrap();
-        let accepted = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/mcp/conversation")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {token}"))
-                    .body(Body::from(
-                        json!({
-                            "jsonrpc":"2.0",
-                            "id":"send-message-ask",
-                            "method":"tools/call",
-                            "params":{
-                                "name":"conversation.ask",
-                                "arguments":{
-                                    "conversation_id":conversation_id,
-                                    "text":"A user question",
-                                    "user_id":"conversation-owner",
-                                    "workflow_id":"send-message-admission-test"
-                                }
+                &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let token = make_token("conversation", &["send_message"]);
+        let missing_capability_token = make_token("conversation", &[]);
+        let wrong_namespace_token = make_token("workflow", &["send_message"]);
+        let mcp_ask = |bearer: &str, request_id: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/conversation")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":request_id,
+                        "method":"tools/call",
+                        "params":{
+                            "name":"conversation.ask",
+                            "arguments":{
+                                "conversation_id":conversation_id,
+                                "text":"A user question",
+                                "user_id":"conversation-owner",
+                                "workflow_id":"send-message-admission-test"
                             }
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        for (bearer, request_id) in [
+            (&missing_capability_token, "ask-no-capability"),
+            (&wrong_namespace_token, "ask-wrong-namespace"),
+        ] {
+            let denied = app.clone().oneshot(mcp_ask(bearer, request_id)).await.unwrap();
+            assert_eq!(denied.status(), StatusCode::OK);
+            let denied_body = to_bytes(denied.into_body(), 8192).await.unwrap();
+            let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
+            assert_eq!(denied_value["error"]["code"], -32000);
+            assert!(denied_value.get("result").is_none());
+        }
+        let still_only_root = service
+            .conversation_store
+            .graph_projection_records(GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "alpha".to_owned(),
+                    workspace_id: Some("workspace-a".to_owned()),
+                    graph_space: Some("conversation".to_owned()),
+                },
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter {
+                    equals: BTreeMap::from([("conversation_id".to_owned(), json!(conversation_id))]),
+                },
+                limit: 20,
+            })
+            .await
+            .unwrap();
+        assert_eq!(still_only_root.len(), 1);
+        assert_eq!(still_only_root[0].id, root_id);
+        let (verify_client, connection) =
+            tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
+        let connection_task = tokio::spawn(connection);
+        for table in ["server_runs", "server_run_events", "projected_lane_messages"] {
+            let count: i64 = verify_client
+                .query_one(&format!("SELECT COUNT(*) FROM \"{schema}\".{table}"), &[])
+                .await
+                .unwrap()
+                .get(0);
+            assert_eq!(count, 0, "denied MCP ask left rows in {table}");
+        }
+        drop(verify_client);
+        connection_task.await.unwrap().unwrap();
+
+        let accepted = app
+            .clone()
+            .oneshot(
+                mcp_ask(&token, "send-message-ask"),
             )
             .await
             .unwrap();
