@@ -1,0 +1,33 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-empty-history",
+  "response_body": {
+    "workflow_id": "wf-empty-history",
+    "namespace": "wf_design:wf-empty-history",
+    "current_version": 0,
+    "active_tip_version": 0,
+    "max_version": 0,
+    "allocated_max_version": 0,
+    "current_seq": 0,
+    "can_undo": false,
+    "can_redo": false,
+    "versions": [
+      {"version": 0, "seq": 0, "created_at_ms": 0}
+    ],
+    "selected_versions": [
+      {
+        "version": 0,
+        "seq": 0,
+        "created_at_ms": 0,
+        "prev_version": 0,
+        "target_seq": 0
+      }
+    ],
+    "dropped_ranges": [],
+    "latest_seq": 0,
+    "timeline": [],
+    "commits": {},
+    "materialization_status": "ready"
+  }
+}
