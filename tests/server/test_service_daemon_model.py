@@ -579,6 +579,12 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
             / "contracts/golden/workflow-service-repair-http-v1.json"
         ).read_text(encoding="utf-8")
     )
+    trigger_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-trigger-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     with TestClient(server.app) as client:
         headers = _token_header(
@@ -648,12 +654,22 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         assert rejected_payload_owner.status_code == 403
 
         triggered = client.post(
-            "/api/workflow/services/svc.rest.demo/trigger",
-            json={"trigger_type": "external event", "payload": {}},
+            trigger_contract["path"].replace("{service_id}", "svc.rest.demo"),
+            json=trigger_contract["request_body"],
             headers=headers,
         )
-        triggered.raise_for_status()
-        run_id = str(triggered.json()["current_child_run_id"] or "")
+        assert triggered.status_code == trigger_contract["success_status"], triggered.text
+        trigger_body = triggered.json()
+        for field, expected in trigger_contract["expected_response_fields"].items():
+            assert trigger_body[field] == expected
+        for field in trigger_contract["required_response_fields"]:
+            assert field in trigger_body
+        for field in trigger_contract["dynamic_snapshot_fields"]:
+            assert isinstance(trigger_body[field], str)
+        assert trigger_body["current_child_status"] == "succeeded"
+        assert trigger_body["service_id"] == "svc.rest.demo"
+        assert isinstance(trigger_body["last_triggered_at_ms"], int)
+        run_id = str(trigger_body["current_child_run_id"] or "")
         assert run_id
         assert service.run_registry.get_run(run_id)["user_id"] == "tester"
         service.run_registry.update_status(

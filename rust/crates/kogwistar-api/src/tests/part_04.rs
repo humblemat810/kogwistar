@@ -623,21 +623,43 @@
         let resources: Value = serde_json::from_slice(&resources.body).unwrap();
         assert_eq!(resources["services"]["total_services"], 1);
         assert_eq!(resources["services"]["by_health"]["degraded"], 1);
+        let trigger_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-service-trigger-http-v1.json"
+        ))
+        .unwrap();
         let triggered = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/api/workflow/services/svc-declared/trigger".to_owned(),
-                body: serde_json::to_vec(&json!({
-                    "trigger_type": "external event",
-                    "payload": {"source": "test"},
-                }))
-                .unwrap(),
+                method: trigger_contract["method"].as_str().unwrap().to_owned(),
+                path_and_query: trigger_contract["path"]
+                    .as_str()
+                    .unwrap()
+                    .replace("{service_id}", "svc-declared"),
+                body: serde_json::to_vec(&trigger_contract["request_body"]).unwrap(),
                 principal: principal.clone(),
             })
             .await;
-        assert_eq!(triggered.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            triggered.status,
+            trigger_contract["success_status"].as_u64().unwrap() as u16
+        );
         let triggered = serde_json::from_slice::<Value>(&triggered.body).unwrap();
+        for (field, expected) in trigger_contract["expected_response_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&triggered[field], expected);
+        }
+        for field in trigger_contract["required_response_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(triggered.get(field).is_some(), "missing {field}");
+        }
+        for field in trigger_contract["dynamic_snapshot_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(triggered[field].as_str().is_some(), "missing string {field}");
+        }
+        assert_eq!(triggered["service_id"], "svc-declared");
+        assert!(triggered["last_triggered_at_ms"].as_i64().is_some());
         let run_id = triggered["current_child_run_id"]
             .as_str()
             .unwrap()
