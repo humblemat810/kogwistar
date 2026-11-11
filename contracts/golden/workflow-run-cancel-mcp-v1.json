@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.run_cancel",
+  "arguments": {
+    "run_id": "mcp-cancel-contract-run"
+  },
+  "result": {
+    "run_id": "mcp-cancel-contract-run",
+    "conversation_id": "cancel-contract-conversation",
+    "workflow_id": "cancel-contract-workflow",
+    "user_id": "alice",
+    "user_turn_node_id": "cancel-contract-turn",
+    "assistant_turn_node_id": null,
+    "status": "cancelling",
+    "cancel_requested": true,
+    "result": null,
+    "error": null,
+    "created_at_ms": 1700000000000,
+    "updated_at_ms": 1700000000100,
+    "started_at_ms": 1700000000050,
+    "finished_at_ms": null,
+    "terminal": false
+  }
+}

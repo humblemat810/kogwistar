@@ -1774,6 +1774,35 @@ async def test_mcp_workflow_run_replay_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_cancel_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-cancel-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[str] = []
+
+    def cancel_run(run_id: str) -> dict:
+        calls.append(run_id)
+        return contract["result"]
+
+    monkeypatch.setattr(service, "cancel_run", cancel_run)
+    with _claims("rw", "workflow"):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert _structured(result) == contract["result"]
+    assert calls == [contract["arguments"]["run_id"]]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_steps_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
