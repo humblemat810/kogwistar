@@ -1332,16 +1332,16 @@
 
         for (id, entity_type, summary, status, acl_mode) in [
             (
-                "tool-call-1",
+                "tool-call:1",
                 "tool_call",
-                "Read graph neighbors",
+                "Read adjacent graph nodes",
                 "requested",
                 "public",
             ),
             (
-                "tool-result-1",
+                "tool-result:1",
                 "tool_result",
-                "Returned one neighbor",
+                "Returned two visible neighbors",
                 "completed",
                 "public",
             ),
@@ -1363,17 +1363,21 @@
             let conversation_id = if id == "tool-call-other" {
                 "conversation-other"
             } else {
-                "conversation-1"
+                "conversation:demo"
             };
             let mut metadata = Map::new();
             metadata.insert("entity_type".to_owned(), json!(entity_type));
             metadata.insert("conversation_id".to_owned(), json!(conversation_id));
             metadata.insert("tool_name".to_owned(), json!("kg_neighbors"));
             metadata.insert("summary".to_owned(), json!(summary));
-            metadata.insert("turn_index".to_owned(), json!(0));
+            metadata.insert("turn_index".to_owned(), json!(2));
+            let mut properties = json!({"status": status});
+            if id == "tool-result:1" {
+                properties["count"] = json!(2);
+            }
             let record = GraphRecord {
                 id: id.to_owned(),
-                document: Some(json!({"properties": {"status": status}}).to_string()),
+                document: Some(json!({"properties": properties}).to_string()),
                 metadata,
                 embedding: None,
             };
@@ -1539,7 +1543,7 @@
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
-                path_and_query: "/api/workflow/tools/audit?conversation_id=conversation-1&limit=10"
+                path_and_query: "/api/workflow/tools/audit?conversation_id=conversation%3Ademo&limit=10"
                     .to_owned(),
                 body: Vec::new(),
                 principal: json!({
@@ -1553,10 +1557,19 @@
             .await;
         assert_eq!(audit_response.status, StatusCode::OK.as_u16());
         let audit: Value = serde_json::from_slice(&audit_response.body).unwrap();
-        assert_eq!(audit["conversation_id"], "conversation-1");
+        let mut expected_audit: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/tool-audit-v1.json"
+        ))
+        .unwrap();
+        expected_audit.as_object_mut().unwrap().remove("schema_version");
+        for item in expected_audit["items"].as_array_mut().unwrap() {
+            item.as_object_mut().unwrap().remove("schema_version");
+        }
+        assert_eq!(audit, expected_audit);
+        assert_eq!(audit["conversation_id"], "conversation:demo");
         assert_eq!(audit["items"].as_array().unwrap().len(), 2);
-        assert_eq!(audit["items"][0]["node_id"], "tool-call-1");
-        assert_eq!(audit["items"][1]["node_id"], "tool-result-1");
+        assert_eq!(audit["items"][0]["node_id"], "tool-call:1");
+        assert_eq!(audit["items"][1]["node_id"], "tool-result:1");
         assert_eq!(audit["items"][1]["properties"]["status"], "completed");
         assert!(audit["items"].as_array().unwrap().iter().all(|item| {
             item["node_id"] != "tool-call-private" && item["node_id"] != "tool-call-other"
@@ -1730,7 +1743,7 @@
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/api/workflow/tools/audit?conversation_id=conversation-1&limit=10")
+                    .uri("/api/workflow/tools/audit?conversation_id=conversation%3Ademo&limit=10")
                     .header("authorization", format!("Bearer {token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1751,7 +1764,7 @@
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {token}"))
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"audit","method":"tools/call","params":{"name":"workflow.tool_audit","arguments":{"conversation_id":"conversation-1","limit":10}}}"#,
+                        r#"{"jsonrpc":"2.0","id":"audit","method":"tools/call","params":{"name":"workflow.tool_audit","arguments":{"conversation_id":"conversation:demo","limit":10}}}"#,
                     ))
                     .unwrap(),
             )
@@ -1761,9 +1774,7 @@
         let mcp_audit: Value =
             serde_json::from_slice(&to_bytes(mcp_audit.into_body(), 65_536).await.unwrap())
                 .unwrap();
-        assert_eq!(mcp_audit["result"]["items"].as_array().unwrap().len(), 2);
-        assert_eq!(mcp_audit["result"]["items"][0]["node_id"], "tool-call-1");
-        assert_eq!(mcp_audit["result"]["items"][1]["node_id"], "tool-result-1");
+        assert_eq!(mcp_audit["result"], audit);
 
         for (id, turn_index, workspace_id, graph_space, summary) in [
             ("scoped-turn-1", 1, "workspace-a", "conversation", "first scoped"),

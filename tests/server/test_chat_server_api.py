@@ -3713,19 +3713,19 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
     conversation_engine.write.add_node(
         ConversationNode(
             user_id="tester",
-            id="tool-call-1",
-            label="tool_call:list_transcript",
+            id="tool-call:1",
+            label="tool_call:kg_neighbors",
             type="entity",
-            doc_id="tool-call-1",
-            summary="Calling tool list_transcript",
+            doc_id="tool-call:1",
+            summary="Read adjacent graph nodes",
             role="assistant",
-            turn_index=1,
-            conversation_id="conv-tools",
+            turn_index=2,
+            conversation_id="conversation:demo",
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-            properties={"tool_name": "list_transcript"},
+            properties={"status": "requested"},
             metadata={
                 "entity_type": "tool_call",
-                "tool_name": "list_transcript",
+                "tool_name": "kg_neighbors",
                 "level_from_root": 0,
             },
             domain_id=None,
@@ -3735,19 +3735,19 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
     conversation_engine.write.add_node(
         ConversationNode(
             user_id="tester",
-            id="tool-result-1",
-            label="tool_result:list_transcript",
+            id="tool-result:1",
+            label="tool_result:kg_neighbors",
             type="entity",
-            doc_id="tool-result-1",
-            summary="[]",
+            doc_id="tool-result:1",
+            summary="Returned two visible neighbors",
             role="tool",
-            turn_index=1,
-            conversation_id="conv-tools",
+            turn_index=2,
+            conversation_id="conversation:demo",
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-            properties={"tool_name": "list_transcript", "result_json": "[]"},
+            properties={"status": "completed", "count": 2},
             metadata={
                 "entity_type": "tool_result",
-                "tool_name": "list_transcript",
+                "tool_name": "kg_neighbors",
                 "level_from_root": 0,
             },
             domain_id=None,
@@ -3780,14 +3780,22 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
         assert sched.status_code == timeline_contract["success_status"]
         assert sched.json() == timeline_contract["response"]
 
+        expected_audit = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/tool-audit-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        expected_audit.pop("schema_version")
+        for item in expected_audit["items"]:
+            item.pop("schema_version")
         audit = client.get(
             "/api/workflow/tools/audit",
-            params={"conversation_id": "conv-tools"},
+            params={"conversation_id": "conversation:demo"},
             headers=wf_ro,
         )
         audit.raise_for_status()
-        items = audit.json()["items"]
-        assert {item["entity_type"] for item in items} == {"tool_call", "tool_result"}
+        assert audit.json() == expected_audit
 
 
 def test_get_run_keeps_registry_status_even_if_workflow_completed_node_exists(
