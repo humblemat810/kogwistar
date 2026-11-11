@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model_class": "workflow_step_exec_node",
+  "canonical_json_sha256": "03ad0924f476d120e5a2f220764fc34caae72154784f26e544de44898dd4745c",
   "payload": {
     "label": "Workflow step execution parity",
     "type": "entity",
