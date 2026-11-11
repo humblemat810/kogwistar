@@ -1342,25 +1342,66 @@ impl PostgresRunApplicationService {
                 },
             );
         }
-        Some(
-            match self
+        Some(match self
+            .store
+            .get_named_projection("service_registry", &service_id)
+            .await
+        {
+            Ok(Some(row)) => json_effect(StatusCode::OK, Value::Object(row.payload)),
+            Ok(None) => match self
                 .store
-                .get_named_projection("service_registry", &service_id)
+                .replay_raw_events("workflow", 0, usize::MAX)
                 .await
             {
-                Ok(Some(row)) => json_effect(StatusCode::OK, Value::Object(row.payload)),
-                Ok(None) => effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_SERVICE_NOT_FOUND",
-                    format!("Unknown service_id: {service_id}"),
-                ),
+                Ok(events) => match service_projection_from_history(
+                    events.into_iter().map(|event| (
+                        event.seq,
+                        event.entity_kind,
+                        event.entity_id,
+                        event.op,
+                        event.payload_json,
+                    )),
+                    &service_id,
+                ) {
+                    Ok(Some((seq, value))) => match self
+                        .store
+                        .replace_named_projection(
+                            "service_registry",
+                            &service_id,
+                            service_projection_write(seq, &value),
+                        )
+                        .await
+                    {
+                        Ok(()) => json_effect(StatusCode::OK, value),
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    },
+                    Ok(None) => effect_error(
+                        StatusCode::NOT_FOUND,
+                        "KOGWISTAR_SERVICE_NOT_FOUND",
+                        format!("Unknown service_id: {service_id}"),
+                    ),
+                    Err(error) => effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_SERVICE_HISTORY_INVALID",
+                        error,
+                    ),
+                },
                 Err(error) => effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
                     error.to_string(),
                 ),
             },
-        )
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        })
     }
 
     async fn repair_orphaned_messages(&self, request: &ApiEffectRequest) -> ApiEffectResponse {

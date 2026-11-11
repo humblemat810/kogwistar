@@ -734,6 +734,47 @@ def test_service_declare_route_matches_shared_contract(monkeypatch, engine_tripl
         assert payload[field] == expected
 
 
+def test_service_get_rebuilds_missing_projection_from_history(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-service-get-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service_id = contract["request"]["service_id"]
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            capabilities="service.manage,service.inspect,project_view",
+        )
+        created = client.post(
+            "/api/workflow/services", json=contract["request"], headers=headers
+        )
+        assert created.status_code == contract["http_status"], created.text
+        declared_payload = created.json()
+        workflow_engine.meta_sqlite.clear_named_projection("service_registry", service_id)
+        response = client.get(f"/api/workflow/services/{service_id}", headers=headers)
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert payload == declared_payload
+    for field, expected in contract["expected_body_fields"].items():
+        assert payload[field] == expected
+    assert workflow_engine.meta_sqlite.get_named_projection("service_registry", service_id)
+
+
 def test_service_enable_disable_routes_match_shared_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     service, _registry = _configure_server(

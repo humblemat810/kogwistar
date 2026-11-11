@@ -430,6 +430,70 @@
         for (field, expected) in contract["expected_body_fields"].as_object().unwrap() {
             assert_eq!(&payload[field], expected);
         }
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn sqlite_service_get_rebuilds_missing_projection_from_history() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-service-get-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-service-get-http-v1.json"
+        ))
+        .unwrap();
+        let service_id = contract["request"]["service_id"].as_str().unwrap();
+        let declared = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&contract["request"]).unwrap(),
+                principal: json!({
+                    "sub": "operator",
+                    "role": "rw",
+                    "ns": "workflow",
+                    "capabilities": ["service.manage", "service.inspect", "project_view"],
+                }),
+            })
+            .await;
+        assert_eq!(declared.status, contract["http_status"].as_u64().unwrap() as u16);
+        let declared: Value = serde_json::from_slice(&declared.body).unwrap();
+        SqliteStore::open(&path)
+            .unwrap()
+            .clear_named_projection("service_registry", service_id)
+            .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/services/{service_id}"),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "operator",
+                    "role": "rw",
+                    "ns": "workflow",
+                    "capabilities": ["service.inspect", "project_view"],
+                }),
+            })
+            .await;
+        assert_eq!(response.status, contract["http_status"].as_u64().unwrap() as u16);
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload, declared);
+        for (field, expected) in contract["expected_body_fields"].as_object().unwrap() {
+            assert_eq!(&payload[field], expected);
+        }
+        assert!(SqliteStore::open(&path)
+            .unwrap()
+            .get_named_projection("service_registry", service_id)
+            .unwrap()
+            .is_some());
 
         drop(service);
         let _ = std::fs::remove_file(path);

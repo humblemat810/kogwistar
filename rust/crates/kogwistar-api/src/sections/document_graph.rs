@@ -3326,6 +3326,14 @@ fn service_projection_values(
     Ok(projections)
 }
 
+// PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#service_projection_from_history; python=kogwistar/server/service_daemon.py#ServiceSupervisor.get_service+ServiceSupervisor._rebuild_projection; fixture=contracts/golden/workflow-service-get-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_service_get_rebuilds_missing_projection_from_history; python_test=tests/server/test_service_daemon_model.py#test_service_get_rebuilds_missing_projection_from_history; note=canonical raw history rebuilds the disposable serving projection when missing.
+fn service_projection_from_history(
+    events: impl IntoIterator<Item = (i64, String, String, String, String)>,
+    service_id: &str,
+) -> Result<Option<(i64, Value)>, String> {
+    Ok(service_projection_values(events)?.remove(service_id))
+}
+
 fn service_projection_write(last_seq: i64, projection: &Value) -> NamedProjectionWrite {
     NamedProjectionWrite {
         payload: projection.as_object().cloned().unwrap_or_default(),
