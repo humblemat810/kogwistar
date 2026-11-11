@@ -1687,6 +1687,12 @@ def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
         assert payload["step_seq"] == 0
         assert payload["state"] == {"counter": 7}
 
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/checkpoints/0", headers=workflow_headers
+        )
+        assert workflow_response.status_code == contract["success_status"]
+        assert workflow_response.json() == payload
+
         denied = client.get(
             f"/api/runs/{run_id}/checkpoints/0", headers=denied_headers
         )
