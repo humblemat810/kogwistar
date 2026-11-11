@@ -407,6 +407,68 @@ def test_sqlite_rebuild_recovers_python_persisted_workflow_runtime_edge(tmp_path
     assert recovered_payload["target_ids"] == ["external:target"]
 
 
+@pytest.mark.parametrize(
+    ("fixture_name", "entity_kind"),
+    [
+        ("workflow-run-node-model-v1.json", "node"),
+        ("workflow-runtime-edge-model-v1.json", "edge"),
+    ],
+)
+def test_postgres_rebuild_recovers_python_persisted_derived_entity(
+    sa_engine: Any,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    fixture_name: str,
+    entity_kind: str,
+) -> None:
+    """PostgreSQL event authority replays Python-derived graph payload in Rust."""
+    pytest.importorskip("sqlalchemy")
+    if pg_dsn is None or pg_schema is None or sa_engine is None:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / fixture_name
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    namespace = f"derived-recovery-{uuid.uuid4().hex}"
+    python_store = EnginePostgresMetaStore(engine=sa_engine, schema=pg_schema)
+    python_store.ensure_initialized()
+    event_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    python_store.append_entity_event(
+        namespace=namespace,
+        event_id=f"python-{uuid.uuid4().hex}",
+        entity_kind=entity_kind,
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=event_payload,
+    )
+
+    operation = _rebuild(
+        namespace=namespace,
+        consumer=f"consumer-{uuid.uuid4().hex}",
+        projection_namespace=f"projection-{uuid.uuid4().hex}",
+        projection_key="derived",
+    )
+    first = _postgres(pg_dsn, pg_schema, operation)
+    reopened = _postgres(pg_dsn, pg_schema, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps([entity_kind, payload["id"]], separators=(",", ":"))
+    assert restored["entities"][entity_key]["entity"] == payload
+
+
 def _assert_python_projection_recovery_over_rust_owned_store(
     open_store: Callable[[], RustEngineSQLite],
 ) -> None:
