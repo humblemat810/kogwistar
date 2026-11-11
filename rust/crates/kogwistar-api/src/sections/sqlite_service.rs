@@ -704,7 +704,12 @@ impl SqliteRunApplicationService {
                         ids.iter().position(|value| *value == current).and_then(|index| ids.get(index + 1)).copied().unwrap_or(current)
                     };
                     if target == current || (route == DesignRoute::Undo && current == 0) {
-                        let mut value = history.clone(); value["status"] = json!("noop"); return Ok(value);
+                        let mut value = history.clone();
+                        let _ = value
+                            .as_object_mut()
+                            .and_then(|fields| fields.remove("materialization_status"));
+                        value["status"] = json!("noop");
+                        return Ok(value);
                     }
                     let op = if route == DesignRoute::Undo { "UNDO_APPLIED" } else { "REDO_APPLIED" };
                     uow.append_raw_entity_event(&namespace, SqliteNewRawEntityEvent {
@@ -731,6 +736,10 @@ impl SqliteRunApplicationService {
                         schema_version: 1,
                     })?;
                     uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_undo+workflow_design_redo; fixture=contracts/golden/workflow-design-redo-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api.py#test_workflow_design_redo_matches_shared_contract; note=internal projection status is not part of Python's undo/redo mutation response.
+                    let _ = folded
+                        .as_object_mut()
+                        .and_then(|value| value.remove("materialization_status"));
                     folded["status"] = json!("ok"); Ok(folded)
                 }
                 DesignRoute::NodeUpsert | DesignRoute::NodeDelete(_) | DesignRoute::EdgeUpsert | DesignRoute::EdgeDelete(_) => {

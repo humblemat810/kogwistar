@@ -906,6 +906,63 @@
             let field = field.as_str().unwrap();
             assert!(node_delete.get(field).is_none(), "field {field}");
         }
+        let redo_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-redo-http-v1.json"
+        )))
+        .unwrap();
+        let redo_workflow = redo_contract["workflow_id"].as_str().unwrap();
+        let redo_node = redo_contract["node_id"].as_str().unwrap();
+        let redo_create = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{redo_workflow}/nodes"),
+            json!({
+                "designer_id":"alice",
+                "node_id":redo_node,
+                "label":"Start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(redo_create.status(), StatusCode::OK);
+        let redo_undo = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{redo_workflow}/undo"),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(redo_undo.status(), StatusCode::OK);
+        let redo_response = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{redo_workflow}/redo"),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(
+            redo_response.status().as_u16(),
+            redo_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let redo: Value = serde_json::from_slice(
+            &to_bytes(redo_response.into_body(), 32_768).await.unwrap(),
+        )
+        .unwrap();
+        for (field, expected) in redo_contract["fixed_response_fields"].as_object().unwrap() {
+            assert_eq!(&redo[field], expected, "field {field}");
+        }
+        for field in redo_contract["integer_response_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(redo[field].as_i64().is_some(), "field {field}");
+        }
+        for (field, expected_length) in redo_contract["array_lengths"].as_object().unwrap() {
+            assert_eq!(
+                redo[field].as_array().unwrap().len(),
+                expected_length.as_u64().unwrap() as usize,
+                "field {field}"
+            );
+        }
+        assert_eq!(redo["commits"]["1"]["action"], redo_contract["version_one_action"]);
+        for field in redo_contract["absent_response_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(redo.get(field).is_none(), "field {field}");
+        }
         let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
         let call = |method: &str, path: &str, body: Value| {
             service.execute_sync(ApiEffectRequest {
