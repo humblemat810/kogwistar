@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "required_capabilities": [
+    "read_security_scope",
+    "project_view"
+  ],
+  "required_fields": [
+    "scheduler",
+    "runs",
+    "services",
+    "storage_usage_bytes",
+    "cost_ledger",
+    "budget_model",
+    "policy_infra"
+  ],
+  "required_object_fields": {
+    "scheduler": [
+      "max_active",
+      "max_queue",
+      "active",
+      "queued",
+      "active_by_class",
+      "queued_by_class",
+      "dead_letter_count",
+      "paused_count",
+      "pause_requested_count"
+    ],
+    "runs": [
+      "total_runs",
+      "by_status",
+      "terminal_runs"
+    ],
+    "services": [
+      "total_services",
+      "by_health"
+    ],
+    "cost_ledger": [
+      "workspace_id",
+      "event_count",
+      "total_amount",
+      "by_kind"
+    ],
+    "budget_model": [
+      "token_kind",
+      "time_kind",
+      "storage_kind"
+    ],
+    "policy_infra": [
+      "cpu_millicores",
+      "memory_mb"
+    ]
+  },
+  "rust_additive_fields": [
+    "migration"
+  ]
+}

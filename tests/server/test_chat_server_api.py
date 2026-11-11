@@ -3441,6 +3441,12 @@ def test_workflow_run_lane_message_lifecycle_streams_through_registry_sse(
 
 
 def test_runtime_resource_snapshot_reports_pressure(monkeypatch, engine_triplet):
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-resources-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch,
@@ -3451,17 +3457,30 @@ def test_runtime_resource_snapshot_reports_pressure(monkeypatch, engine_triplet)
         runtime_runner=_runtime_success_runner,
     )
     with TestClient(server.app) as client:
-        wf_ro = _token_header(client, role="ro", ns="workflow")
+        partial = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="project_view",
+        )
+        denied = client.get("/api/workflow/resources", headers=partial)
+        assert denied.status_code == 403
+
+        wf_ro = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
         snapshot = client.get("/api/workflow/resources", headers=wf_ro)
-        snapshot.raise_for_status()
-        payload = snapshot.json()
-        assert "scheduler" in payload
-        assert "runs" in payload
-        assert "budget_model" in payload
-        assert "cost_ledger" in payload
-        assert "storage_usage_bytes" in payload
-        assert "policy_infra" in payload
-        assert payload["scheduler"]["max_active"] >= 1
+    assert snapshot.status_code == 200
+    payload = snapshot.json()
+    assert all(field in payload for field in contract["required_fields"])
+    for key, required_fields in contract["required_object_fields"].items():
+        assert all(field in payload[key] for field in required_fields), key
+    assert not set(contract["rust_additive_fields"]).intersection(payload)
+    assert isinstance(payload["storage_usage_bytes"], int)
+    assert payload["scheduler"]["max_active"] >= 1
 
 
 def test_runtime_rest_cancel(monkeypatch, engine_triplet):

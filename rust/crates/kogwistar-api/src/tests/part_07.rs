@@ -587,6 +587,78 @@ async fn sqlite_operator_dashboard_requires_project_view_and_separates_blocked_r
 }
 
 #[tokio::test]
+async fn sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities() {
+    let contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/workflow-resources-http-v1.json"
+    )))
+    .unwrap();
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-resources-contract-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+    let request = |capabilities: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "GET".to_owned(),
+        path_and_query: "/api/workflow/resources".to_owned(),
+        body: Vec::new(),
+        principal: json!({
+            "sub": "alice",
+            "role": "ro",
+            "ns": ["workflow"],
+            "storage_ns": "tenant-workflow",
+            "capabilities": capabilities
+        }),
+    };
+    for missing_capabilities in [json!(["project_view"]), json!(["read_security_scope"])] {
+        let denied = service.execute(request(missing_capabilities)).await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    }
+
+    let allowed = service
+        .execute(request(json!(contract["required_capabilities"])))
+        .await;
+    assert_eq!(allowed.status, StatusCode::OK.as_u16());
+    let resources: Value = serde_json::from_slice(&allowed.body).unwrap();
+    let required_fields = contract["required_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let additive_fields = contract["rust_additive_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_fields = resources
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_fields, required_fields.union(&additive_fields).copied().collect());
+    for (key, fields) in contract["required_object_fields"].as_object().unwrap() {
+        let actual = resources[key]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected = fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(expected.is_subset(&actual), "resource section {key}");
+    }
+    assert!(resources["storage_usage_bytes"].is_u64());
+}
+
+#[tokio::test]
 async fn sqlite_run_transient_delta_routes_preserve_owner_and_sequence_contract() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-transient-delta-route-{}.sqlite",

@@ -2439,6 +2439,7 @@ fn operational_effect(
                 },
             ]),
         ),
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api.py#test_runtime_resource_snapshot_reports_pressure
         "/api/workflow/resources" => json_effect(StatusCode::OK, resources),
         "/api/workflow/budget" => json_effect(
             StatusCode::OK,

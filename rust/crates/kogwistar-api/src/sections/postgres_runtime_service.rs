@@ -6353,6 +6353,20 @@ impl PostgresRunApplicationService {
         {
             let process_table = path == "/api/workflow/process-table";
             let process_listing = process_table || path == "/api/workflow/blocked-runs";
+            if path == "/api/workflow/resources"
+                && !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "read_security_scope",
+                    &["read_security_scope", "project_view"],
+                )
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading resource snapshot requires read_security_scope capability",
+                );
+            }
             if matches!(path, "/api/workflow/budget" | "/api/workflow/budget/history")
                 && !capability_allowed(
                     &request,
