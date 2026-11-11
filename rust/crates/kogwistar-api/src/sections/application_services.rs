@@ -892,6 +892,16 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        // PYTHON_PARITY_V1: cancel admission requires rw/conversation; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#conversation_cancel_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
+        // Capability remains status-aware in the downstream cancel service.
+        if name == "conversation.cancel_run" {
+            return surface == "conversation"
+                && principal_role(principal) == "rw"
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "conversation" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "document_id_from_file_name" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")

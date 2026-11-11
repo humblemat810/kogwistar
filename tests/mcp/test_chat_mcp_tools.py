@@ -1780,6 +1780,66 @@ async def test_mcp_conversation_cancel_run_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_cancel_run_denies_unauthorized_effects(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner
+    )
+    service.run_registry.create_run(
+        run_id="cancel-auth-run",
+        conversation_id="cancel-auth-conversation",
+        workflow_id="agentic_answering.v2",
+        user_id="cancel-auth-owner",
+        user_turn_node_id="cancel-auth-turn",
+    )
+    args = {"run_id": "cancel-auth-run"}
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="cancel-auth-owner",
+        scope_parts={"capabilities": ["workflow.run.write"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "conversation.cancel_run", args, enforce_visibility=True
+            )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="cancel-auth-owner",
+        scope_parts={"capabilities": ["workflow.run.write"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "conversation.cancel_run", args, enforce_visibility=True
+            )
+
+    with _claims(
+        "rw",
+        "conversation",
+        sub="cancel-auth-owner",
+        scope_parts={"capabilities": []},
+    ):
+        with pytest.raises(HTTPException) as missing_capability:
+            await server.mcp._execute(
+                "conversation.cancel_run", args, enforce_visibility=True
+            )
+        assert missing_capability.value.status_code == 403
+
+    run = service.run_registry.get_run("cancel-auth-run")
+    assert run is not None
+    assert run["terminal"] is False
+    assert run["cancel_requested"] is False
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_denies_unauthorized_effects(
     monkeypatch, engine_triplet
 ):

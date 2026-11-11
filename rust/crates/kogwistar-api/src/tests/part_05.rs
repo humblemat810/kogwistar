@@ -1888,6 +1888,55 @@
         ));
     }
 
+    #[test]
+    fn conversation_cancel_mcp_admission_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-cancel-mcp-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_cancel_mcp_admission",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+
+        for service in services {
+            assert!(service.supports_mcp_tool_for_principal(
+                "conversation",
+                "conversation.cancel_run",
+                &json!({"role":"rw", "ns":["conversation"]})
+            ));
+            assert!(service.supports_mcp_tool_for_principal(
+                "conversation",
+                "conversation.cancel_run",
+                &json!({"role":"rw", "ns":["*"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "conversation",
+                "conversation.cancel_run",
+                &json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.write"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "conversation",
+                "conversation.cancel_run",
+                &json!({"role":"rw", "ns":["workflow"], "capabilities":["workflow.run.write"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                "conversation.cancel_run",
+                &json!({"role":"rw", "ns":["conversation"]})
+            ));
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn mcp_workflow_tool_audit_matches_shared_contract() {
         use axum::body::{Body, to_bytes};
