@@ -653,6 +653,13 @@ def test_graph_model_capability_contract_matches_shared_fixture() -> None:
     for edge_name, node_name in edge_node_pairs:
         edge_model = python_models[edge_name]
         node_model = python_models[node_name]
+        edge_contract = fixture["edge_contract"]
+        for field_name in edge_contract["identity_fields"]:
+            assert field_name in edge_model.model_fields, edge_name
+        for field_name, annotation in edge_contract["endpoint_fields"].items():
+            assert field_name in edge_model.model_fields, edge_name
+            assert str(edge_model.model_fields[field_name].annotation) == annotation, edge_name
+
         edge_mixins = {
             base.__name__
             for base in edge_model.__mro__
@@ -666,6 +673,16 @@ def test_graph_model_capability_contract_matches_shared_fixture() -> None:
         node_only_mixins = {"ConversationRoleMixin"} if node_name == "conversation_node" else set()
         assert node_mixins - node_only_mixins <= edge_mixins, edge_name
         assert "EdgeMixin" in edge_mixins, edge_name
+
+    rust_profiles = {
+        profile["model_class"]: profile
+        for profile in graph_model_capability_profiles()
+    }
+    for edge_name, _node_name in edge_node_pairs:
+        profile = rust_profiles[edge_name]
+        assert profile["entity_kind"] == "edge", edge_name
+        for capability in fixture["edge_contract"]["required_capabilities"]:
+            assert profile[capability] is True, edge_name
 
 
 def test_python_workflow_node_model_round_trips_shared_wire_fixture() -> None:
