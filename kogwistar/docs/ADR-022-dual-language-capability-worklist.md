@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **168/177 PASS (94.9%)**.
-- **Fine worklist:** **556/827 PASS (67.2%)**; **0 IN PROGRESS**, **271 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **557/827 PASS (67.4%)**; **0 IN PROGRESS**, **270 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -723,7 +723,7 @@
 | FW-16-02A-FLATTENED-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for FlattenedLLMEdge on advertised paths. |
 | FW-16-02A-ASSOC-FLATTENED-EDGE | DL-16 | NOT STARTED | Verify shared payload and digest parity for AssocFlattenedLLMEdge on advertised paths. |
 | FW-16-02B | DL-16 | PARENT | Parent scope; children: FW-16-02B-NODE-RECOVERY,FW-16-02B-EDGE-RECOVERY,FW-16-02B-NODE-INVALID,FW-16-02B-EDGE-INVALID |
-| FW-16-02B-NODE-RECOVERY | DL-16 | NOT STARTED | Verify Node-family restart and recovery preserves the canonical payload and digest. |
+| FW-16-02B-NODE-RECOVERY | DL-16 | PASS | Python persists the shared `WorkflowRunNode` payload as a canonical node event; Rust SQLite rebuilds its projection from that event on two separately opened store calls. The recovered entity payload is exact and canonical payload/digest remain identical; SHA-256 recomputation matches the report. Evidence: `tests/core/test_rust_store_recovery_differential.py::test_sqlite_rebuild_recovers_python_persisted_workflow_run_node` (**1 passed**). This proves this WorkflowRunNode/SQLite recovery cell, not all derived node families or backends; DL-16 remains open. |
 | FW-16-02B-EDGE-RECOVERY | DL-16 | NOT STARTED | Verify Edge-family restart and recovery preserves endpoints, payload, and digest. |
 | FW-16-02B-NODE-INVALID | DL-16 | NOT STARTED | Verify malformed derived Node payloads are rejected before graph mutation. |
 | FW-16-02B-EDGE-INVALID | DL-16 | NOT STARTED | Verify malformed derived Edge payloads are rejected before graph mutation. |

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
 from collections.abc import Callable
@@ -315,6 +316,49 @@ def test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop(tmp_path
         "alien_kind",
         "node",
     ]
+
+
+def test_sqlite_rebuild_recovers_python_persisted_workflow_run_node(tmp_path: Path) -> None:
+    """Python-authored derived node survives Rust event-log rebuild/reopen."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-run-node-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    event_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id="python-workflow-run-node",
+        entity_kind="node",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=event_payload,
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer="workflow-run-recovery",
+        projection_namespace="derived-node-projection",
+        projection_key="workflow-run",
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
+    assert restored["entities"][entity_key]["entity"] == payload
 
 
 def _assert_python_projection_recovery_over_rust_owned_store(
