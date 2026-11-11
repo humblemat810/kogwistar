@@ -28,6 +28,48 @@ def _mixed_evidence_is_executable(
     )
 
 
+def _capability_link_errors(
+    crosswalk_capabilities: list[dict],
+    matrix_capabilities: list[dict],
+    checklist_rows: dict[str, str],
+) -> list[str]:
+    errors: list[str] = []
+    crosswalk_ids = [item.get("id") for item in crosswalk_capabilities]
+    matrix_ids = [item.get("id") for item in matrix_capabilities]
+    if len(crosswalk_ids) != len(set(crosswalk_ids)):
+        errors.append("duplicate crosswalk capability id")
+    if len(matrix_ids) != len(set(matrix_ids)):
+        errors.append("duplicate support-matrix capability id")
+    if set(crosswalk_ids) != set(matrix_ids):
+        errors.append("missing or unexpected capability evidence link")
+
+    for capability in matrix_capabilities:
+        capability_id = capability.get("id", "<missing>")
+        for lane in ("python", "rust", "mixed"):
+            decision = capability.get(lane)
+            if not isinstance(decision, dict):
+                errors.append(f"{capability_id}/{lane} has no evidence decision")
+                continue
+            evidence_id = decision.get("evidence")
+            if not isinstance(evidence_id, str) or not re.fullmatch(
+                r"DL-[A-Z0-9-]+", evidence_id
+            ):
+                errors.append(f"{capability_id}/{lane} has non-gate evidence")
+            elif evidence_id not in checklist_rows:
+                errors.append(f"{capability_id}/{lane} has stale evidence {evidence_id}")
+            elif (
+                lane in {"rust", "mixed"}
+                and decision.get("status") in {"enabled", "opt-in"}
+                and "advertisement" in checklist_rows[evidence_id].lower()
+                and "does not make" in checklist_rows[evidence_id].lower()
+                and "compatible" in checklist_rows[evidence_id].lower()
+            ):
+                errors.append(
+                    f"{capability_id}/{lane} cites route-advertisement-only evidence"
+                )
+    return errors
+
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "contracts" / "rust-port-v1.json"
 DUAL_LANGUAGE_MANIFEST_PATH = (
@@ -576,6 +618,72 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
     gaps = crosswalk["rust_server_gaps"]
     assert {tuple(route) for route in gaps["pending_routes"]} == expected_routes
     assert set(gaps["pending_syscalls"]) == expected_syscalls
+
+
+def test_capability_evidence_links_reject_missing_stale_duplicate_and_route_refs(
+) -> None:
+    crosswalk = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    checklist_rows = {
+        row[0]: " | ".join(row[1:])
+        for row in _markdown_table_rows(DUAL_LANGUAGE_CHECKLIST_PATH, "| DL-")
+    }
+    crosswalk_capabilities = crosswalk["capabilities"]
+    matrix_capabilities = matrix["capabilities"]
+
+    assert not _capability_link_errors(
+        crosswalk_capabilities, matrix_capabilities, checklist_rows
+    )
+
+    assert "missing or unexpected capability evidence link" in _capability_link_errors(
+        crosswalk_capabilities, matrix_capabilities[:-1], checklist_rows
+    )
+    assert "duplicate support-matrix capability id" in _capability_link_errors(
+        crosswalk_capabilities,
+        [*matrix_capabilities, matrix_capabilities[0]],
+        checklist_rows,
+    )
+    assert "duplicate crosswalk capability id" in _capability_link_errors(
+        [*crosswalk_capabilities, crosswalk_capabilities[0]],
+        matrix_capabilities,
+        checklist_rows,
+    )
+
+    stale_matrix = [dict(item) for item in matrix_capabilities]
+    stale_matrix[0] = {
+        **stale_matrix[0],
+        "python": {"status": "enabled", "evidence": "DL-999"},
+    }
+    assert any(
+        "stale evidence DL-999" in error
+        for error in _capability_link_errors(
+            crosswalk_capabilities, stale_matrix, checklist_rows
+        )
+    )
+
+    route_matrix = [dict(item) for item in matrix_capabilities]
+    route_matrix[0] = {
+        **route_matrix[0],
+        "rust": {"status": "opt-in", "evidence": "POST /api/workflow/runs"},
+    }
+    assert any(
+        "has non-gate evidence" in error
+        for error in _capability_link_errors(
+            crosswalk_capabilities, route_matrix, checklist_rows
+        )
+    )
+
+    advertisement_matrix = [dict(item) for item in matrix_capabilities]
+    advertisement_matrix[-1] = {
+        **advertisement_matrix[-1],
+        "rust": {"status": "opt-in", "evidence": "DL-16N"},
+    }
+    assert any(
+        "route-advertisement-only evidence" in error
+        for error in _capability_link_errors(
+            crosswalk_capabilities, advertisement_matrix, checklist_rows
+        )
+    )
 
 
 def test_dual_language_surface_inventory_is_current() -> None:
