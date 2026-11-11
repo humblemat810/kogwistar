@@ -647,6 +647,20 @@ def test_dual_language_surface_inventory_is_current() -> None:
             assert item["tasklet_id"].startswith("FW-03-03A-HTTP-")
             assert rust_by_key[key] != "pending"
 
+    mcp_names = {item["name"] for item in inventory["mcp_operations"]}
+    for prefix in ("FW-03-04A-MCP-", "FW-03-04B-MCP-"):
+        expected_ids = {
+            prefix + name.upper().replace(".", "-").replace("_", "-")
+            for name in mcp_names
+        }
+        declared_ids = set(
+            re.findall(rf"^\| ({re.escape(prefix)}[^ |]+) \|", worklist, re.M)
+        )
+        assert len(expected_ids) == len(mcp_names)
+        assert declared_ids == expected_ids
+        for tasklet_id in expected_ids:
+            assert len(re.findall(rf"^\| {re.escape(tasklet_id)} \|", worklist, re.M)) == 1
+
     deferrals = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))[
         "server_operation_deferrals"
     ]
