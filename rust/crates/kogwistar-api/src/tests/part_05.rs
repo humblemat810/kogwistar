@@ -3490,6 +3490,29 @@
         assert_eq!(data["run_id"], "run-1");
         assert_eq!(data["event_type"], event_name);
 
+        let workflow_sse = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/runs/run-1/events")
+                    .header("x-kogwistar-roles", "reader")
+                    .header("last-event-id", "0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(workflow_sse.status(), StatusCode::OK);
+        assert!(workflow_sse.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream"));
+        let workflow_sse_body = String::from_utf8(
+            to_bytes(workflow_sse.into_body(), 8192).await.unwrap().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(workflow_sse_body, sse_body);
+
         let mcp_status = app
             .clone()
             .oneshot(
