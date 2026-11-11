@@ -1841,6 +1841,11 @@
             "/../../../contracts/golden/workflow-dead-letter-replay-missing-http-v1.json"
         )))
         .unwrap();
+        let scheduler_timeline_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-scheduler-timeline-empty-v1.json"
+        )))
+        .unwrap();
         for (path, required_keys) in [
             (
                 "/api/workflow/resources",
@@ -1866,7 +1871,7 @@
                 &["process_table", "message_queue", "resources"][..],
             ),
             (
-                "/api/workflow/scheduler/timeline?limit=10",
+                "/api/workflow/scheduler/timeline?run_id=missing-run-for-contract&limit=10",
                 &["run_id", "events"][..],
             ),
             (
@@ -1894,6 +1899,14 @@
                         .unwrap() as u16,
                     "{path}"
                 );
+            } else if path.starts_with("/api/workflow/scheduler/timeline?") {
+                assert_eq!(
+                    response.status().as_u16(),
+                    scheduler_timeline_contract["success_status"]
+                        .as_u64()
+                        .unwrap() as u16,
+                    "{path}"
+                );
             } else {
                 assert_eq!(response.status(), StatusCode::OK, "{path}");
             }
@@ -1911,6 +1924,8 @@
                 assert_eq!(value, workflow_catalog_contract["response_body"]);
             } else if path == "/api/workflow/dead-letters?limit=10" {
                 assert_eq!(value, dead_letters_contract["response_body"]);
+            } else if path.starts_with("/api/workflow/scheduler/timeline?") {
+                assert_eq!(value, scheduler_timeline_contract["response"]);
             }
             for key in required_keys {
                 assert!(value.get(key).is_some(), "{path} lacks {key}: {value}");

@@ -3759,9 +3759,19 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
         assert budget.json()["cost_ledger"]["event_count"] == 2
         assert len(budget.json()["events"]) == 2
 
-        sched = client.get("/api/workflow/scheduler/timeline", headers=wf_ro)
-        sched.raise_for_status()
-        assert "events" in sched.json()
+        timeline_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-scheduler-timeline-empty-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        sched = client.get(
+            "/api/workflow/scheduler/timeline",
+            params={"run_id": timeline_contract["run_id"]},
+            headers=wf_ro,
+        )
+        assert sched.status_code == timeline_contract["success_status"]
+        assert sched.json() == timeline_contract["response"]
 
         audit = client.get(
             "/api/workflow/tools/audit",
