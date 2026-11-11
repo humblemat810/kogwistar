@@ -1160,6 +1160,37 @@ async def test_mcp_workflow_run_steps_denies_wrong_namespace_before_read(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_checkpoint_get_denies_wrong_namespace_before_read(
+    monkeypatch, engine_triplet
+):
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[tuple[str, int]] = []
+
+    def read_checkpoint(run_id: str, step_seq: int) -> dict[str, Any]:
+        reads.append((run_id, step_seq))
+        return {}
+
+    monkeypatch.setattr(service, "get_checkpoint", read_checkpoint)
+    with _claims("ro", "conversation", sub="outsider"):
+        result = await server.mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_checkpoint_get",
+                arguments={"run_id": "private-run", "step_seq": 4},
+            ),
+        )
+
+    assert result.is_error is True
+    assert "403 Forbidden" in result.content[0].text
+    assert reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_steps_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

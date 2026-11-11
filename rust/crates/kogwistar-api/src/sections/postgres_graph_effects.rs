@@ -899,10 +899,16 @@ impl PostgresRunApplicationService {
                 || (tail.as_slice() == ["events", "poll"]
                     && request.path_and_query.starts_with("/api/workflow/runs/"))
                 || (tail.as_slice() == ["steps"]
-                    && request.path_and_query.starts_with("/api/workflow/runs/")))
+                    && request.path_and_query.starts_with("/api/workflow/runs/"))
+                || is_runtime_inspection_tail(&tail))
         {
-            let required_namespace =
-                runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
+            // PYTHON_PARITY_V1: checkpoint/replay/step reads require workflow scope;
+            // python=kogwistar/server/chat_api.py#get_checkpoint and #replay_run
+            let required_namespace = if is_runtime_inspection_tail(&tail) {
+                "workflow"
+            } else {
+                runtime_run_namespace(&request.path_and_query).unwrap_or("workflow")
+            };
             if !principal_strings(&request.principal, "ns")
                 .iter()
                 .any(|namespace| namespace == "*" || namespace == required_namespace)

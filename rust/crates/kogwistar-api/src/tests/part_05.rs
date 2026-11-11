@@ -3133,6 +3133,31 @@
                 expected_code
             );
         }
+        for (principal, expected_code) in [
+            (
+                json!({"sub":"user-1", "ns":["workflow"], "capabilities":[]}),
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            ),
+            (
+                json!({"sub":"user-1", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+        ] {
+            let denied = sqlite_service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: "/api/workflow/runs/run-1/checkpoints/0".to_owned(),
+                    body: Vec::new(),
+                    principal,
+                })
+                .await;
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&denied.body).unwrap()["code"],
+                expected_code
+            );
+        }
         for (path, principal, expected_code) in [
             (
                 "/api/workflow/runs/run-1/cancel",
