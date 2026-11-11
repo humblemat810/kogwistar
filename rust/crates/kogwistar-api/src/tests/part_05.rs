@@ -244,6 +244,7 @@
                             | "workflow.blocked_runs"
                             | "workflow.operator_inbox"
                             | "workflow.run_resume"
+                            | "workflow.run_resume_contract"
                     )
             }
 
@@ -334,6 +335,32 @@
         assert_eq!(request_body["client_result"]["status"], "success");
         assert_eq!(request_body["workflow_id"], "wf-6");
         assert_eq!(request_body["conversation_id"], "conv-6");
+
+        let response = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workflow.run_resume_contract","arguments":{"run_id":"run-7"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"]["method"], "GET");
+        assert_eq!(
+            value["result"]["path_and_query"],
+            "/api/workflow/runs/run-7/resume-contract"
+        );
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.contract_version, 1);
+        assert_eq!(request.method, "GET");
+        assert!(request.body.is_empty());
 
         let response = make_app()
             .oneshot(

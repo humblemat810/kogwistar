@@ -1918,6 +1918,23 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
         )
         assert replay["state"]["answer"] == "draft"
 
+        resume_contract = _structured(
+            await server.mcp.call_tool(
+                "workflow.run_resume_contract", {"run_id": "missing-mcp-run"}
+            )
+        )
+        fixture = json.loads(
+            (Path(__file__).resolve().parents[2] / "contracts/golden/run-resume-contract-v1.json")
+            .read_text(encoding="utf-8")
+        )
+        assert set(resume_contract) == set(fixture["required_fields"])
+        assert resume_contract["run_id"] == "missing-mcp-run"
+        for field, expected in fixture["no_checkpoint"].items():
+            assert resume_contract[field] == expected
+        assert resume_contract["supported_wait_reasons"] == fixture[
+            "supported_wait_reasons"
+        ]
+
 
 @pytest.mark.asyncio
 async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
