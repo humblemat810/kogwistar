@@ -254,3 +254,59 @@ def test_nested_invocation_passes_parent_trace_context_to_new_child() -> None:
     )
 
     assert captured["_trace_context"] is parent
+
+
+def test_nested_invocation_preserves_frozen_transaction_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.implementation_selection import (
+        active_transaction_authority,
+        capture_implementation_selection,
+        implementation_selection_scope,
+        transaction_authority_scope,
+    )
+    from kogwistar._rust_bridge import meta_store_implementation_mode
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    snapshot = capture_implementation_selection()
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime._child_workflow_initial_state = lambda **_: {}
+    runtime._terminal_run_result = lambda **_: None
+    runtime._latest_checkpoint_for_run = lambda **_: None
+    runtime._persist_workflow_run = lambda **_: None
+    runtime._persist_workflow_invocation_lineage = lambda **_: True
+    runtime._workflow_invocation_plan = staticmethod(
+        lambda **_: {
+            "child_run_id": "child-run",
+            "conversation_id": "conversation-1",
+            "turn_node_id": "turn-1",
+            "result_state_key": "child",
+        }
+    )
+    observed: list[tuple[str | None, str | None]] = []
+
+    def child_run(**_kwargs):
+        observed.append(
+            (active_transaction_authority(), meta_store_implementation_mode())
+        )
+        return RunResult(
+            final_state={}, run_id="child-run", mq=queue.Queue(), status="succeeded"
+        )
+
+    runtime.run = child_run
+    invocation = WorkflowInvocationRequest(
+        workflow_id="child-workflow", result_state_key="child", invocation_key="act-1"
+    )
+
+    with implementation_selection_scope(snapshot):
+        with transaction_authority_scope("rust"):
+            monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+            runtime._run_workflow_invocation(
+                invocation=invocation,
+                parent_state={},
+                conversation_id="conversation-1",
+                turn_node_id="turn-1",
+                parent_run_id="parent",
+            )
+
+    assert observed == [("rust", "rust")]
