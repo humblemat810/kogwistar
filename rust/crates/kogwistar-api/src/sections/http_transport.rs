@@ -1402,6 +1402,7 @@ async fn mcp_dispatch(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_workflow_service_heartbeat_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_heartbeat_matches_shared_contract
             "workflow.service_heartbeat" => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1410,7 +1411,15 @@ async fn mcp_dispatch(
                     contract_version: 1,
                     method: "POST".to_owned(),
                     path_and_query: format!("/api/workflow/services/{service_id}/heartbeat"),
-                    body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
+                    body: serde_json::to_vec(&json!({
+                        "instance_id": arguments.get("instance_id").cloned(),
+                        "payload": arguments
+                            .get("payload")
+                            .filter(|payload| !payload.is_null())
+                            .cloned()
+                            .unwrap_or_else(|| json!({})),
+                    }))
+                    .expect("heartbeat request serializes"),
                     principal: principal.clone(),
                 }),
             "workflow.service_trigger" => arguments

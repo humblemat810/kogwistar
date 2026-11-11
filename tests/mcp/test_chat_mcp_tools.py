@@ -1410,6 +1410,42 @@ async def test_mcp_workflow_service_get_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_service_heartbeat_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-heartbeat-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[tuple[str, str, dict[str, object]]] = []
+
+    def record_service_heartbeat(service_id, *, instance_id, payload):
+        calls.append((service_id, instance_id, payload))
+        return contract["result"]
+
+    monkeypatch.setattr(service, "record_service_heartbeat", record_service_heartbeat)
+
+    with _claims("rw", "workflow"):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert calls == [
+        (
+            contract["python_service_arguments"]["service_id"],
+            contract["python_service_arguments"]["instance_id"],
+            contract["python_service_arguments"]["payload"],
+        )
+    ]
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
