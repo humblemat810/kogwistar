@@ -1760,6 +1760,12 @@ def test_checkpoint_list_uses_python_defaults_and_checks_namespace(
         assert checkpoints[0]["state"] == {"cursor": "start"}
         assert checkpoints[1]["state"] == {"cursor": "later"}
 
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/checkpoints", headers=workflow_headers
+        )
+        assert workflow_response.status_code == contract["success_status"]
+        assert workflow_response.json() == payload
+
         denied = client.get(
             f"/api/runs/{run_id}/checkpoints", headers=denied_headers
         )
