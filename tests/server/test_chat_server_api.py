@@ -2242,6 +2242,12 @@ def test_resume_contract_uses_python_defaults_and_checks_namespace(
         assert payload["supported_wait_reasons"] == fixture[
             "supported_wait_reasons"
         ]
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/resume-contract",
+            headers=workflow_headers,
+        )
+        assert workflow_response.status_code == response.status_code
+        assert workflow_response.json() == payload
 
         denied = client.get(
             f"/api/runs/{run_id}/resume-contract", headers=denied_headers

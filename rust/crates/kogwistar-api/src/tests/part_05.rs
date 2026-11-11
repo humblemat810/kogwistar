@@ -1565,6 +1565,36 @@
             resume_contract_value["supported_wait_reasons"],
             resume_contract_fixture["supported_wait_reasons"]
         );
+        let workflow_resume_contract = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/workflow/runs/{submitted_run_id}/resume-contract"
+                    ))
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            workflow_resume_contract.status(),
+            StatusCode::from_u16(
+                resume_contract_fixture["success_status"].as_u64().unwrap() as u16
+            )
+            .unwrap()
+        );
+        let workflow_resume_contract_body = to_bytes(
+            workflow_resume_contract.into_body(),
+            16_384,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&workflow_resume_contract_body).unwrap(),
+            resume_contract_value
+        );
         let queued = store
             .list_projected_lane_messages(LaneMessageFilter {
                 namespace: Some("workflow".to_owned()),
