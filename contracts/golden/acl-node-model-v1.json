@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model_class": "acl_node",
+  "canonical_json_sha256": "85a7ee8d6783317a831225e2a49026c8d472d309742d1d736a8bd565d5b60214",
   "payload": {
     "label": "ACL parity node",
     "type": "entity",

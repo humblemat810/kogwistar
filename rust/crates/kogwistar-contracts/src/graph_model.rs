@@ -3934,6 +3934,12 @@ mod tests {
             round_trip["payload"]["metadata"]["share_extension"],
             "retained"
         );
+        use sha2::Digest;
+        let canonical_payload = crate::canonical_json(&round_trip["payload"], false);
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(canonical_payload.as_bytes())),
+            fixture["canonical_json_sha256"]
+        );
     }
 
     #[test]
@@ -5977,6 +5983,13 @@ mod tests {
             fixture["canonical_json"]
                 .as_str()
                 .expect("Python canonical ACL edge JSON")
+        );
+        use sha2::Digest;
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(
+                crate::canonical_json(&serialized, false).as_bytes()
+            )),
+            fixture["canonical_json_sha256"]
         );
         assert_eq!(serialized["source_ids"], serde_json::json!(["parity-node"]));
         assert_eq!(

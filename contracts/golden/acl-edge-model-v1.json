@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model_class": "acl_edge",
+  "canonical_json_sha256": "585962788cf6a47dbedf5243efae113f0a1ff1df2ff4a221443098a390c836f6",
   "origin": "Python ACLEdge.model_dump(field_mode=backend, dump_format=json)",
   "payload": {
     "canonical_entity_id": null,

@@ -519,6 +519,10 @@ def test_acl_node_type_tag_and_extension_metadata_round_trip_through_rust(
     payload = model.model_dump(field_mode="backend", dump_format="json")
     assert payload == fixture["payload"]
     assert payload["metadata"]["share_extension"] == "retained"
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+    assert _rust.canonical_json(json.dumps(payload, ensure_ascii=False)) == canonical_json
 
     wire = stable_json_dumps(
         {
@@ -531,6 +535,38 @@ def test_acl_node_type_tag_and_extension_metadata_round_trip_through_rust(
     round_trip = json.loads(_rust.round_trip_raw_graph_model_envelope(wire))
     assert round_trip["model_class"] == fixture["model_class"]
     assert round_trip["payload"] == payload
+    rust_payload_json = stable_json_dumps(round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_acl_edge_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture = json.loads(
+        (ROOT / "contracts" / "golden" / "acl-edge-model-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    model = ACLEdge.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+    assert _rust.canonical_json(json.dumps(payload, ensure_ascii=False)) == canonical_json
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "acl_edge", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert rust_round_trip["payload"] == fixture["payload"]
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
 
 
 @pytest.mark.requires_rust
