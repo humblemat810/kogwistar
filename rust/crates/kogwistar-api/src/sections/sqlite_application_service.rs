@@ -565,7 +565,6 @@ impl ApplicationService for SqliteRunApplicationService {
             if request.method == "POST"
                 && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
                 && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["resume"]
-                && query_parameter_present(&request.path_and_query, "wait_for_completion")
             {
                 if !principal_strings(&request.principal, "ns")
                     .iter()

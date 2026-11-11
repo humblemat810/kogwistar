@@ -751,7 +751,7 @@ def _exercise_postgres_synchronous_resume(
     finisher = threading.Thread(target=run_finisher, daemon=True)
     finisher.start()
     resumed = httpx.post(
-        f"{base}/api/workflow/runs/{run_id}/resume?wait_for_completion=true",
+        f"{base}/api/workflow/runs/{run_id}/resume",
         headers=headers,
         json=resume_body,
         timeout=15,
