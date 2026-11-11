@@ -1153,9 +1153,14 @@ impl PostgresRunApplicationService {
                         payload:serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),}).collect::<Vec<_>>();
                     let folded=workflow_design_history_value(&workflow_id_owned,folded_events,"ready").map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
                     uow.replace_named_projection("workflow_design",&workflow_id_owned,workflow_design_projection_write(&folded)).await?;
-                    Ok(json!({"workflow_id":workflow_id_owned,"namespace":namespace,
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_automation_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#postgres_design_capability_mutates_and_undoes_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
+                    let mut response = json!({"workflow_id":workflow_id_owned,"namespace":namespace,
                         if deleted {if action=="node_delete"{"node_id"}else{"edge_id"}}else if action=="node_upsert"{"node_id"}else{"edge_id"}:entity_id,
-                        "designer_id":designer,"deleted":deleted,"version":folded["current_version"],"seq":data_event.event.seq,"can_undo":folded["can_undo"],"can_redo":folded["can_redo"]}))
+                        "designer_id":designer,"version":folded["current_version"],"seq":data_event.event.seq,"can_undo":folded["can_undo"],"can_redo":folded["can_redo"]});
+                    if deleted {
+                        response["deleted"] = json!(true);
+                    }
+                    Ok(response)
                 }
                 _ => unreachable!(),
             }

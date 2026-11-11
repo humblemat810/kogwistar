@@ -763,6 +763,75 @@
                 principal: principal.clone(),
             })
         };
+        let edge_upsert_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-edge-upsert-http-v1.json"
+        )))
+        .unwrap();
+        for node in [
+            json!({
+                "designer_id": "alice",
+                "node_id": "start",
+                "label": "Start",
+                "op": "start",
+                "start": true
+            }),
+            json!({
+                "designer_id": "alice",
+                "node_id": "end",
+                "label": "End",
+                "op": "end",
+                "terminal": true
+            }),
+        ] {
+            let response = public_call!(
+                "POST",
+                "/api/workflow/design/wf-edge-contract/nodes",
+                node
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let edge_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-edge-contract/edges",
+            json!({
+                "designer_id": "alice",
+                "edge_id": "edge-contract",
+                "src": "start",
+                "dst": "end",
+                "is_default": true
+            })
+        );
+        assert_eq!(
+            edge_upsert.status().as_u16(),
+            edge_upsert_contract["success_status"]
+                .as_u64()
+                .unwrap() as u16
+        );
+        let edge_upsert: Value = serde_json::from_slice(
+            &to_bytes(edge_upsert.into_body(), 32_768).await.unwrap(),
+        )
+        .unwrap();
+        for (field, expected) in edge_upsert_contract["fixed_response_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&edge_upsert[field], expected, "field {field}");
+        }
+        for field in edge_upsert_contract["integer_response_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(edge_upsert[field].as_i64().is_some(), "field {field}");
+        }
+        for field in edge_upsert_contract["absent_response_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(edge_upsert.get(field).is_none(), "field {field}");
+        }
         for body in [
             json!({"designer_id":"alice","node_id":"start","label":"Start","op":"increment-counter","start":true,"metadata":{"wf_executor_target":"rust-native"}}),
             json!({"designer_id":"alice","node_id":"end","label":"End","op":"emit-result","terminal":true,"metadata":{"wf_executor_target":"rust-native"}}),
@@ -946,6 +1015,10 @@
             json!({"designer_id":"alice"})
         );
         assert_eq!(response.status(), StatusCode::OK);
+        let deleted: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 32_768).await.unwrap())
+                .unwrap();
+        assert_eq!(deleted["deleted"], true);
         let mcp = app.clone().oneshot(Request::builder().method("POST").uri("/mcp/workflow")
             .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
             .body(Body::from(r#"{"jsonrpc":"2.0","id":"node","method":"tools/call","params":{"name":"workflow.design_node_upsert","arguments":{"workflow_id":"wf-mcp-design","designer_id":"alice","node_id":"mcp-node","label":"MCP"}}}"#)).unwrap()).await.unwrap();

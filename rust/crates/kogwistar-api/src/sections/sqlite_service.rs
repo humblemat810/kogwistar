@@ -778,10 +778,15 @@ impl SqliteRunApplicationService {
                     let folded = workflow_design_history_value(workflow_id, folded_events, "ready")
                         .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
                     uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
-                    Ok(json!({"workflow_id": workflow_id, "namespace": namespace,
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
+                    let mut response = json!({"workflow_id": workflow_id, "namespace": namespace,
                         if deleted { if action == "node_delete" { "node_id" } else { "edge_id" } } else if action == "node_upsert" { "node_id" } else { "edge_id" }: entity_id,
-                        "designer_id": designer, "deleted": deleted, "version": folded["current_version"],
-                        "seq": data_event.event.seq, "can_undo": folded["can_undo"], "can_redo": folded["can_redo"]}))
+                        "designer_id": designer, "version": folded["current_version"],
+                        "seq": data_event.event.seq, "can_undo": folded["can_undo"], "can_redo": folded["can_redo"]});
+                    if deleted {
+                        response["deleted"] = json!(true);
+                    }
+                    Ok(response)
                 }
                 _ => unreachable!(),
             }
