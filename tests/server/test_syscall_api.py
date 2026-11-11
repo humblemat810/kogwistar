@@ -284,6 +284,11 @@ def test_syscall_spawn_process_returns_ok_contract(monkeypatch, engine_triplet):
 
 def test_syscall_request_approval_is_blocked_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/syscall-request-approval-result-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
     )
@@ -291,13 +296,11 @@ def test_syscall_request_approval_is_blocked_contract(monkeypatch, engine_triple
         headers = _token_header(client, role="rw", ns="workflow", capabilities="approve_action,project_view,read_security_scope")
         resp = client.post(
             "/api/syscall/v1/request_approval",
-            json={"version": "v1", "op": "request_approval", "args": {"action": "deny", "reason": "need approval"}},
+            json=contract["request"],
             headers=headers,
         )
-        resp.raise_for_status()
-        payload = resp.json()
-        assert payload["status"] == "blocked"
-        assert payload["error"]["reason"]
+        assert resp.status_code == contract["http_status"]
+        assert resp.json() == contract["response"]
 
 
 def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engine_triplet):

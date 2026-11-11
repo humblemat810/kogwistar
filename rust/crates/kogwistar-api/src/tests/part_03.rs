@@ -399,6 +399,10 @@
                 .unwrap()
                 .contains(&json!("resume"))
         );
+        let approval_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-request-approval-result-v1.json"
+        ))
+        .unwrap();
         let blocked_approval = app
             .clone()
             .oneshot(
@@ -407,22 +411,22 @@
                     .uri("/api/syscall/v1/request_approval")
                     .header("authorization", format!("Bearer {admin_token}"))
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"version":"v1","op":"request_approval","args":{"action":"deny","reason":"manual deny"}}"#,
-                    ))
+                    .body(Body::from(approval_contract["request"].to_string()))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(blocked_approval.status(), StatusCode::OK);
+        assert_eq!(
+            blocked_approval.status().as_u16(),
+            approval_contract["http_status"].as_u64().unwrap() as u16
+        );
         let blocked_approval = serde_json::from_slice::<Value>(
             &to_bytes(blocked_approval.into_body(), 16_384)
                 .await
                 .unwrap(),
         )
         .unwrap();
-        assert_eq!(blocked_approval["status"], "blocked");
-        assert_eq!(blocked_approval["error"]["reason"], "manual deny");
+        assert_eq!(blocked_approval, approval_contract["response"]);
         let syscall_audit_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/syscall-audit-http-v1.json"
         ))

@@ -1,0 +1,20 @@
+{
+  "http_status": 200,
+  "request": {
+    "version": "v1",
+    "op": "request_approval",
+    "args": {
+      "action": "deny",
+      "reason": "approval denied"
+    }
+  },
+  "response": {
+    "version": "v1",
+    "op": "request_approval",
+    "status": "blocked",
+    "result": {},
+    "error": {
+      "reason": "approval denied"
+    }
+  }
+}
