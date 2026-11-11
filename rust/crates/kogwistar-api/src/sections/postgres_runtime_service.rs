@@ -4940,6 +4940,9 @@ impl PostgresRunApplicationService {
                             .values()
                             .any(|waiters| !waiters.is_empty());
                     let applied_idempotent = applied.idempotent;
+                    // The response identifies this worker result, not a later
+                    // completion event appended as a consequence of it.
+                    let worker_result = applied.clone();
                     let result = if unfinished || state.status.is_terminal() {
                         for (node_id, join_mask, token_id, parent_token_id) in &frontier.pending {
                             let existing_lanes = uow
@@ -5079,7 +5082,7 @@ impl PostgresRunApplicationService {
                             .await?;
                         }
                     }
-                    Ok(Ok(result))
+                    Ok(Ok(worker_result))
                 })
             })
             .await;

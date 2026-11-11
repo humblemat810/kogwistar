@@ -318,6 +318,8 @@ pub struct ReducedRecordedTransition {
 pub struct RecordedTransitionResult {
     #[serde(flatten)]
     pub reduced: ReducedRecordedTransition,
+    /// Sequence of the transition accepted by this operation. Exact retries
+    /// must retain it even when later derived events advance the run sequence.
     pub event_seq: i64,
     #[serde(default)]
     pub idempotent: bool,

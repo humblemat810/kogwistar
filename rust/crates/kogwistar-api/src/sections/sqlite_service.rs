@@ -7332,7 +7332,10 @@ impl SqliteRunApplicationService {
                     .values()
                     .any(|waiters| !waiters.is_empty());
             let applied_idempotent = applied.idempotent;
-            let result = if unfinished || applied.reduced.state.status.is_terminal() {
+            // The response identifies this worker result, not a later
+            // completion event appended as a consequence of it.
+            let worker_result = applied.clone();
+            let _completion_result = if unfinished || applied.reduced.state.status.is_terminal() {
                 for (node_id, join_mask, token_id, parent_token_id) in &frontier.pending {
                     let existing_lanes = uow.list_projected_lane_messages(&LaneMessageFilter {
                         namespace: Some("workflow".to_owned()),
@@ -7468,7 +7471,7 @@ impl SqliteRunApplicationService {
                     )?;
                 }
             }
-            Ok(result)
+            Ok(worker_result)
         });
         match outcome {
             Ok(result) => json_effect(

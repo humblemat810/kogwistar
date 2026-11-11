@@ -108,6 +108,7 @@ def _exercise_postgres_transport(
             first = worker.process(work[0])
             retry = worker.process(work[0])
             assert retry["event_seq"] == first["event_seq"]
+            assert retry["idempotent"] is True
         assert callback_calls == 1
 
         status = httpx.get(
@@ -123,7 +124,8 @@ def _exercise_postgres_transport(
             timeout=10,
         )
         assert cancelled.status_code == 202, cancelled.text
-        assert cancelled.json()["cancel_requested"] is True
+        assert cancelled.json()["cancel_requested"] is False
+        assert cancelled.json()["terminal"] is True
         assert cancelled.json()["status"] == "succeeded"
 
         suspended_run = httpx.post(
@@ -364,9 +366,13 @@ def _exercise_postgres_transport(
         assert [event["event_type"] for event in event_payloads].count(
             "workflow.usage.v1"
         ) == 1
-        assert [event["event_type"] for event in event_payloads].count(
-            "workflow.trace.v1"
-        ) == 1
+        fanout_start_traces = [
+            event
+            for event in event_payloads
+            if event["event_type"] == "workflow.trace.v1"
+            and event["trace"].get("span_id") == "fanout-start"
+        ]
+        assert len(fanout_start_traces) == 1
 
         for prefix in ("/api/runs", "/api/workflow/runs"):
             steps = httpx.get(
@@ -415,7 +421,7 @@ def _exercise_postgres_transport(
             ("/api/workflow/operator/dashboard", "resources"),
         ):
             response = httpx.get(f"{base}{path}", headers=headers, timeout=10)
-            response.raise_for_status()
+            assert response.status_code == 200, response.text
             assert expected_key in response.json()
         resources = httpx.get(
             f"{base}/api/workflow/resources", headers=headers, timeout=10
@@ -810,6 +816,103 @@ def test_rust_postgres_server_submit_claim_read_cancel_true_socket(
             headers={"x-kogwistar-roles": "reader,rw"},
             tmp_path=tmp_path,
         )
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_rust_postgres_worker_retry_returns_original_transition_sequence(
+    pg_dsn: str | None,
+    tmp_path: Path,
+) -> None:
+    if not pg_dsn:
+        pytest.skip("PostgreSQL fixture unavailable")
+    if not SERVER.exists():
+        pytest.skip("build kogwistar-server before live transport test")
+    if any(source.stat().st_mtime > SERVER.stat().st_mtime for source in SERVER_SOURCES):
+        pytest.skip("rebuild current kogwistar-server before live transport test")
+    port = _port()
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "KOGWISTAR_BACKEND": "pg",
+            "KOGWISTAR_PG_DSN": pg_dsn,
+            "KOGWISTAR_PG_SCHEMA_BASE": f"rust_retry_{uuid.uuid4().hex}",
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+        }
+    )
+    process = subprocess.Popen(
+        [str(SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    base = f"http://127.0.0.1:{port}"
+    headers = {"x-kogwistar-roles": "reader,rw"}
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                raise AssertionError(f"Rust server exited\nstdout={stdout}\nstderr={stderr}")
+            try:
+                if httpx.get(f"{base}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("Rust PostgreSQL server did not become ready")
+
+        submitted = httpx.post(
+            f"{base}/api/workflow/runs",
+            headers=headers,
+            json={
+                "workflow_id": "pg-worker-retry-workflow",
+                "conversation_id": "pg-worker-retry-conversation",
+                "initial_state": {"seed": 1},
+            },
+            timeout=10,
+        )
+        assert submitted.status_code == 202, submitted.text
+        run_id = submitted.json()["run_id"]
+        callback_calls = 0
+
+        def execute(_work: dict[str, object]) -> dict[str, object]:
+            nonlocal callback_calls
+            callback_calls += 1
+            return {
+                "state_update": [["u", {"worker_done": True}]],
+                "successors": [],
+                "result": {"worker_done": True},
+            }
+
+        with RustRuntimeWorker(
+            base_url=base,
+            worker_id="pg-retry-worker",
+            journal_path=tmp_path / "pg-worker-retry.sqlite",
+            execute=execute,
+            headers=headers,
+        ) as worker:
+            work = worker.claim()
+            assert len(work) == 1
+            first = worker.process(work[0])
+            retry = worker.process(work[0])
+        assert callback_calls == 1
+        assert retry["event_seq"] == first["event_seq"]
+        assert retry["idempotent"] is True
+        status = httpx.get(f"{base}/api/workflow/runs/{run_id}", headers=headers, timeout=10)
+        assert status.status_code == 200, status.text
+        assert status.json()["status"] == "succeeded"
+        assert status.json()["result"] == {"worker_done": True}
     finally:
         process.terminate()
         try:

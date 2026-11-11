@@ -4914,29 +4914,40 @@
             work["payload"]["resume_effect"]["state_update"][0][1]["approved"],
             true
         );
-        let (status, _) = call(
+        let finish_result = json!({
+            "handoff": {
+                "message_id": work["message_id"],
+                "claimed_by": work["claimed_by"],
+                "run_id": work["run_id"],
+                "step_id": work["step_id"],
+                "correlation_id": work["correlation_id"],
+            },
+            "effect": {
+                "contract_version": 1,
+                "effect_id": format!("finish-{run_id}"),
+                "state_update": [["u", {"after_resume": true}]],
+                "successors": [],
+                "result": {"done": true},
+            }
+        });
+        let (status, first_finish) = call(
             app.clone(),
             "POST",
             "/internal/runtime/results".to_owned(),
-            json!({
-                "handoff": {
-                    "message_id": work["message_id"],
-                    "claimed_by": work["claimed_by"],
-                    "run_id": work["run_id"],
-                    "step_id": work["step_id"],
-                    "correlation_id": work["correlation_id"],
-                },
-                "effect": {
-                    "contract_version": 1,
-                    "effect_id": format!("finish-{run_id}"),
-                    "state_update": [["u", {"after_resume": true}]],
-                    "successors": [],
-                    "result": {"done": true},
-                }
-            }),
+            finish_result.clone(),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
+        let (retry_status, retry_finish) = call(
+            app.clone(),
+            "POST",
+            "/internal/runtime/results".to_owned(),
+            finish_result,
+        )
+        .await;
+        assert_eq!(retry_status, StatusCode::OK);
+        assert_eq!(retry_finish["event_seq"], first_finish["event_seq"]);
+        assert_eq!(retry_finish["idempotent"], true);
         let (resume_status, resumed) = resume_future.await.unwrap();
         assert_eq!(resume_status, StatusCode::OK);
         let result_fields = resume_result_fixture["required_fields"]
