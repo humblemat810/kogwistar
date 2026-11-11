@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "tool": "conversation.get_transcript",
+  "arguments": {
+    "conversation_id": "transcript-contract-conversation"
+  },
+  "result": {
+    "conversation_id": "transcript-contract-conversation",
+    "turns": []
+  }
+}

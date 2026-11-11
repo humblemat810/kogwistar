@@ -1007,6 +1007,11 @@
         use std::sync::{Arc, Mutex};
         use tower::ServiceExt;
 
+        let transcript_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-get-transcript-mcp-v1.json"
+        ))
+        .unwrap();
+
         #[derive(Clone)]
         struct TranscriptRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
 
@@ -1025,7 +1030,7 @@
                     ApiEffectResponse {
                         status: StatusCode::OK.as_u16(),
                         content_type: "application/json".to_owned(),
-                        body: br#"{"conversation_id":"conv / 1","turns":[{"node_id":"turn-1","turn_index":0,"role":"user","content":"hello","entity_type":"conversation_turn","schema_version":"v1"}],"schema_version":"v1","implementation_authority":"postgres"}"#.to_vec(),
+                        body: br#"{"conversation_id":"transcript-contract-conversation","turns":[],"schema_version":"v1","implementation_authority":"postgres"}"#.to_vec(),
                     }
                 })
             }
@@ -1130,7 +1135,16 @@
                     .uri("/mcp/conversation")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"transcript-1","method":"tools/call","params":{"name":"conversation.get_transcript","arguments":{"conversation_id":"conv / 1"}}}"#,
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":"transcript-1",
+                            "method":"tools/call",
+                            "params": {
+                                "name": transcript_contract["tool"],
+                                "arguments": transcript_contract["arguments"]
+                            }
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -1140,24 +1154,12 @@
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            value["result"],
-            json!({
-                "conversation_id":"conv / 1",
-                "turns":[{
-                    "node_id":"turn-1",
-                    "turn_index":0,
-                    "role":"user",
-                    "content":"hello",
-                    "entity_type":"conversation_turn"
-                }]
-            })
-        );
+        assert_eq!(value["result"], transcript_contract["result"]);
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.method, "GET");
         assert_eq!(
             request.path_and_query,
-            "/api/conversations/conv%20%2F%201/turns"
+            "/api/conversations/transcript%2Dcontract%2Dconversation/turns"
         );
         assert!(request.body.is_empty());
     }
