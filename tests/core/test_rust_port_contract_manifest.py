@@ -610,6 +610,43 @@ def test_dual_language_surface_inventory_is_current() -> None:
     assert set(http_keys) == expected_http
     assert all(operation["python"] == "openapi" for operation in http_operations)
 
+    route_map = json.loads(
+        (ROOT / "contracts" / "http-route-tasklet-map-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    mappings = route_map["operations"]
+    mapping_keys = [(item["method"], item["path"]) for item in mappings]
+    assert route_map["schema_version"] == 1
+    assert len(mapping_keys) == len(set(mapping_keys))
+    assert set(mapping_keys) == set(http_keys)
+    tasklet_ids = [item["tasklet_id"] for item in mappings]
+    assert len(tasklet_ids) == len(set(tasklet_ids))
+    for tasklet_id in tasklet_ids:
+        assert len(re.findall(rf"^\| {re.escape(tasklet_id)} \|", worklist, re.M)) == 1
+
+    unsupported = [item for item in mappings if item.get("classification") == "unsupported"]
+    assert len(unsupported) == 1
+    assert unsupported[0]["tasklet_id"] == "FW-03-03B"
+    supported_tasklet_ids = {
+        item["tasklet_id"] for item in mappings if item not in unsupported
+    }
+    declared_route_tasklet_ids = set(
+        re.findall(r"^\| (FW-03-03A-HTTP-(?:GET|POST|DELETE)-[0-9a-f]{8}) \|", worklist, re.M)
+    )
+    assert declared_route_tasklet_ids == supported_tasklet_ids
+    rust_by_key = {
+        (item["method"], item["path"]): item["rust"] for item in http_operations
+    }
+    for item in mappings:
+        key = (item["method"], item["path"])
+        if item.get("classification") == "unsupported":
+            assert rust_by_key[key] == "pending"
+        else:
+            assert item["tasklet_id"].startswith("FW-03-03A-HTTP-")
+            assert rust_by_key[key] != "pending"
+
     deferrals = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))[
         "server_operation_deferrals"
     ]
