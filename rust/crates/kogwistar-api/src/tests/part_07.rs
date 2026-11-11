@@ -1069,6 +1069,47 @@ async fn resume_contract_checks_authority_before_run_lookup() {
 }
 
 #[tokio::test]
+async fn workflow_run_submit_checks_both_capabilities_before_admission() {
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-run-submit-auth-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+    for (run_id, capabilities) in [
+        ("missing-spawn", json!(["workflow.run.write"])),
+        ("missing-write", json!(["spawn_process"])),
+    ] {
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "run_id": run_id,
+                    "workflow_id": "submit-auth-workflow",
+                    "conversation_id": "submit-auth-conversation"
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "ns": ["workflow"],
+                    "capabilities": capabilities
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+        assert!(service.store.get_server_run(run_id).unwrap().is_none());
+    }
+
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+}
+
+#[tokio::test]
 async fn run_evidence_checks_authority_before_run_lookup() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-evidence-auth-order-{}.sqlite",
