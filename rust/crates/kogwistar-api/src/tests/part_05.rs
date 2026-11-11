@@ -2053,6 +2053,7 @@
             "../../../../../contracts/golden/run-checkpoint-detail-v1.json"
         ))
         .unwrap();
+        let mut legacy_steps_payload: Option<Value> = None;
         for prefix in ["/api/runs", "/api/workflow/runs"] {
             let steps = app
                 .clone()
@@ -2071,6 +2072,11 @@
             );
             let steps_body = to_bytes(steps.into_body(), 16_384).await.unwrap();
             let steps_value = serde_json::from_slice::<Value>(&steps_body).unwrap();
+            if let Some(expected) = legacy_steps_payload.as_ref() {
+                assert_eq!(&steps_value, expected);
+            } else {
+                legacy_steps_payload = Some(steps_value.clone());
+            }
             assert_eq!(steps_value["steps"].as_array().unwrap().len(), 1);
             assert_eq!(steps_value["steps"][0]["workflow_node_id"], "entry");
             assert_eq!(steps_value["steps"][0]["op"], "begin");

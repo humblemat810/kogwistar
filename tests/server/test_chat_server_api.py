@@ -2324,6 +2324,11 @@ def test_run_steps_uses_python_defaults_and_checks_namespace(monkeypatch, engine
         assert step["status"] == contract["step_status"]
         assert step["result"]["answer"] == "persisted"
         assert step["trace_context"] == trace_fixture["trace_context"]
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/steps", headers=workflow_headers
+        )
+        assert workflow_response.status_code == response.status_code
+        assert workflow_response.json() == payload
 
         denied = client.get(f"/api/runs/{run_id}/steps", headers=denied_headers)
         assert denied.status_code == 403
