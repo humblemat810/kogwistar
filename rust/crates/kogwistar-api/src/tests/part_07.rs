@@ -1528,14 +1528,17 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
             )
             .unwrap();
     let allowed = app.clone().oneshot(request()).await.unwrap();
-    assert_eq!(allowed.status(), StatusCode::OK);
+    let lineage_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-lineage-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        allowed.status().as_u16(),
+        lineage_contract["success_status"].as_u64().unwrap() as u16
+    );
     let allowed_body = to_bytes(allowed.into_body(), 8192).await.unwrap();
     let payload = serde_json::from_slice::<Value>(&allowed_body).unwrap();
-    assert_eq!(payload["run_id"], "lineage-child");
-    assert_eq!(payload["lineage"].as_array().unwrap().len(), 2);
-    assert_eq!(payload["lineage"][0]["workflow_id"], "wf-child");
-    assert_eq!(payload["lineage"][0]["parent_run_id"], "lineage-parent");
-    assert_eq!(payload["lineage"][1]["workflow_id"], "wf-parent");
+    assert_eq!(payload, lineage_contract["response"]);
 
     let mcp_response = app
         .oneshot(

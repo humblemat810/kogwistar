@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -41,16 +44,33 @@ def _client(service, allow):
 
 
 def test_lineage_checks_parent_and_every_child_acl():
+    contract = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/workflow-run-lineage-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
     service = _Service(
         lineage=[
-            {"run_id": "child", "workflow_id": "wf.child", "parent_run_id": "parent"},
-            {"run_id": "parent", "workflow_id": "wf.parent", "parent_run_id": None},
+            {
+                "run_id": "lineage-child",
+                "workflow_id": "wf-child",
+                "parent_run_id": "lineage-parent",
+                "status": "completed",
+                "wf_invoked": [],
+            },
+            {
+                "run_id": "lineage-parent",
+                "workflow_id": "wf-parent",
+                "parent_run_id": None,
+                "status": "completed",
+                "wf_invoked": [],
+            },
         ]
     )
-    with _client(service, {"wf.parent", "wf.child"}) as client:
-        response = client.get("/api/workflow/runs/child/lineage")
-    assert response.status_code == 200
-    assert response.json()["lineage"][0]["workflow_id"] == "wf.child"
+    with _client(service, {"wf.parent", "wf-parent", "wf-child"}) as client:
+        response = client.get("/api/workflow/runs/lineage-child/lineage")
+    assert response.status_code == contract["success_status"]
+    assert response.json() == contract["response"]
 
 
 def test_lineage_denies_unauthorized_parent_or_child():
