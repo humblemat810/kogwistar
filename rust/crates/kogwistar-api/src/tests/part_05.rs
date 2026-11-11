@@ -775,7 +775,7 @@
         use tower::ServiceExt;
 
         #[derive(Clone)]
-        struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
+        struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>, Value);
 
         impl ApplicationService for RequestRecorder {
             fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
@@ -788,8 +788,13 @@
                 request: ApiEffectRequest,
             ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
                 let seen = Arc::clone(&self.0);
+                let steps_result = self.1.clone();
                 Box::pin(async move {
-                    let result = json!({"path_and_query": request.path_and_query.clone()});
+                    let result = if request.path_and_query.ends_with("/steps?limit=25") {
+                        steps_result
+                    } else {
+                        json!({"path_and_query": request.path_and_query.clone()})
+                    };
                     *seen.lock().unwrap() = Some(request);
                     ApiEffectResponse {
                         status: StatusCode::OK.as_u16(),
@@ -801,6 +806,10 @@
         }
 
         let seen = Arc::new(Mutex::new(None));
+        let steps_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-steps-mcp-v1.json"
+        ))
+        .unwrap();
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -808,7 +817,10 @@
                 implementation: ImplementationSnapshot::default(),
                 auth: AuthConfig::default(),
             },
-            Arc::new(RequestRecorder(Arc::clone(&seen))),
+            Arc::new(RequestRecorder(
+                Arc::clone(&seen),
+                steps_contract["result"].clone(),
+            )),
         );
         let response = app
             .clone()
@@ -843,7 +855,16 @@
                     .uri("/mcp/workflow")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"workflow.run_steps","arguments":{"run_id":"run/42?x","limit":25}}}"#,
+                        serde_json::to_string(&json!({
+                            "jsonrpc": "2.0",
+                            "id": 6,
+                            "method": "tools/call",
+                            "params": {
+                                "name": steps_contract["tool"],
+                                "arguments": steps_contract["arguments"]
+                            }
+                        }))
+                        .unwrap(),
                     ))
                     .unwrap(),
             )
@@ -852,8 +873,9 @@
         assert_eq!(steps_response.status(), StatusCode::OK);
         let steps_body = to_bytes(steps_response.into_body(), 4096).await.unwrap();
         let steps_value: Value = serde_json::from_slice(&steps_body).unwrap();
+        assert_eq!(steps_value["result"], steps_contract["result"]);
         assert_eq!(
-            steps_value["result"]["path_and_query"],
+            seen.lock().unwrap().as_ref().unwrap().path_and_query,
             "/api/workflow/runs/run%2F42%3Fx/steps?limit=25"
         );
 

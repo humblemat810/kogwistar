@@ -1160,6 +1160,41 @@ async def test_mcp_workflow_run_steps_denies_wrong_namespace_before_read(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_steps_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-steps-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    run_id = contract["arguments"]["run_id"]
+    monkeypatch.setattr(
+        service,
+        "get_run",
+        lambda requested_id: {"run_id": requested_id, "workflow_id": "workflow-1"},
+    )
+    monkeypatch.setattr(
+        service,
+        "list_steps",
+        lambda requested_id: contract["result"]["steps"]
+        if requested_id == run_id
+        else [],
+    )
+
+    with _claims("ro", "workflow"):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

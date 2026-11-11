@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.run_steps",
+  "arguments": {
+    "run_id": "run/42?x",
+    "limit": 25
+  },
+  "result": {
+    "run_id": "run/42?x",
+    "steps": [
+      {
+        "node_id": "step-node-1",
+        "step_seq": 0,
+        "workflow_id": "workflow-1",
+        "workflow_node_id": "entry",
+        "op": "begin",
+        "status": "ok",
+        "duration_ms": 3,
+        "result": {
+          "conversation_node_id": null,
+          "state_update": [["u", {"answer": "ready"}]],
+          "update": null,
+          "next_step_names": [],
+          "workflow_invocations": [],
+          "status": "success",
+          "answer": "ready"
+        },
+        "trace_context": {
+          "trace_id": "trace-1",
+          "span_id": "span-step-1",
+          "parent_span_id": "span-run-1",
+          "attempt": 1
+        }
+      }
+    ]
+  }
+}
