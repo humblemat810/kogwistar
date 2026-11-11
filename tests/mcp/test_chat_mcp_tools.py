@@ -1080,6 +1080,27 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
 
 
 @pytest.mark.asyncio
+async def test_mcp_conversation_create_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-create-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims("rw", "conversation"):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_wisdom_graph_upsert_mcp_requires_authorized_wisdom_writer(
     monkeypatch, engine_triplet
 ):

@@ -1171,6 +1171,11 @@
         use std::sync::{Arc, Mutex};
         use tower::ServiceExt;
 
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-create-mcp-v1.json"
+        ))
+        .unwrap();
+
         #[derive(Clone)]
         struct CreateRecorder(Arc<Mutex<Option<ApiEffectRequest>>>);
 
@@ -1189,7 +1194,7 @@
                     ApiEffectResponse {
                         status: StatusCode::OK.as_u16(),
                         content_type: "application/json".to_owned(),
-                        body: br#"{"version":"v1","op":"create_conversation","status":"ok","result":{"conversation_id":"conv-1","user_id":"alice","status":"active","start_node_id":"start-1","tail_node_id":"start-1","turn_count":0}}"#.to_vec(),
+                        body: br#"{"version":"v1","op":"create_conversation","status":"ok","result":{"conversation_id":"conv-create-test","user_id":"alice","status":"active","start_node_id":"conv-create-start","tail_node_id":"conv-create-start","turn_count":0}}"#.to_vec(),
                     }
                 })
             }
@@ -1231,7 +1236,16 @@
                     .uri("/mcp/conversation")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"create-1","method":"tools/call","params":{"name":"conversation.create","arguments":{"user_id":"alice","conversation_id":"conv-1","start_node_id":"start-1"}}}"#,
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":"create-1",
+                            "method":"tools/call",
+                            "params": {
+                                "name": contract["tool"],
+                                "arguments": contract["arguments"]
+                            }
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -1241,17 +1255,7 @@
         assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), 4096).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            value["result"],
-            json!({
-                "conversation_id":"conv-1",
-                "user_id":"alice",
-                "status":"active",
-                "start_node_id":"start-1",
-                "tail_node_id":"start-1",
-                "turn_count":0
-            })
-        );
+        assert_eq!(value["result"], contract["result"]);
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.method, "POST");
         assert_eq!(request.path_and_query, "/api/syscall/v1/create_conversation");
@@ -1260,11 +1264,7 @@
             json!({
                 "version":"v1",
                 "op":"create_conversation",
-                "args": {
-                    "user_id":"alice",
-                    "conversation_id":"conv-1",
-                    "start_node_id":"start-1"
-                }
+                "args": contract["arguments"]
             })
         );
     }
