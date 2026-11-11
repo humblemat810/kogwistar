@@ -845,7 +845,7 @@
         use tower::ServiceExt;
 
         #[derive(Clone)]
-        struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>, Value);
+        struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>, Value, Value);
 
         impl ApplicationService for RequestRecorder {
             fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
@@ -859,8 +859,11 @@
             ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
                 let seen = Arc::clone(&self.0);
                 let steps_result = self.1.clone();
+                let lineage_result = self.2.clone();
                 Box::pin(async move {
-                    let result = if request.path_and_query.ends_with("/steps?limit=25") {
+                    let result = if request.path_and_query.ends_with("/lineage?limit=2") {
+                        lineage_result
+                    } else if request.path_and_query.ends_with("/steps?limit=25") {
                         steps_result
                     } else {
                         json!({"path_and_query": request.path_and_query.clone()})
@@ -880,6 +883,12 @@
             "../../../../../contracts/golden/workflow-run-steps-mcp-v1.json"
         ))
         .unwrap();
+        let lineage_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-lineage-v1.json"
+        ))
+        .unwrap();
+        let mut lineage_result = lineage_contract["response"].clone();
+        lineage_result["truncated"] = json!(false);
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -890,6 +899,7 @@
             Arc::new(RequestRecorder(
                 Arc::clone(&seen),
                 steps_contract["result"].clone(),
+                lineage_result,
             )),
         );
         let response = app
@@ -916,6 +926,34 @@
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.method, "GET");
         assert!(request.body.is_empty());
+
+        let lineage_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workflow.run_lineage","arguments":{"run_id":"lineage-child","limit":2}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lineage_response.status(), StatusCode::OK);
+        let lineage_body = to_bytes(lineage_response.into_body(), 4096).await.unwrap();
+        let lineage_value: Value = serde_json::from_slice(&lineage_body).unwrap();
+        let expected_lineage = {
+            let mut expected = lineage_contract["response"].clone();
+            expected["truncated"] = json!(false);
+            expected
+        };
+        assert_eq!(lineage_value["result"], expected_lineage);
+        assert_eq!(
+            seen.lock().unwrap().as_ref().unwrap().path_and_query,
+            "/api/workflow/runs/lineage%2Dchild/lineage?limit=2"
+        );
 
         let steps_response = app
             .clone()

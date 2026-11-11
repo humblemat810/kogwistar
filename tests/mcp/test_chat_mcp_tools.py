@@ -1330,6 +1330,178 @@ async def test_mcp_workflow_run_evidence_denies_scope_and_missing_capabilities(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_lineage_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-lineage-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    access_checks: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        service._run_execution,
+        "get_run",
+        lambda run_id: {
+            "run_id": run_id,
+            "workflow_id": "wf-child",
+            "conversation_id": "lineage-conversation",
+        },
+    )
+    monkeypatch.setattr(
+        service,
+        "workflow_run_lineage",
+        lambda run_id: contract["response"],
+    )
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda workflow_id, role: access_checks.append(
+            (workflow_id, role)
+        ),
+    )
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        result = _structured(
+            await workflow_mcp.call_tool(
+                "workflow.run_lineage",
+                {"run_id": contract["response"]["run_id"], "limit": 2},
+            )
+        )
+
+    assert result == {**contract["response"], "truncated": False}
+    assert access_checks == [
+        ("wf-child", "ro"),
+        ("wf-child", "ro"),
+        ("wf-parent", "ro"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_run_lineage_denies_scope_capability_and_child_acl(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-lineage-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    run_reads: list[str] = []
+    lineage_reads: list[str] = []
+    access_checks: list[str] = []
+    monkeypatch.setattr(
+        service._run_execution,
+        "get_run",
+        lambda run_id: run_reads.append(run_id)
+        or {"workflow_id": "wf-child", "conversation_id": "lineage-conversation"},
+    )
+    monkeypatch.setattr(
+        service,
+        "workflow_run_lineage",
+        lambda run_id: lineage_reads.append(run_id) or contract["response"],
+    )
+
+    def check_workflow_access(workflow_id: str, _role: str) -> None:
+        access_checks.append(workflow_id)
+        if workflow_id == "wf-parent":
+            raise HTTPException(status_code=403, detail="workflow denied")
+
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=check_workflow_access,
+    )
+
+    with _claims("ro", "conversation", sub="alice"):
+        wrong_scope = await workflow_mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_lineage",
+                arguments={"run_id": contract["response"]["run_id"]},
+            ),
+        )
+    assert wrong_scope.is_error is True
+    assert "403 Forbidden" in wrong_scope.content[0].text
+    assert run_reads == []
+
+    with _claims("ro", "workflow", sub="alice", scope_parts={"capabilities": []}):
+        with pytest.raises(HTTPException) as missing_capability:
+            await workflow_mcp._execute(
+                "workflow.run_lineage",
+                {"run_id": contract["response"]["run_id"]},
+                enforce_visibility=True,
+            )
+    assert missing_capability.value.status_code == 403
+    assert run_reads == []
+    assert lineage_reads == []
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        denied_child = await workflow_mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_lineage",
+                arguments={"run_id": contract["response"]["run_id"]},
+            ),
+        )
+    assert denied_child.is_error is True
+    assert denied_child.content[0].text == "403: workflow denied"
+    assert "wf-parent" in access_checks
+    assert lineage_reads == [contract["response"]["run_id"]]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_process_timeline_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
