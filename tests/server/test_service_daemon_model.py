@@ -722,6 +722,50 @@ def test_service_declare_route_matches_shared_contract(monkeypatch, engine_tripl
         assert payload[field] == expected
 
 
+def test_service_enable_disable_routes_match_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-service-toggle-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service.service_supervisor.declare_service(
+        service_id=contract["service_id"],
+        service_kind="daemon",
+        target_kind="workflow",
+        target_ref="wf.service.toggle",
+        enabled=True,
+        autostart=False,
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            capabilities="service.manage,service.inspect,project_view",
+        )
+        for operation in ("disable", "enable"):
+            response = client.post(contract[operation]["path"], headers=headers)
+            assert response.status_code == contract["http_status"], response.text
+            payload = response.json()
+            for field, expected in contract[operation]["expected_fields"].items():
+                assert payload[field] == expected
+    assert any(
+        event["event_type"] == "service.degraded"
+        for event in service.service_supervisor.list_service_events(contract["service_id"])
+    )
+
+
 def test_service_list_route_matches_shared_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(

@@ -3092,6 +3092,72 @@ impl SqliteRunApplicationService {
                     "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
                 )
             })?;
+            if enabled {
+                let (lifecycle_status, health_status) =
+                    if projection["restart_not_before_ms"] != Value::Null
+                        || projection["lifecycle_status"].as_str() == Some("restarting")
+                    {
+                        ("restarting", "degraded")
+                    } else if projection["current_child_status"].as_str() == Some("queued") {
+                        ("starting", "healthy")
+                    } else if projection["current_child_status"].as_str() == Some("running") {
+                        ("healthy", "healthy")
+                    } else {
+                        let heartbeat_is_fresh = projection["last_heartbeat_ms"]
+                            .as_i64()
+                            .is_some_and(|heartbeat| {
+                                timestamp as i64 - heartbeat
+                                    <= projection["heartbeat_ttl_ms"]
+                                        .as_i64()
+                                        .unwrap_or(60_000)
+                            });
+                        if heartbeat_is_fresh {
+                            ("healthy", "healthy")
+                        } else {
+                            ("degraded", "degraded")
+                        }
+                    };
+                if projection["lifecycle_status"].as_str() != Some(lifecycle_status) {
+                let (health_event_id, health_event) = service_event_node(
+                    service_id,
+                    &format!("service.{lifecycle_status}"),
+                    &json!({"health_status": health_status}),
+                    timestamp,
+                );
+                uow.append_raw_entity_event(
+                    "workflow",
+                    SqliteNewRawEntityEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        entity_kind: "node".to_owned(),
+                        entity_id: health_event_id,
+                        op: "ADD".to_owned(),
+                        payload_json: health_event.to_string(),
+                    },
+                )?;
+                let history = uow.replay_raw_events("workflow", 0, usize::MAX)?;
+                let projections = service_projection_values(history.into_iter().map(|event| {
+                    (
+                        event.seq,
+                        event.entity_kind,
+                        event.entity_id,
+                        event.op,
+                        event.payload_json,
+                    )
+                }))
+                .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
+                let (reconciled_seq, reconciled_projection) = projections.get(service_id).ok_or_else(|| {
+                    kogwistar_store_sqlite::SqliteStoreError::TransactionAborted(
+                        "KOGWISTAR_SERVICE_NOT_FOUND".to_owned(),
+                    )
+                })?;
+                uow.replace_named_projection(
+                    "service_registry",
+                    service_id,
+                    service_projection_write(*reconciled_seq, reconciled_projection),
+                )?;
+                return Ok(reconciled_projection.clone());
+                }
+            }
             uow.replace_named_projection(
                 "service_registry",
                 service_id,

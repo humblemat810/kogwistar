@@ -686,34 +686,58 @@
             })
             .await;
         assert_eq!(forbidden.status, StatusCode::FORBIDDEN.as_u16());
+        let toggle_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-service-toggle-http-v1.json"
+        ))
+        .unwrap();
         let disabled = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
-                path_and_query: "/api/workflow/services/svc-repair/disable".to_owned(),
+                path_and_query: toggle_contract["disable"]["path"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
                 body: Vec::new(),
                 principal: principal.clone(),
             })
             .await;
-        assert_eq!(disabled.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            disabled.status,
+            toggle_contract["http_status"].as_u64().unwrap() as u16
+        );
         let disabled = serde_json::from_slice::<Value>(&disabled.body).unwrap();
-        assert_eq!(disabled["enabled"], false);
-        assert_eq!(disabled["lifecycle_status"], "stopped");
+        for (field, expected) in toggle_contract["disable"]["expected_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&disabled[field], expected);
+        }
         let enabled = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
-                path_and_query: "/api/workflow/services/svc-repair/enable".to_owned(),
+                path_and_query: toggle_contract["enable"]["path"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
                 body: Vec::new(),
                 principal,
             })
             .await;
-        assert_eq!(enabled.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            enabled.status,
+            toggle_contract["http_status"].as_u64().unwrap() as u16
+        );
         let enabled = serde_json::from_slice::<Value>(&enabled.body).unwrap();
-        assert_eq!(enabled["enabled"], true);
-        // Python rebuild keeps the prior stopped lifecycle until the next
-        // supervisor health tick emits a new lifecycle event.
-        assert_eq!(enabled["lifecycle_status"], "stopped");
+        for (field, expected) in toggle_contract["enable"]["expected_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&enabled[field], expected);
+        }
+        assert_eq!(enabled["lifecycle_status"], "degraded");
+        assert_eq!(enabled["health_status"], "degraded");
         let heartbeat = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -739,6 +763,10 @@
         let history = store.replay_raw_events("workflow", 0, usize::MAX).unwrap();
         assert!(history.iter().any(|event| {
             event.payload_json.contains("service.enabled")
+                && event.entity_id.starts_with("service_evt:svc-repair:")
+        }));
+        assert!(history.iter().any(|event| {
+            event.payload_json.contains("service.degraded")
                 && event.entity_id.starts_with("service_evt:svc-repair:")
         }));
         assert!(history.iter().any(|event| {

@@ -1,0 +1,21 @@
+{
+  "service_id": "svc-repair",
+  "http_status": 200,
+  "disable": {
+    "path": "/api/workflow/services/svc-repair/disable",
+    "expected_fields": {
+      "service_id": "svc-repair",
+      "enabled": false,
+      "lifecycle_status": "stopped"
+    }
+  },
+  "enable": {
+    "path": "/api/workflow/services/svc-repair/enable",
+    "expected_fields": {
+      "service_id": "svc-repair",
+      "enabled": true,
+      "lifecycle_status": "degraded",
+      "health_status": "degraded"
+    }
+  }
+}
