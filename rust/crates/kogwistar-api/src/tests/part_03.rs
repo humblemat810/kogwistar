@@ -363,6 +363,10 @@
             "allow"
         );
 
+        let capability_revoke_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-capability-revoke-http-v1.json"
+        ))
+        .unwrap();
         let revoke = app
             .clone()
             .oneshot(
@@ -371,21 +375,44 @@
                     .uri("/api/workflow/capabilities/revoke")
                     .header("authorization", format!("Bearer {admin_token}"))
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"capability":"spawn_process"}"#))
+                    .body(Body::from(capability_revoke_contract["request"].to_string()))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(revoke.status(), StatusCode::ACCEPTED);
+        assert_eq!(
+            revoke.status().as_u16(),
+            capability_revoke_contract["http_status"]
+                .as_u64()
+                .unwrap() as u16
+        );
         let revoke =
             serde_json::from_slice::<Value>(&to_bytes(revoke.into_body(), 32768).await.unwrap())
                 .unwrap();
-        assert!(
-            !revoke["effective_capabilities"]
+        for field in capability_revoke_contract["required_body_fields"]
+            .as_array()
+            .unwrap()
+        {
+            let field = field.as_str().unwrap();
+            assert!(revoke.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(
+            revoke["current_subject"],
+            capability_revoke_contract["expected_subject"]
+        );
+        assert!(revoke["revoked"]
+            .as_array()
+            .unwrap()
+            .contains(&capability_revoke_contract["expected_revocation"]));
+        for capability in capability_revoke_contract["effective_capabilities_exclude"]
+            .as_array()
+            .unwrap()
+        {
+            assert!(!revoke["effective_capabilities"]
                 .as_array()
                 .unwrap()
-                .contains(&json!("spawn_process"))
-        );
+                .contains(capability));
+        }
 
         let mcp = app
             .clone()

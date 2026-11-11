@@ -149,6 +149,55 @@ def test_capability_approve_route_matches_shared_contract(monkeypatch, engine_tr
     )
 
 
+def test_capability_revoke_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    golden_dir = Path(__file__).resolve().parents[2] / "contracts" / "golden"
+    approve_contract = json.loads(
+        (golden_dir / "workflow-capability-approve-http-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    contract = json.loads(
+        (golden_dir / "workflow-capability-revoke-http-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["expected_subject"],
+            capabilities="approve_action,project_view,read_security_scope",
+        )
+        approved = client.post(
+            "/api/workflow/capabilities/approve",
+            json=approve_contract["request"],
+            headers=headers,
+        )
+        assert approved.status_code == approve_contract["http_status"]
+        response = client.post(
+            "/api/workflow/capabilities/revoke",
+            json=contract["request"],
+            headers=headers,
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert set(contract["required_body_fields"]).issubset(payload)
+    assert payload["current_subject"] == contract["expected_subject"]
+    assert contract["expected_revocation"] in payload["revoked"]
+    for capability in contract["effective_capabilities_exclude"]:
+        assert capability not in payload["effective_capabilities"]
+
+
 def test_workflow_budget_route_matches_contract_and_requires_security_scope(
     monkeypatch, engine_triplet
 ):
