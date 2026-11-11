@@ -54,6 +54,137 @@ async def test_postgres_stage1_row_lock_requires_active_async_uow(monkeypatch) -
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("op", "revision_state"),
+    [("DELETE", "active"), ("UPSERT", None), ("UPSERT", "active")],
+)
+async def test_async_postgres_projection_worker_fails_closed_without_transaction_uow(
+    monkeypatch, op: str, revision_state: str | None
+) -> None:
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.two_stage_async import (
+        AsyncPostgresTwoStageProjectionAdapter,
+    )
+
+    mutations: list[str] = []
+
+    class Collection:
+        async def delete(self, **_kwargs: object) -> None:
+            mutations.append("stage2_delete")
+
+    class Backend:
+        _is_async_engine = True
+        _nodes_c = Collection()
+
+        async def stage1_projection_get_async(self, **_kwargs: object):
+            return {
+                "document": "node text",
+                "metadata": {},
+                "source_fingerprint": "fingerprint",
+                "revision": 1,
+            }
+
+        async def stage1_projection_delete_async(self, **_kwargs: object) -> None:
+            mutations.append("stage1_delete")
+
+        async def _upsert_async(self, *_args: object, **_kwargs: object) -> None:
+            mutations.append("stage2_upsert")
+
+    class Indexing:
+        engine = SimpleNamespace(namespace="default")
+
+        def canonical_entity_revision(self, **_kwargs: object):
+            if revision_state is None:
+                return None
+            return SimpleNamespace(state=revision_state)
+
+        def canonical_revision_payload(self, **_kwargs: object) -> str:
+            return json.dumps({"source_fingerprint": "fingerprint"})
+
+    async def fake_embed(_provider: object, documents: list[str]):
+        return [[1.0, 0.0] for _ in documents]
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.two_stage_async._embed", fake_embed
+    )
+    engine = SimpleNamespace(
+        backend=Backend(),
+        indexing=Indexing(),
+        namespace="default",
+        _ef=object(),
+        _async_backend_uow=None,
+    )
+    adapter = AsyncPostgresTwoStageProjectionAdapter(engine)
+
+    with pytest.raises(RuntimeError, match="requires a transactional backend UoW"):
+        await adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="n1",
+            op=op,
+            payload_json=None,
+        )
+
+    assert mutations == []
+
+
+@pytest.mark.asyncio
+async def test_async_postgres_reconciliation_fails_closed_without_transaction_uow() -> None:
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.two_stage_async import (
+        AsyncPostgresTwoStageProjectionAdapter,
+    )
+
+    mutations: list[str] = []
+
+    class Collection:
+        async def delete(self, **_kwargs: object) -> None:
+            mutations.append("stage2_delete")
+
+    class Backend:
+        _is_async_engine = True
+        _nodes_c = Collection()
+        _edges_c = Collection()
+
+        async def stage1_projection_query_async(
+            self, *, entity_kind: str, **_kwargs: object
+        ):
+            if entity_kind != "node":
+                return []
+            return [{
+                "entity_kind": "node",
+                "entity_id": "orphan",
+                "document": "orphaned stage one",
+                "metadata": {},
+                "source_fingerprint": "old",
+            }]
+
+        async def stage1_projection_delete_async(self, **_kwargs: object) -> None:
+            mutations.append("stage1_delete")
+
+    class Indexing:
+        engine = SimpleNamespace(namespace="default")
+
+        def canonical_entity_revision(self, **_kwargs: object):
+            return None
+
+    adapter = AsyncPostgresTwoStageProjectionAdapter(
+        SimpleNamespace(
+            backend=Backend(),
+            indexing=Indexing(),
+            namespace="default",
+            _async_backend_uow=None,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="requires a transactional backend UoW"):
+        await adapter.reconcile_projection()
+
+    assert mutations == []
+
+
 def test_chroma_safe_kwargs_drops_null_metadata_and_preserves_supported_values() -> None:
     metadata = {
         "wf_predicate": None,

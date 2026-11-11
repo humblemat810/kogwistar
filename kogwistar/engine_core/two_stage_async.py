@@ -188,16 +188,17 @@ class AsyncPostgresTwoStageProjectionAdapter:
 
     @asynccontextmanager
     async def _backend_transaction(self) -> AsyncIterator[None]:
-        """Join the configured async SQL UOW when one exists."""
+        """Join the async SQL UOW; projection mutations require atomic ownership."""
         uow = getattr(self.engine, "_async_backend_uow", None)
         transaction = getattr(uow, "transaction", None)
-        if callable(transaction):
-            context = cast(AbstractAsyncContextManager[None], transaction())
-            with self._transaction_authority_scope():
-                async with context:
-                    yield
-        else:
-            yield
+        if not callable(transaction):
+            raise RuntimeError(
+                "async PostgreSQL projection mutation requires a transactional backend UoW"
+            )
+        context = cast(AbstractAsyncContextManager[None], transaction())
+        with self._transaction_authority_scope():
+            async with context:
+                yield
 
     async def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
@@ -329,12 +330,18 @@ class AsyncPostgresTwoStageProjectionAdapter:
                 and expected != await self._fingerprint(entity_kind, entity_id)
             ):
                 return
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            async with self._backend_transaction():
+                await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                await self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
             return
         if current is None or current.state != "active":
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+            async with self._backend_transaction():
+                await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                await self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
             return
         if expected and expected != await self._fingerprint(entity_kind, entity_id):
             return
@@ -477,8 +484,11 @@ class AsyncPostgresTwoStageProjectionAdapter:
                 continue
             current = await self._current(entity_kind, entity_id)
             if current is None or current.state != "active":
-                await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+                async with self._backend_transaction():
+                    await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                    await self.remove_stage2_or_invalidate(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
                 removed += 1
                 continue
             stage2 = await self._backend()._get_flat_async(
@@ -504,9 +514,15 @@ class AsyncPostgresTwoStageProjectionAdapter:
                                 entity_kind=entity_kind, entity_id=entity_id
                             )
                     else:
-                        await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                        async with self._backend_transaction():
+                            await self.remove_stage1(
+                                entity_kind=entity_kind, entity_id=entity_id
+                            )
                 else:
-                    await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                    async with self._backend_transaction():
+                        await self.remove_stage1(
+                            entity_kind=entity_kind, entity_id=entity_id
+                        )
                 removed += 1
         return removed
 
