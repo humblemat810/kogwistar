@@ -270,6 +270,12 @@ async def test_async_chroma_admission_and_promotion_use_async_adapter(tmp_path):
         embedding_function=provider,
     )
     try:
+        assert engine.atomic_mutation_capability.mode == "eventual"
+        assert not engine.atomic_mutation_capability.supports_atomic_mutation
+        assert (
+            engine.two_stage_projection_capability.atomic_promotion
+            == "eventual_reconcile"
+        )
         nodes = [
             build_entity_node(node_id="async-chroma-n1", doc_id="d1", embedding=None),
             build_entity_node(node_id="async-chroma-n2", doc_id="d1", embedding=None),
