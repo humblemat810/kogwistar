@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.service_events",
+  "arguments": {
+    "service_id": "svc-contract",
+    "limit": 2
+  },
+  "python_service_arguments": {
+    "service_id": "svc-contract",
+    "limit": 2
+  },
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/services/svc-contract/events?limit=2"
+  },
+  "result": {
+    "service_id": "svc-contract",
+    "events": [
+      {
+        "event_id": "evt-contract",
+        "event_type": "service.triggered"
+      }
+    ]
+  }
+}

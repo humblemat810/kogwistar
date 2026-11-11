@@ -1345,6 +1345,41 @@ async def test_mcp_workflow_service_enable_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_service_events_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-events-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[tuple[str, int]] = []
+
+    def list_service_events(service_id, *, limit):
+        calls.append((service_id, limit))
+        return contract["result"]["events"]
+
+    monkeypatch.setattr(service, "list_service_events", list_service_events)
+
+    with _claims("ro", "workflow"):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert calls == [
+        (
+            contract["python_service_arguments"]["service_id"],
+            contract["python_service_arguments"]["limit"],
+        )
+    ]
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
