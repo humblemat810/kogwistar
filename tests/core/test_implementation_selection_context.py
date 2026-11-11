@@ -1346,6 +1346,54 @@ def test_backend_transactions_cannot_be_opened_from_worker_callback(
                     pytest.fail("backend transaction must not start in callback")
 
 
+def test_guarded_write_callsite_inventory_maps_to_negative_ownership_tests() -> None:
+    inventory = {
+        "GraphKnowledgeEngine.uow": (
+            "test_engine_unit_of_work_cannot_be_opened_from_worker_callback",
+        ),
+        "EngineSQLite/InMemoryMetaStore/PostgresUnitOfWork.transaction": (
+            "test_backend_transactions_cannot_be_opened_from_worker_callback",
+            "test_python_sqlite_and_memory_transactions_reject_rust_selection",
+            "test_python_postgres_uow_never_begins_under_rust_selection",
+        ),
+        "EngineSQLite.connect and SQLite authorizer": (
+            "test_raw_sqlite_connection_cannot_write_inside_worker_callback",
+        ),
+        "InMemoryMetaStore connection mutation": (
+            "test_in_memory_meta_connection_cannot_mutate_from_worker_callback",
+        ),
+        "InMemoryBackend/PgCollectionFacade mutations": (
+            "test_backend_collection_mutations_cannot_run_from_worker_callback",
+        ),
+        "ChromaBackend.call/AsyncChromaBackend.async_call": (
+            "test_chroma_collection_mutations_cannot_run_from_worker_callback",
+        ),
+        "Rust bridge and RustEngineSQLite facade": (
+            "test_native_store_bridges_cannot_be_called_from_worker_callback",
+        ),
+        "Rust extension store entrypoints": (
+            "test_native_extension_store_entrypoints_reject_worker_callback",
+        ),
+        "PgVectorBackend SQL projection writes": (
+            "test_postgres_sql_write_primitives_cannot_be_called_from_worker_callback",
+        ),
+        "GraphKnowledgeEngine.async_uow under Rust authority": (
+            "test_rust_async_uow_uses_native_metadata_transaction_only",
+        ),
+    }
+
+    assert inventory
+    for callsite, negative_tests in inventory.items():
+        assert negative_tests, f"{callsite} has no negative ownership test"
+        for test_name in negative_tests:
+            test = globals().get(test_name)
+            assert callable(test), f"{callsite} references missing test {test_name}"
+            source = inspect.getsource(test)
+            assert "pytest.raises(" in source or "pytest.fail(" in source, (
+                f"{callsite} test {test_name} does not assert rejection"
+            )
+
+
 def test_raw_sqlite_connection_cannot_write_inside_worker_callback(
     tmp_path: Path,
 ) -> None:
