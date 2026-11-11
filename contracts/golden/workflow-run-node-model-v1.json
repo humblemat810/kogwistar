@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "model_class": "workflow_run_node",
+  "canonical_json_sha256": "59d9ae0791edc079d0cf79d461596de8a06483d89b8e321f3c95c20f5e789b36",
   "payload": {
     "label": "Workflow run parity",
     "type": "entity",
