@@ -1301,6 +1301,10 @@
             "../../../../../contracts/golden/workflow-lane-progress-http-v1.json"
         ))
         .unwrap();
+        let submit_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-submit-http-v1.json"
+        ))
+        .unwrap();
 
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1351,6 +1355,22 @@
         let submitted = serde_json::from_slice::<Value>(&submit_body).unwrap();
         let submitted_run_id = submitted["run_id"].as_str().unwrap();
         assert_eq!(submitted_run_id, "caller-run-id");
+        assert!(submit_contract["required_common_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|field| submitted.get(field.as_str().unwrap()).is_some()));
+        assert_eq!(submitted["conversation_id"], "conversation-submit");
+        assert_eq!(submitted["workflow_id"], "workflow-submit");
+        assert_eq!(submitted["turn_node_id"], "wf_turn|caller-run-id");
+        for (field, value) in submit_contract["expected_common_values"].as_object().unwrap() {
+            assert_eq!(&submitted[field], value, "field {field}");
+        }
+        assert!(submit_contract["rust_additive_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|field| submitted.get(field.as_str().unwrap()).is_some()));
         let resume_contract = app
             .clone()
             .oneshot(

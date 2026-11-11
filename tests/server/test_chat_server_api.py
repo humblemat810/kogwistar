@@ -676,6 +676,24 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
     monkeypatch, engine_triplet
 ):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-submit-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    def assert_submit_contract(response, expected_conversation_id, expected_workflow_id, turn_node_id):
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert all(field in payload for field in contract["required_common_fields"])
+        assert isinstance(payload["run_id"], str) and payload["run_id"]
+        assert payload["conversation_id"] == expected_conversation_id
+        assert payload["workflow_id"] == expected_workflow_id
+        assert payload["turn_node_id"] == turn_node_id
+        for field, value in contract["expected_common_values"].items():
+            assert payload[field] == value
+
     captured: list[str] = []
 
     def _runtime_runner(req: RuntimeRunRequest) -> dict[str, object]:
@@ -709,12 +727,18 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
             json={
                 "workflow_id": "wf.runtime.kind.async",
                 "conversation_id": conversation_id,
+                "turn_node_id": "turn-contract-async",
                 "initial_state": {},
                 "runtime_kind": "async",
             },
             headers=headers,
         )
-        assert async_resp.status_code == 202, async_resp.text
+        assert_submit_contract(
+            async_resp,
+            conversation_id,
+            "wf.runtime.kind.async",
+            "turn-contract-async",
+        )
         async_run_id = str(async_resp.json()["run_id"])
         _wait_for_status(
             client,
@@ -729,11 +753,17 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
             json={
                 "workflow_id": "wf.runtime.kind.sync",
                 "conversation_id": conversation_id,
+                "turn_node_id": "turn-contract-default",
                 "initial_state": {},
             },
             headers=headers,
         )
-        assert default_resp.status_code == 202, default_resp.text
+        assert_submit_contract(
+            default_resp,
+            conversation_id,
+            "wf.runtime.kind.sync",
+            "turn-contract-default",
+        )
         default_run_id = str(default_resp.json()["run_id"])
         _wait_for_status(
             client,
