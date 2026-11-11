@@ -3191,6 +3191,46 @@ def test_workflow_design_undo_matches_shared_contract(monkeypatch, engine_triple
         assert field not in body
 
 
+def test_workflow_lane_progress_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-lane-progress-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    registry.create_run(
+        run_id=contract["run_id"],
+        conversation_id="lane-progress-contract-conversation",
+        workflow_id="lane-progress-contract-workflow",
+        user_id="alice",
+        user_turn_node_id="lane-progress-contract-turn",
+        status="running",
+    )
+    registry.append_event(
+        contract["run_id"], contract["event_type"], contract["payload"]
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get(
+            f"/api/workflow/lane/progress?run_id={contract['run_id']}",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    assert body["total"] == contract["expected_total"]
+    assert len(body["items"]) == contract["expected_item_count"]
+    item = body["items"][0]
+    assert set(item) == set(contract["expected_item_keys"])
+    for field, expected in contract["expected_item_fields"].items():
+        assert item[field] == expected
+    assert isinstance(item["created_at_ms"], int)
+
+
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(

@@ -1297,6 +1297,10 @@
             "../../../../../contracts/golden/workflow-step-inspection-v1.json"
         ))
         .unwrap();
+        let lane_progress_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-lane-progress-http-v1.json"
+        ))
+        .unwrap();
 
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1706,6 +1710,59 @@
                 assert!(value.get(key).is_some(), "{path} lacks {key}: {value}");
             }
         }
+        let lane_progress = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/api/workflow/lane/progress?run_id={}",
+                        lane_progress_contract["run_id"].as_str().unwrap()
+                    ))
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            lane_progress.status().as_u16(),
+            lane_progress_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let lane_progress: Value = serde_json::from_slice(
+            &to_bytes(lane_progress.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            lane_progress["total"],
+            lane_progress_contract["expected_total"]
+        );
+        assert_eq!(
+            lane_progress["items"].as_array().unwrap().len(),
+            lane_progress_contract["expected_item_count"]
+                .as_u64()
+                .unwrap() as usize
+        );
+        let lane_progress_item = &lane_progress["items"][0];
+        let expected_item_keys = lane_progress_contract["expected_item_keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_item_keys = lane_progress_item
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_item_keys, expected_item_keys);
+        for (field, expected) in lane_progress_contract["expected_item_fields"]
+            .as_object()
+            .unwrap()
+        {
+            assert_eq!(&lane_progress_item[field], expected, "field {field}");
+        }
+        assert!(lane_progress_item["created_at_ms"].as_i64().is_some());
         let dead_lane = |message_id: &str, run_id: &str| NewProjectedLaneMessage {
             message_id: message_id.to_owned(),
             namespace: "workflow".to_owned(),
