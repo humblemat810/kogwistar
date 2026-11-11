@@ -1424,6 +1424,7 @@ async fn mcp_dispatch(
                     .expect("heartbeat request serializes"),
                     principal: principal.clone(),
                 }),
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_trigger; fixture=contracts/golden/workflow-service-trigger-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#mcp_workflow_service_trigger_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_trigger_matches_shared_contract
             "workflow.service_trigger" => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1436,7 +1437,7 @@ async fn mcp_dispatch(
                         "trigger_type": arguments.get("trigger_type").cloned(),
                         "payload": arguments
                             .get("payload")
-                            .filter(|value| value.is_object())
+                            .filter(|value| !value.is_null())
                             .cloned()
                             .unwrap_or_else(|| json!({})),
                     }))
