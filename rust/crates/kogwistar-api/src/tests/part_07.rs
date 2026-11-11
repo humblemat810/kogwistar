@@ -923,6 +923,85 @@ fn rust_run_evidence_projection_matches_shared_v1_contract() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_run_cancel_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: "cancel-auth-run".to_owned(),
+            conversation_id: "cancel-auth-conversation".to_owned(),
+            workflow_id: "cancel-auth-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "cancel-auth-turn".to_owned(),
+            status: "running".to_owned(),
+        })
+        .await
+        .unwrap();
+
+    for (principal, expected_code) in [
+        (
+            json!({"sub":"alice", "ns":["conversation"], "capabilities":["workflow.run.write"]}),
+            "KOGWISTAR_NAMESPACE_FORBIDDEN",
+        ),
+        (
+            json!({"sub":"alice", "ns":["workflow"], "capabilities":[]}),
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+        ),
+    ] {
+        let denied = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs/cancel-auth-run/cancel".to_owned(),
+                body: Vec::new(),
+                principal,
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&denied.body).unwrap()["code"],
+            expected_code
+        );
+    }
+    let unchanged = service
+        .store
+        .get_server_run("cancel-auth-run")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(unchanged.status, "running");
+    assert!(!unchanged.cancel_requested);
+
+    let accepted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs/cancel-auth-run/cancel".to_owned(),
+            body: Vec::new(),
+            principal: json!({"sub":"alice", "ns":["workflow"], "capabilities":["workflow.run.write"]}),
+        })
+        .await;
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-cancel-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(accepted.status, contract["accepted_status"].as_u64().unwrap() as u16);
+    assert_eq!(contract["workflow_route"], "POST /api/workflow/runs/{run_id}/cancel");
+    let body: Value = serde_json::from_slice(&accepted.body).unwrap();
+    for field in contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(body.get(field).is_some(), "missing {field}");
+    }
+    assert!(contract["accepted_run_statuses"].as_array().unwrap().contains(&body["status"]));
+    assert_eq!(body["cancel_requested"], true);
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");

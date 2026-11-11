@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "route": "POST /api/runs/{run_id}/cancel",
+  "workflow_route": "POST /api/workflow/runs/{run_id}/cancel",
   "accepted_status": 202,
   "accepted_run_statuses": ["cancelling", "cancelled"],
   "terminal_statuses": ["succeeded", "failed", "cancelled"],

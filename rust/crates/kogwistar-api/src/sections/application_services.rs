@@ -3589,6 +3589,21 @@ impl SqliteRunApplicationService {
                 );
             }
         }
+        // PYTHON_PARITY_V1: authorize workflow cancel scope before lookup; python=kogwistar/server/runtime_api.py#create_runtime_router.cancel_workflow_run
+        if request.method == "POST" && tail == ["cancel"] {
+            let required_namespace =
+                runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
+            if !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "*" || namespace == required_namespace)
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                    format!("Cancelling runs requires {required_namespace} namespace"),
+                );
+            }
+        }
         if request.method == "GET" && tail == ["lineage"] {
             let namespaces = principal_strings(&request.principal, "ns");
             if !namespaces
@@ -3631,6 +3646,23 @@ impl SqliteRunApplicationService {
                 );
             }
         };
+        // PYTHON_PARITY_V1: non-terminal cancellation requires write capability; python=kogwistar/server/chat_service.py#ChatRunService.cancel_run
+        if request.method == "POST"
+            && tail == ["cancel"]
+            && !matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled")
+            && !capability_allowed(
+                &request,
+                &self.capabilities,
+                "workflow.run.write",
+                &["workflow.run.write"],
+            )
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Cancelling a non-terminal run requires workflow.run.write capability",
+            );
+        }
         if request.method == "GET" && tail == ["lineage"] {
             return effect_error(
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -3794,6 +3826,11 @@ impl SqliteRunApplicationService {
                 ),
             },
             ("POST", ["resume"]) => self.resume_runtime_run(&run_id, &request),
+            ("POST", ["cancel"])
+                if matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled") =>
+            {
+                json_effect(StatusCode::ACCEPTED, server_run_value(run))
+            }
             ("POST", ["cancel"]) => match self.store.request_server_run_cancel(&run_id) {
                 Ok(()) => match self.get_run(&run_id) {
                     Ok(Some(updated)) => {

@@ -3610,8 +3610,32 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         assert submit.status_code == 202
         run_id = submit.json()["run_id"]
 
+        cancel_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts"
+                / "golden"
+                / "run-cancel-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert cancel_contract["workflow_route"] == "POST /api/workflow/runs/{run_id}/cancel"
+        denied = client.post(
+            f"/api/workflow/runs/{run_id}/cancel", headers=wf_ro
+        )
+        assert denied.status_code == 403
+        assert conversation_engine.get_nodes(
+            where={
+                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+            },
+            limit=10,
+        ) == []
+
         cancel = client.post(f"/api/workflow/runs/{run_id}/cancel", headers=wf_rw)
-        assert cancel.status_code == 202
+        assert cancel.status_code == cancel_contract["accepted_status"]
+        cancel_body = cancel.json()
+        assert all(field in cancel_body for field in cancel_contract["required_fields"])
+        assert cancel_body["cancel_requested"] is True
+        assert cancel_body["status"] in cancel_contract["accepted_run_statuses"]
 
         final_run = _wait_for_status(
             client,

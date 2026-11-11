@@ -1363,6 +1363,65 @@
                 expected_code
             );
         }
+        for (path, principal, expected_code) in [
+            (
+                "/api/workflow/runs/run-1/cancel",
+                json!({"sub":"user-1", "ns":["conversation"], "capabilities":["workflow.run.write"]}),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+            (
+                "/api/workflow/runs/run-1/cancel",
+                json!({"sub":"user-1", "ns":["workflow"], "capabilities":[]}),
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            ),
+            (
+                "/api/runs/run-1/cancel",
+                json!({"sub":"user-1", "ns":["workflow"], "capabilities":["workflow.run.write"]}),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+        ] {
+            let denied = sqlite_service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: path.to_owned(),
+                    body: Vec::new(),
+                    principal,
+                })
+                .await;
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(
+                serde_json::from_slice::<Value>(&denied.body).unwrap()["code"],
+                expected_code
+            );
+        }
+        let unchanged_run = sqlite_service.store.get_server_run("run-1").unwrap().unwrap();
+        assert_eq!(unchanged_run.status, "running");
+        assert!(!unchanged_run.cancel_requested);
+        store
+            .create_server_run(kogwistar_store::ServerRunCreate {
+                run_id: "terminal-cancel-run".to_owned(),
+                conversation_id: "conversation-terminal-cancel".to_owned(),
+                workflow_id: "workflow-terminal-cancel".to_owned(),
+                user_id: Some("user-1".to_owned()),
+                user_turn_node_id: "turn-terminal-cancel".to_owned(),
+                status: "succeeded".to_owned(),
+            })
+            .unwrap();
+        let terminal_cancel = sqlite_service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs/terminal-cancel-run/cancel".to_owned(),
+                body: Vec::new(),
+                principal: json!({"sub":"user-1", "ns":["workflow"], "capabilities":[]}),
+            })
+            .await;
+        assert_eq!(terminal_cancel.status, StatusCode::ACCEPTED.as_u16());
+        let terminal_body: Value = serde_json::from_slice(&terminal_cancel.body).unwrap();
+        assert_eq!(terminal_body["status"], "succeeded");
+        assert_eq!(terminal_body["cancel_requested"], false);
+
         let submit_auth_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/workflow-run-submit-auth-v1.json"
         ))
@@ -3092,8 +3151,8 @@
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/api/runs/{cancelled_run_id}/cancel"))
-                    .header("x-kogwistar-roles", "reader")
+                    .uri(format!("/api/workflow/runs/{cancelled_run_id}/cancel"))
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3209,13 +3268,28 @@
             .unwrap();
         let claimed_cancel_work =
             serde_json::from_slice::<Value>(&claimed_cancel_claim_body).unwrap()["work"][0].clone();
-        let claimed_cancel = app
+        let denied_cancel = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri(format!("/api/workflow/runs/{claimed_cancel_run_id}/cancel"))
                     .header("x-kogwistar-roles", "reader")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_cancel.status(), StatusCode::FORBIDDEN);
+        let denied_run = store.get_server_run(&claimed_cancel_run_id).unwrap().unwrap();
+        assert!(!denied_run.cancel_requested);
+        let claimed_cancel = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workflow/runs/{claimed_cancel_run_id}/cancel"))
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3349,7 +3423,7 @@
                 Request::builder()
                     .method("POST")
                     .uri("/api/workflow/runs/run-1/cancel")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3357,10 +3431,20 @@
             .unwrap();
         assert_eq!(cancel.status(), StatusCode::ACCEPTED);
         let cancel_body = to_bytes(cancel.into_body(), 8192).await.unwrap();
+        let cancel_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-cancel-v1.json"
+        ))
+        .unwrap();
         assert_eq!(
-            serde_json::from_slice::<Value>(&cancel_body).unwrap()["status"],
-            "cancelling"
+            cancel_contract["workflow_route"],
+            "POST /api/workflow/runs/{run_id}/cancel"
         );
+        let cancel_value = serde_json::from_slice::<Value>(&cancel_body).unwrap();
+        for field in cancel_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(cancel_value.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(cancel_value["status"], "cancelling");
 
         let sse = app
             .clone()

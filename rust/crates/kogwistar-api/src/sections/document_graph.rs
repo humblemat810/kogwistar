@@ -2478,7 +2478,7 @@ fn operational_effect(
                 "limit": limit,
             }),
         ),
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#get_lane_message_progress+kogwistar/server/chat_service.py#lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_lane_progress_matches_shared_contract
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_lane_message_progress; python_service=kogwistar/server/chat_service.py#ChatRunService.lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_lane_progress_matches_shared_contract
         "/api/workflow/lane/progress" => {
             let run_id = query_string(&request.path_and_query, "run_id");
             let conversation_id = query_string(&request.path_and_query, "conversation_id");
