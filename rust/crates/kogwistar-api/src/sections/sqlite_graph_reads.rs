@@ -521,11 +521,40 @@ impl SqliteRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+        self.chroma_semantic_seed_expand_effect(request, "knowledge", None, 5, 1)
+            .await
+    }
+
+    async fn chroma_wisdom_semantic_seed_expand_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_graph_reads.rs#chroma_wisdom_semantic_seed_expand_effect; python=kogwistar/graph_query.py#GraphQuery.semantic_seed_then_expand_text; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding; python_test=tests/mcp/test_chat_mcp_tools.py#test_wisdom_semantic_seed_expand_mcp_contract_and_authorization
+        self.chroma_semantic_seed_expand_effect(request, "wisdom", Some("wisdom"), 10, 2)
+            .await
+    }
+
+    async fn chroma_semantic_seed_expand_effect(
+        &self,
+        request: &ApiEffectRequest,
+        truth_graph: &str,
+        required_namespace: Option<&str>,
+        default_top_k: usize,
+        default_hops: usize,
+    ) -> ApiEffectResponse {
+        let wisdom_scope_allowed = required_namespace.is_none_or(|required| {
+            matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
+                && principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == required || namespace == "*")
+        });
+        if !wisdom_scope_allowed
+            || !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"])
+        {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Semantic graph retrieval requires read_graph capability",
+                "Semantic graph retrieval requires an authorized read_graph scope",
             );
         }
         let input: SemanticSeedExpandRequest = match serde_json::from_slice(&request.body) {
@@ -538,8 +567,8 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let top_k = input.top_k.unwrap_or(5);
-        let hops = input.hops.unwrap_or(1);
+        let top_k = input.top_k.unwrap_or(default_top_k);
+        let hops = input.hops.unwrap_or(default_hops);
         let query_text = input.text.trim();
         if query_text.is_empty() || query_text.chars().count() > 16_384 {
             return effect_error(
@@ -571,6 +600,13 @@ impl SqliteRunApplicationService {
         let namespace = scope_value["storage_namespace"]
             .as_str()
             .unwrap_or("default");
+        if required_namespace.is_some_and(|required| namespace != required) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Wisdom semantic retrieval requires the wisdom storage namespace",
+            );
+        }
         let mut metadata = MetadataFilter::default();
         if let Some(workspace) = request
             .principal
@@ -630,7 +666,7 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        let snapshot = match self.chroma_graph_snapshot(request, &self.graph_role).await {
+        let snapshot = match self.chroma_graph_snapshot(request, truth_graph).await {
             Ok(snapshot) => snapshot,
             Err(response) => return response,
         };

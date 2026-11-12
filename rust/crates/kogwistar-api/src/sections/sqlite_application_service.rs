@@ -307,10 +307,14 @@ impl ApplicationService for SqliteRunApplicationService {
                         | "kg_neighbors"
                         | "kg_shortest_path"
                         | "kg_semantic_seed_then_expand_text"
+                        | "wisdom.semantic_seed_then_expand"
                         | "kg_viz_cytoscape_json"
                         | "kg_viz_d3_json"
                 ) || (name == "wisdom.kg_upsert_graph" && self.embedding_provider.is_some()))
-                && (name != "kg_semantic_seed_then_expand_text"
+                && (!matches!(
+                    name,
+                    "kg_semantic_seed_then_expand_text" | "wisdom.semantic_seed_then_expand"
+                )
                     || self.embedding_provider.is_some());
         }
         name != "workflow.tool_audit"
@@ -347,6 +351,22 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "wisdom.semantic_seed_then_expand" {
+            if surface != "root"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "wisdom" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_V1: conversation status admission requires ro/rw and conversation namespace; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_run_status; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_run_status_denies_unauthorized_effects
         if name == "conversation.run_status" {
             return surface == "conversation"
@@ -501,6 +521,10 @@ impl ApplicationService for SqliteRunApplicationService {
                     | Some(INTERNAL_GRAPH_VIZ_D3_ROUTE)
                     | Some(INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE)
             );
+        let is_composed_wisdom_semantic_read = self.chroma_graph.is_some()
+            && self.embedding_provider.is_some()
+            && method == "POST"
+            && path.split('?').next() == Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE);
         let is_composed_graph_mutation = self.chroma_graph.is_some()
             && method == "POST"
             && path.split('?').next() == Some(INTERNAL_GRAPH_MUTATIONS_ROUTE);
@@ -527,6 +551,7 @@ impl ApplicationService for SqliteRunApplicationService {
             && conversation_answer_id(path).is_some();
         (FROZEN_OPENAPI_ROUTES.contains(&(method, path))
             || is_composed_graph_read
+            || is_composed_wisdom_semantic_read
             || is_composed_graph_mutation
             || is_composed_document_projection
             || is_composed_wisdom_graph_upsert
@@ -544,6 +569,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 || self.graph_authority_capability().supports_single_mutation())
             && (!SQLITE_UNSUPPORTED_HTTP_ROUTES.contains(&(method, path))
                 || is_composed_graph_read
+                || is_composed_wisdom_semantic_read
                 || is_composed_graph_mutation
                 || is_composed_document_projection
                 || is_composed_wisdom_graph_upsert
@@ -810,6 +836,13 @@ impl ApplicationService for SqliteRunApplicationService {
                     Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE) if self.embedding_provider.is_some() => {
                         return self
                             .chroma_graph_semantic_seed_expand_effect(&request)
+                            .await;
+                    }
+                    Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE)
+                        if self.embedding_provider.is_some() =>
+                    {
+                        return self
+                            .chroma_wisdom_semantic_seed_expand_effect(&request)
                             .await;
                     }
                     Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE) => {

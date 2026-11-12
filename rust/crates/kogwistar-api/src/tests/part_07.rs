@@ -8662,6 +8662,186 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
 }
 
 #[tokio::test]
+async fn sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct FixedEmbeddingProvider {
+        profile: kogwistar_engine::embedding::EmbeddingProfile,
+        vector: Vec<f64>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+    impl kogwistar_engine::embedding::EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            &self.profile
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().extend(texts.iter().cloned());
+                Ok(texts.iter().map(|_| self.vector.clone()).collect())
+            })
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let queries = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let queries_for_server = queries.clone();
+    let server = tokio::spawn(async move {
+        for _ in 0..5 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value = serde_json::from_slice(
+                &bytes[header_end + 4..header_end + 4 + content_length],
+            )
+            .unwrap();
+            let request_line = String::from_utf8_lossy(&bytes[..header_end])
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .to_owned();
+            let payload = if request_line.contains("/collections HTTP") {
+                json!({
+                    "id":format!("collection-{}", request["name"].as_str().unwrap()),
+                    "metadata":{"hnsw:space":"cosine"}
+                })
+            } else if request_line.contains("/query HTTP") {
+                queries_for_server.lock().unwrap().push(request);
+                json!({"ids":[[]],"documents":[[]],"metadatas":[[]],"embeddings":[[]],"distances":[[]]})
+            } else {
+                json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
+            };
+            let response = payload.to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(), response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("wisdom-semantic-nodes"),
+        chroma_config("wisdom-semantic-edges"),
+    )
+    .await
+    .unwrap();
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-chroma-wisdom-semantic-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let embedding_calls = Arc::new(Mutex::new(Vec::<String>::new()));
+    let provider = Arc::new(FixedEmbeddingProvider {
+        profile: kogwistar_engine::embedding::EmbeddingProfile {
+            provider: "test".to_owned(),
+            model: "fixed-v1".to_owned(),
+            dimension: 2,
+            similarity_metric: "cosine".to_owned(),
+            endpoint_fingerprint: None,
+            max_sequence_length: None,
+            crop_token_budget: None,
+            tokenizer_fingerprint: None,
+            crop_policy: None,
+            embedding_kind: Some("single_vector".to_owned()),
+            model_revision: None,
+            preprocessing_fingerprint: None,
+            max_image_patches: None,
+        },
+        vector: vec![0.6, 0.8],
+        calls: embedding_calls.clone(),
+    });
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_chroma_graph(graph)
+        .with_embedding_provider(provider);
+    let authorized = json!({
+        "sub":"reader", "role":"ro", "ns":["wisdom"],
+        "storage_ns":"wisdom", "capabilities":["read_graph"]
+    });
+    assert!(service.supports_mcp_tool("root", "wisdom.semantic_seed_then_expand"));
+    assert!(service.supports_mcp_tool_for_principal(
+        "root",
+        "wisdom.semantic_seed_then_expand",
+        &authorized,
+    ));
+    assert!(service.supports_http_operation("POST", WISDOM_SEMANTIC_SEED_EXPAND_ROUTE));
+    assert!(!service.supports_mcp_tool_for_principal(
+        "root",
+        "wisdom.semantic_seed_then_expand",
+        &json!({"role":"ro", "ns":["wisdom"], "capabilities":[]}),
+    ));
+
+    let request_body = serde_json::to_vec(&json!({"text":"a relevant memory"})).unwrap();
+    let denied = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: WISDOM_SEMANTIC_SEED_EXPAND_ROUTE.to_owned(),
+            body: request_body.clone(),
+            principal: json!({"role":"ro", "ns":["wisdom"], "storage_ns":"wisdom", "capabilities":[]}),
+        })
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(embedding_calls.lock().unwrap().is_empty());
+    assert!(queries.lock().unwrap().is_empty());
+
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: WISDOM_SEMANTIC_SEED_EXPAND_ROUTE.to_owned(),
+            body: request_body,
+            principal: authorized,
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let payload: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(payload["seeds"], json!([]));
+    assert_eq!(payload["layers"].as_array().unwrap().len(), 2);
+    assert!(payload["layers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|layer| layer["nodes"] == json!([]) && layer["edges"] == json!([])));
+    assert_eq!(embedding_calls.lock().unwrap().as_slice(), ["a relevant memory"]);
+    let queries = queries.lock().unwrap();
+    assert_eq!(queries.len(), 1);
+    assert_eq!(queries[0]["n_results"], 10);
+
+    drop(service);
+    server.await.unwrap();
+    remove_test_sqlite(&sqlite_path);
+}
+
+#[tokio::test]
 async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
