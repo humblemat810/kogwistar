@@ -5563,6 +5563,41 @@ async def test_mcp_workflow_operator_inbox_denies_before_reads(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_budget_snapshot_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-budget-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="budget-snapshot-contract",
+        scope_parts={"capabilities": contract["required_capabilities"]},
+    ):
+        result = await server.mcp._execute(
+            "workflow.budget_snapshot", {}, enforce_visibility=True
+        )
+
+    payload = _structured(result)
+    for field in contract["required_fields"]:
+        assert field in payload
+    for field in contract["required_cost_ledger_fields"]:
+        assert field in payload["cost_ledger"]
+    assert payload["budget_model"] == contract["budget_model"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):

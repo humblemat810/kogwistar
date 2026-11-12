@@ -6226,6 +6226,28 @@
                 value["result"].get(expected_key).is_some(),
                 "{tool_name} failed: {value}"
             );
+            if tool_name == "workflow.budget_snapshot" {
+                let contract: Value = serde_json::from_str(include_str!(
+                    "../../../../../contracts/golden/workflow-budget-http-v1.json"
+                ))
+                .unwrap();
+                assert!(arguments.as_object().unwrap().is_empty());
+                for field in contract["required_fields"].as_array().unwrap() {
+                    let field = field.as_str().unwrap();
+                    assert!(value["result"].get(field).is_some(), "missing {field}");
+                }
+                for field in contract["required_cost_ledger_fields"].as_array().unwrap() {
+                    let field = field.as_str().unwrap();
+                    assert!(
+                        value["result"]["cost_ledger"].get(field).is_some(),
+                        "missing cost_ledger.{field}"
+                    );
+                }
+                assert_eq!(
+                    value["result"]["budget_model"],
+                    contract["budget_model"]
+                );
+            }
             if tool_name == "workflow.run_checkpoint_get" {
                 let contract: Value = serde_json::from_str(include_str!(
                     "../../../../../contracts/golden/workflow-run-checkpoint-get-mcp-v1.json"
