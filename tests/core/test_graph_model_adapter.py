@@ -530,6 +530,32 @@ def test_built_rust_extension_matches_all_registered_model_slice_modes() -> None
 
 
 @pytest.mark.requires_rust
+def test_built_rust_extension_preserves_workflow_run_extensions_in_every_slice() -> None:
+    """Populated workflow metadata must obey Pydantic slicing across Rust."""
+    native = pytest.importorskip("kogwistar._rust")
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-run-node-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    model = runtime_models.WorkflowRunNode.model_validate(fixture["payload"])
+
+    for mode in ("backend", "frontend", "dto", "llm", "llm_in"):
+        envelope = build_graph_model_slice_envelope(model, field_mode=mode)
+        result = json.loads(native.project_graph_model_slice(json.dumps(envelope)))
+        expected = model.model_dump(field_mode=mode, dump_format="json")
+        assert result["model_class"] == "workflow_run_node"
+        assert result["mode"] == mode
+        assert result["payload"] == expected
+    assert model.metadata["vendor_extension"] == {
+        "attempt_group": "golden",
+        "version": 1,
+    }
+
+
+@pytest.mark.requires_rust
 def test_built_rust_extension_preserves_real_llm_node_fields_in_every_slice() -> None:
     """Mode-only model fields and nested evidence survive the language seam."""
     native = pytest.importorskip("kogwistar._rust")
