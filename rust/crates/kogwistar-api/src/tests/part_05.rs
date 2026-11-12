@@ -3570,6 +3570,50 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn workflow_message_orphans_repair_authorization_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-message-repair-auth-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "message_orphan_repair_auth",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let tool = "workflow.message_orphans_repair";
+        let authorized = json!({
+            "role":"rw", "ns":["workflow"], "capabilities":["project_view"]
+        });
+
+        for service in services {
+            assert!(service.supports_mcp_tool_for_principal("workflow", tool, &authorized));
+            for principal in [
+                json!({"role":"rw", "ns":["workflow"], "capabilities":[]}),
+                json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
+                json!({"role":"rw", "ns":["conversation"], "capabilities":["project_view"]}),
+            ] {
+                assert!(!service.supports_mcp_tool_for_principal("workflow", tool, &principal));
+                let response = service.execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/workflow/messages/repair-orphans?limit=10&inbox_id=repair-auth".to_owned(),
+                    body: Vec::new(),
+                    principal,
+                }).await;
+                assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+            }
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -5172,7 +5216,7 @@
                 implementation: ImplementationSnapshot::default(),
                 auth: AuthConfig::default(),
             },
-            Arc::new(sqlite_service),
+            Arc::new(sqlite_service.clone()),
         );
 
         let denied_submit = app
@@ -6046,7 +6090,39 @@
             "../../../../../contracts/golden/workflow-repair-orphans-http-v1.json"
         ))
         .unwrap();
-        let repaired = app
+        let secret = "workflow-orphan-repair-test-secret";
+        let repair_auth = AuthConfig {
+            mode: "jwt".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some(secret.to_owned()),
+            ..AuthConfig::default()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let repair_token = jsonwebtoken::encode(
+            &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub": "repair-worker",
+                "role": "rw",
+                "ns": ["workflow"],
+                "capabilities": ["project_view"],
+                "exp": now + 300
+            }),
+            &jsonwebtoken::EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let repair_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: repair_auth,
+            },
+            Arc::new(sqlite_service),
+        );
+        let repaired = repair_app
             .clone()
             .oneshot(
                 Request::builder()
@@ -6056,7 +6132,7 @@
                         repair_orphans_contract["inbox_id"].as_str().unwrap(),
                         repair_orphans_contract["limit"].as_u64().unwrap()
                     ))
-                    .header("x-kogwistar-roles", "reader")
+                    .header("authorization", format!("Bearer {repair_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -6087,14 +6163,14 @@
                 .as_str()
                 .unwrap()
         );
-        let repaired = app
+        let repaired = repair_app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/mcp/workflow")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("authorization", format!("Bearer {repair_token}"))
                     .body(Body::from(
                         r#"{"jsonrpc":"2.0","id":"orphan-repair","method":"tools/call","params":{"name":"workflow.message_orphans_repair","arguments":{"inbox_id":"repair-mcp","limit":10}}}"#,
                     ))
@@ -7446,6 +7522,7 @@
             mcp_timeline_value["result"]["events"][0]["event_type"],
             "run.started"
         );
+        drop(repair_app);
         drop(app);
         drop(store);
         remove_test_sqlite(&path);

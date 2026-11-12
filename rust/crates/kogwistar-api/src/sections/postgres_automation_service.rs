@@ -1458,6 +1458,17 @@ impl PostgresRunApplicationService {
     }
 
     async fn repair_orphaned_messages(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        if principal_role(&request.principal) != "rw"
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "workflow" || namespace == "*")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Repairing claimed workflow messages requires rw role and workflow namespace",
+            );
+        }
         if !capability_allowed(
             request,
             &self.capabilities,

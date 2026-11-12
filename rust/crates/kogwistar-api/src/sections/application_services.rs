@@ -975,6 +975,23 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: orphan repair requires rw/workflow plus project_view before dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; python_service=kogwistar/server/chat_service.py#ChatRunService.repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_message_orphans_repair_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_denies_before_dispatch
+        if name == "workflow.message_orphans_repair" {
+            if surface != "workflow"
+                || principal_role(principal) != "rw"
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("project_view")
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_V1: node upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_node; fixture=contracts/golden/workflow-design-node-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_node_upsert_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_node_upsert_denies_before_dispatch
         if name == "workflow.design_node_upsert" {
             if surface != "workflow"

@@ -5361,6 +5361,53 @@ async def test_mcp_workflow_design_redo_denies_before_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_message_orphans_repair_denies_before_dispatch(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    meta_store = service._execution_meta_store()
+    accesses: list[str] = []
+    original_list = meta_store.list_projected_lane_messages
+    original_update = meta_store.update_projected_lane_message_status
+
+    def track_list(**kwargs: Any) -> Any:
+        accesses.append("list")
+        return original_list(**kwargs)
+
+    def track_update(**kwargs: Any) -> Any:
+        accesses.append("update")
+        return original_update(**kwargs)
+
+    monkeypatch.setattr(meta_store, "list_projected_lane_messages", track_list)
+    monkeypatch.setattr(meta_store, "update_projected_lane_message_status", track_update)
+    arguments = {"inbox_id": "repair-auth", "limit": 10}
+
+    with _claims("rw", "workflow", sub="alice", scope_parts={"capabilities": []}):
+        with pytest.raises(HTTPException) as denied:
+            await server.mcp._execute(
+                "workflow.message_orphans_repair", arguments, enforce_visibility=True
+            )
+        assert denied.value.status_code == 403
+
+    for role, namespace in (("ro", "workflow"), ("rw", "conversation")):
+        with _claims(
+            role,
+            namespace,
+            sub="alice",
+            scope_parts={"capabilities": ["project_view"]},
+        ), pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "workflow.message_orphans_repair", arguments, enforce_visibility=True
+            )
+    assert accesses == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):
