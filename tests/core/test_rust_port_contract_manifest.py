@@ -6,6 +6,7 @@ import importlib
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -972,13 +973,24 @@ def test_dual_language_surface_inventory_is_current() -> None:
     ]
 
     result = subprocess.run(
-        ["python", str(generator), "--check"],
+        [sys.executable, str(generator), "--check"],
         cwd=ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
     assert result.returncode == 0, result.stderr or result.stdout
+
+    mcp_contract_check = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "freeze_mcp_tools.py"), "--check"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert mcp_contract_check.returncode == 0, (
+        mcp_contract_check.stderr or mcp_contract_check.stdout
+    )
 
 
 def test_dual_language_support_matrix_is_complete_and_conservative() -> None:

@@ -6720,6 +6720,57 @@
             "Rust tools/list must preserve Python's graph-tool schemas and metadata"
         );
 
+        let wisdom_listing = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token_for_namespace("wisdom", &["read_graph"])),
+                )
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"wisdom-list","method":"tools/list"}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(wisdom_listing.status(), StatusCode::OK);
+        let wisdom_listing: Value = serde_json::from_slice(
+            &to_bytes(wisdom_listing.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        let wisdom_tools = wisdom_listing["result"]["tools"].as_array().unwrap();
+        let wisdom_semantic_tool = wisdom_tools.iter()
+            .find(|tool| tool["name"] == "wisdom.semantic_seed_then_expand");
+        let expected_wisdom_semantic_tool = frozen_tools["surfaces"]["root"]
+            .as_array().unwrap().iter()
+            .find(|tool| tool["name"] == "wisdom.semantic_seed_then_expand")
+            .expect("frozen Python catalog contains Wisdom semantic search");
+        assert_eq!(wisdom_semantic_tool, Some(expected_wisdom_semantic_tool));
+        assert!(
+            !wisdom_tools.iter().any(|tool| tool["name"] == "wisdom.kg_upsert_graph"),
+            "read-only Wisdom discovery must not expose graph writes"
+        );
+
+        let wisdom_listing_without_read_capability = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token_for_namespace("wisdom", &[])),
+                )
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"wisdom-list-denied","method":"tools/list"}"#))
+                .unwrap(),
+        ).await.unwrap();
+        assert_eq!(wisdom_listing_without_read_capability.status(), StatusCode::OK);
+        let wisdom_listing_without_read_capability: Value = serde_json::from_slice(
+            &to_bytes(wisdom_listing_without_read_capability.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert!(
+            !wisdom_listing_without_read_capability["result"]["tools"]
+                .to_string().contains("wisdom.semantic_seed_then_expand"),
+            "Wisdom semantic search must be hidden without read_graph"
+        );
+
         let python_owned_parser = app.clone().oneshot(
             Request::builder()
                 .method("POST")
