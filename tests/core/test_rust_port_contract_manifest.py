@@ -1197,6 +1197,37 @@ def test_each_authoritative_capability_has_owner_and_rollback() -> None:
         assert item["rollback"]
 
 
+def test_projection_snapshot_registry_capability_remains_explicitly_unsupported() -> None:
+    capability_id = "projections-snapshots-run-registry"
+    ownership = next(
+        item
+        for item in _manifest()["capability_ownership"]
+        if item["capability"] == capability_id
+    )
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item for item in support_matrix["capabilities"] if item["id"] == capability_id
+    )
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == capability_id
+    )
+
+    assert ownership["configuration"] == "KOGWISTAR_IMPL_META_STORE"
+    assert ownership["current_authoritative_writer"] == "python"
+    assert ownership["target_authoritative_writer"] == "rust"
+    assert ownership["rust_cutover_ready"] is False
+    assert support["python"]["status"] == "enabled"
+    assert support["rust"]["status"] == "disabled"
+    assert support["mixed"]["status"] == "disabled"
+    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert coverage["mixed_coverage"] == "not-inventoried"
+    assert {
+        "projection-rebuild-and-snapshot-parity",
+        "restart-resume-and-stale-state",
+    } <= set(conformance["conformance_profiles"]["projections-snapshots-run-registry"])
+
+
 def test_implementation_selector_manifest_matches_runtime_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
