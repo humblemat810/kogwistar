@@ -245,6 +245,66 @@ async def test_document_id_from_file_name_mcp_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_document_id_from_file_name_denies_scope_and_capability_before_lookup(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from kogwistar.server import mcp_tools
+    from kogwistar.shortids import ShortIdMapper
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-id-from-file-name-mcp-v1.json"
+    )
+    contract = json.loads(fixture_path.read_text(encoding="utf-8"))
+    mapper = ShortIdMapper(f"document-id-auth-{uuid.uuid4()}", str(tmp_path))
+    canonical_id = contract["expected_canonical_id"]
+    lookup_calls: list[list[str]] = []
+
+    def document_get(*, ids: list[str]) -> dict[str, list[str]]:
+        lookup_calls.append(ids)
+        return {"ids": [canonical_id] if canonical_id in ids else []}
+
+    backend = SimpleNamespace(document_get=document_get)
+    monkeypatch.setattr(
+        mcp_tools, "engine", _FixedResource(SimpleNamespace(backend=backend))
+    )
+    monkeypatch.setattr(mcp_tools.shortids, "_mapper_for_current_run", lambda: mapper)
+
+    for role, namespace, capabilities in (
+        ("ro", "docs", []),
+        ("ro", "conversation", ["read_graph"]),
+        ("rw", "docs", ["write_graph"]),
+    ):
+        with _claims(role, namespace, scope_parts={"capabilities": capabilities}):
+            with pytest.raises(PermissionError, match="not permitted"):
+                await server.mcp._execute(
+                    contract["operation"],
+                    contract["arguments"],
+                    enforce_visibility=True,
+                )
+    assert lookup_calls == []
+
+    with _claims("ro", "docs", scope_parts={"capabilities": ["read_graph"]}):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+    assert _structured(result)["id_mapping"][0]["file_name"] == canonical_id
+    assert lookup_calls == [[canonical_id]]
+
+    # Legacy tokens without explicit capability claims retain Python defaults.
+    with _claims("ro", "docs"):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+    assert _structured(result)["id_mapping"][0]["file_name"] == canonical_id
+    assert lookup_calls == [[canonical_id], [canonical_id]]
+
+
+@pytest.mark.asyncio
 async def test_python_only_mcp_graph_read_does_not_load_rust(monkeypatch, tmp_path):
     from kogwistar._rust_bridge import RustExtensionUnavailableError
     from kogwistar.server import mcp_tools

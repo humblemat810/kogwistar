@@ -911,6 +911,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "conversation" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: require read_graph for explicit capability claims; legacy role defaults remain intact; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#document_id_lookup_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
         if name == "document_id_from_file_name" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
