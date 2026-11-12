@@ -3207,6 +3207,69 @@ async def test_mcp_workflow_service_trigger_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_service_trigger_denies_unauthorized_effects(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-trigger-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    effects: list[tuple[str, str, dict[str, object]]] = []
+
+    def trigger_service(
+        service_id,
+        *,
+        trigger_type,
+        payload,
+        authenticated_user_id=None,
+        enforce_authenticated_owner=False,
+    ):
+        effects.append((service_id, trigger_type, payload))
+        return contract["result"]
+
+    monkeypatch.setattr(service.service_supervisor, "trigger_service", trigger_service)
+
+    for role, namespace, capabilities in (
+        ("ro", "workflow", ["service.manage"]),
+        ("rw", "conversation", ["service.manage"]),
+        ("rw", "workflow", []),
+    ):
+        with _claims(
+            role,
+            namespace,
+            scope_parts={"capabilities": capabilities},
+        ), pytest.raises((HTTPException, PermissionError)):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+    assert effects == []
+
+    with _claims(
+        "rw", "workflow", scope_parts={"capabilities": ["service.manage"]}
+    ):
+        result = await server.mcp._execute(
+            contract["tool"], contract["arguments"], enforce_visibility=True
+        )
+    assert result.is_error is False
+    assert _structured(result) == contract["result"]
+    assert effects == [
+        (
+            contract["python_service_arguments"]["service_id"],
+            contract["python_service_arguments"]["trigger_type"],
+            contract["python_service_arguments"]["payload"],
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_dead_letter_replay_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
