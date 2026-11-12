@@ -2076,6 +2076,63 @@ async def test_mcp_workflow_service_events_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_service_events_deny_before_read(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[tuple[str, int]] = []
+
+    def list_service_events(service_id: str, *, limit: int) -> list[dict[str, str]]:
+        reads.append((service_id, limit))
+        return [{"event_id": "evt-1"}]
+
+    monkeypatch.setattr(
+        service.service_supervisor, "list_service_events", list_service_events
+    )
+    arguments = {"service_id": "svc-1", "limit": 5}
+
+    for claims_ns, capabilities in [
+        ("workflow", []),
+        ("workflow", ["service.inspect"]),
+        ("workflow", ["project_view"]),
+        ("conversation", ["service.inspect", "project_view"]),
+    ]:
+        reads_before = len(reads)
+        with _claims(
+            "ro",
+            claims_ns,
+            sub=f"service-events-denied-{reads_before}",
+            scope_parts={"capabilities": capabilities},
+        ), pytest.raises((HTTPException, PermissionError)):
+            await server.mcp._execute(
+                "workflow.service_events", arguments, enforce_visibility=True
+            )
+        assert len(reads) == reads_before
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="service-events-authorized",
+        scope_parts={"capabilities": ["service.inspect", "project_view"]},
+    ):
+        result = await server.mcp._execute(
+            "workflow.service_events", arguments, enforce_visibility=True
+        )
+
+    assert result.is_error is False
+    assert _structured(result) == {
+        "service_id": "svc-1",
+        "events": [{"event_id": "evt-1"}],
+    }
+    assert reads == [("svc-1", 5)]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_get_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

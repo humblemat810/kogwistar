@@ -1323,8 +1323,8 @@ impl PostgresRunApplicationService {
         }
         let is_service_read = path == "/api/workflow/services"
             || service_route(&request.path_and_query)
-                .is_some_and(|(_, route)| route == ServiceRoute::Get);
-        // PYTHON_PARITY_V1: get/list REST effects enforce MCP-declared role and namespace before storage reads; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores.
+                .is_some_and(|(_, route)| matches!(route, ServiceRoute::Get | ServiceRoute::Events));
+        // PYTHON_PARITY_V1: service get/list/events REST effects enforce MCP-declared role and namespace before storage reads; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list+workflow_service_events; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores+workflow_service_events_mcp_admission_matches_python_policy_for_all_stores.
         if is_service_read
             && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
                 || !principal_strings(&request.principal, "ns")
