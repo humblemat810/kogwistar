@@ -1710,12 +1710,12 @@ from mcp.client.streamable_http import streamable_http_client
 ENDPOINT = {endpoint:?}
 READY = Path({ready_path_literal})
 received = asyncio.Event()
-received_methods = set()
+received_methods = []
 
 async def on_message(message):
     method = getattr(message, "method", None)
     if method in {{"notifications/message", "notifications/tools/list_changed"}}:
-        received_methods.add(method)
+        received_methods.append(method)
     if len(received_methods) == 2:
         received.set()
 
@@ -1734,6 +1734,10 @@ async def main():
             async with ClientSession(read, write, message_handler=on_message) as session:
                 await session.initialize()
                 await asyncio.wait_for(received.wait(), timeout=20)
+                assert received_methods == [
+                    "notifications/message",
+                    "notifications/tools/list_changed",
+                ], received_methods
                 print("python-sdk-server-notification-received")
 
 asyncio.run(main())
