@@ -1,0 +1,15 @@
+{
+  "contract_version": 1,
+  "operation": "kg_viz_cytoscape_json",
+  "arguments": {
+    "doc_id": "doc-a",
+    "mode": "reify"
+  },
+  "expected_elements": [
+    {"id": "e1", "classes": "edge-node"},
+    {"id": "e1::src::n1", "classes": "src", "source": "n1", "target": "e1"},
+    {"id": "e1::tgt::n2", "classes": "tgt", "source": "e1", "target": "n2"},
+    {"id": "n1", "classes": ""},
+    {"id": "n2", "classes": ""}
+  ]
+}

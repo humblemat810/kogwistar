@@ -3248,6 +3248,73 @@ async def test_kg_viz_d3_mcp_matches_shared_contract(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_kg_viz_cytoscape_mcp_matches_shared_contract(monkeypatch):
+    from types import SimpleNamespace
+
+    from kogwistar.server import mcp_tools
+
+    nodes = {
+        node_id: build_entity_node(node_id=node_id, doc_id="doc-a")
+        for node_id in ("n1", "n2")
+    }
+    edge = build_relationship_edge(
+        edge_id="e1", src="n1", tgt="n2", doc_id="doc-a"
+    )
+    graph = SimpleNamespace(
+        kg_graph_type="knowledge",
+        backend=SimpleNamespace(
+            node_get=lambda **_kwargs: {"ids": list(nodes)},
+            edge_get=lambda **_kwargs: {"ids": [edge.id]},
+        ),
+        read=SimpleNamespace(
+            node_ids_by_doc=lambda doc_id: list(nodes) if doc_id == "doc-a" else [],
+            edge_ids_by_doc=lambda doc_id: [edge.id] if doc_id == "doc-a" else [],
+            load_node_map=lambda ids, **_kwargs: {
+                node_id: nodes[node_id] for node_id in ids if node_id in nodes
+            },
+            load_edge_map=lambda ids, **_kwargs: {
+                edge.id: edge for edge_id in ids if edge_id == edge.id
+            },
+        ),
+        metadata=object(),
+    )
+    monkeypatch.setattr(mcp_tools, "engine", _FixedResource(graph))
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "kg-viz-cytoscape-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims("ro", "docs", scope_parts={"capabilities": []}):
+        with pytest.raises(PermissionError, match="not permitted"):
+            await server.mcp._execute(
+                contract["operation"], contract["arguments"], enforce_visibility=True
+            )
+
+    with _claims(
+        "ro", "docs", scope_parts={"capabilities": ["read_graph"]}
+    ):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+    actual = result.structured_content
+    actual_elements = []
+    for element in actual["elements"]:
+        data = element["data"]
+        normalized = {"id": data["id"], "classes": element.get("classes", "")}
+        if "source" in data:
+            normalized["source"] = data["source"]
+            normalized["target"] = data["target"]
+        actual_elements.append(normalized)
+    assert sorted(actual_elements, key=lambda item: item["id"]) == contract[
+        "expected_elements"
+    ]
+
+
+@pytest.mark.asyncio
 async def test_kg_k_hop_mcp_matches_shared_contract(monkeypatch, tmp_path):
     from kogwistar.server import mcp_tools
     from tests.core.test_two_stage_chroma import _engine

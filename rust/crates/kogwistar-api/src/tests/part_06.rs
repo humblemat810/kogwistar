@@ -7263,6 +7263,90 @@
             d3_denied["error"]["message"],
             "Tool not advertised by this application service"
         );
+        let cytoscape_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-viz-cytoscape-mcp-v1.json"
+        )))
+        .unwrap();
+        let cytoscape_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"cytoscape-contract","method":"tools/call",
+                            "params":{"name":cytoscape_contract["operation"],"arguments":cytoscape_contract["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cytoscape_response: Value = serde_json::from_slice(
+            &to_bytes(cytoscape_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        let cytoscape_elements = cytoscape_response["result"]["elements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|element| {
+                let data = &element["data"];
+                let mut normalized = serde_json::Map::from_iter([
+                    ("id".to_owned(), data["id"].clone()),
+                    ("classes".to_owned(), element["classes"].clone()),
+                ]);
+                if data.get("source").is_some() {
+                    normalized.insert("source".to_owned(), data["source"].clone());
+                    normalized.insert("target".to_owned(), data["target"].clone());
+                }
+                Value::Object(normalized)
+            })
+            .collect::<Vec<_>>();
+        let mut sorted_cytoscape_elements = cytoscape_elements;
+        sorted_cytoscape_elements.sort_by(|left, right| {
+            left["id"].as_str().cmp(&right["id"].as_str())
+        });
+        assert_eq!(
+            json!(sorted_cytoscape_elements),
+            cytoscape_contract["expected_elements"]
+        );
+        let cytoscape_denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token(&[])))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"cytoscape-denied","method":"tools/call",
+                            "params":{"name":cytoscape_contract["operation"],"arguments":cytoscape_contract["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cytoscape_denied: Value = serde_json::from_slice(
+            &to_bytes(cytoscape_denied.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cytoscape_denied["error"]["code"], -32602);
+        assert_eq!(
+            cytoscape_denied["error"]["message"],
+            "Tool not advertised by this application service"
+        );
 
         for (path, result_key) in [
             ("/api/viz/d3.json", "nodes"),
