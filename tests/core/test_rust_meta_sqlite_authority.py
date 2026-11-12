@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
 from threading import Event
 
@@ -79,6 +80,50 @@ def test_manifest_advertised_sqlite_meta_run_round_trip_and_python_rollback(
     python_store = build_sqlite_meta_store(tmp_path, "selector-round-trip.sqlite")
     python_store.ensure_initialized()
     assert python_store.get_server_run("selector-run") == rust_result
+
+
+def test_manifest_sqlite_meta_selector_closes_python_raw_connection_in_rust_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads(
+        (root / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    capability = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "sqlite-meta"
+    )
+    matrix = json.loads(
+        (root / "contracts" / "dual-language-support-matrix-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    support = next(
+        item for item in matrix["capabilities"] if item["id"] == "sqlite-meta"
+    )
+    selector_name = capability["configuration"]
+    assert selector_name == "KOGWISTAR_IMPL_META_STORE"
+    assert support["python"]["status"] == "enabled"
+    assert support["rust"]["status"] == "opt-in"
+    assert support["mixed"]["status"] == "opt-in"
+
+    monkeypatch.setenv(selector_name, "python")
+    python_store = build_sqlite_meta_store(tmp_path, "unsupported-cell.sqlite")
+    assert type(python_store).__name__ == "EngineSQLite"
+    python_store.ensure_initialized()
+    with closing(python_store.connect()) as connection:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+
+    monkeypatch.setenv(selector_name, "rust")
+    rust_store = build_sqlite_meta_store(tmp_path, "unsupported-cell.sqlite")
+    assert isinstance(rust_store, RustEngineSQLite)
+    rust_store.ensure_initialized()
+    with pytest.raises(
+        RustSQLiteConnectionUnavailable,
+        match="would create a second writer",
+    ):
+        rust_store.connect()
 
 
 def test_rust_authority_marks_calls_as_sole_writer_sessions(
