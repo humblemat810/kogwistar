@@ -1321,6 +1321,22 @@ impl PostgresRunApplicationService {
         if path != "/api/workflow/services" && service_route(&request.path_and_query).is_none() {
             return None;
         }
+        let is_service_read = path == "/api/workflow/services"
+            || service_route(&request.path_and_query)
+                .is_some_and(|(_, route)| route == ServiceRoute::Get);
+        // PYTHON_PARITY_V1: get/list REST effects enforce MCP-declared role and namespace before storage reads; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores.
+        if is_service_read
+            && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
+                || !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*"))
+        {
+            return Some(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Inspecting service requires ro/rw role and workflow namespace",
+            ));
+        }
         if !capability_allowed(
             request,
             &self.capabilities,

@@ -2172,6 +2172,79 @@ async def test_mcp_workflow_service_list_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_service_reads_deny_before_lookup(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    lookups: list[tuple[str, str]] = []
+
+    def get_service(service_id: str) -> dict[str, str]:
+        lookups.append(("get", service_id))
+        return {"service_id": service_id}
+
+    def list_services(*, limit: int) -> list[dict[str, int]]:
+        lookups.append(("list", str(limit)))
+        return []
+
+    monkeypatch.setattr(service.service_supervisor, "get_service", get_service)
+    monkeypatch.setattr(service.service_supervisor, "list_services", list_services)
+    operations = [
+        ("workflow.service_get", {"service_id": "svc-1"}),
+        ("workflow.service_list", {"limit": 20}),
+    ]
+
+    for tool, arguments in operations:
+        reads_before = len(lookups)
+        with _claims(
+            "ro", "workflow", sub=f"{tool}-no-cap", scope_parts={"capabilities": []}
+        ), pytest.raises(HTTPException) as denied:
+            await server.mcp._execute(tool, arguments, enforce_visibility=True)
+        assert denied.value.status_code == 403
+        assert len(lookups) == reads_before
+
+        with _claims(
+            "ro",
+            "conversation",
+            sub=f"{tool}-wrong-scope",
+            scope_parts={"capabilities": ["service.inspect"]},
+        ), pytest.raises(PermissionError):
+            await server.mcp._execute(tool, arguments, enforce_visibility=True)
+        assert len(lookups) == reads_before
+
+        for capabilities in (["service.inspect"], ["project_view"]):
+            with _claims(
+                "ro",
+                "workflow",
+                sub=f"{tool}-missing-{capabilities[0]}",
+                scope_parts={"capabilities": capabilities},
+            ), pytest.raises(HTTPException) as denied:
+                await server.mcp._execute(tool, arguments, enforce_visibility=True)
+            assert denied.value.status_code == 403
+            assert len(lookups) == reads_before
+
+        with _claims(
+            "ro",
+            "workflow",
+            sub=f"{tool}-authorized",
+            scope_parts={"capabilities": ["service.inspect", "project_view"]},
+        ):
+            result = await server.mcp._execute(
+                tool, arguments, enforce_visibility=True
+            )
+        assert result.is_error is False
+
+    assert lookups == [
+        ("get", "svc-1"),
+        ("list", "20"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_repair_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

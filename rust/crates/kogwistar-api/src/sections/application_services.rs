@@ -1202,6 +1202,26 @@ impl ApplicationService for PostgresRunApplicationService {
                 && capabilities.contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: service reads require ro/rw, workflow namespace, and both service.inspect and project_view; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list+kogwistar/server/chat_service.py#ChatRunService.get_service+list_services; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_reads_deny_before_lookup
+        if matches!(name, "workflow.service_get" | "workflow.service_list") {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return ["service.inspect", "project_view"]
+                .iter()
+                .all(|required| capabilities.contains(*required))
+                && self.supports_mcp_tool(surface, name);
+        }
         if matches!(name, "workflow.process_table" | "workflow.blocked_runs") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")

@@ -4009,6 +4009,95 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn workflow_service_read_mcp_admission_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-service-read-auth-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_service_read_auth",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let operations = [
+            (
+                "workflow.service_get",
+                "/api/workflow/services/svc-missing",
+            ),
+            ("workflow.service_list", "/api/workflow/services?limit=10"),
+        ];
+
+        for service in services {
+            for (tool, path) in operations {
+                let authorized = json!({
+                    "sub":"service-read-authorized",
+                    "role":"ro",
+                    "ns":["workflow"],
+                    "capabilities":["service.inspect", "project_view"]
+                });
+                assert!(service.supports_mcp_tool_for_principal(
+                    "workflow", tool, &authorized
+                ));
+                for principal in [
+                    json!({"sub":"service-read-no-caps", "role":"ro", "ns":["workflow"], "capabilities":[]}),
+                    json!({"sub":"service-read-no-project-view", "role":"ro", "ns":["workflow"], "capabilities":["service.inspect"]}),
+                    json!({"sub":"service-read-no-inspect", "role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
+                    json!({"sub":"service-read-wrong-scope", "role":"ro", "ns":["conversation"], "capabilities":["service.inspect", "project_view"]}),
+                ] {
+                    assert!(!service.supports_mcp_tool_for_principal(
+                        "workflow", tool, &principal
+                    ), "unexpected MCP admission: {tool} {principal}");
+                    let response = service
+                        .execute(ApiEffectRequest {
+                            contract_version: 1,
+                            method: "GET".to_owned(),
+                            path_and_query: path.to_owned(),
+                            body: Vec::new(),
+                            principal,
+                        })
+                        .await;
+                    assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+                }
+                assert!(!service.supports_mcp_tool_for_principal(
+                    "root",
+                    tool,
+                    &json!({"role":"ro", "ns":["workflow"], "capabilities":["service.inspect"]})
+                ));
+            }
+        }
+
+        for (tool, path) in operations {
+            let response = sqlite
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: path.to_owned(),
+                    body: Vec::new(),
+                    principal: json!({
+                        "sub":"service-read-authorized",
+                        "role":"rw",
+                        "ns":["workflow"],
+                        "capabilities":["service.inspect", "project_view"]
+                    }),
+                })
+                .await;
+            if tool == "workflow.service_get" {
+                assert_eq!(response.status, StatusCode::NOT_FOUND.as_u16());
+            } else {
+                assert_eq!(response.status, StatusCode::OK.as_u16());
+            }
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
