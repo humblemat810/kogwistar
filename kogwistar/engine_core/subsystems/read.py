@@ -260,6 +260,15 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     equal[key] = cast(JsonValue, value)
         return equal, not_equal
 
+    def _rust_postgres_projection_selected(self) -> bool:
+        from kogwistar._rust_bridge import meta_store_implementation_mode
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        return (
+            isinstance(getattr(self._e, "metadata", None), RustEnginePostgresMetaStore)
+            and meta_store_implementation_mode() == "rust"
+        )
+
     @implementation_selection_bound
     def _rust_postgres_projection_get(
         self,
@@ -270,23 +279,24 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         limit: int | None,
         include: list[str],
     ) -> dict[str, JsonValue] | None:
-        from kogwistar._rust_bridge import meta_store_implementation_mode
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "metadata", None)
-        metadata = self._native_equality_filter(where)
-        if (
-            not isinstance(meta, RustEnginePostgresMetaStore)
-            or meta_store_implementation_mode() != "rust"
-            or metadata is None
-            or limit is None
-            # Native projection reads are id-sorted while the legacy backend
-            # leaves multi-row get order unspecified. Cut over only the exact
-            # singleton case until a public ordering contract is approved.
-            or ids is None
-            or len(ids) != 1
-        ):
+        if not self._rust_postgres_projection_selected():
             return None
+        metadata = self._native_equality_filter(where)
+        if not isinstance(meta, RustEnginePostgresMetaStore):
+            return None
+        if metadata is None:
+            raise RuntimeError(
+                "Rust-selected PostgreSQL projection get does not support this "
+                "filter; refusing Python backend fallback"
+            )
+        if limit is None:
+            raise RuntimeError(
+                "Rust-selected PostgreSQL projection get requires a finite limit; "
+                "refusing Python backend fallback"
+            )
         table = (
             cast(ProjectionBackendLike, self._e.backend).nodes.name
             if entity_kind == "node"
@@ -328,17 +338,19 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         n_results: int,
         include: list[str],
     ) -> dict[str, JsonValue] | None:
-        from kogwistar._rust_bridge import meta_store_implementation_mode
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
         meta = getattr(self._e, "metadata", None)
-        filters = self._native_vector_filter(where)
-        if (
-            not isinstance(meta, RustEnginePostgresMetaStore)
-            or meta_store_implementation_mode() != "rust"
-            or filters is None
-        ):
+        if not self._rust_postgres_projection_selected():
             return None
+        filters = self._native_vector_filter(where)
+        if not isinstance(meta, RustEnginePostgresMetaStore):
+            return None
+        if filters is None:
+            raise RuntimeError(
+                "Rust-selected PostgreSQL projection query does not support this "
+                "filter; refusing Python backend fallback"
+            )
         metadata, metadata_not_equals = filters
         table = (
             cast(ProjectionBackendLike, self._e.backend).nodes.name
@@ -899,17 +911,21 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        native = (
-            None
-            if args or set(kwargs) - {"where", "n_results"}
-            else self._rust_postgres_projection_query(
-            entity_kind="node",
-            query_embeddings=query_embeddings,
-            where=kwargs.get("where"),
-            n_results=int(cast(int, kwargs.get("n_results", 10))),
-            include=include,
+        if args or set(kwargs) - {"where", "n_results"}:
+            if self._rust_postgres_projection_selected():
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL node query does not support this "
+                    "argument shape; refusing Python backend fallback"
+                )
+            native = None
+        else:
+            native = self._rust_postgres_projection_query(
+                entity_kind="node",
+                query_embeddings=query_embeddings,
+                where=kwargs.get("where"),
+                n_results=int(cast(int, kwargs.get("n_results", 10))),
+                include=include,
             )
-        )
         if native is not None:
             got = native
         else:
@@ -1142,8 +1158,18 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         }
         # Historical search needs tombstone candidates for redirect/time
         # resolution; ordinary semantic search must continue excluding them.
-        if getattr(self._e.backend, "supports_historical_tombstone_query", False):
+        historical_candidates = getattr(
+            self._e.backend, "supports_historical_tombstone_query", False
+        )
+        if historical_candidates:
             query_kwargs["include_tombstoned"] = True
+        if self._rust_postgres_projection_selected() and (
+            kwargs or historical_candidates
+        ):
+            raise RuntimeError(
+                "Rust-selected PostgreSQL historical query does not support this "
+                "request shape; refusing Python backend fallback"
+            )
         native = (
             self._rust_postgres_projection_query(
                 entity_kind="node",
@@ -1152,7 +1178,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 n_results=n_results,
                 include=include,
             )
-            if not kwargs and not query_kwargs.get("include_tombstoned")
+            if not kwargs and not historical_candidates
             else None
         )
         if native is not None:
@@ -1264,17 +1290,21 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        native = (
-            None
-            if args or set(kwargs) - {"where", "n_results"}
-            else self._rust_postgres_projection_query(
-            entity_kind="edge",
-            query_embeddings=query_embeddings,
-            where=kwargs.get("where"),
-            n_results=int(cast(int, kwargs.get("n_results", 10))),
-            include=include,
+        if args or set(kwargs) - {"where", "n_results"}:
+            if self._rust_postgres_projection_selected():
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL edge query does not support this "
+                    "argument shape; refusing Python backend fallback"
+                )
+            native = None
+        else:
+            native = self._rust_postgres_projection_query(
+                entity_kind="edge",
+                query_embeddings=query_embeddings,
+                where=kwargs.get("where"),
+                n_results=int(cast(int, kwargs.get("n_results", 10))),
+                include=include,
             )
-        )
         if native is not None:
             got = native
         else:

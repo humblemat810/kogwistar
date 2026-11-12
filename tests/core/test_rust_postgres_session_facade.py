@@ -1474,6 +1474,7 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
             "ids": ["n1"],
             "metadata": {"team": "red"},
             "limit": 5,
+            "for_update": False,
         }
     ]
 
@@ -1481,13 +1482,14 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     assert "documents" in no_include and "metadatas" in no_include
     assert "embeddings" not in no_include
 
-    fallback = reader._node_get_raw(
-        where={"team": {"$in": ["red"]}}, include=[], limit=5
+    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
+        reader._node_get_raw(
+            where={"team": {"$in": ["red"]}}, include=[], limit=5
+        )
+    native_filtered = reader._node_get_raw(
+        where={"team": "red"}, include=[], limit=5
     )
-    assert fallback == {"ids": ["python"]}
-    assert reader._node_get_raw(where={"team": "red"}, include=[], limit=5) == {
-        "ids": ["python"]
-    }
+    assert native_filtered["ids"] == ["n1"]
 
     def reject_python_node_read(**_values):
         raise AssertionError("Rust-selected singleton read fell back to Python")
@@ -1520,6 +1522,8 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
         raise AssertionError("Rust-selected vector query fell back to Python")
 
     monkeypatch.setattr(engine.backend, "node_query", reject_python_vector_query)
+    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
+        reader.query_nodes("unsupported-positional", query_embeddings=[1.0, 0.0, 0.0])
     native_hits = reader.query_nodes(
         query_embeddings=[1.0, 0.0, 0.0], where={"team": "red"}, n_results=1
     )
@@ -1680,34 +1684,31 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
         }
 
     monkeypatch.setattr(engine.backend, "node_query", legacy_vector_query)
-    legacy_hits = reader.query_nodes(
-        query_embeddings=[1.0, 0.0, 0.0],
-        where={"team": {"$in": ["red"]}},
-        n_results=1,
-    )
-    assert legacy_hits[0][0].summary == "native"
-    assert len(legacy_query_calls) == 1
-    scored_legacy_hits = reader.search_nodes_as_of_scored(
-        query_embeddings=[1.0, 0.0, 0.0],
-        as_of_ts="2025-01-01T00:00:00Z",
-        where={"team": {"$in": ["red"]}},
-        n_results=1,
-    )
-    assert len(scored_legacy_hits) == 1
-    assert scored_legacy_hits[0].node.summary == "native"
-    assert scored_legacy_hits[0].raw_distance is None
-    assert len(legacy_query_calls) == 2
+    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
+        reader.query_nodes(
+            query_embeddings=[1.0, 0.0, 0.0],
+            where={"team": {"$in": ["red"]}},
+            n_results=1,
+        )
+    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
+        reader.search_nodes_as_of_scored(
+            query_embeddings=[1.0, 0.0, 0.0],
+            as_of_ts="2025-01-01T00:00:00Z",
+            where={"team": {"$in": ["red"]}},
+            n_results=1,
+        )
+    assert legacy_query_calls == []
 
     native_query_count = len(native_query_calls)
     engine.backend.supports_historical_tombstone_query = True
-    tombstone_aware_hits = reader.search_nodes_as_of_scored(
-        query_embeddings=[1.0, 0.0, 0.0],
-        as_of_ts="2025-01-01T00:00:00Z",
-        where={"team": "red"},
-        n_results=1,
-    )
-    assert len(tombstone_aware_hits) == 1
-    assert legacy_query_calls[-1]["include_tombstoned"] is True
+    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
+        reader.search_nodes_as_of_scored(
+            query_embeddings=[1.0, 0.0, 0.0],
+            as_of_ts="2025-01-01T00:00:00Z",
+            where={"team": "red"},
+            n_results=1,
+        )
+    assert legacy_query_calls == []
     assert len(native_query_calls) == native_query_count
 
     native_edge = build_relationship_edge(
@@ -1773,6 +1774,12 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     assert len(native_edge_hits) == 1
     assert native_edge_hits[0][0].summary == "native edge"
     assert native_edge_hits[0][0].source_edge_ids == ["source-edge"]
+    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
+        reader.query_edges(
+            query_embeddings=[0.0, 1.0, 0.0],
+            where={"team": {"$in": ["red"]}},
+            n_results=1,
+        )
 
     native_records_result = {
         "id": "doc-1",
@@ -1804,10 +1811,11 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
         "metadatas": [[{"type": "text", "processed": True}]],
         "distances": [[0.25]],
     }
-    assert reader._rust_postgres_projection_query(
-        entity_kind="node",
-        query_embeddings=[[1.0, 0.0, 0.0]],
-        where={"team": {"$in": ["red"]}},
-        n_results=3,
-        include=[],
-    ) is None
+    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
+        reader._rust_postgres_projection_query(
+            entity_kind="node",
+            query_embeddings=[[1.0, 0.0, 0.0]],
+            where={"team": {"$in": ["red"]}},
+            n_results=3,
+            include=[],
+        )

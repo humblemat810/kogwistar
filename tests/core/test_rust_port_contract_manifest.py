@@ -1660,6 +1660,7 @@ def test_implementation_fallback_inventory_has_owned_behavior_and_evidence() -> 
         "short-id-non-json": "python_compatibility_semantics",
         "runtime-state-non-json": "python_compatibility_semantics",
         "rust-extension-unavailable": "fail_closed_error",
+        "rust-postgres-projection-read-unsupported-shape": "fail_closed_error",
     }
 
     assert inventory["contract_version"] == 1

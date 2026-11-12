@@ -76,6 +76,18 @@
         "tests/core/test_rust_bridge_strict_json.py::test_selected_rust_server_fails_closed_without_python_fallback",
         "tests/server/test_rust_api_health.py::test_rust_health_route_fails_closed_without_native_extension"
       ]
+    },
+    {
+      "id": "rust-postgres-projection-read-unsupported-shape",
+      "class": "fail_closed_error",
+      "owner": "kogwistar.engine_core.subsystems.read",
+      "owner_symbol": "ReadSubsystem._rust_postgres_projection_get",
+      "site": "kogwistar/engine_core/subsystems/read.py",
+      "source_marker": "refusing Python backend fallback",
+      "behavior": "Rust-selected PostgreSQL projection reads use the native metadata facade for supported shapes and raise before backend access for unsupported filters or historical shapes.",
+      "evidence": [
+        "tests/core/test_rust_postgres_session_facade.py::test_read_subsystem_routes_simple_base_reads_to_native_projection"
+      ]
     }
   ]
 }
