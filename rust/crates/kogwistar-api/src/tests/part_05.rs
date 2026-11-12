@@ -4071,6 +4071,95 @@
     }
 
     #[tokio::test]
+    async fn workflow_service_lifecycle_mcp_admission_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-service-lifecycle-auth-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_service_lifecycle_auth",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let operations = [
+            (
+                "workflow.service_enable",
+                "/api/workflow/services/svc-lifecycle-auth/enable",
+                true,
+            ),
+            (
+                "workflow.service_disable",
+                "/api/workflow/services/svc-lifecycle-auth/disable",
+                false,
+            ),
+        ];
+
+        for service in services {
+            for (tool, path, _) in operations {
+                let authorized = json!({"role":"rw", "ns":["workflow"]});
+                assert!(service.supports_mcp_tool_for_principal(
+                    "workflow", tool, &authorized
+                ));
+                for principal in [
+                    json!({"role":"ro", "ns":["workflow"]}),
+                    json!({"role":"rw", "ns":["conversation"]}),
+                ] {
+                    assert!(!service.supports_mcp_tool_for_principal(
+                        "workflow", tool, &principal
+                    ));
+                }
+                assert!(!service.supports_mcp_tool_for_principal(
+                    "root", tool, &authorized
+                ));
+                let denied = service
+                    .execute(ApiEffectRequest {
+                        contract_version: 1,
+                        method: "POST".to_owned(),
+                        path_and_query: path.to_owned(),
+                        body: Vec::new(),
+                        principal: json!({"role":"rw", "ns":["workflow"], "capabilities":[]}),
+                    })
+                    .await;
+                assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            }
+        }
+
+        let declared = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: br#"{"service_id":"svc-lifecycle-auth","service_kind":"daemon","target_kind":"workflow","target_ref":"wf.lifecycle-auth","enabled":false,"autostart":false,"heartbeat_ttl_ms":1000}"#.to_vec(),
+                principal: json!({"role":"rw", "ns":["workflow"], "capabilities":["service.manage"]}),
+            })
+            .await;
+        assert_eq!(declared.status, StatusCode::OK.as_u16());
+
+        for (_, path, expected_enabled) in operations {
+            let allowed = sqlite
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: path.to_owned(),
+                    body: Vec::new(),
+                    principal: json!({"role":"rw", "ns":["workflow"], "capabilities":["service.manage"]}),
+                })
+                .await;
+            assert_eq!(allowed.status, StatusCode::OK.as_u16());
+            let body: Value = serde_json::from_slice(&allowed.body).unwrap();
+            assert_eq!(body["enabled"], expected_enabled);
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn workflow_service_read_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -2212,6 +2212,69 @@ async def test_mcp_workflow_service_enable_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("tool", "method", "fixture_name"),
+    [
+        (
+            "workflow.service_enable",
+            "enable_service",
+            "workflow-service-enable-mcp-v1.json",
+        ),
+        (
+            "workflow.service_disable",
+            "disable_service",
+            "workflow-service-disable-mcp-v1.json",
+        ),
+    ],
+)
+async def test_mcp_workflow_service_lifecycle_denies_unauthorized_effects(
+    monkeypatch, engine_triplet, tool, method, fixture_name
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (Path(__file__).resolve().parents[2] / f"contracts/golden/{fixture_name}").read_text(
+            encoding="utf-8"
+        )
+    )
+    effects: list[str] = []
+    monkeypatch.setattr(
+        service.service_supervisor,
+        method,
+        lambda service_id: effects.append(service_id) or contract["result"],
+    )
+
+    for role, namespace, capabilities in (
+        ("ro", "workflow", ["service.manage"]),
+        ("rw", "conversation", ["service.manage"]),
+        ("rw", "workflow", []),
+    ):
+        with _claims(
+            role,
+            namespace,
+            scope_parts={"capabilities": capabilities},
+        ), pytest.raises((HTTPException, PermissionError)):
+            await server.mcp._execute(
+                tool, contract["arguments"], enforce_visibility=True
+            )
+    assert effects == []
+
+    with _claims(
+        "rw", "workflow", scope_parts={"capabilities": ["service.manage"]}
+    ):
+        result = await server.mcp._execute(
+            tool, contract["arguments"], enforce_visibility=True
+        )
+    assert result.is_error is False
+    assert _structured(result) == contract["result"]
+    assert effects == [contract["python_service_arguments"]["service_id"]]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_events_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
