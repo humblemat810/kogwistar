@@ -2072,6 +2072,13 @@
                 .iter()
                 .any(|tool| tool["name"] == "kg_neighbors")
         );
+        assert!(
+            mcp_list_value["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == "kg_find_edges")
+        );
 
         let mcp_missing_capability = make_app()
             .oneshot(
@@ -2092,6 +2099,34 @@
             .unwrap();
         assert_eq!(mcp_missing_capability.status(), StatusCode::OK);
         let denied_body = to_bytes(mcp_missing_capability.into_body(), 65_536)
+            .await
+            .unwrap();
+        let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_value["error"]["code"], -32602);
+        assert_eq!(
+            denied_value["error"]["message"],
+            "Tool not advertised by this application service"
+        );
+
+        let find_edges_missing_capability = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_docs_token(&[])),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"find-edges-denied","method":"tools/call","params":{"name":"kg_find_edges","arguments":{}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(find_edges_missing_capability.status(), StatusCode::OK);
+        let denied_body = to_bytes(find_edges_missing_capability.into_body(), 65_536)
             .await
             .unwrap();
         let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();

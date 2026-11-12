@@ -2957,12 +2957,28 @@ async def test_kg_find_edges_mcp_matches_shared_contract(monkeypatch, tmp_path):
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     assert contract["operation"] == "kg_find_edges"
 
+    with _claims("ro", "docs", scope_parts={"capabilities": []}):
+        with pytest.raises(PermissionError, match="not permitted"):
+            await server.mcp._execute(
+                contract["operation"],
+                contract["arguments"],
+                enforce_visibility=True,
+            )
+
     with _claims("rw", "docs"):
         result = await server.mcp._execute(
             contract["operation"], contract["arguments"], enforce_visibility=True
         )
 
     assert result.structured_content == contract["expected_structured_content"]
+
+    with _claims(
+        "ro", "docs", scope_parts={"capabilities": ["read_graph"]}
+    ):
+        authorized = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+    assert authorized.structured_content == contract["expected_structured_content"]
 
 
 @pytest.mark.asyncio
