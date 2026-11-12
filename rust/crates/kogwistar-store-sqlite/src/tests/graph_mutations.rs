@@ -33,6 +33,57 @@ fn mutation(event_id: &str, id: &str) -> GraphMutation {
 }
 
 #[test]
+fn typed_class_marker_stays_out_of_canonical_event_and_survives_projection_queue() {
+    let (store, path) = store("canonical-graph-class-marker");
+    let mut typed = mutation("typed-event", "typed-node");
+    typed.record.metadata.insert(
+        "_class_name".to_owned(),
+        serde_json::json!("WorkflowRunNode"),
+    );
+    typed.payload["metadata"]["namespace"] = serde_json::json!("conversation");
+    let canonical_payload = typed.payload.clone();
+
+    store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![typed],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+
+    let event = store.replay_raw_events("conversation", 0, 10).unwrap();
+    assert_eq!(event.len(), 1);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&event[0].payload_json).unwrap(),
+        canonical_payload,
+        "typed projection metadata must not mutate canonical event payload"
+    );
+    let stage1 = store
+        .get_stage1_node_projection("conversation", "node:typed-node")
+        .unwrap()
+        .unwrap();
+    assert_eq!(stage1.payload["metadata"]["_class_name"], "WorkflowRunNode");
+    let jobs = store
+        .list_index_jobs(
+            Some("conversation"),
+            Some("PENDING"),
+            Some("node"),
+            Some("typed-node"),
+            Some("node_embedding"),
+            10,
+        )
+        .unwrap();
+    let job_payload: serde_json::Value =
+        serde_json::from_str(jobs[0].payload_json.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        job_payload["projection_metadata"]["_class_name"],
+        "WorkflowRunNode"
+    );
+
+    drop(store);
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn canonical_graph_batch_commits_events_and_projection_jobs_together() {
     let (store, path) = store("canonical-graph-batch");
     let applied = store

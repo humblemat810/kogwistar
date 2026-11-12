@@ -110,6 +110,7 @@ mod workflow_runtime;
 pub use kogwistar_store::RestoredRawEntityEvent;
 pub use stage1_projection::{
     STAGE1_PROJECTION_SCHEMA_VERSION, stage1_projection_from_canonical_event,
+    stage1_projection_from_canonical_event_with_class_name,
 };
 pub use types::{
     AppendedRawEvent, NamedProjectionCas, NewRawEntityEvent, RawEntityEvent, SqliteStoreError,

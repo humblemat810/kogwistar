@@ -5094,12 +5094,7 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(canonical_events.len(), 2);
     for event in &canonical_events {
         let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
-        let expected_class = if payload["id"] == "node-1" {
-            "Node"
-        } else {
-            "Edge"
-        };
-        assert_eq!(payload["metadata"]["_class_name"], expected_class);
+        assert!(payload["metadata"].get("_class_name").is_none());
         assert_eq!(payload["metadata"]["workspace_id"], "ws");
         assert_eq!(payload["metadata"]["graph_space"], "facts");
     }
@@ -5133,18 +5128,31 @@ async fn sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs
     assert_eq!(recovered_events.len(), 2);
     for event in &recovered_events {
         let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
-        let expected_class = if payload["id"] == "node-1" {
-            "Node"
-        } else {
-            "Edge"
-        };
-        assert_eq!(payload["metadata"]["_class_name"], expected_class);
+        assert!(payload["metadata"].get("_class_name").is_none());
     }
     let recovered_jobs = service
         .store
         .list_index_jobs(Some("tenant-a"), Some("PENDING"), None, None, None, 10)
         .unwrap();
     assert_eq!(recovered_jobs.len(), 2);
+    for job in &recovered_jobs {
+        let job_payload: Value = serde_json::from_str(job.payload_json.as_deref().unwrap()).unwrap();
+        let expected_class = if job.entity_kind == "node" { "Node" } else { "Edge" };
+        assert_eq!(
+            job_payload["projection_metadata"]["_class_name"],
+            expected_class
+        );
+    }
+    // Simulate lost derived Stage-1 rows: durable queue metadata must restore
+    // subtype identity without adding it to canonical event payloads.
+    service
+        .store
+        .clear_stage1_node_projection("tenant-a", "node:node-1")
+        .unwrap();
+    service
+        .store
+        .clear_stage1_node_projection("tenant-a", "edge:edge-1")
+        .unwrap();
 
     let failed_projection = service
         .run_embedding_projection_jobs_once(10, 30, Some("tenant-a"))

@@ -1328,13 +1328,15 @@ fn graph_mutation_batch_value(
                 .map(|envelope| envelope.model_class.python_name().to_owned());
             let mut mutation = graph_mutation_into_store(raw);
             if let Some(model_class) = model_class {
+                // Python write.py keeps this discriminator in projection
+                // metadata; the backend model envelope remains canonical.
                 ensure_model_class_marker(&mut mutation.record.metadata, &model_class)?;
                 if let Some(metadata) = mutation
                     .payload
                     .get_mut("metadata")
                     .and_then(Value::as_object_mut)
                 {
-                    ensure_model_class_marker(metadata, &model_class)?;
+                    validate_model_class_marker(metadata, &model_class)?;
                 }
             }
             Ok(mutation)
@@ -1385,6 +1387,18 @@ fn ensure_model_class_marker(
             metadata.insert("_class_name".to_owned(), Value::String(model_class.to_owned()));
             Ok(())
         }
+    }
+}
+
+fn validate_model_class_marker(
+    metadata: &serde_json::Map<String, Value>,
+    model_class: &str,
+) -> Result<(), String> {
+    match metadata.get("_class_name") {
+        Some(existing) if existing.as_str() != Some(model_class) => Err(format!(
+            "payload metadata _class_name conflicts with typed model envelope ({model_class})"
+        )),
+        _ => Ok(()),
     }
 }
 

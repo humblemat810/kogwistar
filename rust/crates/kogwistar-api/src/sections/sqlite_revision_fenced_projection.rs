@@ -112,14 +112,16 @@ impl RevisionFencedChromaProjectionStore {
     fn restore_stage1_from_revision(
         revision: &kogwistar_engine::canonical_revision::CanonicalEntityRevision,
         fingerprint: &str,
+        class_name: Option<&str>,
     ) -> Result<NamedProjectionWrite, StoreError> {
-        kogwistar_store_sqlite::stage1_projection_from_canonical_event(
+        kogwistar_store_sqlite::stage1_projection_from_canonical_event_with_class_name(
             &revision.namespace,
             &revision.entity_kind,
             &revision.entity_id,
             revision.revision,
             &revision.payload,
             fingerprint,
+            class_name,
         )
     }
 

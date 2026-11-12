@@ -52,6 +52,12 @@ impl SqliteUnitOfWork<'_> {
 
         let mut applied = Vec::with_capacity(mutations.len());
         for mutation in mutations {
+            let model_class = mutation
+                .record
+                .metadata
+                .get("_class_name")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             let payload_json = serde_json::to_string(&mutation.payload)
                 .expect("serde_json::Value serialization cannot fail");
             let appended = self.append_raw_entity_event(
@@ -113,13 +119,16 @@ impl SqliteUnitOfWork<'_> {
                                 "canonical Stage-1 fingerprint could not be derived".to_owned(),
                             )
                         })?;
-                    let projection = crate::stage1_projection_from_canonical_event(
+                    // Python write.py keeps `_class_name` in index metadata,
+                    // outside the canonical model payload persisted as event.
+                    let projection = crate::stage1_projection_from_canonical_event_with_class_name(
                         &revision.namespace,
                         &revision.entity_kind,
                         &revision.entity_id,
                         revision.revision,
                         &revision.payload,
                         &fingerprint,
+                        model_class.as_deref(),
                     )
                     .map_err(SqliteStoreError::from)?;
                     self.replace_stage1_node_projection(
@@ -155,6 +164,16 @@ impl SqliteUnitOfWork<'_> {
                     state: state.to_owned(),
                     payload: event.payload.clone(),
                 };
+                let mut projection_job_payload = serde_json::from_str::<Value>(
+                    &kogwistar_engine::canonical_revision::canonical_revision_job_payload(
+                        &revision,
+                    ),
+                )
+                .expect("canonical revision job payload is valid JSON");
+                if let Some(model_class) = model_class.as_deref() {
+                    projection_job_payload["projection_metadata"] =
+                        serde_json::json!({"_class_name": model_class});
+                }
                 let projection_job = NewIndexJob {
                     job_id: format!("canonical-projection-{}", mutation.event_id),
                     namespace: mutation.scope.namespace.clone(),
@@ -169,9 +188,8 @@ impl SqliteUnitOfWork<'_> {
                         "UPSERT".to_owned()
                     },
                     payload_json: Some(
-                        kogwistar_engine::canonical_revision::canonical_revision_job_payload(
-                            &revision,
-                        ),
+                        serde_json::to_string(&projection_job_payload)
+                            .expect("JSON value serialization cannot fail"),
                     ),
                     max_retries: 10,
                 };

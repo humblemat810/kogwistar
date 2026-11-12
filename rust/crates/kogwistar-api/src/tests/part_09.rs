@@ -125,18 +125,12 @@ async fn postgres_native_workflow_run_node_preserves_python_payload_and_digest_a
     let entity_id = model_fixture["payload"]["id"].as_str().unwrap();
     let first_event = read_workflow_run_parity_event(&service, entity_id).await;
     let first_payload: Value = serde_json::from_str(&first_event.payload_json).unwrap();
-    assert_eq!(first_payload["metadata"]["_class_name"], "WorkflowRunNode");
-    let mut python_payload_view = first_payload.clone();
-    python_payload_view["metadata"]
-        .as_object_mut()
-        .unwrap()
-        .remove("_class_name");
-    assert_eq!(python_payload_view, model_fixture["payload"]);
+    assert_eq!(first_payload, model_fixture["payload"]);
     assert_eq!(
         format!(
             "{:x}",
             sha2::Sha256::digest(
-                kogwistar_contracts::canonical_json(&python_payload_view, false).as_bytes()
+                kogwistar_contracts::canonical_json(&first_payload, false).as_bytes()
             )
         ),
         model_fixture["canonical_json_sha256"]
@@ -164,7 +158,7 @@ async fn postgres_native_workflow_run_node_preserves_python_payload_and_digest_a
         format!(
             "{:x}",
             sha2::Sha256::digest(
-                kogwistar_contracts::canonical_json(&python_payload_view, false).as_bytes()
+                kogwistar_contracts::canonical_json(&first_payload, false).as_bytes()
             )
         ),
         model_fixture["canonical_json_sha256"]

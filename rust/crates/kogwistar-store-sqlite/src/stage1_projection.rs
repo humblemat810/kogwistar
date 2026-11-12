@@ -14,6 +14,26 @@ pub fn stage1_projection_from_canonical_event(
     payload: &Value,
     fingerprint: &str,
 ) -> Result<NamedProjectionWrite, StoreError> {
+    stage1_projection_from_canonical_event_with_class_name(
+        namespace,
+        entity_kind,
+        entity_id,
+        revision,
+        payload,
+        fingerprint,
+        None,
+    )
+}
+
+pub fn stage1_projection_from_canonical_event_with_class_name(
+    namespace: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    revision: i64,
+    payload: &Value,
+    fingerprint: &str,
+    class_name: Option<&str>,
+) -> Result<NamedProjectionWrite, StoreError> {
     let model_class = match entity_kind {
         "node" => GraphModelClass::Node,
         "edge" => GraphModelClass::Edge,
@@ -48,6 +68,15 @@ pub fn stage1_projection_from_canonical_event(
 
     let source_metadata = payload.get("metadata").and_then(Value::as_object);
     let mut metadata = source_metadata.cloned().unwrap_or_default();
+    if let Some(class_name) = class_name {
+        if class_name.is_empty() {
+            return Err(invalid("projection class name must not be empty"));
+        }
+        metadata.insert(
+            "_class_name".to_owned(),
+            Value::String(class_name.to_owned()),
+        );
+    }
     if metadata
         .get("namespace")
         .is_some_and(|value| !value.is_null() && value.as_str() != Some(namespace))

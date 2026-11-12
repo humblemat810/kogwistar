@@ -1163,6 +1163,11 @@ impl SqliteRunApplicationService {
                 let recovered = RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
                     &current,
                     &fingerprint,
+                    row.payload
+                        .get("metadata")
+                        .and_then(Value::as_object)
+                        .and_then(|metadata| metadata.get("_class_name"))
+                        .and_then(Value::as_str),
                 )
                 .map_err(|error| error.to_string())?;
                 self.store
@@ -1305,6 +1310,10 @@ impl SqliteRunApplicationService {
                             RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
                                 &current,
                                 &current_fingerprint,
+                                record
+                                    .metadata
+                                    .get("_class_name")
+                                    .and_then(Value::as_str),
                             )
                             .map_err(|error| error.to_string())?;
                         self.store
@@ -1446,6 +1455,17 @@ impl SqliteRunApplicationService {
                             backend: "sqlite-chroma-projection".to_owned(),
                             message: "embedding job lacks a canonical source fingerprint".to_owned(),
                         })?;
+                    let queued_class_name = input
+                        .payload_json
+                        .as_deref()
+                        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+                        .and_then(|value| {
+                            value
+                                .get("projection_metadata")
+                                .and_then(|metadata| metadata.get("_class_name"))
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        });
                     let stage1_key = format!("{}:{}", input.entity_kind, input.entity_id);
                     let stage1 = store
                         .get_stage1_node_projection(&input.namespace, &stage1_key)
@@ -1474,6 +1494,7 @@ impl SqliteRunApplicationService {
                             RevisionFencedChromaProjectionStore::restore_stage1_from_revision(
                                 &current,
                                 &current_fingerprint,
+                                queued_class_name.as_deref(),
                             )?;
                         store
                             .replace_stage1_node_projection(
