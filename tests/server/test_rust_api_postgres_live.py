@@ -984,7 +984,11 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
             process.wait(timeout=10)
 
 
-@pytest.mark.parametrize("entity_kind", ["node", "edge"], ids=["node", "edge"])
+@pytest.mark.parametrize(
+    "entity_kind",
+    ["node", "edge", "workflow_run_node"],
+    ids=["node", "edge", "workflow-run-node"],
+)
 def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     entity_kind: str,
     request: pytest.FixtureRequest,
@@ -1005,6 +1009,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
     from kogwistar.engine_core.models import Edge, Node
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.runtime.models import WorkflowRunNode
     from kogwistar.server.bootstrap import load_server_storage_settings
     from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
@@ -1044,18 +1049,20 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             metadata={"visibility": "public"},
         )
 
-    def mutation_for(entity: Node | Edge, entity_kind: str) -> dict[str, object]:
-        if entity_kind == "node":
+    def mutation_for(entity: Node | Edge) -> dict[str, object]:
+        if isinstance(entity, Node):
             document, metadata = engine.write.node_doc_and_meta(entity)
             table = "gke_nodes"
+            wire_kind = "node"
         else:
             document = entity.model_dump_json(field_mode="backend")
             metadata = engine.write.enrich_edge_meta(entity)
             table = "gke_edges"
+            wire_kind = "edge"
         return {
             "scope": {"namespace": namespace, "workspace_id": None, "graph_space": None},
             "table": table,
-            "entity_kind": entity_kind,
+            "entity_kind": wire_kind,
             "event_id": f"{entity.id}-typed-http-event",
             "op": "ADD",
             "payload": entity.model_dump(
@@ -1075,6 +1082,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
 
     expected_nodes: list[ConversationNode] = []
     expected_edges: list[ConversationEdge] = []
+    expected_workflow_runs: list[WorkflowRunNode] = []
     mutations: list[dict[str, object]]
     if entity_kind == "node":
         base_node = node_payload(
@@ -1097,7 +1105,29 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             }
         )
         expected_nodes.append(node)
-        mutations = [mutation_for(node, "node")]
+        mutations = [mutation_for(node)]
+    elif entity_kind == "workflow_run_node":
+        base_node = node_payload(
+            node_id=f"typed-http-run-{uuid.uuid4().hex}",
+            summary="Workflow run persisted through Rust HTTP",
+        )
+        run_node = WorkflowRunNode.model_validate(
+            {
+                **base_node.model_dump(field_mode="backend"),
+                "metadata": {
+                    **base_node.metadata,
+                    "entity_type": "workflow_run",
+                    "workflow_id": "typed-http-workflow",
+                    "workflow_version": "v1",
+                    "run_id": f"typed-http-run-id-{uuid.uuid4().hex}",
+                    "conversation_id": conversation_id,
+                    "turn_node_id": f"typed-http-turn-{uuid.uuid4().hex}",
+                    "status": "running",
+                },
+            }
+        )
+        expected_workflow_runs.append(run_node)
+        mutations = [mutation_for(run_node)]
     else:
         source_node = node_payload(
             node_id=f"typed-http-source-{uuid.uuid4().hex}",
@@ -1120,9 +1150,9 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         )
         expected_edges.append(edge)
         mutations = [
-            mutation_for(source_node, "node"),
-            mutation_for(target_node, "node"),
-            mutation_for(edge, "edge"),
+            mutation_for(source_node),
+            mutation_for(target_node),
+            mutation_for(edge),
         ]
 
     port = _port()
@@ -1200,6 +1230,20 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             assert recovered_node.user_id == expected.user_id
             assert recovered_node.summary == expected.summary
             assert recovered_node.metadata["_class_name"] == "ConversationNode"
+        elif entity_kind == "workflow_run_node":
+            expected_run = expected_workflow_runs[0]
+            python_nodes = engine.read.get_nodes(
+                ids=[expected_run.id], node_type=WorkflowRunNode
+            )
+            assert len(python_nodes) == 1
+            recovered_run = python_nodes[0]
+            assert isinstance(recovered_run, WorkflowRunNode)
+            assert recovered_run.metadata["workflow_id"] == "typed-http-workflow"
+            assert recovered_run.metadata["run_id"] == expected_run.metadata["run_id"]
+            assert recovered_run.metadata["conversation_id"] == conversation_id
+            assert recovered_run.metadata["turn_node_id"] == expected_run.metadata["turn_node_id"]
+            assert recovered_run.metadata["status"] == "running"
+            assert recovered_run.metadata["_class_name"] == "WorkflowRunNode"
         else:
             expected_edge = expected_edges[0]
             python_edges = engine.read.get_edges(
