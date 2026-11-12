@@ -179,6 +179,50 @@ def test_rust_queue_and_lane_operations_fail_closed_without_native_extension(
     assert not database_dir.exists()
 
 
+def test_rust_runtime_kernels_fail_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar import _rust_bridge
+    from kogwistar._rust_bridge import RustExtensionUnavailableError
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr(_rust_bridge, "_load_extension", unavailable)
+    operations = (
+        lambda: _rust_bridge.runtime_apply_state_update(payload={}, python_value=[]),
+        lambda: _rust_bridge.runtime_workflow_may_reach_join(
+            node_ids=[], edges=[], join_ids=[], python_value={}
+        ),
+        lambda: _rust_bridge.runtime_workflow_terminal_reachable(
+            node_ids=[], edges=[], start_node_id="start", terminal_ids=[], python_value=False
+        ),
+        lambda: _rust_bridge.runtime_select_route(payload={}),
+        lambda: _rust_bridge.runtime_plan_successors(payload={}, python_value={}),
+        lambda: _rust_bridge.runtime_apply_join_arrival(payload={}),
+        lambda: _rust_bridge.runtime_decide_retry(payload={}, python_value={}),
+        lambda: _rust_bridge.runtime_plan_nested_invocation(payload={}, python_value={}),
+        lambda: _rust_bridge.runtime_decide_dispatch(payload={}, python_value={}),
+        lambda: _rust_bridge.runtime_decide_budget_suspend(payload={}, python_value={}),
+        lambda: _rust_bridge.runtime_scheduler_tick(payload={}, python_value={}),
+    )
+
+    for operation in operations:
+        with pytest.raises(RustExtensionUnavailableError):
+            operation()
+
+
+def test_runtime_kernel_rejects_unsupported_selector_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "unsupported")
+
+    with pytest.raises(ValueError, match="KOGWISTAR_IMPL_RUNTIME must be one of"):
+        runtime_apply_state_update(payload={}, python_value=[])
+
+
 def test_rust_postgres_authority_rejects_chroma_before_backend_initialization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
