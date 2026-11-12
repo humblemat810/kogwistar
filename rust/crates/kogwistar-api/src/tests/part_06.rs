@@ -6466,6 +6466,16 @@
             )
             .unwrap()
         };
+        let docs_writer_token = encode(
+            &Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"writer-1", "storage_ns":"docs", "workspace_id":"workspace-a",
+                "graph_space":"facts", "role":"rw", "ns":["docs"],
+                "capabilities":["read_graph", "write_graph"], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(b"sqlite-chroma-mcp-secret"),
+        )
+        .unwrap();
         let token_for_project = |project: &str| {
             encode(
                 &Header::new(jsonwebtoken::Algorithm::HS256),
@@ -6681,7 +6691,35 @@
         let advertised_tools = listing["result"]["tools"].as_array().unwrap();
         let advertised = advertised_tools.iter()
             .filter_map(|tool| tool["name"].as_str()).collect::<Vec<_>>();
-        assert!(!advertised.contains(&"doc_parse"));
+        for ingestion_tool in ["doc_parse", "kg_extract", "store_document"] {
+            assert!(
+                !advertised.contains(&ingestion_tool),
+                "Rust must not advertise Python-owned ingestion tool {ingestion_tool}"
+            );
+            assert!(
+                !rust_mcp_tool_supported("root", ingestion_tool),
+                "Rust support matrix must keep Python-owned tool {ingestion_tool} disabled"
+            );
+        }
+        let docs_listing = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {docs_writer_token}"))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"docs-list","method":"tools/list"}"#))
+                .unwrap(),
+        ).await.unwrap();
+        let docs_listing: Value = serde_json::from_slice(
+            &to_bytes(docs_listing.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        let docs_tools = docs_listing["result"]["tools"].to_string();
+        for ingestion_tool in ["doc_parse", "kg_extract", "store_document"] {
+            assert!(
+                !docs_tools.contains(ingestion_tool),
+                "Rust docs writer discovery must omit Python-owned tool {ingestion_tool}"
+            );
+        }
         assert!(advertised.contains(&"propose_vector"));
         assert!(!rust_mcp_tool_supported("root", "doc_parse"));
         let advertised_graph_tools = advertised
@@ -6771,23 +6809,34 @@
             "Wisdom semantic search must be hidden without read_graph"
         );
 
-        let python_owned_parser = app.clone().oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/mcp")
-                .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
-                .body(Body::from(r#"{"jsonrpc":"2.0","id":"python-owned-parser","method":"tools/call","params":{"name":"doc_parse","arguments":{"inp":{"content":"must not be parsed here"}}}}"#))
-                .unwrap(),
-        ).await.unwrap();
-        let python_owned_parser: Value = serde_json::from_slice(
-            &to_bytes(python_owned_parser.into_body(), 65_536).await.unwrap(),
-        ).unwrap();
-        assert_eq!(python_owned_parser["error"]["code"], -32602);
-        assert_eq!(
-            python_owned_parser["error"]["message"],
-            "Tool not advertised by this application service"
-        );
+        for ingestion_tool in ["doc_parse", "kg_extract", "store_document"] {
+            let rejected = app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {docs_writer_token}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": format!("python-owned-{ingestion_tool}"),
+                            "method": "tools/call",
+                            "params": {"name": ingestion_tool, "arguments": {}}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            ).await.unwrap();
+            let rejected: Value = serde_json::from_slice(
+                &to_bytes(rejected.into_body(), 65_536).await.unwrap(),
+            ).unwrap();
+            assert_eq!(rejected["error"]["code"], -32602, "{ingestion_tool}: {rejected}");
+            assert_eq!(
+                rejected["error"]["message"],
+                "Tool not advertised by this application service",
+                "{ingestion_tool} must fail before any Python/provider fallback"
+            );
+        }
 
         let vector_proposal = app.clone().oneshot(
             Request::builder()
