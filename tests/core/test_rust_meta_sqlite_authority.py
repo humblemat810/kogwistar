@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
@@ -43,6 +44,41 @@ def test_public_selector_keeps_python_rollback_and_routes_rust_owner(
     assert type(build_sqlite_meta_store(tmp_path)).__name__ == "EngineSQLite"
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     assert isinstance(build_sqlite_meta_store(tmp_path), RustEngineSQLite)
+
+
+def test_manifest_advertised_sqlite_meta_run_round_trip_and_python_rollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest_path = Path(__file__).resolve().parents[2] / "contracts" / "rust-port-v1.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    capability = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "sqlite-meta"
+    )
+    assert capability["configuration"] == "KOGWISTAR_IMPL_META_STORE"
+    assert capability["target_authoritative_writer"] == "rust"
+    assert capability["rust_cutover_ready"] is True
+
+    monkeypatch.setenv(capability["configuration"], "rust")
+    rust_store = build_sqlite_meta_store(tmp_path, "selector-round-trip.sqlite")
+    assert isinstance(rust_store, RustEngineSQLite)
+    rust_store.ensure_initialized()
+    rust_store.create_server_run(
+        run_id="selector-run",
+        conversation_id="conversation",
+        workflow_id="workflow",
+        user_id="user",
+        user_turn_node_id="turn",
+    )
+    rust_result = rust_store.get_server_run("selector-run")
+    assert rust_result is not None
+    assert rust_result["status"] == "queued"
+
+    monkeypatch.setenv(capability["configuration"], "python")
+    python_store = build_sqlite_meta_store(tmp_path, "selector-round-trip.sqlite")
+    python_store.ensure_initialized()
+    assert python_store.get_server_run("selector-run") == rust_result
 
 
 def test_rust_authority_marks_calls_as_sole_writer_sessions(
