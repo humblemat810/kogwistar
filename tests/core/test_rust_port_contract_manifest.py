@@ -1374,6 +1374,35 @@ def test_workflow_runtime_selector_keeps_python_default_and_rust_opt_in() -> Non
     } <= set(conformance["conformance_profiles"][capability_id])
 
 
+def test_rest_capability_keeps_deferred_route_explicit_and_cutover_gated() -> None:
+    capability_id = "server-rest-sse-mcp-cli"
+    ownership = next(
+        item
+        for item in _manifest()["capability_ownership"]
+        if item["capability"] == capability_id
+    )
+    selector = next(
+        item
+        for item in _manifest()["implementation_selectors"]
+        if item["name"] == ownership["configuration"]
+    )
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item for item in support_matrix["capabilities"] if item["id"] == capability_id
+    )
+    server_gaps = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))[
+        "rust_server_gaps"
+    ]
+
+    assert ownership["configuration"] == "KOGWISTAR_IMPL_SERVER"
+    assert ownership["rust_cutover_ready"] is False
+    assert selector["default"] == "python"
+    assert set(selector["accepted_modes"]) == {"python", "rust"}
+    assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
+    assert server_gaps["status"] == "intentionally-deferred"
+    assert ["DELETE", "/admin/doc/{doc_id}"] in server_gaps["pending_routes"]
+
+
 def test_implementation_selector_manifest_matches_runtime_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
