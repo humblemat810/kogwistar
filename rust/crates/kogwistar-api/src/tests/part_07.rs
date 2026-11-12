@@ -216,6 +216,18 @@ async fn sqlite_workflow_run_steps_enforces_per_workflow_read_acl() {
 
 #[tokio::test]
 async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/workflow-blocked-runs-mcp-v1.json"
+    )))
+    .unwrap();
+    let run = &fixture["run"];
+    let run_id = run["run_id"].as_str().unwrap();
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-sqlite-process-table-{}.sqlite",
         uuid::Uuid::new_v4().simple()
@@ -224,23 +236,23 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
     service
         .store
         .create_server_run(ServerRunCreate {
-            run_id: "process-table-run".to_owned(),
-            conversation_id: "process-table-conversation".to_owned(),
-            workflow_id: "process-table-workflow".to_owned(),
+            run_id: "workflow-process-table-completed-run".to_owned(),
+            conversation_id: "workflow-process-table-completed-conversation".to_owned(),
+            workflow_id: "workflow-process-table-completed-workflow".to_owned(),
             user_id: Some("alice".to_owned()),
-            user_turn_node_id: "process-table-turn".to_owned(),
+            user_turn_node_id: "workflow-process-table-completed-turn".to_owned(),
             status: "succeeded".to_owned(),
         })
         .unwrap();
     service
         .store
         .create_server_run(ServerRunCreate {
-            run_id: "process-table-blocked-run".to_owned(),
-            conversation_id: "process-table-blocked-conversation".to_owned(),
-            workflow_id: "process-table-blocked-workflow".to_owned(),
-            user_id: Some("alice".to_owned()),
-            user_turn_node_id: "process-table-blocked-turn".to_owned(),
-            status: "suspended".to_owned(),
+            run_id: run_id.to_owned(),
+            conversation_id: run["conversation_id"].as_str().unwrap().to_owned(),
+            workflow_id: run["workflow_id"].as_str().unwrap().to_owned(),
+            user_id: Some(run["user_id"].as_str().unwrap().to_owned()),
+            user_turn_node_id: run["user_turn_node_id"].as_str().unwrap().to_owned(),
+            status: run["status"].as_str().unwrap().to_owned(),
         })
         .unwrap();
 
@@ -312,7 +324,7 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
     assert_eq!(response.status, StatusCode::OK.as_u16());
     let body: Value = serde_json::from_slice(&response.body).unwrap();
     assert!(body["processes"].as_array().unwrap().iter().any(|process| {
-        process["process_id"] == "process-table-run"
+        process["process_id"] == "workflow-process-table-completed-run"
             && process["process_kind"] == "workflow_run"
             && process["status"] == "succeeded"
     }));
@@ -332,8 +344,76 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
     let blocked: Value = serde_json::from_slice(&blocked.body).unwrap();
     let blocked_processes = blocked["processes"].as_array().unwrap();
     assert_eq!(blocked_processes.len(), 1);
-    assert_eq!(blocked_processes[0]["process_id"], "process-table-blocked-run");
-    assert_eq!(blocked_processes[0]["status"], "suspended");
+    assert_eq!(blocked_processes[0]["process_id"], run_id);
+    assert_eq!(blocked_processes[0]["status"], run["status"]);
+
+    let secret = "workflow-blocked-mcp-test-secret";
+    let bearer = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "role":"ro", "ns":["workflow"],
+            "capabilities":["workflow.run.read"], "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let arguments = fixture["arguments"].clone();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("accept", "application/json, text/event-stream")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"blocked-runs-contract",
+                        "method":"tools/call",
+                        "params":{"name":fixture["operation"], "arguments":arguments}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+    let wire = String::from_utf8(body.to_vec()).unwrap();
+    let data = wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap_or_else(|| panic!("missing MCP SSE data frame: {wire}"));
+    let response: Value = serde_json::from_str(data).unwrap();
+    let actual = response["result"]["structuredContent"]["processes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("unexpected blocked-runs MCP response: {response:#?}"))
+        .iter()
+        .filter(|item| item["process_id"] == run_id)
+        .map(|item| {
+            json!({
+                "process_id": item["process_id"],
+                "process_kind": item["process_kind"],
+                "status": item["status"]
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(json!(actual), fixture["expected_processes"]);
 
     drop(service);
     let _ = std::fs::remove_file(sqlite_path);

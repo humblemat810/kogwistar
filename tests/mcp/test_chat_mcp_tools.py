@@ -3464,43 +3464,65 @@ async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
     service = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-blocked-runs-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    run = fixture["run"]
 
     service.run_registry.create_run(
-        run_id="run-process-1",
-        conversation_id="conv-1",
-        workflow_id="wf-1",
-        user_id="user-1",
-        user_turn_node_id="turn-1",
+        run_id=run["run_id"],
+        conversation_id=run["conversation_id"],
+        workflow_id=run["workflow_id"],
+        user_id=run["user_id"],
+        user_turn_node_id=run["user_turn_node_id"],
         status="running",
     )
     service.run_registry.append_event(
-        "run-process-1", "run.stage", {"stage": "execute"}
+        run["run_id"], "run.stage", {"stage": "execute"}
     )
     service.run_registry.update_status(
-        "run-process-1",
-        status="suspended",
+        run["run_id"],
+        status=run["status"],
         started=True,
     )
 
     with _claims("ro", "workflow"):
         processes = _structured(
-            await server.mcp.call_tool("workflow.process_table", {"limit": 10})
+            await server.mcp.call_tool(
+                "workflow.process_table", fixture["arguments"]
+            )
         )["processes"]
         assert processes
-        assert processes[0]["process_id"] == "run-process-1"
+        assert processes[0]["process_id"] == run["run_id"]
         assert processes[0]["process_kind"] == "workflow_run"
 
         blocked = _structured(
-            await server.mcp.call_tool("workflow.blocked_runs", {"limit": 10})
+            await server.mcp.call_tool(
+                fixture["operation"], fixture["arguments"]
+            )
         )["processes"]
-        assert any(item["process_id"] == "run-process-1" for item in blocked)
+        actual = [
+            {
+                field: item[field]
+                for field in ("process_id", "process_kind", "status")
+            }
+            for item in blocked
+            if item["process_id"] == run["run_id"]
+        ]
+        assert actual == fixture["expected_processes"]
 
         timeline = _structured(
             await server.mcp.call_tool(
-                "workflow.process_timeline", {"run_id": "run-process-1", "limit": 10}
+                "workflow.process_timeline",
+                {"run_id": run["run_id"], "limit": 10},
             )
         )
-        assert timeline["run_id"] == "run-process-1"
+        assert timeline["run_id"] == run["run_id"]
         assert timeline["events"]
 
 

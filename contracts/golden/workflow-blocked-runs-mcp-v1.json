@@ -1,0 +1,22 @@
+{
+  "contract_version": 1,
+  "operation": "workflow.blocked_runs",
+  "arguments": {
+    "limit": 10
+  },
+  "run": {
+    "run_id": "workflow-blocked-contract-run",
+    "conversation_id": "workflow-blocked-contract-conversation",
+    "workflow_id": "workflow-blocked-contract-workflow",
+    "user_id": "workflow-contract-user",
+    "user_turn_node_id": "workflow-blocked-contract-turn",
+    "status": "suspended"
+  },
+  "expected_processes": [
+    {
+      "process_id": "workflow-blocked-contract-run",
+      "process_kind": "workflow_run",
+      "status": "suspended"
+    }
+  ]
+}
