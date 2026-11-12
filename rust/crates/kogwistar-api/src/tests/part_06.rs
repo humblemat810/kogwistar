@@ -6682,6 +6682,10 @@
         let advertised = advertised_tools.iter()
             .filter_map(|tool| tool["name"].as_str()).collect::<Vec<_>>();
         assert!(!advertised.contains(&"doc_parse"));
+        assert!(
+            !advertised.contains(&"propose_vector"),
+            "SQLite+Chroma must not advertise vector proposals until its backend path is implemented"
+        );
         assert!(!rust_mcp_tool_supported("root", "doc_parse"));
         let advertised_graph_tools = advertised
             .iter()
@@ -6734,6 +6738,26 @@
         assert_eq!(python_owned_parser["error"]["code"], -32602);
         assert_eq!(
             python_owned_parser["error"]["message"],
+            "Tool not advertised by this application service"
+        );
+
+        let unsupported_vector_proposal = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"unsupported-vector-proposal","method":"tools/call","params":{"name":"propose_vector","arguments":{"inp":{"new_node_ids":["n1"]}}}}"#,
+                ))
+                .unwrap(),
+        ).await.unwrap();
+        let unsupported_vector_proposal: Value = serde_json::from_slice(
+            &to_bytes(unsupported_vector_proposal.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert_eq!(unsupported_vector_proposal["error"]["code"], -32602);
+        assert_eq!(
+            unsupported_vector_proposal["error"]["message"],
             "Tool not advertised by this application service"
         );
 
