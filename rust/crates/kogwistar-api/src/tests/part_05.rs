@@ -4423,6 +4423,71 @@
     }
 
     #[tokio::test]
+    async fn workflow_services_repair_mcp_admission_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir()
+            .join(format!("kogwistar-services-repair-auth-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_services_repair_auth",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let tool = "workflow.services_repair";
+        let repair_path = "/api/workflow/services/repair?limit=37";
+
+        for service in services {
+            let authorized = json!({"role":"rw", "ns":["workflow"]});
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow", tool, &authorized
+            ));
+            for principal in [
+                json!({"role":"ro", "ns":["workflow"]}),
+                json!({"role":"rw", "ns":["conversation"]}),
+            ] {
+                assert!(!service.supports_mcp_tool_for_principal(
+                    "workflow", tool, &principal
+                ));
+            }
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root", tool, &authorized
+            ));
+            let denied = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: repair_path.to_owned(),
+                    body: Vec::new(),
+                    principal: json!({"role":"rw", "ns":["workflow"], "capabilities":[]}),
+                })
+                .await;
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        }
+
+        let allowed = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: repair_path.to_owned(),
+                body: Vec::new(),
+                principal: json!({"role":"rw", "ns":["workflow"], "capabilities":["service.manage"]}),
+            })
+            .await;
+        assert_eq!(allowed.status, StatusCode::OK.as_u16());
+        let result: Value = serde_json::from_slice(&allowed.body).unwrap();
+        assert_eq!(result["repaired_service_ids"], json!([]));
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn workflow_service_read_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 

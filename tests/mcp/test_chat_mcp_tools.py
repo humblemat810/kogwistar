@@ -2721,6 +2721,62 @@ async def test_mcp_workflow_services_repair_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_services_repair_denies_unauthorized_effects(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-services-repair-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    listed: list[int] = []
+    repairs: list[str] = []
+    monkeypatch.setattr(
+        service.service_supervisor,
+        "list_services",
+        lambda *, limit: listed.append(limit)
+        or [{"service_id": "svc-a"}, {"service_id": "svc-b"}],
+    )
+    monkeypatch.setattr(
+        service.service_supervisor,
+        "_rebuild_projection",
+        lambda service_id: repairs.append(service_id),
+    )
+
+    for role, namespace, capabilities in (
+        ("ro", "workflow", ["service.manage"]),
+        ("rw", "conversation", ["service.manage"]),
+        ("rw", "workflow", []),
+    ):
+        with _claims(
+            role,
+            namespace,
+            scope_parts={"capabilities": capabilities},
+        ), pytest.raises((HTTPException, PermissionError)):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+    assert listed == []
+    assert repairs == []
+
+    with _claims("rw", "workflow", scope_parts={"capabilities": ["service.manage"]}):
+        result = await server.mcp._execute(
+            contract["tool"], contract["arguments"], enforce_visibility=True
+        )
+    assert result.is_error is False
+    assert listed == [contract["python_service_arguments"]["limit"]]
+    assert repairs == ["svc-a", "svc-b"]
+    assert _structured(result) == {"repaired_service_ids": repairs}
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_tool_audit_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
