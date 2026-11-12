@@ -372,6 +372,43 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
         Arc::new(service.clone()),
     );
     let arguments = fixture["arguments"].clone();
+    let no_capability_bearer = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "role":"ro", "ns":["workflow"],
+            "capabilities":[], "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {no_capability_bearer}"),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"blocked-runs-denied",
+                        "method":"tools/call",
+                        "params":{"name":fixture["operation"], "arguments":arguments}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::OK);
+    let denied_body = to_bytes(denied.into_body(), 65_536).await.unwrap();
+    let denied: Value = serde_json::from_slice(&denied_body).unwrap();
+    assert_eq!(denied["error"]["code"], -32602);
+
     let response = app
         .oneshot(
             Request::builder()

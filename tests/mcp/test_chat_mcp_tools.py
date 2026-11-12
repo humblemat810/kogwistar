@@ -3490,6 +3490,36 @@ async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
         status=run["status"],
         started=True,
     )
+    from fastapi import HTTPException
+
+    process_reads: list[int] = []
+    original_list_process_table = service.list_process_table
+
+    def track_process_read(
+        *,
+        status: str | None = None,
+        workflow_id: str | None = None,
+        conversation_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        process_reads.append(limit)
+        return original_list_process_table(
+            status=status,
+            workflow_id=workflow_id,
+            conversation_id=conversation_id,
+            limit=limit,
+        )
+
+    monkeypatch.setattr(service, "list_process_table", track_process_read)
+    with _claims(
+        "ro", "workflow", sub="blocked-runs-no-cap", scope_parts={"capabilities": []}
+    ):
+        with pytest.raises(HTTPException) as denied:
+            await server.mcp._execute(
+                fixture["operation"], fixture["arguments"], enforce_visibility=True
+            )
+    assert denied.value.status_code == 403
+    assert process_reads == []
 
     with _claims("ro", "workflow"):
         processes = _structured(
