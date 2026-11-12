@@ -134,6 +134,27 @@ def test_cytoscape_shell_route_matches_shared_rust_contract() -> None:
 
 
 @pytest.mark.ci
+def test_d3_shell_route_matches_shared_rust_contract() -> None:
+    from fastapi.testclient import TestClient
+
+    import kogwistar.server_mcp_with_admin as server
+
+    contract = json.loads(
+        (ROOT / "contracts/golden/visualization-d3-shell-http-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    with TestClient(server.app) as client:
+        response = client.get(contract["path_and_query"])
+    assert response.status_code == contract["success_status"]
+    assert response.headers["content-type"] == contract["content_type"]
+    for fragment in contract["required_fragments"]:
+        assert fragment in response.text
+    for fragment in contract["forbidden_fragments"]:
+        assert fragment not in response.text
+
+
+@pytest.mark.ci
 def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
