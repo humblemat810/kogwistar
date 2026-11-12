@@ -1,0 +1,15 @@
+{
+  "contract_version": 1,
+  "method": "GET",
+  "path_and_query": "/viz/go?doc_id=doc-1&mode=graph&insertion_method=parser",
+  "success_status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "required_fragments": [
+    "id=\"diagram\"",
+    "const url = new URL(window.location.href);",
+    "url.searchParams.get(\"doc_id\")",
+    "fetch(\"/api/viz/d3.json?\"",
+    "go.LayeredDigraphLayout"
+  ],
+  "forbidden_fragments": ["{{", "{%"]
+}

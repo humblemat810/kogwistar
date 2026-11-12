@@ -1665,6 +1665,71 @@
         }
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#visualization_shell_effect; python=kogwistar/server_mcp_with_admin.py#viz_go; fixture=contracts/golden/visualization-go-shell-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#go_shell_matches_shared_python_http_contract; python_test=tests/test_visualization.py#test_go_shell_route_matches_shared_rust_contract
+    #[tokio::test]
+    async fn go_shell_matches_shared_python_http_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use tower::ServiceExt;
+
+        struct GoShellService;
+
+        impl ApplicationService for GoShellService {
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                Box::pin(async move {
+                    visualization_shell_effect(&request)
+                        .expect("GoJS shell route is implemented")
+                })
+            }
+        }
+
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/visualization-go-shell-http-v1.json"
+        )))
+        .expect("parse shared GoJS shell contract");
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(GoShellService),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(contract["method"].as_str().unwrap())
+                    .uri(contract["path_and_query"].as_str().unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
+        assert_eq!(
+            response.headers()["content-type"],
+            contract["content_type"].as_str().unwrap()
+        );
+        let body = String::from_utf8(to_bytes(response.into_body(), 1_000_000).await.unwrap().to_vec())
+            .unwrap();
+        for fragment in contract["required_fragments"].as_array().unwrap() {
+            assert!(body.contains(fragment.as_str().unwrap()), "missing {fragment}");
+        }
+        for fragment in contract["forbidden_fragments"].as_array().unwrap() {
+            assert!(!body.contains(fragment.as_str().unwrap()), "unexpected {fragment}");
+        }
+    }
+
     #[test]
     fn d3_bundle_embeds_data_with_script_safe_json_and_python_metadata() {
         let response = d3_bundle_html_effect(
