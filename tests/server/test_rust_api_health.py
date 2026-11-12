@@ -86,6 +86,20 @@ def test_sse_frame_fails_closed_without_native_extension(
         api_sse_frame(event="run", data={"ok": True}, event_id="7")
 
 
+def test_mcp_result_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    def native_unavailable() -> object:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        api_mcp_result(request_id="request-1", result={"ok": True})
+
+
 @pytest.mark.requires_rust
 def test_rust_api_auth_sse_mcp_and_cli_contracts() -> None:
     assert api_authorize(roles=["admin"], required_roles=["admin"]) is True
