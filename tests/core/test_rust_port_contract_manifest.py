@@ -1197,6 +1197,98 @@ def test_each_authoritative_capability_has_owner_and_rollback() -> None:
         assert item["rollback"]
 
 
+def test_implementation_selector_manifest_matches_runtime_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar import _rust_bridge as bridge
+    from kogwistar import implementation_selection as selection
+
+    manifest = _manifest()
+    selector_rows = manifest["implementation_selectors"]
+    selectors = {item["name"]: item for item in selector_rows}
+    assert len(selectors) == len(selector_rows)
+    assert set(selectors) == set(selection._IMPLEMENTATION_ENV_NAMES)
+    assert set(manifest["implementation_modes"]) == {"python", "shadow", "rust"}
+    capability_selectors = {
+        item["configuration"] for item in manifest["capability_ownership"]
+    }
+    assert capability_selectors <= set(selectors)
+    assert all(
+        item["owner"] == "kogwistar.implementation_selection"
+        and item["default"] == "python"
+        for item in selector_rows
+    )
+    for item in selector_rows:
+        fallback = item["fallback_selector"]
+        assert fallback is None or fallback in selectors
+        assert set(item["accepted_modes"]) <= set(manifest["implementation_modes"])
+
+    readers = {
+        "KOGWISTAR_IMPL_CONTRACTS": bridge.contract_implementation_mode,
+        "KOGWISTAR_IMPL_META_STORE": bridge.meta_store_implementation_mode,
+        "KOGWISTAR_IMPL_GRAPH_STORE": bridge.graph_store_implementation_mode,
+        "KOGWISTAR_IMPL_RUNTIME": bridge.runtime_implementation_mode,
+        "KOGWISTAR_IMPL_SERVER": bridge.server_implementation_mode,
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY": bridge.postgres_authority_implementation_mode,
+    }
+    for env_name in selection._IMPLEMENTATION_ENV_NAMES:
+        monkeypatch.delenv(env_name, raising=False)
+
+    for env_name, reader in readers.items():
+        row = selectors[env_name]
+        for mode in row["accepted_modes"]:
+            for selector in selection._IMPLEMENTATION_ENV_NAMES:
+                monkeypatch.delenv(selector, raising=False)
+            monkeypatch.setenv(env_name, mode)
+            assert reader() == mode, f"{env_name}={mode}"
+
+        for selector in selection._IMPLEMENTATION_ENV_NAMES:
+            monkeypatch.delenv(selector, raising=False)
+        monkeypatch.setenv(env_name, "")
+        with pytest.raises(ValueError):
+            reader()
+
+    for global_mode in manifest["implementation_modes"]:
+        for selector in selection._IMPLEMENTATION_ENV_NAMES:
+            monkeypatch.delenv(selector, raising=False)
+        monkeypatch.setenv("KOGWISTAR_IMPL_MODE", global_mode)
+        for env_name, reader in readers.items():
+            row = selectors[env_name]
+            if row["fallback_selector"] != "KOGWISTAR_IMPL_MODE":
+                assert reader() == row["default"], f"{env_name} is independent"
+            elif global_mode in row["accepted_modes"]:
+                assert reader() == global_mode, f"{env_name} inherits {global_mode}"
+            else:
+                with pytest.raises(ValueError):
+                    reader()
+
+    for env_name, reader in readers.items():
+        row = selectors[env_name]
+        if row["fallback_selector"] != "KOGWISTAR_IMPL_MODE":
+            continue
+        for inherited_mode in manifest["implementation_modes"]:
+            for explicit_mode in row["accepted_modes"]:
+                for selector in selection._IMPLEMENTATION_ENV_NAMES:
+                    monkeypatch.delenv(selector, raising=False)
+                monkeypatch.setenv("KOGWISTAR_IMPL_MODE", inherited_mode)
+                monkeypatch.setenv(env_name, explicit_mode)
+                assert reader() == explicit_mode, f"{env_name} overrides {inherited_mode}"
+
+    for selector in selection._IMPLEMENTATION_ENV_NAMES:
+        monkeypatch.delenv(selector, raising=False)
+    monkeypatch.setenv("KOGWISTAR_IMPL_MODE", "")
+    for env_name, reader in readers.items():
+        if selectors[env_name]["fallback_selector"] == "KOGWISTAR_IMPL_MODE":
+            with pytest.raises(ValueError):
+                reader()
+        else:
+            assert reader() == selectors[env_name]["default"]
+
+    for selector in selection._IMPLEMENTATION_ENV_NAMES:
+        monkeypatch.delenv(selector, raising=False)
+    assert all(reader() == "python" for reader in readers.values())
+
+
 def test_rust_port_manifest_preserves_consumer_event_envelopes() -> None:
     manifest = _manifest()
     events = {item["type"]: item for item in manifest["event_contracts"]}

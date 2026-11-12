@@ -7,6 +7,57 @@
     "shadow",
     "rust"
   ],
+  "implementation_selectors": [
+    {
+      "name": "KOGWISTAR_IMPL_MODE",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": null,
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_CONTRACTS",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_META_STORE",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_GRAPH_STORE",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_RUNTIME",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_SERVER",
+      "accepted_modes": ["python", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+      "accepted_modes": ["python", "rust"],
+      "default": "python",
+      "fallback_selector": null,
+      "owner": "kogwistar.implementation_selection"
+    }
+  ],
   "phase_0_evidence": {
     "consumer_import_inventory": "contracts/inventory/consumer-imports-v1.json",
     "benchmark_baseline": "contracts/benchmarks/python-memory-windows.json",
