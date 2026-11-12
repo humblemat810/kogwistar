@@ -2192,7 +2192,9 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
     let doc_id = fixture["scope"]["doc_id"].as_str().unwrap();
     assert_eq!(fixture["expansion_document_filter"], "not_applied");
 
-    struct FixedEmbeddingProvider;
+    struct FixedEmbeddingProvider {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
     impl EmbeddingProvider for FixedEmbeddingProvider {
         fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
             static PROFILE: std::sync::OnceLock<kogwistar_engine::embedding::EmbeddingProfile> =
@@ -2218,7 +2220,12 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
             &'a self,
             texts: &'a [String],
         ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
-            Box::pin(async move { Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect()) })
+            let calls = self.calls.clone();
+            let inputs = texts.to_vec();
+            Box::pin(async move {
+                calls.lock().unwrap().extend(inputs);
+                Ok(texts.iter().map(|_| vec![1.0, 0.0]).collect())
+            })
         }
     }
 
@@ -2231,10 +2238,16 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
     assert!(!inactive.supports_mcp_tool("root", "kg_semantic_seed_then_expand_text"));
     assert!(!inactive.supports_http_operation("POST", GRAPH_SEMANTIC_SEED_EXPAND_ROUTE));
 
-    let service = InMemoryGraphApplicationService::default()
-        .with_embedding_provider(Arc::new(FixedEmbeddingProvider));
+    let embedding_calls = Arc::new(Mutex::new(Vec::new()));
+    let service = InMemoryGraphApplicationService::default().with_embedding_provider(Arc::new(
+        FixedEmbeddingProvider {
+            calls: embedding_calls.clone(),
+        },
+    ));
     assert!(service.supports_mcp_tool("root", "kg_semantic_seed_then_expand_text"));
     assert!(service.supports_http_operation("POST", GRAPH_SEMANTIC_SEED_EXPAND_ROUTE));
+    assert!(service.supports_mcp_tool("root", "wisdom.semantic_seed_then_expand"));
+    assert!(service.supports_http_operation("POST", WISDOM_SEMANTIC_SEED_EXPAND_ROUTE));
     service
         .store
         .apply_graph_mutations_atomic(vec![
@@ -2449,6 +2462,139 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
         .await
         .unwrap();
 
+    let wisdom_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/wisdom-semantic-seed-expand-mcp-v1.json"
+    )))
+    .unwrap();
+    let wisdom_scope = GraphScope {
+        namespace: "wisdom".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let wisdom_seed_id = wisdom_contract["expected_seed_ids"][0].as_str().unwrap();
+    let wisdom_edge_id = wisdom_contract["expected_first_layer_edge_ids"][0]
+        .as_str()
+        .unwrap();
+    let wisdom_neighbor_id = "wisdom-related-node";
+    let mut wisdom_seed_metadata = serde_json::Map::new();
+    wisdom_seed_metadata.insert("namespace".to_owned(), json!("wisdom"));
+    wisdom_seed_metadata.insert("doc_id".to_owned(), json!("wisdom-doc"));
+    let mut wisdom_neighbor_metadata = wisdom_seed_metadata.clone();
+    wisdom_neighbor_metadata.insert("doc_id".to_owned(), json!("wisdom-related-doc"));
+    let mut wisdom_edge_metadata = wisdom_seed_metadata.clone();
+    wisdom_edge_metadata.insert("source_ids".to_owned(), json!([wisdom_seed_id]));
+    wisdom_edge_metadata.insert("target_ids".to_owned(), json!([wisdom_neighbor_id]));
+    wisdom_edge_metadata.insert("relation".to_owned(), json!("related_to"));
+    let wisdom_acl_metadata = |grain: &str, target: &str| {
+        serde_json::Map::from_iter([
+            ("namespace".to_owned(), json!("wisdom")),
+            ("entity_type".to_owned(), json!("acl_record")),
+            ("acl_truth_graph".to_owned(), json!("wisdom")),
+            ("acl_target_grain".to_owned(), json!(grain)),
+            ("acl_target_entity_id".to_owned(), json!(target)),
+            ("acl_version".to_owned(), json!(1)),
+            ("acl_mode".to_owned(), json!("public")),
+        ])
+    };
+    let wisdom_graph_mutations = vec![
+        GraphMutation {
+            scope: wisdom_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "wisdom-semantic-seed-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":wisdom_seed_id,"label":"Wisdom seed"}),
+            record: GraphRecord {
+                id: wisdom_seed_id.to_owned(),
+                document: Some(json!({"id":wisdom_seed_id,"label":"Wisdom seed"}).to_string()),
+                metadata: wisdom_seed_metadata,
+                embedding: Some(vec![1.0, 0.0]),
+            },
+            embedding_dim: 2,
+        },
+        GraphMutation {
+            scope: wisdom_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "wisdom-semantic-neighbor-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":wisdom_neighbor_id,"label":"Related"}),
+            record: GraphRecord {
+                id: wisdom_neighbor_id.to_owned(),
+                document: Some(json!({"id":wisdom_neighbor_id,"label":"Related"}).to_string()),
+                metadata: wisdom_neighbor_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
+        },
+        GraphMutation {
+            scope: wisdom_scope.clone(),
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: "wisdom-semantic-edge-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":wisdom_edge_id,"source_ids":[wisdom_seed_id],"target_ids":[wisdom_neighbor_id]}),
+            record: GraphRecord {
+                id: wisdom_edge_id.to_owned(),
+                document: Some(json!({"id":wisdom_edge_id,"source_ids":[wisdom_seed_id],"target_ids":[wisdom_neighbor_id]}).to_string()),
+                metadata: wisdom_edge_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
+        },
+        GraphMutation {
+            scope: wisdom_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "wisdom-semantic-seed-acl-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"wisdom-semantic-seed-acl"}),
+            record: GraphRecord {
+                id: "wisdom-semantic-seed-acl".to_owned(),
+                document: None,
+                metadata: wisdom_acl_metadata("node", wisdom_seed_id),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        },
+        GraphMutation {
+            scope: wisdom_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "wisdom-semantic-neighbor-acl-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"wisdom-semantic-neighbor-acl"}),
+            record: GraphRecord {
+                id: "wisdom-semantic-neighbor-acl".to_owned(),
+                document: None,
+                metadata: wisdom_acl_metadata("node", wisdom_neighbor_id),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        },
+        GraphMutation {
+            scope: wisdom_scope,
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "wisdom-semantic-edge-acl-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"wisdom-semantic-edge-acl"}),
+            record: GraphRecord {
+                id: "wisdom-semantic-edge-acl".to_owned(),
+                document: None,
+                metadata: wisdom_acl_metadata("edge", wisdom_edge_id),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        },
+    ];
+    service
+        .store
+        .apply_graph_mutations_atomic(wisdom_graph_mutations)
+        .await
+        .unwrap();
+
     let secret = "in-memory-semantic-mcp-test-secret";
     let auth = AuthConfig {
         mode: "jwt".to_owned(),
@@ -2482,9 +2628,10 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
             implementation: ImplementationSnapshot::default(),
             auth,
         },
-        Arc::new(service),
+        Arc::new(service.clone()),
     );
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -2534,6 +2681,93 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
         json!(first_layer_edge_ids),
         fixture["expected_first_layer_edge_ids"],
         "response={response}"
+    );
+
+    let embedding_calls_before_denial = embedding_calls.lock().unwrap().len();
+    let denied_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader", "role":"ro", "ns":["wisdom"],
+            "storage_ns":"wisdom", "capabilities":[], "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"wisdom-semantic-denied", "method":"tools/call",
+                        "params":{"name":wisdom_contract["operation"],"arguments":wisdom_contract["arguments"]}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let denied: Value = serde_json::from_slice(&to_bytes(denied.into_body(), 65_536).await.unwrap())
+        .unwrap();
+    assert!(denied.get("error").is_some(), "{denied}");
+    assert_eq!(embedding_calls.lock().unwrap().len(), embedding_calls_before_denial);
+
+    let wisdom_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader", "role":"ro", "ns":["wisdom"],
+            "storage_ns":"wisdom", "capabilities":["read_graph"], "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let wisdom_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {wisdom_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"wisdom-semantic", "method":"tools/call",
+                        "params":{"name":wisdom_contract["operation"],"arguments":wisdom_contract["arguments"]}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(wisdom_response.status(), StatusCode::OK);
+    let wisdom_response: Value = serde_json::from_slice(
+        &to_bytes(wisdom_response.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(wisdom_response.get("error").is_none(), "{wisdom_response}");
+    let wisdom_result = &wisdom_response["result"];
+    let wisdom_seed: Value =
+        serde_json::from_str(wisdom_result["seeds"][0].as_str().unwrap()).unwrap();
+    assert_eq!(wisdom_seed["id"], wisdom_contract["expected_seed_ids"][0]);
+    let wisdom_edge_ids = wisdom_result["layers"][0]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|edge| {
+            serde_json::from_str::<Value>(edge.as_str().unwrap()).unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        json!(wisdom_edge_ids),
+        wisdom_contract["expected_first_layer_edge_ids"]
     );
 }
 

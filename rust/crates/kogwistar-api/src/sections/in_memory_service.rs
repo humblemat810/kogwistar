@@ -1047,6 +1047,7 @@ impl InMemoryGraphApplicationService {
                 | "kg_propose_bruteforce"
                 | "kg_shortest_path"
                 | "kg_semantic_seed_then_expand_text"
+                | "wisdom.semantic_seed_then_expand"
                 | "kg_viz_cytoscape_json"
                 | "kg_viz_d3_json"
                 | "propose_vector"
@@ -1082,6 +1083,14 @@ impl InMemoryGraphApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> Result<GraphScope, ApiEffectResponse> {
+        self.authorized_graph_scope_for_namespace(request, "docs")
+    }
+
+    fn authorized_graph_scope_for_namespace(
+        &self,
+        request: &ApiEffectRequest,
+        required_namespace: &str,
+    ) -> Result<GraphScope, ApiEffectResponse> {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return Err(effect_error(
                 StatusCode::FORBIDDEN,
@@ -1092,16 +1101,16 @@ impl InMemoryGraphApplicationService {
         let namespaces = principal_strings(&request.principal, "ns");
         if !namespaces
             .iter()
-            .any(|namespace| matches!(namespace.as_str(), "*" | "docs"))
+            .any(|namespace| namespace == "*" || namespace == required_namespace)
         {
             return Err(effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_NAMESPACE_FORBIDDEN",
-                "Graph reads require docs namespace",
+                format!("Graph reads require {required_namespace} namespace"),
             ));
         }
         let scope_value = security_scope_value(&request.principal);
-        Ok(GraphScope {
+        let scope = GraphScope {
             namespace: scope_value["storage_namespace"]
                 .as_str()
                 .unwrap_or("default")
@@ -1117,7 +1126,15 @@ impl InMemoryGraphApplicationService {
                 .get("graph_space")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
-        })
+        };
+        if required_namespace == "wisdom" && scope.namespace != required_namespace {
+            return Err(effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                format!("Graph reads require storage namespace {required_namespace}"),
+            ));
+        }
+        Ok(scope)
     }
 
     async fn graph_snapshot(
@@ -1146,6 +1163,9 @@ impl InMemoryGraphApplicationService {
         }
         if request.path_and_query == GRAPH_SEMANTIC_SEED_EXPAND_ROUTE {
             return self.graph_semantic_seed_expand_effect(request).await;
+        }
+        if request.path_and_query == WISDOM_SEMANTIC_SEED_EXPAND_ROUTE {
+            return self.wisdom_semantic_seed_expand_effect(request).await;
         }
         if request.path_and_query == INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE {
             return self.graph_vector_proposal_effect(request).await;
@@ -1311,7 +1331,27 @@ impl InMemoryGraphApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        let scope = match self.authorized_graph_scope(request) {
+        self.semantic_seed_expand_effect(request, "knowledge", "docs", 5, 1)
+            .await
+    }
+
+    async fn wisdom_semantic_seed_expand_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        self.semantic_seed_expand_effect(request, "wisdom", "wisdom", 10, 2)
+            .await
+    }
+
+    async fn semantic_seed_expand_effect(
+        &self,
+        request: &ApiEffectRequest,
+        truth_graph: &str,
+        required_namespace: &str,
+        default_top_k: usize,
+        default_hops: usize,
+    ) -> ApiEffectResponse {
+        let scope = match self.authorized_graph_scope_for_namespace(request, required_namespace) {
             Ok(scope) => scope,
             Err(response) => return response,
         };
@@ -1320,8 +1360,8 @@ impl InMemoryGraphApplicationService {
             Err(error) => return invalid_graph_request(error.to_string()),
         };
         let query_text = input.text.trim();
-        let top_k = input.top_k.unwrap_or(5);
-        let hops = input.hops.unwrap_or(1);
+        let top_k = input.top_k.unwrap_or(default_top_k);
+        let hops = input.hops.unwrap_or(default_hops);
         if query_text.is_empty()
             || query_text.chars().count() > 16_384
             || !(1..=1000).contains(&top_k)
@@ -1384,8 +1424,12 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (visible_nodes, visible_edges) =
-            graph_records_visible_by_acl(&all_nodes, &all_edges, "knowledge", &principal);
+        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
+            &all_nodes,
+            &all_edges,
+            truth_graph,
+            &principal,
+        );
         let visible_node_ids = visible_nodes
             .iter()
             .map(|record| record.id.as_str())
@@ -2116,7 +2160,10 @@ impl ApplicationService for InMemoryGraphApplicationService {
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         surface == "root"
             && Self::supports_graph_tool(name)
-            && (name != "kg_semantic_seed_then_expand_text" || self.embedding_provider.is_some())
+            && (!matches!(
+                name,
+                "kg_semantic_seed_then_expand_text" | "wisdom.semantic_seed_then_expand"
+            ) || self.embedding_provider.is_some())
     }
 
     fn supports_mcp_tool_for_principal(
@@ -2125,6 +2172,21 @@ impl ApplicationService for InMemoryGraphApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        if name == "wisdom.semantic_seed_then_expand" {
+            return self.supports_mcp_tool(surface, name)
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "wisdom" || namespace == "*")
+                && effective_capabilities(
+                    principal,
+                    &self
+                        .capabilities
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                )
+                .contains("read_graph");
+        }
         if !self.supports_mcp_tool(surface, name)
             || !matches!(principal_role(principal).as_str(), "ro" | "rw")
             || !principal_strings(principal, "ns")
@@ -2169,7 +2231,11 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && !PENDING_SERVER_CUTOVER_ROUTES.contains(&(method, "/api/add_index_entries"));
         }
         method == "POST"
-            && (route != Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
+            && (!matches!(
+                route,
+                Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
+                    | Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE)
+            )
                 || self.embedding_provider.is_some())
             && matches!(
                 route,
@@ -2179,6 +2245,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     | Some(INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE)
                     | Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE)
                     | Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
+                    | Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE)
                     | Some(INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE)
                     | Some(INTERNAL_GRAPH_FIND_EDGES_ROUTE)
                     | Some(INTERNAL_GRAPH_SHORTEST_PATH_ROUTE)
@@ -2280,6 +2347,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     | INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE
                     | INTERNAL_GRAPH_VECTOR_QUERY_ROUTE
                     | GRAPH_SEMANTIC_SEED_EXPAND_ROUTE
+                    | WISDOM_SEMANTIC_SEED_EXPAND_ROUTE
                     | INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE
                     | INTERNAL_GRAPH_FIND_EDGES_ROUTE
                     | INTERNAL_GRAPH_SHORTEST_PATH_ROUTE
