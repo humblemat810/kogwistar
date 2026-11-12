@@ -1854,6 +1854,22 @@ asyncio.run(main())
             registry.publish(&session_id, &owner, None, json!({"jsonrpc": "2.0", "id": 1})),
             Err(McpSessionError::InvalidOutboundMessage)
         );
+        for unsupported_method in [
+            "notifications/progress",
+            "notifications/resources/list_changed",
+            "notifications/prompts/list_changed",
+        ] {
+            assert_eq!(
+                registry.publish(
+                    &session_id,
+                    &owner,
+                    None,
+                    json!({"jsonrpc": "2.0", "method": unsupported_method})
+                ),
+                Err(McpSessionError::InvalidOutboundMessage),
+                "unimplemented MCP notification family must fail closed: {unsupported_method}"
+            );
+        }
         assert_eq!(
             registry.publish(
                 &session_id,
@@ -1890,6 +1906,24 @@ asyncio.run(main())
             registry.subscribe_get(&session_id, &owner, None, None),
             Err(McpSessionError::GetStreamAlreadyActive)
         ));
+        registry.finish_get(&session_id);
+
+        let tools_changed = json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/tools/list_changed"
+        });
+        assert_eq!(
+            registry
+                .publish(&session_id, &owner, None, tools_changed.clone())
+                .unwrap(),
+            "258"
+        );
+        let resumed_tools_change = registry
+            .subscribe_get(&session_id, &owner, None, Some("257"))
+            .unwrap();
+        assert_eq!(resumed_tools_change.replay.len(), 1);
+        assert_eq!(resumed_tools_change.replay[0].event_id(), "258");
+        assert_eq!(resumed_tools_change.replay[0].message(), &tools_changed);
         registry.finish_get(&session_id);
     }
 
