@@ -1336,6 +1336,44 @@ def test_chroma_adapter_remains_python_only_and_mixed_disabled() -> None:
     }
 
 
+def test_workflow_runtime_selector_keeps_python_default_and_rust_opt_in() -> None:
+    capability_id = "workflow-runtime"
+    ownership = next(
+        item
+        for item in _manifest()["capability_ownership"]
+        if item["capability"] == capability_id
+    )
+    selector = next(
+        item
+        for item in _manifest()["implementation_selectors"]
+        if item["name"] == ownership["configuration"]
+    )
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item for item in support_matrix["capabilities"] if item["id"] == capability_id
+    )
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == capability_id
+    )
+
+    assert ownership["configuration"] == "KOGWISTAR_IMPL_RUNTIME"
+    assert ownership["current_authoritative_writer"] == "python"
+    assert ownership["target_authoritative_writer"] == "rust"
+    assert ownership["rust_cutover_ready"] is False
+    assert selector["default"] == "python"
+    assert set(selector["accepted_modes"]) == {"python", "shadow", "rust"}
+    assert support["python"]["status"] == "enabled"
+    assert support["rust"]["status"] == "opt-in"
+    assert support["mixed"]["status"] == "opt-in"
+    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert {
+        "transition-route-and-checkpoint-parity",
+        "worker-version-environment-and-replay-contract",
+        "trace-provenance-and-cancellation",
+    } <= set(conformance["conformance_profiles"][capability_id])
+
+
 def test_implementation_selector_manifest_matches_runtime_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
