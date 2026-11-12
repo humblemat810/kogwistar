@@ -78,6 +78,29 @@ def _isolate_implementation_selector_environment(
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.mark.parametrize("graph_mode", ["rust", "shadow"])
+def test_non_python_graph_selection_rejects_chroma_before_backend_initialization(
+    graph_mode: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", graph_mode)
+
+    def unexpected_chroma_import() -> object:
+        pytest.fail("unsupported Chroma backend was initialized before rejection")
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.engine._import_chroma_client", unexpected_chroma_import
+    )
+
+    with pytest.raises(ValueError, match="Chroma graph storage is Python-only"):
+        GraphKnowledgeEngine(
+            backend="chroma",
+            persist_directory=str(tmp_path / "chroma-rust-must-not-initialize"),
+            embedding_function=ConstantEmbeddingFunction(),
+        )
+
+    assert not (tmp_path / "chroma-rust-must-not-initialize").exists()
+
+
 def test_selector_values_are_frozen_and_nested_scope_does_not_recapture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
