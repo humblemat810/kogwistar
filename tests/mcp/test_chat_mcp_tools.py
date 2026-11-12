@@ -2295,6 +2295,90 @@ async def test_mcp_workflow_visibility_snapshot_denies_missing_capability_and_na
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_capabilities_snapshot_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-capabilities-snapshot-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    snapshot_calls: list[None] = []
+
+    def capability_kernel_snapshot():
+        snapshot_calls.append(None)
+        return {
+            field: contract["result"][field]
+            for field in ("specs", "approvals", "revoked", "audit_log")
+        }
+
+    monkeypatch.setattr(service.capability_kernel, "snapshot", capability_kernel_snapshot)
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub=contract["result"]["current_subject"],
+        scope_parts={"capabilities": contract["result"]["effective_capabilities"]},
+    ):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert snapshot_calls == [None]
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_capabilities_snapshot_denies_before_snapshot(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    snapshot_calls: list[None] = []
+    original_snapshot = service.capability_kernel.snapshot
+
+    def track_snapshot():
+        snapshot_calls.append(None)
+        return original_snapshot()
+
+    monkeypatch.setattr(service.capability_kernel, "snapshot", track_snapshot)
+    for capabilities in (["project_view"], ["read_security_scope"]):
+        with _claims(
+            "ro",
+            "workflow",
+            sub=f"capabilities-snapshot-denied-{len(capabilities)}",
+            scope_parts={"capabilities": capabilities},
+        ):
+            with pytest.raises(HTTPException) as denied:
+                await server.mcp._execute(
+                    "workflow.capabilities_snapshot", {}, enforce_visibility=True
+                )
+            assert denied.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="capabilities-snapshot-wrong-namespace",
+        scope_parts={"capabilities": ["project_view", "read_security_scope"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                "workflow.capabilities_snapshot", {}, enforce_visibility=True
+            )
+
+    assert snapshot_calls == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_trigger_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

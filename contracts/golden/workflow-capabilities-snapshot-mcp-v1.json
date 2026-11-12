@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.capabilities_snapshot",
+  "arguments": {},
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/capabilities",
+    "body": ""
+  },
+  "result": {
+    "specs": [],
+    "approvals": [],
+    "revoked": [],
+    "audit_log": [],
+    "current_subject": "capability-reader",
+    "effective_capabilities": [
+      "project_view",
+      "read_security_scope"
+    ]
+  }
+}

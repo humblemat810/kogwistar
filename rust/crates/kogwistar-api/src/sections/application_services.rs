@@ -975,9 +975,8 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // Python counterpart: chat_mcp.workflow_visibility_snapshot's role/namespace decorators
-        // and ChatService.visibility_snapshot's read_security_scope + project_view requirement.
-        if name == "workflow.visibility_snapshot" {
+        // PYTHON_PARITY_V1: both read snapshots require project_view + read_security_scope; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capabilities_snapshot; python_service=kogwistar/server/chat_service.py#capability_snapshot; fixture=contracts/golden/workflow-capabilities-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_capabilities_snapshot_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capabilities_snapshot_denies_missing_capability_before_snapshot
+        if matches!(name, "workflow.visibility_snapshot" | "workflow.capabilities_snapshot") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
                 || !principal_strings(principal, "ns")
