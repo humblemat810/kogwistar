@@ -226,6 +226,11 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
         "/../../../contracts/golden/workflow-blocked-runs-mcp-v1.json"
     )))
     .unwrap();
+    let process_table_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/workflow-process-table-mcp-v1.json"
+    )))
+    .unwrap();
     let run = &fixture["run"];
     let run_id = run["run_id"].as_str().unwrap();
     let sqlite_path = std::env::temp_dir().join(format!(
@@ -408,8 +413,41 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
     let denied_body = to_bytes(denied.into_body(), 65_536).await.unwrap();
     let denied: Value = serde_json::from_slice(&denied_body).unwrap();
     assert_eq!(denied["error"]["code"], -32602);
+    let process_table_denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {no_capability_bearer}"),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"process-table-denied",
+                        "method":"tools/call",
+                        "params":{
+                            "name":process_table_fixture["operation"],
+                            "arguments":process_table_fixture["arguments"]
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(process_table_denied.status(), StatusCode::OK);
+    let denied_body = to_bytes(process_table_denied.into_body(), 65_536)
+        .await
+        .unwrap();
+    let denied: Value = serde_json::from_slice(&denied_body).unwrap();
+    assert_eq!(denied["error"]["code"], -32602);
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -451,6 +489,54 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
         })
         .collect::<Vec<_>>();
     assert_eq!(json!(actual), fixture["expected_processes"]);
+    let process_table_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {bearer}"))
+                .header("accept", "application/json, text/event-stream")
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"process-table-contract",
+                        "method":"tools/call",
+                        "params":{
+                            "name":process_table_fixture["operation"],
+                            "arguments":process_table_fixture["arguments"]
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(process_table_response.status(), StatusCode::OK);
+    let body = to_bytes(process_table_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let wire = String::from_utf8(body.to_vec()).unwrap();
+    let data = wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap_or_else(|| panic!("missing process-table MCP SSE frame: {wire}"));
+    let response: Value = serde_json::from_str(data).unwrap();
+    let actual = response["result"]["structuredContent"]["processes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("unexpected process-table MCP response: {response:#?}"))
+        .iter()
+        .map(|item| {
+            json!({
+                "process_id": item["process_id"],
+                "process_kind": item["process_kind"],
+                "status": item["status"],
+                "workflow_id": item["workflow_id"],
+                "conversation_id": item["conversation_id"]
+            })
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(json!(actual), process_table_fixture["expected_processes"]);
 
     drop(service);
     let _ = std::fs::remove_file(sqlite_path);

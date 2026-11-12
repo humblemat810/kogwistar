@@ -3473,6 +3473,14 @@ async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
         ).read_text(encoding="utf-8")
     )
     run = fixture["run"]
+    process_table_fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-process-table-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     service.run_registry.create_run(
         run_id=run["run_id"],
@@ -3493,9 +3501,10 @@ async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
     from fastapi import HTTPException
 
     process_reads: list[int] = []
-    original_list_process_table = service.list_process_table
+    meta_store = service._execution_meta_store()
+    original_list_server_runs = meta_store.list_server_runs
 
-    def track_process_read(
+    def track_run_store_read(
         *,
         status: str | None = None,
         workflow_id: str | None = None,
@@ -3503,14 +3512,14 @@ async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         process_reads.append(limit)
-        return original_list_process_table(
+        return original_list_server_runs(
             status=status,
             workflow_id=workflow_id,
             conversation_id=conversation_id,
             limit=limit,
         )
 
-    monkeypatch.setattr(service, "list_process_table", track_process_read)
+    monkeypatch.setattr(meta_store, "list_server_runs", track_run_store_read)
     with _claims(
         "ro", "workflow", sub="blocked-runs-no-cap", scope_parts={"capabilities": []}
     ):
@@ -3519,17 +3528,39 @@ async def test_mcp_workflow_process_views(monkeypatch, engine_triplet):
                 fixture["operation"], fixture["arguments"], enforce_visibility=True
             )
     assert denied.value.status_code == 403
+    with _claims(
+        "ro", "workflow", sub="process-table-no-cap", scope_parts={"capabilities": []}
+    ):
+        with pytest.raises(HTTPException) as denied_process_table:
+            await server.mcp._execute(
+                process_table_fixture["operation"],
+                process_table_fixture["arguments"],
+                enforce_visibility=True,
+            )
+    assert denied_process_table.value.status_code == 403
     assert process_reads == []
 
     with _claims("ro", "workflow"):
         processes = _structured(
             await server.mcp.call_tool(
-                "workflow.process_table", fixture["arguments"]
+                process_table_fixture["operation"],
+                process_table_fixture["arguments"],
             )
         )["processes"]
-        assert processes
-        assert processes[0]["process_id"] == run["run_id"]
-        assert processes[0]["process_kind"] == "workflow_run"
+        actual_processes = [
+            {
+                field: process[field]
+                for field in (
+                    "process_id",
+                    "process_kind",
+                    "status",
+                    "workflow_id",
+                    "conversation_id",
+                )
+            }
+            for process in processes
+        ]
+        assert actual_processes == process_table_fixture["expected_processes"]
 
         blocked = _structured(
             await server.mcp.call_tool(
