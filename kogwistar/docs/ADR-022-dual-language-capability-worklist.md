@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **168/177 PASS (94.9%)**.
-- **Fine worklist:** **660/833 PASS (79.2%)**; **0 IN PROGRESS**, **173 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **661/833 PASS (79.4%)**; **0 IN PROGRESS**, **172 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, one HTTP dev-token mode gate, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -651,7 +651,7 @@
 | FW-15-02B-PGVECTOR | DL-15 | PASS | Rust PG vector query fails closed without extension; Rust/shadow graph selectors reject Chroma before initialization. Evidence: facade query/extension and selector tests (**4 passed**). |
 | FW-15-02B-WORKFLOW-RUNTIME | DL-15 | PASS | 11 selected-Rust runtime kernels reject missing extension; invalid mode rejected. Kernels are storage-backend-independent; sync/async Rust authority rejects absent URL. Evidence: **4 passed**. |
 | FW-15-02B-SERVER | DL-15 | PARENT | Parent scope; children: FW-15-02B-SERVER-REST,FW-15-02B-SERVER-SSE,FW-15-02B-SERVER-MCP,FW-15-02B-SERVER-CLI |
-| FW-15-02B-SERVER-REST | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for REST. |
+| FW-15-02B-SERVER-REST | DL-15 | PASS | Rust REST health fails closed without extension; Python health stays extension-free; unsupported backend rejected pre-start. Evidence: Python (**4 passed**), Rust config (**1 passed**). |
 | FW-15-02B-SERVER-SSE | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for SSE. |
 | FW-15-02B-SERVER-MCP | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for MCP. |
 | FW-15-02B-SERVER-CLI | DL-15 | NOT STARTED | Verify selected-Rust missing-extension and unsupported-backend failures for CLI. |
