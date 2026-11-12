@@ -8664,6 +8664,9 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
 #[tokio::test]
 async fn sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let seed_id = "wisdom-semantic-seed".to_owned();
+    let neighbor_id = "wisdom-semantic-neighbor".to_owned();
+    let edge_id = "wisdom-semantic-edge".to_owned();
 
     struct FixedEmbeddingProvider {
         profile: kogwistar_engine::embedding::EmbeddingProfile,
@@ -8731,9 +8734,51 @@ async fn sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding() 
                 })
             } else if request_line.contains("/query HTTP") {
                 queries_for_server.lock().unwrap().push(request);
-                json!({"ids":[[]],"documents":[[]],"metadatas":[[]],"embeddings":[[]],"distances":[[]]})
+                let metadata = json!({"entity_type":"node","namespace":"wisdom","label":"Seed","lifecycle_status":"active"});
+                json!({
+                    "ids":[["wisdom-semantic-seed"]],
+                    "documents":[[json!({"id":"wisdom-semantic-seed","label":"Seed"}).to_string()]],
+                    "metadatas":[[{
+                        "_kogwistar_namespace":"wisdom",
+                        "_kogwistar_original_metadata":metadata.to_string()
+                    }]],
+                    "embeddings":[[[0.6,0.8]]],
+                    "distances":[[0.0]]
+                })
+            } else if request_line.contains("wisdom-semantic-edges") {
+                let metadata = json!({
+                    "entity_type":"edge", "namespace":"wisdom", "lifecycle_status":"active",
+                    "source_ids":["wisdom-semantic-seed"],
+                    "target_ids":["wisdom-semantic-neighbor"], "relation":"related_to"
+                });
+                json!({
+                    "ids":["wisdom-semantic-edge"],
+                    "documents":[json!({
+                        "id":"wisdom-semantic-edge",
+                        "source_ids":["wisdom-semantic-seed"],
+                        "target_ids":["wisdom-semantic-neighbor"]
+                    }).to_string()],
+                    "metadatas":[{
+                        "_kogwistar_namespace":"wisdom",
+                        "_kogwistar_original_metadata":metadata.to_string()
+                    }],
+                    "embeddings":[null]
+                })
             } else {
-                json!({"ids":[],"documents":[],"metadatas":[],"embeddings":[]})
+                let seed_metadata = json!({"entity_type":"node","namespace":"wisdom","label":"Seed","lifecycle_status":"active"});
+                let neighbor_metadata = json!({"entity_type":"node","namespace":"wisdom","label":"Neighbor","lifecycle_status":"active"});
+                json!({
+                    "ids":["wisdom-semantic-seed","wisdom-semantic-neighbor"],
+                    "documents":[
+                        json!({"id":"wisdom-semantic-seed","label":"Seed"}).to_string(),
+                        json!({"id":"wisdom-semantic-neighbor","label":"Neighbor"}).to_string()
+                    ],
+                    "metadatas":[
+                        {"_kogwistar_namespace":"wisdom","_kogwistar_original_metadata":seed_metadata.to_string()},
+                        {"_kogwistar_namespace":"wisdom","_kogwistar_original_metadata":neighbor_metadata.to_string()}
+                    ],
+                    "embeddings":[[0.6,0.8],null]
+                })
             };
             let response = payload.to_string();
             let wire = format!(
@@ -8782,6 +8827,169 @@ async fn sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding() 
         .unwrap()
         .with_chroma_graph(graph)
         .with_embedding_provider(provider);
+    let scope = GraphScope {
+        namespace: "wisdom".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let mutation = |event_id: &str,
+                    table: &str,
+                    entity_kind: &str,
+                    id: &str,
+                    document: Option<String>,
+                    metadata: serde_json::Map<String, Value>,
+                    embedding: Option<Vec<f32>>,
+                    embedding_dim: usize| {
+        let mut payload = json!({
+            "id":id,
+            "label":metadata
+                .get("label")
+                .cloned()
+                .unwrap_or_else(|| json!(id)),
+            "type":if entity_kind == "edge" { "relationship" } else { "entity" },
+            "summary":"Wisdom semantic retrieval fixture",
+            "doc_id":"wisdom-test-doc",
+            "domain_id":null,
+            "properties":null,
+            "metadata":metadata.clone(),
+            "mentions":[{
+                "multimodal_spans":[],
+                "spans":[{
+                    "collection_page_url":"document_collection/wisdom-test-doc",
+                    "document_page_url":"document/wisdom-test-doc",
+                    "doc_id":"wisdom-test-doc",
+                    "insertion_method":"contract-test",
+                    "start_char":0,
+                    "end_char":1,
+                    "excerpt":id
+                }]
+            }]
+        });
+        if entity_kind == "edge" {
+            payload["source_ids"] = metadata
+                .get("source_ids")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            payload["target_ids"] = metadata
+                .get("target_ids")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            payload["relation"] = metadata
+                .get("relation")
+                .cloned()
+                .unwrap_or_else(|| json!("related_to"));
+            payload["source_edge_ids"] = json!([]);
+            payload["target_edge_ids"] = json!([]);
+        }
+        GraphMutation {
+            scope: scope.clone(),
+            table: table.to_owned(),
+            entity_kind: entity_kind.to_owned(),
+            event_id: event_id.to_owned(),
+            op: "ADD".to_owned(),
+            payload,
+            record: GraphRecord {
+            id: id.to_owned(),
+            document,
+            metadata,
+            embedding,
+            },
+            embedding_dim,
+        }
+    };
+    let mut seed_metadata = serde_json::Map::new();
+    seed_metadata.insert("namespace".to_owned(), json!("wisdom"));
+    seed_metadata.insert("label".to_owned(), json!("Seed"));
+    seed_metadata.insert("lifecycle_status".to_owned(), json!("active"));
+    let mut neighbor_metadata = serde_json::Map::new();
+    neighbor_metadata.insert("namespace".to_owned(), json!("wisdom"));
+    neighbor_metadata.insert("label".to_owned(), json!("Neighbor"));
+    neighbor_metadata.insert("lifecycle_status".to_owned(), json!("active"));
+    let mut edge_metadata = serde_json::Map::new();
+    edge_metadata.insert("namespace".to_owned(), json!("wisdom"));
+    edge_metadata.insert("lifecycle_status".to_owned(), json!("active"));
+    edge_metadata.insert("source_ids".to_owned(), json!([seed_id]));
+    edge_metadata.insert("target_ids".to_owned(), json!([neighbor_id]));
+    edge_metadata.insert("relation".to_owned(), json!("related_to"));
+    let acl_metadata = |grain: &str, target: &str| {
+        serde_json::Map::from_iter([
+            ("entity_type".to_owned(), json!("acl_record")),
+            ("namespace".to_owned(), json!("wisdom")),
+            ("acl_truth_graph".to_owned(), json!("wisdom")),
+            ("acl_target_grain".to_owned(), json!(grain)),
+            ("acl_target_entity_id".to_owned(), json!(target)),
+            ("acl_version".to_owned(), json!(1)),
+            ("acl_mode".to_owned(), json!("public")),
+        ])
+    };
+    service
+        .store
+        .apply_canonical_graph_mutation_batch(kogwistar_store::GraphMutationBatch {
+            mutations: vec![
+            mutation(
+                "wisdom-semantic-seed-event",
+                "gke_nodes",
+                "node",
+                &seed_id,
+                Some(json!({"id":seed_id,"label":"Seed"}).to_string()),
+                seed_metadata,
+                Some(vec![0.6_f32, 0.8_f32]),
+                2,
+            ),
+            mutation(
+                "wisdom-semantic-neighbor-event",
+                "gke_nodes",
+                "node",
+                &neighbor_id,
+                Some(json!({"id":neighbor_id,"label":"Neighbor"}).to_string()),
+                neighbor_metadata,
+                None,
+                0,
+            ),
+            mutation(
+                "wisdom-semantic-edge-event",
+                "gke_edges",
+                "edge",
+                &edge_id,
+                Some(json!({"id":edge_id,"source_ids":[seed_id],"target_ids":[neighbor_id]}).to_string()),
+                edge_metadata,
+                None,
+                0,
+            ),
+            mutation(
+                "wisdom-semantic-seed-acl-event",
+                "gke_nodes",
+                "node",
+                "acl-seed",
+                None,
+                acl_metadata("node", &seed_id),
+                None,
+                0,
+            ),
+            mutation(
+                "wisdom-semantic-neighbor-acl-event",
+                "gke_nodes",
+                "node",
+                "acl-neighbor",
+                None,
+                acl_metadata("node", &neighbor_id),
+                None,
+                0,
+            ),
+            mutation(
+                "wisdom-semantic-edge-acl-event",
+                "gke_nodes",
+                "node",
+                "acl-edge",
+                None,
+                acl_metadata("edge", &edge_id),
+                None,
+                0,
+            ),
+            ],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
     let authorized = json!({
         "sub":"reader", "role":"ro", "ns":["wisdom"],
         "storage_ns":"wisdom", "capabilities":["read_graph"]
@@ -8824,13 +9032,19 @@ async fn sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding() 
         .await;
     assert_eq!(response.status, StatusCode::OK.as_u16());
     let payload: Value = serde_json::from_slice(&response.body).unwrap();
-    assert_eq!(payload["seeds"], json!([]));
+    let seed_json = payload["seeds"][0]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected Chroma seed in response: {payload}"));
+    let seed: Value = serde_json::from_str(seed_json).unwrap();
+    assert_eq!(seed["id"], seed_id);
     assert_eq!(payload["layers"].as_array().unwrap().len(), 2);
-    assert!(payload["layers"]
+    let first_layer_edges = payload["layers"][0]["edges"]
         .as_array()
         .unwrap()
         .iter()
-        .all(|layer| layer["nodes"] == json!([]) && layer["edges"] == json!([])));
+        .map(|edge| serde_json::from_str::<Value>(edge.as_str().unwrap()).unwrap()["id"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(first_layer_edges, [json!(edge_id)]);
     assert_eq!(embedding_calls.lock().unwrap().as_slice(), ["a relevant memory"]);
     let queries = queries.lock().unwrap();
     assert_eq!(queries.len(), 1);
