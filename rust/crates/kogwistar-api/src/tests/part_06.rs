@@ -7163,6 +7163,107 @@
             );
         }
 
+        let d3_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-viz-d3-mcp-v1.json"
+        )))
+        .unwrap();
+        let d3_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["read_graph"])),
+                    )
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"d3-contract","method":"tools/call",
+                            "params":{"name":d3_contract["operation"],"arguments":d3_contract["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let d3_response: Value = serde_json::from_slice(
+            &to_bytes(d3_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        let d3_node_ids = d3_response["result"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["id"].as_str().map(str::to_owned))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            d3_node_ids,
+            d3_contract["expected_node_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        );
+        let d3_links = d3_response["result"]["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|link| {
+                Some((
+                    link["source"].as_str()?.to_owned(),
+                    link["target"].as_str()?.to_owned(),
+                    link["role"].as_str()?.to_owned(),
+                ))
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_d3_links = d3_contract["expected_links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|link| {
+                Some((
+                    link["source"].as_str()?.to_owned(),
+                    link["target"].as_str()?.to_owned(),
+                    link["role"].as_str()?.to_owned(),
+                ))
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(d3_links, expected_d3_links);
+        let d3_denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token(&[])))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"d3-denied","method":"tools/call",
+                            "params":{"name":d3_contract["operation"],"arguments":d3_contract["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let d3_denied: Value = serde_json::from_slice(
+            &to_bytes(d3_denied.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(d3_denied["error"]["code"], -32602);
+        assert_eq!(
+            d3_denied["error"]["message"],
+            "Tool not advertised by this application service"
+        );
+
         for (path, result_key) in [
             ("/api/viz/d3.json", "nodes"),
             ("/api/viz/cytoscape.json", "elements"),
