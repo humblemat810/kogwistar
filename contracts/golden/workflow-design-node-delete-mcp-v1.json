@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.design_node_delete",
+  "arguments": {
+    "workflow_id": "wf-mcp-node-delete",
+    "node_id": "node-mcp-delete",
+    "designer_id": "alice"
+  },
+  "caller_capabilities": [
+    "workflow.design.write",
+    "write_graph"
+  ],
+  "rust_request": {
+    "method": "DELETE",
+    "path_and_query": "/api/workflow/design/wf-mcp-node-delete/nodes/node-mcp-delete",
+    "body": "{\"workflow_id\":\"wf-mcp-node-delete\",\"node_id\":\"node-mcp-delete\",\"designer_id\":\"alice\"}"
+  },
+  "result": {
+    "workflow_id": "wf-mcp-node-delete",
+    "namespace": "wf_design:wf-mcp-node-delete",
+    "node_id": "node-mcp-delete",
+    "designer_id": "alice",
+    "deleted": true,
+    "version": 2,
+    "seq": 2,
+    "can_undo": true,
+    "can_redo": false
+  }
+}
