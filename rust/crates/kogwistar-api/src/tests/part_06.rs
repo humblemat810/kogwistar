@@ -6972,6 +6972,11 @@
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(expanded_edge_ids, ["e1".to_owned(), "e4".to_owned()].into());
 
+        let proposal_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-propose-bruteforce-mcp-v1.json"
+        )))
+        .unwrap();
         let mcp_proposals = app
             .clone()
             .oneshot(
@@ -6986,9 +6991,7 @@
                     .body(Body::from(
                         json!({
                             "jsonrpc":"2.0","id":"proposals","method":"tools/call",
-                            "params":{"name":"kg_propose_bruteforce","arguments":{"inp":{
-                                "pair_kind":"node_node","allowed_docs":["doc-a"]
-                            }}}
+                            "params":{"name":proposal_contract["operation"],"arguments":proposal_contract["arguments"]}
                         })
                         .to_string(),
                     ))
@@ -7003,10 +7006,7 @@
         .unwrap();
         assert_eq!(
             mcp_proposals["result"]["pairs"],
-            json!([{
-                "left_id":"n1","left_kind":"node",
-                "right_id":"n2","right_kind":"node"
-            }])
+            proposal_contract["expected_structured_content"]["pairs"]
         );
         let mixed_proposals = app
             .clone()
@@ -7062,7 +7062,11 @@
             &to_bytes(proposal_denied.into_body(), 65_536).await.unwrap(),
         )
         .unwrap();
-        assert!(proposal_denied.get("error").is_some());
+        assert_eq!(proposal_denied["error"]["code"], -32602);
+        assert_eq!(
+            proposal_denied["error"]["message"],
+            "Tool not advertised by this application service"
+        );
         assert!(proposal_denied.get("result").is_none());
 
         for (tool, expected_key) in [

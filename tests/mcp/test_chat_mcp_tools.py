@@ -3014,6 +3014,75 @@ async def test_kg_find_edges_mcp_matches_shared_contract(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_kg_propose_bruteforce_mcp_matches_shared_contract(monkeypatch):
+    from kogwistar.server import mcp_tools
+    from types import SimpleNamespace
+
+    nodes = {
+        node_id: build_entity_node(node_id=node_id, doc_id="doc-a")
+        for node_id in ("n1", "n2")
+    }
+
+    class GraphRead:
+        @staticmethod
+        def node_ids_by_doc(doc_id):
+            return list(nodes) if doc_id == "doc-a" else []
+
+        @staticmethod
+        def edge_ids_by_doc(_doc_id):
+            return []
+
+    class GraphBackend:
+        @staticmethod
+        def node_get(*, ids, **_kwargs):
+            selected = [nodes[node_id] for node_id in ids if node_id in nodes]
+            return {
+                "documents": [
+                    node.model_dump_json(field_mode="backend") for node in selected
+                ]
+            }
+
+    engine = SimpleNamespace(
+        read=GraphRead(), backend=GraphBackend(), metadata=object()
+    )
+    monkeypatch.setattr(mcp_tools, "engine", _FixedResource(engine))
+    contract_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "kg-propose-bruteforce-mcp-v1.json"
+    )
+    contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    assert contract["operation"] == "kg_propose_bruteforce"
+
+    with _claims("ro", "docs", scope_parts={"capabilities": []}):
+        with pytest.raises(PermissionError, match="not permitted"):
+            await server.mcp._execute(
+                contract["operation"],
+                contract["arguments"],
+                enforce_visibility=True,
+            )
+
+    with _claims("ro", "docs"):
+        legacy = await server.mcp._execute(
+            contract["operation"],
+            contract["arguments"],
+            enforce_visibility=True,
+        )
+    assert legacy.structured_content == contract["expected_structured_content"]
+
+    with _claims(
+        "ro", "docs", scope_parts={"capabilities": ["read_graph"]}
+    ):
+        authorized = await server.mcp._execute(
+            contract["operation"],
+            contract["arguments"],
+            enforce_visibility=True,
+        )
+    assert authorized.structured_content == contract["expected_structured_content"]
+
+
+@pytest.mark.asyncio
 async def test_kg_k_hop_mcp_matches_shared_contract(monkeypatch, tmp_path):
     from kogwistar.server import mcp_tools
     from tests.core.test_two_stage_chroma import _engine
