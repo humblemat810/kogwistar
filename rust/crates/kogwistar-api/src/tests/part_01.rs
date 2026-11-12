@@ -2834,6 +2834,10 @@
             .expect("ignored test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_vector_query_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        assert!(
+            !service.supports_mcp_tool("root", "propose_vector"),
+            "PostgreSQL must not advertise vector proposals until its backend path is implemented"
+        );
         service.ensure_schema().await.unwrap();
         service
             .store
