@@ -1324,6 +1324,65 @@ def test_implementation_fallback_inventory_has_owned_behavior_and_evidence() -> 
             assert f"def {test_name.split('[')[0]}(" in test_source
 
 
+def test_manifest_deterministic_contract_selector_modes_and_unsupported_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar import _rust_bridge as bridge
+
+    manifest = _manifest()
+    capability = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "deterministic-contracts"
+    )
+    selector = next(
+        item
+        for item in manifest["implementation_selectors"]
+        if item["name"] == capability["configuration"]
+    )
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item
+        for item in support_matrix["capabilities"]
+        if item["id"] == "deterministic-contracts"
+    )
+
+    assert capability["rust_cutover_ready"] is True
+    assert capability["current_authoritative_writer"] == "python"
+    assert support["python"]["status"] == "enabled"
+    assert support["rust"]["status"] == "opt-in"
+    assert support["mixed"]["status"] == "opt-in"
+    assert selector["accepted_modes"] == ["python", "shadow", "rust"]
+
+    expected = '{"key":"value"}'
+
+    class CanonicalJsonExtension:
+        def canonical_json(self, _payload: str) -> str:
+            return expected
+
+    for mode in selector["accepted_modes"]:
+        monkeypatch.setenv(capability["configuration"], mode)
+        monkeypatch.setattr(
+            bridge,
+            "_load_extension",
+            lambda: CanonicalJsonExtension(),
+        )
+        assert bridge.contract_canonical_json(
+            value={"key": "value"}, python_value=expected
+        ) == expected
+
+    monkeypatch.setenv(capability["configuration"], "native")
+
+    def native_must_not_load() -> None:
+        pytest.fail("unsupported selector loaded native code")
+
+    monkeypatch.setattr(bridge, "_load_extension", native_must_not_load)
+    with pytest.raises(ValueError, match="KOGWISTAR_IMPL_CONTRACTS"):
+        bridge.contract_canonical_json(
+            value={"key": "value"}, python_value=expected
+        )
+
+
 def test_rust_port_manifest_preserves_consumer_event_envelopes() -> None:
     manifest = _manifest()
     events = {item["type"]: item for item in manifest["event_contracts"]}
