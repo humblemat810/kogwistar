@@ -7,7 +7,7 @@ import uuid
 import pytest
 
 from kogwistar.acl.models import ACLEdge, ACLNode
-from kogwistar.conversation.models import ConversationNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Edge, Node
@@ -595,6 +595,43 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         conversation_id="conversation::derived",
         user_id="user::reader",
     )
+    assistant_node = ConversationNode(
+        id="node::async-pg-derived-assistant",
+        label="assistant reply",
+        type="entity",
+        summary="derived conversation assistant turn",
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "conversation_node",
+            "level_from_root": 1,
+            "in_conversation_chain": True,
+            "in_ui_chain": True,
+        },
+        role="assistant",
+        turn_index=1,
+        conversation_id="conversation::derived",
+        user_id="user::reader",
+        level_from_root=1,
+    )
+    conversation_edge = ConversationEdge(
+        id="edge::async-pg-derived-conversation-next-turn",
+        label="next turn",
+        type="relationship",
+        summary="user turn leads to assistant turn",
+        relation="next_turn",
+        source_ids=[conversation_node.id],
+        target_ids=[assistant_node.id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "causal_type": "chain",
+            "char_distance_from_last_summary": 48,
+            "turn_distance_from_last_summary": 1,
+        },
+    )
     target = _mk_node(
         node_id="node::async-pg-derived-target",
         doc_id="doc::async-pg-derived",
@@ -695,6 +732,8 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     await engine.write.add_node_async(run_node)
     await engine.write.add_node_async(step_exec_node)
     await engine.write.add_node_async(conversation_node)
+    await engine.write.add_node_async(assistant_node)
+    await engine.write.add_edge_async(conversation_edge)
     await engine.write.add_node_async(target)
     await engine.write.add_edge_async(runtime_edge)
     await engine.write.add_node_async(acl_previous)
@@ -706,6 +745,8 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         "workflow_run_node",
         "workflow_step_exec_node",
         "conversation_node",
+        "conversation_node",
+        "conversation_edge",
         "node",
         "workflow_runtime_edge",
         "acl_node",
@@ -725,6 +766,14 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert (
         type(ConversationNode.model_validate(event_payloads[conversation_node.id]))
         is ConversationNode
+    )
+    assert (
+        type(ConversationNode.model_validate(event_payloads[assistant_node.id]))
+        is ConversationNode
+    )
+    assert (
+        type(ConversationEdge.model_validate(event_payloads[conversation_edge.id]))
+        is ConversationEdge
     )
     assert (
         type(WorkflowRuntimeEdge.model_validate(event_payloads[runtime_edge.id]))
@@ -753,6 +802,13 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     )
     assert conversation_rows["ids"] == [conversation_node.id]
     assert conversation_rows["metadatas"][0]["_class_name"] == "ConversationNode"
+    conversation_edge_rows = await async_pg_backend.edge_get(
+        ids=[conversation_edge.id], include=["documents", "metadatas"]
+    )
+    assert conversation_edge_rows["ids"] == [conversation_edge.id]
+    assert conversation_edge_rows["metadatas"][0]["relation"] == "next_turn"
+    assert conversation_edge_rows["metadatas"][0]["node_endpoint_count"] == 2
+    assert conversation_edge_rows["metadatas"][0]["edge_endpoint_count"] == 0
     assert edge_rows["ids"] == [runtime_edge.id]
     assert edge_rows["metadatas"][0]["relation"] == "next"
     assert edge_rows["metadatas"][0]["node_endpoint_count"] == 2
@@ -781,6 +837,20 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert python_conversation_node[0].role == "user"
     assert python_conversation_node[0].turn_index == 0
     assert python_conversation_node[0].conversation_id == "conversation::derived"
+    python_assistant_node = engine.read.get_nodes(
+        ids=[assistant_node.id], node_type=ConversationNode
+    )
+    python_conversation_edge = engine.read.get_edges(
+        ids=[conversation_edge.id], edge_type=ConversationEdge
+    )
+    assert len(python_assistant_node) == 1
+    assert python_assistant_node[0].role == "assistant"
+    assert python_assistant_node[0].turn_index == 1
+    assert len(python_conversation_edge) == 1
+    assert type(python_conversation_edge[0]) is ConversationEdge
+    assert python_conversation_edge[0].metadata["causal_type"] == "chain"
+    assert python_conversation_edge[0].source_ids == [conversation_node.id]
+    assert python_conversation_edge[0].target_ids == [assistant_node.id]
     projection_lock_requests.clear()
     authorized = engine.decide_acl(
         truth_graph=engine.kg_graph_type,
