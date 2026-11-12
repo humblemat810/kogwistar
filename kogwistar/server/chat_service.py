@@ -726,8 +726,11 @@ class ChatRunService:
     ) -> JsonObject:
         self._require_capability(
             "approve_action",
-            ["approve_action"],
-            approval_message="Approving capability requires approve_action capability",
+            ["approve_action", "project_view", "read_security_scope"],
+            approval_message=(
+                "Approving capability requires approve_action, project_view, "
+                "and read_security_scope capabilities"
+            ),
         )
         return self.approve_action(
             subject=subject or self._capability_subject(),

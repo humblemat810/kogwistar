@@ -2379,6 +2379,136 @@ async def test_mcp_workflow_capabilities_snapshot_denies_before_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_capability_approve_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-capability-approve-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub=contract["expected"]["current_subject"],
+        scope_parts={
+            "capabilities": [
+                "approve_action",
+                "project_view",
+                "read_security_scope",
+            ]
+        },
+    ):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    payload = _structured(result)
+    for field in contract["expected"]["required_fields"]:
+        assert field in payload
+    assert payload["current_subject"] == contract["expected"]["current_subject"]
+    assert contract["expected"]["approval"] in payload["approvals"]
+    assert set(contract["expected"]["effective_capabilities_include"]).issubset(
+        payload["effective_capabilities"]
+    )
+    audit = payload["audit_log"][-2:]
+    assert [entry["action"] for entry in audit] == contract["expected"]["audit_actions"]
+    assert all(entry["outcome"] == "allow" for entry in audit)
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_capability_approve_denies_without_mutation(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-capability-approve-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    prior_approvals = {
+        key: set(capabilities)
+        for key, capabilities in service.capability_kernel.approvals.items()
+    }
+    mutation_calls: list[dict[str, Any]] = []
+    original_approve_action = service.approve_action
+
+    def track_approve_action(**kwargs: Any) -> dict[str, Any]:
+        mutation_calls.append(kwargs)
+        return original_approve_action(**kwargs)
+
+    monkeypatch.setattr(service, "approve_action", track_approve_action)
+    for index, capabilities in enumerate(
+        (
+            ["project_view"],
+            ["approve_action"],
+            ["approve_action", "project_view"],
+            ["approve_action", "read_security_scope"],
+        )
+    ):
+        with _claims(
+            "rw",
+            "workflow",
+            sub=f"approval-missing-capability-{index}",
+            scope_parts={"capabilities": capabilities},
+        ):
+            with pytest.raises(HTTPException) as missing_capability:
+                await server.mcp._execute(
+                    fixture["tool"], fixture["arguments"], enforce_visibility=True
+                )
+        assert missing_capability.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="approval-read-only-role",
+        scope_parts={
+            "capabilities": [
+                "approve_action",
+                "project_view",
+                "read_security_scope",
+            ]
+        },
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                fixture["tool"], fixture["arguments"], enforce_visibility=True
+            )
+
+    with _claims(
+        "rw",
+        "conversation",
+        sub="approval-wrong-namespace",
+        scope_parts={
+            "capabilities": [
+                "approve_action",
+                "project_view",
+                "read_security_scope",
+            ]
+        },
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                fixture["tool"], fixture["arguments"], enforce_visibility=True
+            )
+
+    assert mutation_calls == []
+    assert service.capability_kernel.approvals == prior_approvals
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_trigger_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

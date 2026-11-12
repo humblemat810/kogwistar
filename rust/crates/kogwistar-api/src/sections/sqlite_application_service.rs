@@ -434,6 +434,26 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: capability approval requires rw/workflow plus approve_action, project_view, and read_security_scope before dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capability_approve; python_service=kogwistar/server/chat_service.py#ChatRunService.capability_approve; fixture=contracts/golden/workflow-capability-approve-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_capability_approve_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capability_approve_denies_without_mutation
+        if name == "workflow.capability_approve" {
+            if surface != "workflow"
+                || principal_role(principal) != "rw"
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return ["approve_action", "project_view", "read_security_scope"]
+                .iter()
+                .all(|required| capabilities.contains(*required))
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_V1: both read snapshots require project_view + read_security_scope; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capabilities_snapshot; python_service=kogwistar/server/chat_service.py#capability_snapshot; fixture=contracts/golden/workflow-capabilities-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_capabilities_snapshot_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capabilities_snapshot_denies_missing_capability_before_snapshot
         if matches!(name, "workflow.visibility_snapshot" | "workflow.capabilities_snapshot") {
             if surface != "workflow"

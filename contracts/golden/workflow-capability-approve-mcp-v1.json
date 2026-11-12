@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.capability_approve",
+  "arguments": {
+    "action": "spawn_process",
+    "capabilities": [
+      "spawn_process",
+      "workflow.run.write"
+    ],
+    "subject": "admin-1"
+  },
+  "caller_capabilities": [
+    "approve_action",
+    "project_view",
+    "read_security_scope"
+  ],
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/capabilities/approve",
+    "body": "{\"action\":\"spawn_process\",\"capabilities\":[\"spawn_process\",\"workflow.run.write\"],\"subject\":\"admin-1\"}"
+  },
+  "expected": {
+    "required_fields": [
+      "specs",
+      "approvals",
+      "revoked",
+      "audit_log",
+      "current_subject",
+      "effective_capabilities"
+    ],
+    "current_subject": "admin-1",
+    "approval": {
+      "subject": "admin-1",
+      "action": "spawn_process",
+      "capabilities": [
+        "spawn_process",
+        "workflow.run.write"
+      ]
+    },
+    "effective_capabilities_include": [
+      "spawn_process",
+      "workflow.run.write"
+    ],
+    "audit_actions": ["approve_action", "project_view"],
+    "audit_outcome": "allow"
+  }
+}

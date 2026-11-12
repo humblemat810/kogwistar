@@ -337,6 +337,53 @@
             "../../../../../contracts/golden/workflow-capability-approve-http-v1.json"
         ))
         .unwrap();
+        let approval_without_view_token = token(json!({
+            "sub": "limited-approver",
+            "role": "rw",
+            "ns": ["workflow"],
+            "capabilities": ["approve_action"],
+            "iss": "local",
+            "exp": now + 300,
+        }));
+        let denied_approval = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/capabilities/approve")
+                    .header("authorization", format!("Bearer {approval_without_view_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "action": "must_not_be_granted",
+                            "capabilities": ["workflow.run.write"],
+                            "subject": "target-denied"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_approval.status(), StatusCode::FORBIDDEN);
+        let unchanged = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/capabilities")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let unchanged: Value =
+            serde_json::from_slice(&to_bytes(unchanged.into_body(), 32768).await.unwrap())
+                .unwrap();
+        assert!(!unchanged["approvals"].as_array().unwrap().iter().any(|approval| {
+            approval["subject"] == "target-denied"
+                && approval["action"] == "must_not_be_granted"
+        }));
         let approve = app
             .clone()
             .oneshot(
@@ -389,8 +436,17 @@
                 .unwrap()
                 .contains(&json!("spawn_process"))
         );
+        let approve_audit = approve["audit_log"].as_array().unwrap();
+        let approve_audit_actions = approve_audit
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|entry| entry["action"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(approve_audit_actions, ["approve_action", "project_view"]);
         assert_eq!(
-            approve["audit_log"].as_array().unwrap().last().unwrap()["outcome"],
+            approve_audit.last().unwrap()["outcome"],
             "allow"
         );
 

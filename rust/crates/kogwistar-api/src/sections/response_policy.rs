@@ -957,6 +957,10 @@ fn capability_effect(
             "project_view",
             &["project_view", "read_security_scope"],
         ),
+        "/api/workflow/capabilities/approve" => (
+            "approve_action",
+            &["approve_action", "project_view", "read_security_scope"],
+        ),
         _ => ("approve_action", &["approve_action"]),
     };
     if !audit_capability(&request.principal, &mut state, action, required) {
@@ -1047,6 +1051,14 @@ fn capability_effect(
                 .entry((subject, action.to_ascii_lowercase()))
                 .or_default()
                 .extend(capabilities);
+            // Python's approve_action returns capability_snapshot(), which
+            // records its own project_view decision after the grant.
+            let _ = audit_capability(
+                &request.principal,
+                &mut state,
+                "project_view",
+                &["project_view", "read_security_scope"],
+            );
             Some(json_effect(
                 StatusCode::ACCEPTED,
                 capability_snapshot(&request.principal, &state),
