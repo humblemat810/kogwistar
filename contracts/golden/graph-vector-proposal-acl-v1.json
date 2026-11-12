@@ -1,12 +1,22 @@
 {
   "schema_version": 1,
   "contract_version": 1,
+  "tool": "propose_vector",
   "request": {
     "new_node_ids": ["n1"],
     "top_k": 10,
     "include_edges": false,
     "max_distance": 0.35,
     "where": {"label": {"$ne": "private"}}
+  },
+  "mcp_arguments": {
+    "inp": {
+      "new_node_ids": ["n1"],
+      "top_k": 10,
+      "include_edges": false,
+      "max_distance": 0.35,
+      "where": {"label": {"$ne": "private"}}
+    }
   },
   "expected_pairs": [
     {
@@ -15,5 +25,15 @@
       "right_id": "n2",
       "right_kind": "node"
     }
-  ]
+  ],
+  "expected_result": {
+    "pairs": [
+      {
+        "left_id": "n1",
+        "left_kind": "node",
+        "right_id": "n2",
+        "right_kind": "node"
+      }
+    ]
+  }
 }

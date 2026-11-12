@@ -739,7 +739,8 @@ async def test_mcp_neighbors_keep_same_id_node_and_edge_acl_isolated(
     }
 
 
-def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
+@pytest.mark.asyncio
+async def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
     fixture = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -831,6 +832,14 @@ def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_path):
         )
 
     assert [pair.model_dump() for pair in result.pairs] == fixture["expected_pairs"]
+
+    with _claims("ro", "docs", sub="proposal-reader"):
+        mcp_result = await server.mcp.call_tool(
+            fixture["tool"], fixture["mcp_arguments"]
+        )
+
+    assert mcp_result.is_error is False
+    assert _structured(mcp_result) == fixture["expected_result"]
 
 
 def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):

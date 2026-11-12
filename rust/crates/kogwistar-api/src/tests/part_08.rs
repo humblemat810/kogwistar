@@ -5834,8 +5834,8 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
                         "id":"propose-vector",
                         "method":"tools/call",
                         "params":{
-                            "name":"propose_vector",
-                            "arguments":proposal_fixture["request"]
+                            "name":proposal_fixture["tool"],
+                            "arguments":proposal_fixture["mcp_arguments"]
                         }
                     })
                     .to_string(),
@@ -5852,7 +5852,45 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert_eq!(proposals["result"]["seam_crossings"], json!([]));
     assert_eq!(
         proposals["result"]["pairs"],
-        proposal_fixture["expected_pairs"]
+        proposal_fixture["expected_result"]["pairs"]
+    );
+
+    let flat_proposals = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &["read_graph"])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"propose-vector-legacy-flat",
+                        "method":"tools/call",
+                        "params":{
+                            "name":proposal_fixture["tool"],
+                            "arguments":proposal_fixture["request"]
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(flat_proposals.status(), StatusCode::OK);
+    let flat_proposals: Value = serde_json::from_slice(
+        &to_bytes(flat_proposals.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(flat_proposals.get("error").is_none(), "{flat_proposals}");
+    assert_eq!(
+        flat_proposals["result"]["pairs"],
+        proposal_fixture["expected_result"]["pairs"]
     );
 
     let vector_query = app

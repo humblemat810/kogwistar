@@ -765,11 +765,18 @@ async fn mcp_dispatch(
                 body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
                 principal: principal.clone(),
             }),
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
             "propose_vector" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
                 path_and_query: INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE.to_owned(),
-                body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
+                body: serde_json::to_vec(
+                    arguments
+                        .get("inp")
+                        .and_then(Value::as_object)
+                        .unwrap_or(&arguments),
+                )
+                .expect("MCP graph arguments serialize"),
                 principal: principal.clone(),
             }),
             "kg_shortest_path" => Some(ApiEffectRequest {
