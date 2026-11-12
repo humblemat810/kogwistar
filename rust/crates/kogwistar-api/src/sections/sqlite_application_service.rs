@@ -434,6 +434,23 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: dead-letter snapshots require ro/rw, workflow namespace, and project_view; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letters; python_service=kogwistar/server/chat_service.py#ChatRunService.dead_letter_snapshot; fixture=contracts/golden/workflow-dead-letters-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letters_denies_before_read
+        if name == "workflow.dead_letters" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("project_view")
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_V1: dead-letter replay requires rw/workflow plus service.manage; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay; python_service=kogwistar/server/chat_service.py#ChatRunService.replay_dead_letter; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_dead_letter_replay_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letter_replay_denies_without_dispatch
         if name == "workflow.dead_letter_replay" {
             if surface != "workflow"

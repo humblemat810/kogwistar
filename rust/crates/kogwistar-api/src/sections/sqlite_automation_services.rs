@@ -1415,6 +1415,33 @@ impl SqliteRunApplicationService {
         {
             let process_table = path == "/api/workflow/process-table";
             let process_listing = process_table || path == "/api/workflow/blocked-runs";
+            if path == "/api/workflow/dead-letters"
+                && (principal_role(&request.principal) != "ro"
+                    && principal_role(&request.principal) != "rw"
+                    || !principal_strings(&request.principal, "ns")
+                        .iter()
+                        .any(|namespace| namespace == "workflow" || namespace == "*"))
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "Reading dead letters requires ro/rw role and workflow namespace",
+                );
+            }
+            if path == "/api/workflow/dead-letters"
+                && !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view"],
+                )
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading dead letters requires project_view capability",
+                );
+            }
             if path == "/api/workflow/resources"
                 && !capability_allowed(
                     &request,
