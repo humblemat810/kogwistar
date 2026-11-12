@@ -131,6 +131,27 @@ def _python_declarations(path: Path) -> set[str]:
     return declarations
 
 
+def _python_references_from_marker(value: str) -> list[tuple[str, str]]:
+    path_pattern = re.compile(r"(?P<path>(?:[\w.-]+/)*[\w.-]+\.py)#")
+    matches = list(path_pattern.finditer(value))
+    references: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(value)
+        symbols = value[match.end() : end].strip("+;")
+        parent = ""
+        for symbol in symbols.split("+"):
+            symbol = symbol.strip()
+            if not symbol:
+                continue
+            if "." in symbol:
+                parent = symbol.rpartition(".")[0]
+                declaration = symbol
+            else:
+                declaration = f"{parent}.{symbol}" if parent else symbol
+            references.append((match.group("path"), declaration))
+    return references
+
+
 def test_rust_python_parity_markers_resolve_to_python_declarations() -> None:
     marker_pattern = re.compile(r"PYTHON_PARITY_V1:.*?python=([^;]+)")
     marker_count = 0
@@ -142,16 +163,48 @@ def test_rust_python_parity_markers_resolve_to_python_declarations() -> None:
             if match is None:
                 continue
             marker_count += 1
-            relative_path, separator, declaration = match.group(1).partition("#")
-            assert separator and declaration, f"{rust_file}:{line_number}: missing Python symbol"
-            python_file = ROOT / relative_path
-            assert python_file.is_file(), (
-                f"{rust_file}:{line_number}: missing Python reference file {relative_path}"
-            )
-            assert declaration in _python_declarations(python_file), (
-                f"{rust_file}:{line_number}: {relative_path} has no declaration {declaration}"
-            )
+            references = _python_references_from_marker(match.group(1))
+            assert references, f"{rust_file}:{line_number}: missing Python symbol"
+            declarations_by_path: dict[str, set[str]] = {}
+            for relative_path, declaration in references:
+                python_file = ROOT / relative_path
+                assert python_file.is_file(), (
+                    f"{rust_file}:{line_number}: missing Python reference file {relative_path}"
+                )
+                declarations = declarations_by_path.setdefault(
+                    relative_path, _python_declarations(python_file)
+                )
+                matches = (
+                    {declaration}
+                    if declaration in declarations
+                    else {
+                        candidate
+                        for candidate in declarations
+                        if candidate.endswith(f".{declaration}")
+                    }
+                )
+                assert len(matches) == 1, (
+                    f"{rust_file}:{line_number}: {relative_path} has no unique declaration "
+                    f"for {declaration}: {sorted(matches)}"
+                )
     assert marker_count > 0, "expected checked-in PYTHON_PARITY_V1 markers"
+
+
+def test_python_parity_marker_parser_expands_grouped_declarations() -> None:
+    marker = (
+        "kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get"
+        "+workflow_service_list+workflow_service_events"
+        "+kogwistar/server/chat_service.py#ChatRunService.get_service"
+        "+list_services+list_service_events"
+    )
+    assert _python_references_from_marker(marker) == [
+        ("kogwistar/server/chat_mcp.py", "build_workflow_mcp.workflow_service_get"),
+        ("kogwistar/server/chat_mcp.py", "build_workflow_mcp.workflow_service_list"),
+        ("kogwistar/server/chat_mcp.py", "build_workflow_mcp.workflow_service_events"),
+        ("kogwistar/server/chat_service.py", "ChatRunService.get_service"),
+        ("kogwistar/server/chat_service.py", "ChatRunService.list_services"),
+        ("kogwistar/server/chat_service.py", "ChatRunService.list_service_events"),
+    ]
 
 
 def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
