@@ -1449,6 +1449,54 @@ def test_mcp_support_keeps_pending_syscalls_and_cutover_gate_explicit() -> None:
     assert set(conformance["rust_server_gaps"]["pending_syscalls"]) == deferred_syscalls
 
 
+def test_python_cli_remains_http_client_for_rust_selected_server(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from kogwistar.cli import main
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+    request: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        request.update(kwargs)
+        return {"conversation_id": "conv-1", "turns": []}
+
+    def native_must_not_load() -> object:
+        raise AssertionError("HTTP client CLI must not load the in-process Rust extension")
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_must_not_load)
+
+    assert main(
+        [
+            "api",
+            "conversation",
+            "conversation.get_transcript",
+            "--conversation-id",
+            "conv-1",
+            "--base-url",
+            "http://rust-server",
+        ]
+    ) == 0
+
+    assert request == {
+        "method": "GET",
+        "url": "http://rust-server/api/conversations/conv-1/turns",
+    }
+    assert json.loads(capsys.readouterr().out) == {"conversation_id": "conv-1", "turns": []}
+
+
+def test_cli_parity_remains_a_server_release_gate() -> None:
+    capability_id = "server-rest-sse-mcp-cli"
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == capability_id
+    )
+
+    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert "cli-operation-and-error-parity" in conformance["conformance_profiles"][capability_id]
+
+
 def test_implementation_selector_manifest_matches_runtime_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
