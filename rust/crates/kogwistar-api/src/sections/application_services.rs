@@ -975,6 +975,26 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: edge deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_edge_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_edge_delete_denies_before_dispatch
+        if name == "workflow.design_edge_delete" {
+            if surface != "workflow"
+                || principal_role(principal) != "rw"
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return ["workflow.design.write", "write_graph"]
+                .iter()
+                .all(|required| capabilities.contains(*required))
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_V1: dead-letter snapshots require ro/rw, workflow namespace, and project_view; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letters; python_service=kogwistar/server/chat_service.py#ChatRunService.dead_letter_snapshot; fixture=contracts/golden/workflow-dead-letters-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letters_denies_before_read
         if name == "workflow.dead_letters" {
             if surface != "workflow"

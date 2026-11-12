@@ -1026,12 +1026,34 @@ impl PostgresRunApplicationService {
         workflow_id: &str,
         route: DesignRoute,
     ) -> ApiEffectResponse {
+        if matches!(&route, DesignRoute::EdgeDelete(_))
+            && (principal_role(&request.principal) != "rw"
+                || !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Deleting workflow edges requires rw role and workflow namespace",
+            );
+        }
         let required = if matches!(route, DesignRoute::Graph | DesignRoute::History) {
             "workflow.design.inspect"
         } else {
             "workflow.design.write"
         };
-        if !capability_allowed(request, &self.capabilities, required, &[required]) {
+        let required_capabilities: &[&str] = if matches!(&route, DesignRoute::EdgeDelete(_)) {
+            &["workflow.design.write", "write_graph"]
+        } else {
+            &[required]
+        };
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            required,
+            required_capabilities,
+        ) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
