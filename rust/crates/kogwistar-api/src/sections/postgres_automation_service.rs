@@ -1040,7 +1040,8 @@ impl PostgresRunApplicationService {
         }
         if matches!(
             &route,
-            DesignRoute::NodeDelete(_)
+            DesignRoute::NodeUpsert
+                | DesignRoute::NodeDelete(_)
                 | DesignRoute::EdgeUpsert
                 | DesignRoute::EdgeDelete(_)
         )
@@ -1062,7 +1063,8 @@ impl PostgresRunApplicationService {
         };
         let required_capabilities: &[&str] = if matches!(
             &route,
-            DesignRoute::NodeDelete(_)
+            DesignRoute::NodeUpsert
+                | DesignRoute::NodeDelete(_)
                 | DesignRoute::EdgeUpsert
                 | DesignRoute::EdgeDelete(_)
         ) {

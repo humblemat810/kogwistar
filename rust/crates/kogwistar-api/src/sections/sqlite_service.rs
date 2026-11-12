@@ -337,7 +337,8 @@ impl SqliteRunApplicationService {
         }
         if matches!(
             &route,
-            DesignRoute::NodeDelete(_)
+            DesignRoute::NodeUpsert
+                | DesignRoute::NodeDelete(_)
                 | DesignRoute::EdgeUpsert
                 | DesignRoute::EdgeDelete(_)
         )
@@ -359,7 +360,8 @@ impl SqliteRunApplicationService {
         };
         let required_capabilities: &[&str] = if matches!(
             &route,
-            DesignRoute::NodeDelete(_)
+            DesignRoute::NodeUpsert
+                | DesignRoute::NodeDelete(_)
                 | DesignRoute::EdgeUpsert
                 | DesignRoute::EdgeDelete(_)
         ) {

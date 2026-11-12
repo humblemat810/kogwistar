@@ -5090,6 +5090,83 @@ async def test_mcp_workflow_design_node_delete_denies_before_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_design_node_upsert_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-node-upsert-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with _claims(
+        "rw",
+        "workflow",
+        sub=contract["arguments"]["designer_id"],
+        scope_parts={"capabilities": contract["caller_capabilities"]},
+    ):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    body = _structured(result)
+    for field, expected in contract["fixed_result_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_result_fields"]:
+        assert isinstance(body[field], int)
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_design_node_upsert_denies_before_dispatch(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-node-upsert-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        service._workflow_design,
+        "workflow_design_upsert_node",
+        lambda **kwargs: calls.append(kwargs) or contract["fixed_result_fields"],
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.design.write"]},
+    ), pytest.raises(HTTPException) as denied:
+        await server.mcp._execute(
+            contract["tool"], contract["arguments"], enforce_visibility=True
+        )
+    assert denied.value.status_code == 403
+
+    for role, namespace in (("ro", "workflow"), ("rw", "conversation")):
+        with _claims(
+            role,
+            namespace,
+            sub="alice",
+            scope_parts={"capabilities": contract["caller_capabilities"]},
+        ), pytest.raises(PermissionError):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):

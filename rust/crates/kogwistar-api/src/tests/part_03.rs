@@ -1563,13 +1563,34 @@
             let field = field.as_str().unwrap();
             assert!(deleted.get(field).is_none(), "field {field}");
         }
+        let node_upsert_mcp: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-node-upsert-mcp-v1.json"
+        )))
+        .unwrap();
+        let mcp_request = serde_json::to_vec(&json!({
+            "jsonrpc":"2.0",
+            "id":"node",
+            "method":"tools/call",
+            "params": {
+                "name": node_upsert_mcp["tool"],
+                "arguments": node_upsert_mcp["arguments"]
+            }
+        }))
+        .unwrap();
         let mcp = app.clone().oneshot(Request::builder().method("POST").uri("/mcp/workflow")
             .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
-            .body(Body::from(r#"{"jsonrpc":"2.0","id":"node","method":"tools/call","params":{"name":"workflow.design_node_upsert","arguments":{"workflow_id":"wf-mcp-design","designer_id":"alice","node_id":"mcp-node","label":"MCP"}}}"#)).unwrap()).await.unwrap();
+            .body(Body::from(mcp_request)).unwrap()).await.unwrap();
         assert_eq!(mcp.status(), StatusCode::OK);
         let body: Value =
             serde_json::from_slice(&to_bytes(mcp.into_body(), 65_536).await.unwrap()).unwrap();
-        assert_eq!(body["result"]["node_id"], "mcp-node");
+        for (field, expected) in node_upsert_mcp["fixed_result_fields"].as_object().unwrap() {
+            assert_eq!(&body["result"][field], expected, "field {field}");
+        }
+        for field in node_upsert_mcp["integer_result_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body["result"][field].as_i64().is_some(), "field {field}");
+        }
         drop(app);
         drop(service);
         drop(store);

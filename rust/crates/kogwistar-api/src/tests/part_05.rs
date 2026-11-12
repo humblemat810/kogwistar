@@ -3414,6 +3414,60 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn workflow_design_node_upsert_authorization_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-design-node-upsert-auth-{nonce}.sqlite3"
+        ));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "design_node_upsert_auth",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-design-node-upsert-mcp-v1.json"
+        ))
+        .unwrap();
+        let tool = contract["tool"].as_str().unwrap();
+        let authorized = json!({
+            "role":"rw", "ns":["workflow"],
+            "capabilities":contract["caller_capabilities"]
+        });
+
+        for service in services {
+            assert!(service.supports_mcp_tool_for_principal("workflow", tool, &authorized));
+            assert!(!service.supports_mcp_tool_for_principal("root", tool, &authorized));
+            for principal in [
+                json!({"role":"rw", "ns":["workflow"], "capabilities":["workflow.design.write"]}),
+                json!({"role":"rw", "ns":["workflow"], "capabilities":["write_graph"]}),
+                json!({"role":"ro", "ns":["workflow"], "capabilities":contract["caller_capabilities"]}),
+                json!({"role":"rw", "ns":["conversation"], "capabilities":contract["caller_capabilities"]}),
+            ] {
+                assert!(!service.supports_mcp_tool_for_principal("workflow", tool, &principal));
+                let response = service.execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: contract["rust_request"]["method"].as_str().unwrap().to_owned(),
+                    path_and_query: contract["rust_request"]["path_and_query"]
+                        .as_str().unwrap().to_owned(),
+                    body: serde_json::to_vec(&contract["arguments"]).unwrap(),
+                    principal,
+                }).await;
+                assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+            }
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};

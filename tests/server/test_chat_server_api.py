@@ -3153,6 +3153,37 @@ def test_workflow_design_node_upsert_matches_shared_contract(
         assert field not in body
 
 
+def test_workflow_design_node_upsert_requires_write_graph_before_effect(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    calls = []
+    monkeypatch.setattr(
+        service._workflow_design,
+        "workflow_design_upsert_node",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username="alice",
+            capabilities="workflow.design.write",
+        )
+        response = client.post(
+            "/api/workflow/design/wf-node-upsert-denied/nodes",
+            json={"designer_id": "alice", "node_id": "node-denied", "label": "Denied"},
+            headers=headers,
+        )
+
+    assert response.status_code == 403
+    assert calls == []
+
+
 def test_workflow_design_node_delete_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

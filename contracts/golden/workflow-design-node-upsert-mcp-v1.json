@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.design_node_upsert",
+  "arguments": {
+    "workflow_id": "wf-mcp-node-upsert",
+    "designer_id": "alice",
+    "node_id": "node-mcp-upsert",
+    "label": "Start",
+    "op": "start",
+    "start": true,
+    "terminal": false,
+    "fanout": false,
+    "metadata": {}
+  },
+  "caller_capabilities": [
+    "workflow.design.write",
+    "write_graph"
+  ],
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/design/wf-mcp-node-upsert/nodes",
+    "body": "{\"workflow_id\":\"wf-mcp-node-upsert\",\"designer_id\":\"alice\",\"node_id\":\"node-mcp-upsert\",\"label\":\"Start\",\"op\":\"start\",\"start\":true,\"terminal\":false,\"fanout\":false,\"metadata\":{}}"
+  },
+  "fixed_result_fields": {
+    "workflow_id": "wf-mcp-node-upsert",
+    "namespace": "wf_design:wf-mcp-node-upsert",
+    "node_id": "node-mcp-upsert",
+    "designer_id": "alice",
+    "version": 1,
+    "can_undo": true,
+    "can_redo": false
+  },
+  "integer_result_fields": ["seq"]
+}
