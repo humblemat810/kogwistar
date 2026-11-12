@@ -739,6 +739,33 @@ impl PostgresRunApplicationService {
                     "Reading budget data requires project_view and read_security_scope capabilities",
                 );
             }
+            // PYTHON_PARITY_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
+            if path == "/api/workflow/scheduler/timeline"
+                && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
+                    || !principal_strings(&request.principal, "ns")
+                        .iter()
+                        .any(|namespace| namespace == "workflow" || namespace == "*"))
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "Reading scheduler timeline requires ro/rw role and workflow namespace",
+                );
+            }
+            if path == "/api/workflow/scheduler/timeline"
+                && !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view"],
+                )
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                    "Reading scheduler timeline requires project_view capability",
+                );
+            }
             if path == "/api/workflow/operator/dashboard"
                 && let Some(error) =
                     operator_inbox_authorization_error(&request, &self.capabilities)

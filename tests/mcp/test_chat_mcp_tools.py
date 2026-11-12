@@ -1901,6 +1901,56 @@ async def test_mcp_workflow_scheduler_timeline_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_scheduler_timeline_denies_before_reads(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    timeline_reads: list[dict[str, object]] = []
+
+    def track_timeline(**kwargs: object) -> list[dict[str, object]]:
+        timeline_reads.append(kwargs)
+        return []
+
+    monkeypatch.setattr(service.scheduler, "timeline", track_timeline)
+    arguments = {"run_id": None, "limit": 10}
+    with _claims(
+        "ro", "workflow", sub="scheduler-no-cap", scope_parts={"capabilities": []}
+    ), pytest.raises(HTTPException) as denied:
+        await server.mcp._execute(
+            "workflow.scheduler_timeline", arguments, enforce_visibility=True
+        )
+    assert denied.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="scheduler-wrong-scope",
+        scope_parts={"capabilities": ["project_view"]},
+    ), pytest.raises(PermissionError):
+        await server.mcp._execute(
+            "workflow.scheduler_timeline", arguments, enforce_visibility=True
+        )
+    assert timeline_reads == []
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="scheduler-authorized",
+        scope_parts={"capabilities": ["project_view"]},
+    ):
+        result = await server.mcp._execute(
+            "workflow.scheduler_timeline", arguments, enforce_visibility=True
+        )
+    assert timeline_reads == [{"run_id": None, "limit": 10}]
+    assert _structured(result) == {"run_id": None, "events": []}
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_service_declare_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
