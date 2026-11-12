@@ -1041,6 +1041,7 @@ impl PostgresRunApplicationService {
         if matches!(
             &route,
             DesignRoute::Undo
+                | DesignRoute::Redo
                 | DesignRoute::NodeUpsert
                 | DesignRoute::NodeDelete(_)
                 | DesignRoute::EdgeUpsert
@@ -1062,7 +1063,10 @@ impl PostgresRunApplicationService {
         } else {
             "workflow.design.write"
         };
-        let required_capabilities: &[&str] = if matches!(&route, DesignRoute::Undo) {
+        let required_capabilities: &[&str] = if matches!(
+            &route,
+            DesignRoute::Undo | DesignRoute::Redo
+        ) {
             &["workflow.design.write", "approve_action"]
         } else if matches!(
             &route,

@@ -995,8 +995,8 @@ impl ApplicationService for PostgresRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: design undo requires rw/workflow plus workflow.design.write and approve_action; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_undo; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_undo; fixture=contracts/golden/workflow-design-undo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_undo_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_undo_denies_before_dispatch
-        if name == "workflow.design_undo" {
+        // PYTHON_PARITY_V1: undo/redo require rw/workflow plus workflow.design.write and approve_action; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_redo_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_denies_before_dispatch
+        if matches!(name, "workflow.design_undo" | "workflow.design_redo") {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
                 || !principal_strings(principal, "ns")
