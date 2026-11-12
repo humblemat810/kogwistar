@@ -1419,6 +1419,36 @@ def test_sse_support_remains_opt_in_until_ordering_and_resume_parity() -> None:
     assert "sse-ordering-and-resume" in conformance["conformance_profiles"][capability_id]
 
 
+def test_mcp_support_keeps_pending_syscalls_and_cutover_gate_explicit() -> None:
+    capability_id = "server-rest-sse-mcp-cli"
+    manifest = _manifest()
+    selector = next(
+        item
+        for item in manifest["implementation_selectors"]
+        if item["name"] == "KOGWISTAR_IMPL_SERVER"
+    )
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item for item in support_matrix["capabilities"] if item["id"] == capability_id
+    )
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == capability_id
+    )
+    deferred_syscalls = set(manifest["server_operation_deferrals"]["syscall_group"]["operations"])
+
+    assert selector["default"] == "python"
+    assert set(selector["accepted_modes"]) == {"python", "rust"}
+    assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
+    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert {
+        "openapi-and-mcp-contract-parity",
+        "authentication-acl-namespace-and-capability-parity",
+    } <= set(conformance["conformance_profiles"][capability_id])
+    assert deferred_syscalls == {"send_message", "receive_message", "mount_memory", "invoke_tool"}
+    assert set(conformance["rust_server_gaps"]["pending_syscalls"]) == deferred_syscalls
+
+
 def test_implementation_selector_manifest_matches_runtime_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
