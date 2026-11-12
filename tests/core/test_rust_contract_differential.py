@@ -631,6 +631,48 @@ def test_acl_edge_payload_digest_is_stable_through_rust_envelope(
 
 
 @pytest.mark.requires_rust
+def test_llm_edge_extraction_payload_digest_matches_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transient Python extraction DTO shares exact wire bytes with Rust."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture = json.loads(
+        (ROOT / "contracts" / "golden" / "llm-edge-extraction-model-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validation_payload = dict(fixture["payload"])
+    validation_payload["mentions"] = [
+        {**span, "insertion_method": "contract-test"}
+        for span in fixture["payload"]["mentions"]
+    ]
+    model = LLMEdgeExtraction.model_validate(validation_payload)
+    payload = model.model_dump(field_mode="llm", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+    assert _rust.canonical_json(json.dumps(payload, ensure_ascii=False)) == canonical_json
+
+    wire = stable_json_dumps(
+        {
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": payload,
+        }
+    )
+    _rust.validate_graph_model_family(wire)
+    round_trip = json.loads(round_trip_raw_graph_model_envelope(wire))
+    assert round_trip["model_class"] == "llm_edge_extraction"
+    assert round_trip["payload"] == fixture["payload"]
+    rust_payload_json = stable_json_dumps(round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
 def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatch) -> None:
     """Python and Rust must reject the same malformed Node/Edge contract cases."""
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")

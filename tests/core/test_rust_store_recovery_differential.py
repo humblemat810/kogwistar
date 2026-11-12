@@ -604,6 +604,62 @@ def test_sqlite_rebuild_recovers_python_persisted_llm_derived_node(
 
 
 @pytest.mark.parametrize(
+    ("fixture_name", "projection_key"),
+    [
+        ("conversation-edge-model-v1.json", "conversation-edge"),
+        ("workflow-edge-model-v1.json", "workflow-edge"),
+        ("llm-edge-model-v1.json", "llm-edge"),
+        ("llm-edge-flattened-model-v1.json", "llm-edge-flattened"),
+        ("llm-edge-assoc-flattened-model-v1.json", "llm-edge-assoc-flattened"),
+    ],
+)
+def test_sqlite_rebuild_recovers_python_persisted_derived_edge(
+    tmp_path: Path,
+    fixture_name: str,
+    projection_key: str,
+) -> None:
+    """Rust SQLite replay preserves Python-authored derived edge payloads."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / fixture_name
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id=f"python-{projection_key}",
+        entity_kind="edge",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer=f"{projection_key}-recovery",
+        projection_namespace="derived-edge-projection",
+        projection_key=projection_key,
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    entity_key = json.dumps(["edge", payload["id"]], separators=(",", ":"))
+    restored = json.loads(reopened["canonical_payload"])
+    assert restored["entities"][entity_key]["entity"] == payload
+
+
+@pytest.mark.parametrize(
     ("fixture_name", "entity_kind"),
     [
         ("workflow-run-node-model-v1.json", "node"),
@@ -615,6 +671,11 @@ def test_sqlite_rebuild_recovers_python_persisted_llm_derived_node(
         ("llm-node-extraction-model-v1.json", "node"),
         ("llm-node-flattened-model-v1.json", "node"),
         ("llm-node-assoc-flattened-model-v1.json", "node"),
+        ("conversation-edge-model-v1.json", "edge"),
+        ("workflow-edge-model-v1.json", "edge"),
+        ("llm-edge-model-v1.json", "edge"),
+        ("llm-edge-flattened-model-v1.json", "edge"),
+        ("llm-edge-assoc-flattened-model-v1.json", "edge"),
         ("workflow-runtime-edge-model-v1.json", "edge"),
     ],
 )

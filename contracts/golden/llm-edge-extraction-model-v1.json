@@ -2,6 +2,7 @@
   "schema_version": 1,
   "model_class": "llm_edge_extraction",
   "origin": "Python LLMEdgeExtraction.model_dump(field_mode=llm, dump_format=json)",
+  "canonical_json_sha256": "f0456aa6156093bd586624c60e7f8ff71a07e0a89b87b5b2ec56805d4dd5989c",
   "payload": {
     "canonical_entity_id": null,
     "domain_id": null,
