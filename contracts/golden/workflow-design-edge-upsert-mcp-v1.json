@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.design_edge_upsert",
+  "arguments": {
+    "workflow_id": "wf-mcp-upsert",
+    "designer_id": "alice",
+    "edge_id": "edge-mcp-upsert",
+    "src": "node-start",
+    "dst": "node-end",
+    "relation": "wf_next",
+    "predicate": null,
+    "priority": 100,
+    "is_default": true,
+    "multiplicity": "one",
+    "metadata": {}
+  },
+  "caller_capabilities": [
+    "workflow.design.write",
+    "write_graph"
+  ],
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/design/wf-mcp-upsert/edges",
+    "body": "{\"workflow_id\":\"wf-mcp-upsert\",\"designer_id\":\"alice\",\"edge_id\":\"edge-mcp-upsert\",\"src\":\"node-start\",\"dst\":\"node-end\",\"relation\":\"wf_next\",\"predicate\":null,\"priority\":100,\"is_default\":true,\"multiplicity\":\"one\",\"metadata\":{}}"
+  },
+  "result": {
+    "workflow_id": "wf-mcp-upsert",
+    "namespace": "wf_design:wf-mcp-upsert",
+    "edge_id": "edge-mcp-upsert",
+    "designer_id": "alice",
+    "version": 4,
+    "seq": 5,
+    "can_undo": true,
+    "can_redo": false
+  }
+}

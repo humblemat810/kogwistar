@@ -4809,6 +4809,93 @@ async def test_mcp_workflow_design_edge_delete_denies_before_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_design_edge_upsert_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-edge-upsert-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[dict[str, Any]] = []
+
+    def upsert_edge(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return contract["result"]
+
+    monkeypatch.setattr(service._workflow_design, "workflow_design_upsert_edge", upsert_edge)
+    with _claims(
+        "rw",
+        "workflow",
+        sub=contract["arguments"]["designer_id"],
+        scope_parts={"capabilities": contract["caller_capabilities"]},
+    ):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert _structured(result) == contract["result"]
+    assert calls == [
+        {
+            **contract["arguments"],
+            "actor_sub": contract["arguments"]["designer_id"],
+            "source": "mcp",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_design_edge_upsert_denies_before_dispatch(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-edge-upsert-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        service._workflow_design,
+        "workflow_design_upsert_edge",
+        lambda **kwargs: calls.append(kwargs) or contract["result"],
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.design.write"]},
+    ), pytest.raises(HTTPException) as denied:
+        await server.mcp._execute(
+            contract["tool"], contract["arguments"], enforce_visibility=True
+        )
+    assert denied.value.status_code == 403
+
+    for role, namespace in (("ro", "workflow"), ("rw", "conversation")):
+        with _claims(
+            role,
+            namespace,
+            sub="alice",
+            scope_parts={"capabilities": contract["caller_capabilities"]},
+        ), pytest.raises(PermissionError):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):

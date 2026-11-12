@@ -323,7 +323,10 @@ impl SqliteRunApplicationService {
         workflow_id: &str,
         route: DesignRoute,
     ) -> ApiEffectResponse {
-        if matches!(&route, DesignRoute::EdgeDelete(_))
+        if matches!(
+            &route,
+            DesignRoute::EdgeUpsert | DesignRoute::EdgeDelete(_)
+        )
             && (principal_role(&request.principal) != "rw"
                 || !principal_strings(&request.principal, "ns")
                     .iter()
@@ -332,7 +335,7 @@ impl SqliteRunApplicationService {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_SCOPE_FORBIDDEN",
-                "Deleting workflow edges requires rw role and workflow namespace",
+                "Modifying workflow edges requires rw role and workflow namespace",
             );
         }
         let required = if matches!(route, DesignRoute::Graph | DesignRoute::History) {
@@ -340,7 +343,10 @@ impl SqliteRunApplicationService {
         } else {
             "workflow.design.write"
         };
-        let required_capabilities: &[&str] = if matches!(&route, DesignRoute::EdgeDelete(_)) {
+        let required_capabilities: &[&str] = if matches!(
+            &route,
+            DesignRoute::EdgeUpsert | DesignRoute::EdgeDelete(_)
+        ) {
             &["workflow.design.write", "write_graph"]
         } else {
             &[required]
