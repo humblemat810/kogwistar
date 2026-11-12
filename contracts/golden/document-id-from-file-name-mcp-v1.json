@@ -1,0 +1,8 @@
+{
+  "contract_version": 1,
+  "operation": "document_id_from_file_name",
+  "arguments": {"file_name": "document-id-fixture"},
+  "expected_file_name": "document-id-fixture",
+  "short_id_prefix": "<sid>",
+  "expected_canonical_id": "document-id-fixture"
+}

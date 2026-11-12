@@ -1731,6 +1731,7 @@ async fn mcp_dispatch(
                 "conversation_id": conversation_id,
                 "turns": turns,
             });
+        // PYTHON_PARITY_V1: preserve filename and return a caller-scoped reversible short ID; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/mcp_tools.py#document_id_from_file_name; fixture=contracts/golden/document-id-from-file-name-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_document_id_mcp_returns_python_compatible_short_id_mapping; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_mcp_matches_shared_contract
         } else if tool_name == "document_id_from_file_name" {
             let Some(ids) = result.get("ids").and_then(Value::as_array) else {
                 return Json(json!({

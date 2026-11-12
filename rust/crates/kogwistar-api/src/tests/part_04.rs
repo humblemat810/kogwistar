@@ -1258,6 +1258,12 @@
         use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use tower::ServiceExt;
 
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-id-from-file-name-mcp-v1.json"
+        )))
+        .unwrap();
+
         let nonce = uuid::Uuid::new_v4();
         let path = std::env::temp_dir().join(format!("kogwistar-document-mcp-{nonce}.sqlite3"));
         let service = SqliteRunApplicationService::open(&path).unwrap();
@@ -1284,7 +1290,10 @@
             DocumentProjectionUpsert {
                 scope,
                 record: GraphRecord {
-                    id: "source-document-1".to_owned(),
+                    id: contract["expected_canonical_id"]
+                        .as_str()
+                        .unwrap()
+                        .to_owned(),
                     document: Some("source text".to_owned()),
                     metadata: Default::default(),
                     embedding: None,
@@ -1317,7 +1326,16 @@
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {bearer}"))
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"lookup","method":"tools/call","params":{"name":"document_id_from_file_name","arguments":{"file_name":"source-document-1"}}}"#,
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":"lookup",
+                            "method":"tools/call",
+                            "params": {
+                                "name": contract["operation"],
+                                "arguments": contract["arguments"]
+                            }
+                        })
+                        .to_string(),
                     ))
                     .unwrap(),
             )
@@ -1327,13 +1345,13 @@
         let body = to_bytes(response.into_body(), 65_536).await.unwrap();
         let payload: Value = serde_json::from_slice(&body).unwrap();
         let mapping = &payload["result"]["id_mapping"][0];
-        assert_eq!(mapping["file_name"], "source-document-1");
+        assert_eq!(mapping["file_name"], contract["expected_file_name"]);
         let short_id = mapping["id"].as_str().unwrap();
-        assert!(short_id.starts_with("<sid>"));
+        assert!(short_id.starts_with(contract["short_id_prefix"].as_str().unwrap()));
         let map_key = crate::short_id_store::short_id_map_key_for_bearer(Some(&bearer));
         assert_eq!(
             crate::short_id_store::canonical_id_for(".shortids", &map_key, short_id).unwrap(),
-            "source-document-1"
+            contract["expected_canonical_id"].as_str().unwrap()
         );
 
         drop(service);

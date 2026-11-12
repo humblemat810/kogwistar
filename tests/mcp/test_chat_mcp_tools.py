@@ -205,6 +205,46 @@ async def test_mcp_stage1_read_and_semantic_visibility(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_document_id_from_file_name_mcp_matches_shared_contract(
+    monkeypatch, tmp_path
+):
+    from types import SimpleNamespace
+
+    from kogwistar.server import mcp_tools
+    from kogwistar.shortids import ShortIdMapper
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-id-from-file-name-mcp-v1.json"
+    )
+    contract = json.loads(fixture_path.read_text(encoding="utf-8"))
+    mapper = ShortIdMapper(f"document-id-mcp-{uuid.uuid4()}", str(tmp_path))
+    canonical_id = contract["expected_canonical_id"]
+    backend = SimpleNamespace(
+        document_get=lambda *, ids: {"ids": [canonical_id] if canonical_id in ids else []}
+    )
+    monkeypatch.setattr(mcp_tools, "engine", _FixedResource(SimpleNamespace(backend=backend)))
+    monkeypatch.setattr(mcp_tools.shortids, "_mapper_for_current_run", lambda: mapper)
+
+    with _claims("ro", "docs", scope_parts={"capabilities": ["read_graph"]}):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+
+    mapping = _structured(result)["id_mapping"]
+    assert mapping == [
+        {
+            "file_name": contract["expected_file_name"],
+            "id": mapping[0]["id"],
+        }
+    ]
+    assert mapping[0]["id"].startswith(contract["short_id_prefix"])
+    assert mapper.s2l_id(mapping[0]["id"]) == canonical_id
+
+
+@pytest.mark.asyncio
 async def test_python_only_mcp_graph_read_does_not_load_rust(monkeypatch, tmp_path):
     from kogwistar._rust_bridge import RustExtensionUnavailableError
     from kogwistar.server import mcp_tools
