@@ -413,6 +413,14 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
             raise RuntimeError("native graph projection read returned invalid records")
         return [cast(JsonObject, record) for record in result]
 
+    def graph_incident_edges(self, **values: JsonValue) -> list[JsonObject]:
+        result = self._call("graph_incident_edges", **values)
+        if not isinstance(result, list) or not all(
+            _valid_graph_projection_record(record) for record in result
+        ):
+            raise RuntimeError("native incident-edge read returned invalid records")
+        return [cast(JsonObject, record) for record in result]
+
     def node_index_upsert(
         self, *, records: list[JsonObject], table: str = "gke_node_index"
     ) -> None:

@@ -291,6 +291,26 @@ async fn postgres_store_operation_json(
                 records.into_iter().map(graph_record_json).collect(),
             ))
         }
+        PostgresStoreOperation::GraphIncidentEdges {
+            namespace,
+            workspace_id,
+            graph_space,
+            endpoint_id,
+            endpoint_kind,
+            limit,
+        } => {
+            let records = store
+                .graph_incident_edges(kogwistar_store::GraphIncidentEdgeRead {
+                    scope: graph_scope(namespace, workspace_id, graph_space),
+                    endpoint_id,
+                    endpoint_kind,
+                    limit,
+                })
+                .await?;
+            Ok(Value::Array(
+                records.into_iter().map(graph_record_json).collect(),
+            ))
+        }
         PostgresStoreOperation::GraphProjectionVectorQuery {
             namespace,
             workspace_id,
@@ -1323,6 +1343,26 @@ async fn postgres_uow_operation_json(
                     table,
                     ids,
                     metadata: metadata_filter(metadata),
+                    limit,
+                })
+                .await?;
+            Ok(Value::Array(
+                records.into_iter().map(graph_record_json).collect(),
+            ))
+        }
+        PostgresStoreOperation::GraphIncidentEdges {
+            namespace,
+            workspace_id,
+            graph_space,
+            endpoint_id,
+            endpoint_kind,
+            limit,
+        } => {
+            let records = uow
+                .graph_incident_edges(kogwistar_store::GraphIncidentEdgeRead {
+                    scope: graph_scope(namespace, workspace_id, graph_space),
+                    endpoint_id,
+                    endpoint_kind,
                     limit,
                 })
                 .await?;

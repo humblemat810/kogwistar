@@ -1,8 +1,9 @@
 // Domain-focused tests; shared fixtures live in the parent test module.
 use super::*;
 use kogwistar_store::{
-    DistanceMetric, GraphMutation, GraphProjectionVectorQuery, GraphRecord, GraphScope,
-    MetadataFilter, NodeIndexStore, VectorCollectionStore, VectorQuery, similarity_from_distance,
+    DistanceMetric, GraphEndpointKind, GraphIncidentEdgeRead, GraphMutation,
+    GraphProjectionVectorQuery, GraphRecord, GraphScope, MetadataFilter, NodeIndexStore,
+    VectorCollectionStore, VectorQuery, similarity_from_distance,
 };
 
 #[test]
@@ -253,6 +254,47 @@ async fn postgres_edge_mutation_persists_shared_endpoint_projection_when_dsn_ava
             embedding_dim: 3,
         })
         .await?;
+
+    for (endpoint_id, endpoint_kind, should_match) in [
+        ("node-source", GraphEndpointKind::Node, true),
+        ("edge-parent", GraphEndpointKind::Edge, true),
+        ("edge-parent", GraphEndpointKind::Node, false),
+        ("node-source", GraphEndpointKind::Edge, false),
+    ] {
+        let rows = store
+            .graph_incident_edges(GraphIncidentEdgeRead {
+                scope: scope.clone(),
+                endpoint_id: endpoint_id.to_owned(),
+                endpoint_kind,
+                limit: 10,
+            })
+            .await?;
+        assert_eq!(rows.iter().any(|row| row.id == edge_id), should_match);
+    }
+    let wrong_scope = store
+        .graph_incident_edges(GraphIncidentEdgeRead {
+            scope: GraphScope {
+                namespace: format!("{namespace}-other"),
+                workspace_id: None,
+                graph_space: None,
+            },
+            endpoint_id: "node-source".to_owned(),
+            endpoint_kind: GraphEndpointKind::Node,
+            limit: 10,
+        })
+        .await?;
+    assert!(wrong_scope.is_empty());
+    assert!(
+        store
+            .graph_incident_edges(GraphIncidentEdgeRead {
+                scope: scope.clone(),
+                endpoint_id: "node-source".to_owned(),
+                endpoint_kind: GraphEndpointKind::Node,
+                limit: 0,
+            })
+            .await?
+            .is_empty()
+    );
 
     let client = store.client().await?;
     let persisted = client

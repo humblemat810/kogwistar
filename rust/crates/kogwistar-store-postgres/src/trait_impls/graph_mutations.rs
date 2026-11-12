@@ -41,6 +41,15 @@ impl GraphMutationStore for PostgresStore {
             .map_err(trait_error)
     }
 
+    async fn graph_incident_edges(
+        &self,
+        read: GraphIncidentEdgeRead,
+    ) -> StoreResult<Vec<GraphRecord>> {
+        PostgresStore::graph_incident_edges(self, read)
+            .await
+            .map_err(trait_error)
+    }
+
     async fn graph_projection_page(
         &self,
         page: GraphProjectionPageRead,

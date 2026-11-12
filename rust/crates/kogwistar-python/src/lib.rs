@@ -499,6 +499,33 @@ mod tests {
     }
 
     #[test]
+    fn postgres_incident_edge_read_has_typed_endpoint_contract() {
+        for endpoint_kind in ["node", "edge"] {
+            let request = json!({
+                "kind": "graph_incident_edges",
+                "namespace": "knowledge",
+                "endpoint_id": "endpoint-1",
+                "endpoint_kind": endpoint_kind,
+                "limit": 32
+            });
+            validate_postgres_operation(&request)
+                .expect("incident-edge request fields should be allowlisted");
+            serde_json::from_value::<PostgresStoreOperation>(request)
+                .expect("typed endpoint grain should deserialize");
+        }
+        let invalid = json!({
+            "kind": "graph_incident_edges",
+            "namespace": "knowledge",
+            "endpoint_id": "endpoint-1",
+            "endpoint_kind": "hyperedge",
+            "limit": 32
+        });
+        validate_postgres_operation(&invalid)
+            .expect("field inventory is independent of enum value validation");
+        assert!(serde_json::from_value::<PostgresStoreOperation>(invalid).is_err());
+    }
+
+    #[test]
     fn postgres_bridge_accepts_typed_graph_mutation_envelope() {
         validate_postgres_operation(&json!({
             "kind": "graph_mutation",

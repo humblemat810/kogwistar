@@ -1,6 +1,14 @@
 use super::*;
 
 impl PostgresUnitOfWork<'_> {
+    /// Read incident edges through this transaction's authoritative snapshot.
+    pub async fn graph_incident_edges(
+        &self,
+        read: GraphIncidentEdgeRead,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        graph_incident_edges(&self.transaction, &self.tables, read).await
+    }
+
     fn graph_tables_for_schema(&self, schema: &str) -> PostgresStoreResult<&Tables> {
         self.graph_tables_by_schema.get(schema).ok_or_else(|| {
             PostgresStoreError::Backend(format!(

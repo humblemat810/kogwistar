@@ -935,6 +935,15 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "limit",
             "for_update",
         ][..],
+        "graph_incident_edges" => &[
+            "kind",
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "endpoint_id",
+            "endpoint_kind",
+            "limit",
+        ][..],
         "graph_projection_vector_query" => &[
             "kind",
             "namespace",

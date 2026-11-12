@@ -389,6 +389,23 @@ pub struct GraphProjectionPageRead {
     pub after_id: Option<String>,
 }
 
+/// Typed endpoint grain for canonical edge-membership reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraphEndpointKind {
+    Node,
+    Edge,
+}
+
+/// Read canonical graph edges that reference one typed endpoint.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GraphIncidentEdgeRead {
+    pub scope: GraphScope,
+    pub endpoint_id: String,
+    pub endpoint_kind: GraphEndpointKind,
+    pub limit: usize,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GraphProjectionVectorQuery {
     pub scope: GraphScope,
@@ -463,6 +480,19 @@ pub trait GraphMutationStore: Send + Sync {
         &self,
         read: GraphProjectionRead,
     ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send;
+    /// Read incident edges from canonical edge records. Default is fail-closed
+    /// so existing store implementations do not silently scan another backend.
+    fn graph_incident_edges(
+        &self,
+        _read: GraphIncidentEdgeRead,
+    ) -> impl Future<Output = StoreResult<Vec<GraphRecord>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "graph-incident-edges".to_owned(),
+                message: "canonical incident-edge reads are not supported by this store".to_owned(),
+            })
+        }
+    }
     /// Read one keyset page. The default fails closed so older store
     /// implementations remain source-compatible without pretending to page.
     fn graph_projection_page(

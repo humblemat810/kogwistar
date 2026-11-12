@@ -794,47 +794,72 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             return []
         if endpoint_type not in {"node", "edge"}:
             raise ValueError("endpoint_type must be 'node' or 'edge'")
-        if self._rust_postgres_projection_selected():
-            raise RuntimeError(
-                "Rust-selected PostgreSQL incident-edge reads are not "
-                "implemented; refusing Python backend fallback"
-            )
         selected_edge_type = edge_type or default_edge_type_for_graph_kind(
             self._e.kg_graph_type
         )
-        backend_query = getattr(self._e.backend, "edge_get_by_endpoint", None)
-        if callable(backend_query):
-            got = _json_object(
-                run_awaitable_blocking(
-                    backend_query(
-                        endpoint_id=endpoint_id,
-                        endpoint_type=endpoint_type,
-                        include=["documents", "metadatas"],
-                        limit=limit,
-                    )
+        if self._rust_postgres_projection_selected():
+            from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+            meta = getattr(self._e, "metadata", None)
+            if not isinstance(meta, RustEnginePostgresMetaStore):
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL incident-edge reads require the "
+                    "native metadata store; refusing Python backend fallback"
                 )
+            records = meta.graph_incident_edges(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=None,
+                graph_space=None,
+                endpoint_id=endpoint_id,
+                endpoint_kind=endpoint_type,
+                limit=max(0, int(limit)),
             )
+            got: JsonObject = {
+                "ids": [str(record.get("id") or "") for record in records],
+                "documents": [record.get("document") for record in records],
+                "metadatas": [
+                    _json_object(record.get("metadata") or {}) for record in records
+                ],
+            }
             edges = self.edges_from_single_or_id_query_result(
                 got,
                 edge_type=selected_edge_type,
                 include=["documents", "metadatas"],
             )
         else:
-            edges = [
-                edge
-                for edge in self.get_edges(
+            backend_query = getattr(self._e.backend, "edge_get_by_endpoint", None)
+            if callable(backend_query):
+                got = _json_object(
+                    run_awaitable_blocking(
+                        backend_query(
+                            endpoint_id=endpoint_id,
+                            endpoint_type=endpoint_type,
+                            include=["documents", "metadatas"],
+                            limit=limit,
+                        )
+                    )
+                )
+                edges = self.edges_from_single_or_id_query_result(
+                    got,
                     edge_type=selected_edge_type,
-                    limit=limit,
-                    resolve_mode=resolve_mode,
+                    include=["documents", "metadatas"],
                 )
-                if _edge_has_endpoint(
-                    edge, endpoint_id=endpoint_id, endpoint_type=endpoint_type
+            else:
+                edges = [
+                    edge
+                    for edge in self.get_edges(
+                        edge_type=selected_edge_type,
+                        limit=limit,
+                        resolve_mode=resolve_mode,
+                    )
+                    if _edge_has_endpoint(
+                        edge, endpoint_id=endpoint_id, endpoint_type=endpoint_type
+                    )
+                ]
+                return cast(
+                    list[Edge],
+                    self._e._filter_items_by_resolve_mode(edges, resolve_mode),
                 )
-            ]
-            return cast(
-                list[Edge],
-                self._e._filter_items_by_resolve_mode(edges, resolve_mode),
-            )
 
         edges = self._e._resolve_redirect_chain(
             initial_items=edges,

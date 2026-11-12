@@ -16,6 +16,58 @@ where
     graph_projection_records_with_lock(client, tables, read, after_id, keyset_page, false).await
 }
 
+pub(crate) async fn graph_incident_edges<C>(
+    client: &C,
+    tables: &Tables,
+    read: GraphIncidentEdgeRead,
+) -> PostgresStoreResult<Vec<GraphRecord>>
+where
+    C: GenericClient + Sync,
+{
+    if read.scope.namespace.is_empty() {
+        return Err(StoreError::EmptyNamespace.into());
+    }
+    if read.endpoint_id.is_empty() {
+        return Err(StoreError::InvalidIdentifier {
+            identifier: "graph endpoint id",
+        }
+        .into());
+    }
+    if read.limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let table = graph_table(tables, "gke_edges")?;
+    let metadata_fields = match read.endpoint_kind {
+        GraphEndpointKind::Node => ["source_ids", "target_ids"],
+        GraphEndpointKind::Edge => ["source_edge_ids", "target_edge_ids"],
+    };
+    let limit = i64::try_from(read.limit).unwrap_or(i64::MAX);
+    let endpoint_json = serde_json::to_string(&[read.endpoint_id])?;
+    let rows = client
+        .query(
+            &format!(
+                "SELECT id, document, metadata::TEXT, NULL::TEXT FROM {table} \
+                 WHERE {} AND ((COALESCE(document::JSONB -> $4::TEXT, metadata -> $4::TEXT)) @> $5::TEXT::JSONB \
+                   OR (COALESCE(document::JSONB -> $6::TEXT, metadata -> $6::TEXT)) @> $5::TEXT::JSONB) \
+                 ORDER BY id COLLATE \"C\" ASC LIMIT $7",
+                graph_scope_identity_predicate(1),
+            ),
+            &[
+                &read.scope.namespace,
+                &read.scope.workspace_id.as_deref().unwrap_or(""),
+                &read.scope.graph_space.as_deref().unwrap_or(""),
+                &metadata_fields[0],
+                &endpoint_json,
+                &metadata_fields[1],
+                &limit,
+            ],
+        )
+        .await
+        .map_err(backend)?;
+    rows.iter().map(graph_record_from_row).collect()
+}
+
 pub(crate) async fn graph_projection_records_with_lock<C>(
     client: &C,
     tables: &Tables,

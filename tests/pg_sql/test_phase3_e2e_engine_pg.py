@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -97,7 +98,7 @@ def test_phase3_e2e_engine_edges_by_doc_pg(
 
 
 def test_incident_edge_lookup_is_canonical_and_joins_postgres_transaction(
-    tmp_path: Path, sa_engine, pg_schema
+    tmp_path: Path, sa_engine, pg_schema, monkeypatch
 ) -> None:
     import json
 
@@ -178,6 +179,40 @@ def test_incident_edge_lookup_is_canonical_and_joins_postgres_transaction(
         ordinary.safe_get_id(), endpoint_type="edge"
     )
     assert [edge.safe_get_id() for edge in by_edge] == [hyperedge.safe_get_id()]
+
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
+
+    class NoPythonReadFallback:
+        def edge_get_by_endpoint(self, **_values):
+            raise AssertionError("Rust-selected read crossed into Python backend")
+
+    with monkeypatch.context() as rust_selectors:
+        rust_selectors.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+        rust_metadata = RustEnginePostgresMetaStore(
+            dsn=sa_engine.url.render_as_string(hide_password=False), schema=pg_schema
+        )
+        rust_reader = ReadSubsystem(
+            SimpleNamespace(
+                metadata=rust_metadata,
+                backend=NoPythonReadFallback(),
+                namespace="default",
+                kg_graph_type="knowledge",
+                _resolve_redirect_chain=lambda *, initial_items, **_values: initial_items,
+                _filter_items_by_resolve_mode=lambda items, _mode: items,
+            )
+        )
+        rust_by_left = rust_reader.get_incident_edges(left.safe_get_id())
+        assert {edge.safe_get_id() for edge in rust_by_left} == {
+            ordinary.safe_get_id(),
+            single_endpoint.safe_get_id(),
+        }
+        rust_by_edge = rust_reader.get_incident_edges(
+            ordinary.safe_get_id(), endpoint_type="edge"
+        )
+        assert [edge.safe_get_id() for edge in rust_by_edge] == [
+            hyperedge.safe_get_id()
+        ]
 
     transient = _make_edge(
         src=left.safe_get_id(),

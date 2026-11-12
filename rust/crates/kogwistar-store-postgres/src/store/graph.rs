@@ -1,6 +1,15 @@
 use super::super::*;
 
 impl PostgresStore {
+    /// Read edges that reference one typed endpoint from canonical edge rows.
+    pub async fn graph_incident_edges(
+        &self,
+        read: GraphIncidentEdgeRead,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        let client = self.client().await?;
+        graph_incident_edges(&**client, &self.tables, read).await
+    }
+
     /// Apply graph projection row and authoritative event in one PostgreSQL
     /// transaction.  `gke_*` remains Python's schema; this merely joins it.
     pub async fn apply_graph_mutation(

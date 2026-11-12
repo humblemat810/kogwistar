@@ -1394,16 +1394,7 @@ def test_postgres_meta_facade_requires_active_rust_transaction_for_row_lock(
         )
 
 
-@pytest.mark.parametrize(
-    ("operation", "message"),
-    [
-        ("get_edge_endpoints", "structural endpoint reads"),
-        ("get_incident_edges", "incident-edge reads"),
-    ],
-)
-def test_rust_selected_structural_edge_reads_fail_before_python_backend(
-    monkeypatch, operation, message
-):
+def test_rust_selected_structural_edge_reads_fail_before_python_backend(monkeypatch):
     class Backend:
         def edge_endpoints_get(self, **_values):
             raise AssertionError("Rust-selected read crossed into Python backend")
@@ -1415,11 +1406,97 @@ def test_rust_selected_structural_edge_reads_fail_before_python_backend(
     reader = ReadSubsystem(engine)
     monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
 
-    with pytest.raises(RuntimeError, match=f"{message}.*refusing Python backend fallback"):
-        if operation == "get_edge_endpoints":
-            reader.get_edge_endpoints()
-        else:
-            reader.get_incident_edges("node-1")
+    with pytest.raises(
+        RuntimeError,
+        match="structural endpoint reads.*refusing Python backend fallback",
+    ):
+        reader.get_edge_endpoints()
+
+
+def test_postgres_meta_facade_validates_native_incident_edge_records(monkeypatch):
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    calls: list[tuple[str, dict]] = []
+    record = {"id": "edge-1", "document": "{}", "metadata": {}, "embedding": None}
+
+    def native_call(operation, **values):
+        calls.append((operation, values))
+        return [record]
+
+    monkeypatch.setattr(store, "_call", native_call)
+    assert store.graph_incident_edges(
+        namespace="alpha",
+        endpoint_id="node-1",
+        endpoint_kind="node",
+        limit=8,
+    ) == [record]
+    assert calls == [
+        (
+            "graph_incident_edges",
+            {
+                "namespace": "alpha",
+                "endpoint_id": "node-1",
+                "endpoint_kind": "node",
+                "limit": 8,
+            },
+        )
+    ]
+
+
+def test_rust_selected_incident_edge_read_uses_native_canonical_query(monkeypatch):
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://example/db", schema="test"
+    )
+    edge = build_relationship_edge(
+        edge_id="edge-1", src="node-1", tgt="node-2", doc_id="doc-1"
+    )
+    with use_mode("backend"):
+        edge_document = edge.model_dump_json()
+    native_calls: list[dict] = []
+
+    def native_incident_edges(**values):
+        native_calls.append(values)
+        return [
+            {
+                "id": "edge-1",
+                "document": edge_document,
+                "metadata": {"namespace": "alpha"},
+                "embedding": None,
+            }
+        ]
+
+    monkeypatch.setattr(store, "graph_incident_edges", native_incident_edges)
+
+    class Backend:
+        def edge_get_by_endpoint(self, **_values):
+            raise AssertionError("Rust-selected incident read used Python backend")
+
+    engine = SimpleNamespace(
+        metadata=store,
+        backend=Backend(),
+        namespace="alpha",
+        kg_graph_type="knowledge",
+        _resolve_redirect_chain=lambda *, initial_items, **_values: initial_items,
+        _filter_items_by_resolve_mode=lambda items, _mode: items,
+    )
+    reader = ReadSubsystem(engine)
+    monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+
+    actual_edges = reader.get_incident_edges("node-1")
+    assert [item.safe_get_id() for item in actual_edges] == ["edge-1"]
+    assert actual_edges[0].source_ids == ["node-1"]
+    assert actual_edges[0].target_ids == ["node-2"]
+    assert native_calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "endpoint_id": "node-1",
+            "endpoint_kind": "node",
+            "limit": 512,
+        }
+    ]
 
 
 def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatch):

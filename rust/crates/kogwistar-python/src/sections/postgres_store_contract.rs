@@ -186,6 +186,17 @@ enum PostgresStoreOperation {
         #[serde(default)]
         for_update: bool,
     },
+    GraphIncidentEdges {
+        namespace: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        graph_space: Option<String>,
+        endpoint_id: String,
+        endpoint_kind: kogwistar_store::GraphEndpointKind,
+        #[serde(default = "default_list_limit")]
+        limit: usize,
+    },
     GraphProjectionVectorQuery {
         namespace: String,
         #[serde(default)]
