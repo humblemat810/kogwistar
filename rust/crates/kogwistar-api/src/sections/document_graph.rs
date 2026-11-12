@@ -1150,6 +1150,55 @@ impl SqliteRunApplicationService {
             Err(error) => graph_upsert_commit_error(error),
         }
     }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#sqlite_public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
+    async fn sqlite_public_document_tree_upsert_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let (graph_request, inserted_nodes, inserted_edges) =
+            match document_tree_upsert_graph_request(request) {
+                Ok(parsed) => parsed,
+                Err(response) => return response,
+            };
+        let response = self.sqlite_public_graph_upsert_effect(&graph_request).await;
+        if !(200..300).contains(&response.status) {
+            return response;
+        }
+        let result: Value = match serde_json::from_slice(&response.body) {
+            Ok(result) => result,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_GRAPH_UPSERT_RESPONSE_INVALID",
+                    error.to_string(),
+                );
+            }
+        };
+        let Some(document_id) = result.get("document_id").and_then(Value::as_str) else {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_GRAPH_UPSERT_RESPONSE_INVALID",
+                "graph upsert response did not include document_id",
+            );
+        };
+        let engine_result = json!({
+            "document_id": document_id,
+            "node_ids": result.get("node_ids").cloned().unwrap_or_else(|| json!([])),
+            "edge_ids": result.get("edge_ids").cloned().unwrap_or_else(|| json!([])),
+            "nodes_added": result.get("nodes_added").cloned().unwrap_or_else(|| json!(0)),
+            "edges_added": result.get("edges_added").cloned().unwrap_or_else(|| json!(0)),
+        });
+        json_effect(
+            StatusCode::OK,
+            json!({
+                "status": "ok",
+                "inserted_nodes": inserted_nodes,
+                "inserted_edges": inserted_edges,
+                "engine_result": engine_result,
+            }),
+        )
+    }
 }
 
 #[cfg(test)]

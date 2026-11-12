@@ -9347,7 +9347,9 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     let standalone = SqliteRunApplicationService::open(&standalone_path).unwrap();
     assert_eq!(standalone.graph_role, "knowledge");
     assert!(!standalone.supports_http_operation("POST", PUBLIC_GRAPH_UPSERT_ROUTE));
+    assert!(!standalone.supports_http_operation("POST", PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE));
     assert!(service.supports_http_operation("POST", PUBLIC_GRAPH_UPSERT_ROUTE));
+    assert!(service.supports_http_operation("POST", PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE));
 
     let mut extraction: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -9419,6 +9421,7 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         Arc::new(service.clone()),
     );
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -9461,7 +9464,52 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     assert_eq!(payload["nodes_added"], expected_body["nodes_added"]);
     assert_eq!(payload["edges_added"], expected_body["edges_added"]);
 
+    let legacy_tree = json!({
+        "doc_id": extraction["doc_id"],
+        "insertion_method": "legacy-parser-v1",
+        "nodes": extraction["nodes"],
+        "edges": extraction["edges"],
+    });
+    let legacy_tree_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(&legacy_tree).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let legacy_tree_status = legacy_tree_response.status();
+    let legacy_tree_body = to_bytes(legacy_tree_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    assert_eq!(
+        legacy_tree_status,
+        StatusCode::OK,
+        "legacy tree upsert failed: {}",
+        String::from_utf8_lossy(&legacy_tree_body)
+    );
+    let legacy_result: Value = serde_json::from_slice(&legacy_tree_body).unwrap();
+    assert_eq!(legacy_result["status"], "ok");
+    assert_eq!(legacy_result["inserted_nodes"], 2);
+    assert_eq!(legacy_result["inserted_edges"], 1);
+    assert_eq!(legacy_result["engine_result"]["document_id"], "doc-1");
+    let legacy_node_ids = legacy_result["engine_result"]["node_ids"]
+        .as_array()
+        .unwrap();
+    let legacy_edge_ids = legacy_result["engine_result"]["edge_ids"]
+        .as_array()
+        .unwrap();
+    assert_eq!(legacy_node_ids.len(), 2);
+    assert_eq!(legacy_edge_ids.len(), 1);
+
     let events = service.store.replay_raw_events("docs", 0, 100).unwrap();
+    for id in legacy_node_ids.iter().chain(legacy_edge_ids) {
+        assert!(events.iter().any(|event| event.entity_id == *id));
+    }
     assert!(events.iter().any(|event| {
         event.entity_id == payload["node_ids"][0]
             && serde_json::from_str::<Value>(&event.payload_json)

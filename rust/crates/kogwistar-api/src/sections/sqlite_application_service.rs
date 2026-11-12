@@ -859,6 +859,8 @@ impl ApplicationService for SqliteRunApplicationService {
             && is_public_wisdom_graph_upsert_route(method, path);
         let is_composed_graph_upsert =
             self.chroma_graph.is_some() && is_public_graph_upsert_route(method, path);
+        let is_composed_document_tree_upsert = self.chroma_graph.is_some()
+            && is_public_document_tree_upsert_route(method, path);
         let is_composed_conversation_transcript = self.chroma_graph.is_some()
             && method == "GET"
             && conversation_transcript_id(path).is_some();
@@ -880,6 +882,7 @@ impl ApplicationService for SqliteRunApplicationService {
             || is_composed_document_projection
             || is_composed_wisdom_graph_upsert
             || is_composed_graph_upsert
+            || is_composed_document_tree_upsert
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
             || is_composed_conversation_list
@@ -898,6 +901,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 || is_composed_document_projection
                 || is_composed_wisdom_graph_upsert
                 || is_composed_graph_upsert
+                || is_composed_document_tree_upsert
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
                 || is_composed_conversation_list
@@ -1098,6 +1102,11 @@ impl ApplicationService for SqliteRunApplicationService {
                 match request.path_and_query.split('?').next() {
                     Some(PUBLIC_GRAPH_UPSERT_ROUTE) => {
                         return self.sqlite_public_graph_upsert_effect(&request).await;
+                    }
+                    Some(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE) => {
+                        return self
+                            .sqlite_public_document_tree_upsert_effect(&request)
+                            .await;
                     }
                     Some(PUBLIC_WISDOM_GRAPH_UPSERT_ROUTE) if self.embedding_provider.is_some() => {
                         return self
