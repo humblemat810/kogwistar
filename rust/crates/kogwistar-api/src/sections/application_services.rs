@@ -864,8 +864,10 @@ impl ApplicationService for PostgresRunApplicationService {
         if surface == "root" && name == "kg_propose_bruteforce" {
             return self.graph_authority_capability().supports_single_mutation();
         }
+        if surface == "root" && name == "propose_vector" {
+            return self.graph_authority_capability().supports_single_mutation();
+        }
         rust_mcp_tool_supported(surface, name)
-            && name != "propose_vector"
             && (surface != "root" || self.graph_authority_capability().supports_single_mutation())
             && (name != "wisdom.kg_upsert_graph"
                 || (self.embedding_provider.is_some()
@@ -999,6 +1001,23 @@ impl ApplicationService for PostgresRunApplicationService {
                 && self.supports_mcp_tool(surface, name);
         }
         if name == "kg_propose_bruteforce" {
+            if surface != "root"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "docs" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_V1: vector proposal requires ro/rw + docs namespace + read_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES+propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_01.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+        if name == "propose_vector" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
                 || !principal_strings(principal, "ns")

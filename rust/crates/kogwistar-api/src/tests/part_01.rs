@@ -2835,8 +2835,8 @@
         let schema = format!("rust_vector_query_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         assert!(
-            !service.supports_mcp_tool("root", "propose_vector"),
-            "PostgreSQL must not advertise vector proposals until its backend path is implemented"
+            service.supports_mcp_tool("root", "propose_vector"),
+            "PostgreSQL graph authority implements vector proposals"
         );
         service.ensure_schema().await.unwrap();
         service
@@ -3047,6 +3047,81 @@
                 }
             }
         }
+
+        let proposal_principal = json!({
+            "sub": "owner-b",
+            "role": "ro",
+            "ns": ["docs"],
+            "storage_ns": scope.namespace,
+            "workspace_id": scope.workspace_id,
+            "capabilities": ["read_graph"]
+        });
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            "propose_vector",
+            &proposal_principal
+        ));
+        let proposal_response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE.to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "new_node_ids": ["near-private"],
+                    "new_edge_ids": [],
+                    "top_k": 10,
+                    "include_edges": false,
+                    "max_distance": 0.35
+                }))
+                .unwrap(),
+                principal: proposal_principal.clone(),
+            })
+            .await;
+        assert_eq!(proposal_response.status, StatusCode::OK.as_u16());
+        let proposal: Value = serde_json::from_slice(&proposal_response.body).unwrap();
+        assert_eq!(
+            proposal["pairs"],
+            json!([
+                {
+                    "left_id": "near-private",
+                    "left_kind": "node",
+                    "right_id": "visible-scope",
+                    "right_kind": "node"
+                },
+                {
+                    "left_id": "near-private",
+                    "left_kind": "node",
+                    "right_id": "visible-public",
+                    "right_kind": "node"
+                }
+            ])
+        );
+        let denied_proposal_principal = json!({
+            "sub": "owner-b",
+            "role": "ro",
+            "ns": ["docs"],
+            "storage_ns": scope.namespace,
+            "workspace_id": scope.workspace_id,
+            "capabilities": []
+        });
+        assert!(!service.supports_mcp_tool_for_principal(
+            "root",
+            "propose_vector",
+            &denied_proposal_principal
+        ));
+        let denied_proposal_response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE.to_owned(),
+                body: serde_json::to_vec(&json!({"new_node_ids": ["near-private"]})).unwrap(),
+                principal: denied_proposal_principal,
+            })
+            .await;
+        assert_eq!(
+            denied_proposal_response.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
 
         let revoked_node_id = "visible-public";
         let revoked_acl_metadata = Map::from_iter([

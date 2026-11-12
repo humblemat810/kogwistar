@@ -395,6 +395,98 @@ enum NativeEvidenceRecordError {
 }
 
 impl PostgresRunApplicationService {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_01.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+    async fn graph_propose_vector_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Vector graph proposal requires read_graph capability",
+            );
+        }
+        let input = match GraphVectorProposalRequest::parse(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let where_filter = input
+            .where_filter
+            .as_ref()
+            .filter(|value| value.is_object());
+        if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+            &json!({"metadata": {}, "where": where_filter}).to_string(),
+        ) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_REQUEST",
+                error.to_string(),
+            );
+        }
+        let scope_value = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: scope_value["storage_namespace"]
+                .as_str()
+                .unwrap_or("default")
+                .to_owned(),
+            workspace_id: request
+                .principal
+                .get("workspace_id")
+                .or_else(|| request.principal.get("workspace"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            graph_space: request
+                .principal
+                .get("graph_space")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+        };
+        let (all_nodes, all_edges) = match self.graph_records_snapshot("knowledge", scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let principal = graph_acl_principal_from_claims(
+            &request.principal,
+            scope_value["security_scope"].as_str(),
+        );
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&all_nodes, &all_edges, "knowledge", &principal);
+        let pairs = match graph_vector_proposal_pairs(
+            &all_nodes,
+            &all_edges,
+            &visible_nodes,
+            &visible_edges,
+            &input,
+            where_filter,
+        ) {
+            Ok(pairs) => pairs,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"pairs": pairs})),
+        )
+    }
+
     // PYTHON_PARITY: kogwistar/server/mcp_tools.py::kg_propose_bruteforce
     async fn graph_propose_bruteforce_effect(
         &self,
