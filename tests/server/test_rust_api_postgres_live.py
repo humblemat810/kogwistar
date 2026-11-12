@@ -984,7 +984,9 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
             process.wait(timeout=10)
 
 
-def test_rust_postgres_http_typed_node_envelope_round_trips_to_python(
+@pytest.mark.parametrize("entity_kind", ["node", "edge"], ids=["node", "edge"])
+def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
+    entity_kind: str,
     request: pytest.FixtureRequest,
     pg_dsn: str | None,
     pg_schema: str | None,
@@ -998,12 +1000,13 @@ def test_rust_postgres_http_typed_node_envelope_round_trips_to_python(
     if any(source.stat().st_mtime > SERVER.stat().st_mtime for source in SERVER_SOURCES):
         pytest.skip("rebuild current kogwistar-server before live typed mutation test")
 
-    from kogwistar.conversation.models import ConversationNode
+    from kogwistar.conversation.models import ConversationEdge, ConversationNode
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
     from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
+    from kogwistar.engine_core.models import Edge, Node
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
     from kogwistar.server.bootstrap import load_server_storage_settings
-    from tests._helpers.graph_builders import build_entity_node
+    from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
     namespace = f"typed-{uuid.uuid4().hex}"
     graph_type = "knowledge"
@@ -1029,49 +1032,98 @@ def test_rust_postgres_http_typed_node_envelope_round_trips_to_python(
         ),
         acl_enabled=False,
     )
-    base_node = build_entity_node(
-        node_id=f"typed-http-{uuid.uuid4().hex}",
-        doc_id="typed-http-source",
-        label="Typed HTTP node",
-        summary="Conversation subtype persisted through Rust HTTP",
-        embedding=[0.25, 0.5, 0.75],
-        metadata={"visibility": "public"},
-    )
-    node = ConversationNode.model_validate(
-        {
-            **base_node.model_dump(field_mode="backend"),
-            "role": "assistant",
-            "turn_index": 5,
-            "conversation_id": "typed-http-conversation",
-            "user_id": "typed-http-owner",
-            "metadata": {
-                **base_node.metadata,
-                "entity_type": "conversation_turn",
-                "level_from_root": 0,
-                "in_conversation_chain": True,
+    conversation_id = f"typed-http-conversation-{uuid.uuid4().hex}"
+
+    def node_payload(*, node_id: str, summary: str) -> Node:
+        return build_entity_node(
+            node_id=node_id,
+            doc_id="typed-http-source",
+            label="Typed HTTP endpoint",
+            summary=summary,
+            embedding=[0.25, 0.5, 0.75],
+            metadata={"visibility": "public"},
+        )
+
+    def mutation_for(entity: Node | Edge, entity_kind: str) -> dict[str, object]:
+        if entity_kind == "node":
+            document, metadata = engine.write.node_doc_and_meta(entity)
+            table = "gke_nodes"
+        else:
+            document = entity.model_dump_json(field_mode="backend")
+            metadata = engine.write.enrich_edge_meta(entity)
+            table = "gke_edges"
+        return {
+            "scope": {"namespace": namespace, "workspace_id": None, "graph_space": None},
+            "table": table,
+            "entity_kind": entity_kind,
+            "event_id": f"{entity.id}-typed-http-event",
+            "op": "ADD",
+            "payload": entity.model_dump(
+                field_mode="backend", exclude=["embedding"], dump_format="json"
+            ),
+            "record": {
+                "id": entity.id,
+                "document": document,
+                "metadata": metadata,
+                "embedding": list(entity.embedding or []),
             },
+            "embedding_dim": 3,
+            "model_envelope": build_graph_model_envelope(
+                entity, exclude=["embedding"]
+            ),
         }
-    )
-    document, metadata = engine.write.node_doc_and_meta(node)
-    payload = node.model_dump(
-        field_mode="backend", exclude=["embedding"], dump_format="json"
-    )
-    mutation = {
-        "scope": {"namespace": namespace, "workspace_id": None, "graph_space": None},
-        "table": "gke_nodes",
-        "entity_kind": "node",
-        "event_id": f"{node.id}-typed-http-event",
-        "op": "ADD",
-        "payload": payload,
-        "record": {
-            "id": node.id,
-            "document": document,
-            "metadata": metadata,
-            "embedding": list(node.embedding or []),
-        },
-        "embedding_dim": 3,
-        "model_envelope": build_graph_model_envelope(node, exclude=["embedding"]),
-    }
+
+    expected_nodes: list[ConversationNode] = []
+    expected_edges: list[ConversationEdge] = []
+    mutations: list[dict[str, object]]
+    if entity_kind == "node":
+        base_node = node_payload(
+            node_id=f"typed-http-{uuid.uuid4().hex}",
+            summary="Conversation subtype persisted through Rust HTTP",
+        )
+        node = ConversationNode.model_validate(
+            {
+                **base_node.model_dump(field_mode="backend"),
+                "role": "assistant",
+                "turn_index": 5,
+                "conversation_id": conversation_id,
+                "user_id": "typed-http-owner",
+                "metadata": {
+                    **base_node.metadata,
+                    "entity_type": "conversation_turn",
+                    "level_from_root": 0,
+                    "in_conversation_chain": True,
+                },
+            }
+        )
+        expected_nodes.append(node)
+        mutations = [mutation_for(node, "node")]
+    else:
+        source_node = node_payload(
+            node_id=f"typed-http-source-{uuid.uuid4().hex}",
+            summary="Conversation edge source",
+        )
+        target_node = node_payload(
+            node_id=f"typed-http-target-{uuid.uuid4().hex}",
+            summary="Conversation edge target",
+        )
+        edge = ConversationEdge.model_validate(
+            build_relationship_edge(
+                edge_id=f"typed-http-edge-{uuid.uuid4().hex}",
+                src=source_node.id,
+                tgt=target_node.id,
+                doc_id="typed-http-source",
+                relation="next_turn",
+                embedding=[0.25, 0.5, 0.75],
+                metadata={"visibility": "public", "causal_type": "chain"},
+            ).model_dump(field_mode="backend")
+        )
+        expected_edges.append(edge)
+        mutations = [
+            mutation_for(source_node, "node"),
+            mutation_for(target_node, "node"),
+            mutation_for(edge, "edge"),
+        ]
 
     port = _port()
     secret = uuid.uuid4().hex
@@ -1128,22 +1180,38 @@ def test_rust_postgres_http_typed_node_envelope_round_trips_to_python(
         response = httpx.post(
             f"{base}/internal/graph/mutations",
             headers={"Authorization": f"Bearer {_hs256_token(secret, claims)}"},
-            json={"contract_version": 1, "atomic": True, "mutations": [mutation]},
+            json={"contract_version": 1, "atomic": True, "mutations": mutations},
             timeout=10,
         )
         assert response.status_code == 200, response.text
-        assert response.json()["results"][0]["mutated"] is True
+        assert all(result["mutated"] for result in response.json()["results"])
 
-        python_nodes = engine.read.get_nodes(ids=[node.id], node_type=ConversationNode)
-        assert len(python_nodes) == 1
-        recovered = python_nodes[0]
-        assert isinstance(recovered, ConversationNode)
-        assert recovered.role == node.role
-        assert recovered.turn_index == node.turn_index
-        assert recovered.conversation_id == node.conversation_id
-        assert recovered.user_id == node.user_id
-        assert recovered.summary == node.summary
-        assert recovered.metadata["_class_name"] == "ConversationNode"
+        if entity_kind == "node":
+            expected = expected_nodes[0]
+            python_nodes = engine.read.get_nodes(
+                ids=[expected.id], node_type=ConversationNode
+            )
+            assert len(python_nodes) == 1
+            recovered_node = python_nodes[0]
+            assert isinstance(recovered_node, ConversationNode)
+            assert recovered_node.role == expected.role
+            assert recovered_node.turn_index == expected.turn_index
+            assert recovered_node.conversation_id == expected.conversation_id
+            assert recovered_node.user_id == expected.user_id
+            assert recovered_node.summary == expected.summary
+            assert recovered_node.metadata["_class_name"] == "ConversationNode"
+        else:
+            expected_edge = expected_edges[0]
+            python_edges = engine.read.get_edges(
+                ids=[expected_edge.id], edge_type=ConversationEdge
+            )
+            assert len(python_edges) == 1
+            recovered_edge = python_edges[0]
+            assert isinstance(recovered_edge, ConversationEdge)
+            assert recovered_edge.relation == "next_turn"
+            assert recovered_edge.source_ids == expected_edge.source_ids
+            assert recovered_edge.target_ids == expected_edge.target_ids
+            assert recovered_edge.metadata["_class_name"] == "ConversationEdge"
     finally:
         process.terminate()
         try:
