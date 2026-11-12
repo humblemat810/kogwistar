@@ -10,7 +10,11 @@ from kogwistar.acl.models import ACLEdge, ACLNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Edge, Node
-from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
+from kogwistar.runtime.models import (
+    WorkflowRunNode,
+    WorkflowRuntimeEdge,
+    WorkflowStepExecNode,
+)
 from kogwistar.server.run_registry import RunRegistry
 from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._kg_factories import kg_document
@@ -553,6 +557,25 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
             "status": "running",
         },
     )
+    step_exec_node = WorkflowStepExecNode(
+        id="node::async-pg-derived-step",
+        label="parse step execution",
+        type="entity",
+        summary="derived workflow step execution",
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "workflow_step_exec",
+            "workflow_id": "wf::derived",
+            "run_id": "run::derived",
+            "workflow_node_id": "wf-node::parse",
+            "step_seq": 1,
+            "op": "parse",
+            "status": "ok",
+            "duration_ms": 17,
+            "result_json": '{"parsed":true}',
+        },
+    )
     target = _mk_node(
         node_id="node::async-pg-derived-target",
         doc_id="doc::async-pg-derived",
@@ -651,6 +674,7 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     monkeypatch.setattr(meta, "apply_graph_mutation", capture_envelope)
     monkeypatch.setattr(meta, "graph_projection_records", capture_projection_lock)
     await engine.write.add_node_async(run_node)
+    await engine.write.add_node_async(step_exec_node)
     await engine.write.add_node_async(target)
     await engine.write.add_edge_async(runtime_edge)
     await engine.write.add_node_async(acl_previous)
@@ -660,6 +684,7 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
 
     assert [envelope["model_class"] for envelope in envelopes] == [
         "workflow_run_node",
+        "workflow_step_exec_node",
         "node",
         "workflow_runtime_edge",
         "acl_node",
@@ -672,6 +697,10 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
         for _, _, entity_id, _, payload_json in events
     }
     assert type(WorkflowRunNode.model_validate(event_payloads[run_node.id])) is WorkflowRunNode
+    assert (
+        type(WorkflowStepExecNode.model_validate(event_payloads[step_exec_node.id]))
+        is WorkflowStepExecNode
+    )
     assert (
         type(WorkflowRuntimeEdge.model_validate(event_payloads[runtime_edge.id]))
         is WorkflowRuntimeEdge
@@ -689,6 +718,11 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     )
     assert node_rows["ids"] == [run_node.id]
     assert node_rows["metadatas"][0]["_class_name"] == "WorkflowRunNode"
+    step_rows = await async_pg_backend.node_get(
+        ids=[step_exec_node.id], include=["documents", "metadatas"]
+    )
+    assert step_rows["ids"] == [step_exec_node.id]
+    assert step_rows["metadatas"][0]["_class_name"] == "WorkflowStepExecNode"
     assert edge_rows["ids"] == [runtime_edge.id]
     assert edge_rows["metadatas"][0]["relation"] == "next"
     assert edge_rows["metadatas"][0]["node_endpoint_count"] == 2
@@ -703,6 +737,12 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert python_acl_edge[0].relation == "acl_supersedes"
     assert python_acl_edge[0].source_ids == [acl_current.id]
     assert python_acl_edge[0].target_ids == [acl_previous.id]
+    python_step_node = engine.read.get_nodes(
+        ids=[step_exec_node.id], node_type=WorkflowStepExecNode
+    )
+    assert len(python_step_node) == 1
+    assert type(python_step_node[0]) is WorkflowStepExecNode
+    assert python_step_node[0].metadata["result_json"] == '{"parsed":true}'
     projection_lock_requests.clear()
     authorized = engine.decide_acl(
         truth_graph=engine.kg_graph_type,

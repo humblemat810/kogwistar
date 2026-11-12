@@ -30,6 +30,7 @@ from kogwistar.runtime.models import (
     WorkflowCompletedNode,
     WorkflowFailedNode,
     WorkflowNode,
+    WorkflowStepExecNode,
 )
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -731,6 +732,7 @@ def test_sqlite_rebuild_recovers_python_persisted_derived_edge(
         ("workflow-cancelled-node-model-v1.json", "node"),
         ("workflow-failed-node-model-v1.json", "node"),
         ("workflow-node-model-v1.json", "node"),
+        ("workflow-step-exec-node-model-v1.json", "node"),
         ("llm-node-model-v1.json", "node"),
         ("llm-node-extraction-model-v1.json", "node"),
         ("llm-node-flattened-model-v1.json", "node"),
@@ -831,6 +833,10 @@ def test_postgres_rebuild_recovers_python_persisted_derived_entity(
     elif fixture_name == "workflow-node-model-v1.json":
         python_model = WorkflowNode.model_validate(recovered_entity)
         assert type(python_model) is WorkflowNode
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "workflow-step-exec-node-model-v1.json":
+        python_model = WorkflowStepExecNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowStepExecNode
         assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
     elif fixture_name == "acl-node-model-v1.json":
         python_model = ACLNode.model_validate(recovered_entity)
