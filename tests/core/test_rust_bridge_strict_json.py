@@ -83,6 +83,127 @@ def test_python_server_mode_keeps_legacy_path_without_loading_rust(
     assert api_health(payload={}, python_value=expected) is expected
 
 
+def test_unset_implementation_selectors_preserve_python_bridge_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar import _rust_bridge as bridge
+    from kogwistar.implementation_selection import _IMPLEMENTATION_ENV_NAMES
+
+    for selector in _IMPLEMENTATION_ENV_NAMES:
+        monkeypatch.delenv(selector, raising=False)
+
+    def rust_must_not_load() -> None:
+        raise AssertionError("unset selector default unexpectedly loaded Rust")
+
+    monkeypatch.setattr(bridge, "_load_extension", rust_must_not_load)
+    stable_id = UUID("8d9f6f96-e5a5-4ec8-9794-b9bd4938f9f0")
+    cases = [
+        ("server", lambda: bridge.api_health(payload={}, python_value={"ok": True}), {"ok": True}),
+        (
+            "contracts stable id",
+            lambda: bridge.contract_stable_id(kind="node", parts=(), python_value=stable_id),
+            stable_id,
+        ),
+        (
+            "contracts canonical json",
+            lambda: bridge.contract_canonical_json(value={"a": 1}, python_value='{"a":1}'),
+            '{"a":1}',
+        ),
+        (
+            "contracts evidence digest",
+            lambda: bridge.contract_evidence_pack_digest_hash(value={}, python_value="digest"),
+            "digest",
+        ),
+        (
+            "contracts metadata filter",
+            lambda: bridge.contract_metadata_filter_matches(
+                metadata={}, where={}, python_value=True
+            ),
+            True,
+        ),
+        (
+            "contracts short id",
+            lambda: bridge.short_id_transform(payload={}, python_value={"id": "python"}),
+            {"id": "python"},
+        ),
+        (
+            "contracts canonical event",
+            lambda: bridge.contract_canonical_entity_event(payload={}, python_value="event"),
+            "event",
+        ),
+        (
+            "contracts replay",
+            lambda: bridge.contract_replay_entity_events(payload={}, python_value="replay"),
+            "replay",
+        ),
+        (
+            "runtime state update",
+            lambda: bridge.runtime_apply_state_update(payload={}, python_value={"state": 1}),
+            {"state": 1},
+        ),
+        (
+            "runtime join reachability",
+            lambda: bridge.runtime_workflow_may_reach_join(
+                node_ids=[], edges=[], join_ids=[], python_value={"node": 1}
+            ),
+            {"node": 1},
+        ),
+        (
+            "runtime terminal reachability",
+            lambda: bridge.runtime_workflow_terminal_reachable(
+                node_ids=[], edges=[], start_node_id="start", terminal_ids=[], python_value=True
+            ),
+            True,
+        ),
+        (
+            "runtime successors",
+            lambda: bridge.runtime_plan_successors(payload={}, python_value={"tokens": []}),
+            {"tokens": []},
+        ),
+        (
+            "runtime retry",
+            lambda: bridge.runtime_decide_retry(payload={}, python_value={"retry": False}),
+            {"retry": False},
+        ),
+        (
+            "runtime nested invocation",
+            lambda: bridge.runtime_plan_nested_invocation(payload={}, python_value={"run": "py"}),
+            {"run": "py"},
+        ),
+        (
+            "runtime dispatch",
+            lambda: bridge.runtime_decide_dispatch(payload={}, python_value={"dispatch": False}),
+            {"dispatch": False},
+        ),
+        (
+            "runtime budget",
+            lambda: bridge.runtime_decide_budget_suspend(payload={}, python_value={"suspend": False}),
+            {"suspend": False},
+        ),
+        (
+            "runtime scheduler",
+            lambda: bridge.runtime_scheduler_tick(payload={}, python_value={"effects": []}),
+            {"effects": []},
+        ),
+        (
+            "graph store",
+            lambda: bridge.store_memory_read(
+                snapshot={}, operation={"kind": "list_nodes"}, python_value=[], store="graph"
+            ),
+            [],
+        ),
+        (
+            "metadata store",
+            lambda: bridge.store_memory_read(
+                snapshot={}, operation={"kind": "list_jobs"}, python_value=[], store="meta"
+            ),
+            [],
+        ),
+    ]
+    for name, invoke, expected in cases:
+        assert invoke() == expected, name
+
+
 def test_selected_rust_server_fails_closed_without_python_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
