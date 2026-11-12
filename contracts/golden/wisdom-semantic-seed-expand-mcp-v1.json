@@ -1,0 +1,11 @@
+{
+  "contract_version": 1,
+  "operation": "wisdom.semantic_seed_then_expand",
+  "arguments": {
+    "text": "find the node by meaning",
+    "top_k": 5,
+    "hops": 1
+  },
+  "expected_seed_ids": ["wisdom-private-node"],
+  "expected_first_layer_edge_ids": ["wisdom-private-edge"]
+}

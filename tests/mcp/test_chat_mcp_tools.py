@@ -3181,6 +3181,105 @@ async def test_kg_semantic_seed_expand_mcp_matches_shared_contract(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_wisdom_semantic_seed_expand_mcp_contract_and_authorization(monkeypatch):
+    from kogwistar.graph_query import GraphQuery
+    from kogwistar.server import mcp_tools
+    from tests.primitives.test_graph_query import FakeEngine
+
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "wisdom-semantic-seed-expand-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    engine = FakeEngine()
+    seed_id = contract["expected_seed_ids"][0]
+    edge_id = contract["expected_first_layer_edge_ids"][0]
+    seed = build_entity_node(node_id=seed_id, doc_id="wisdom-doc")
+    neighbor = build_entity_node(node_id="wisdom-neighbor", doc_id="wisdom-doc")
+    for node in (seed, neighbor):
+        engine.node_collection.add(
+            ids=[node.id],
+            documents=[node.model_dump_json(field_mode="backend")],
+            metadatas=[{"doc_id": node.doc_id}],
+        )
+        node_doc = {"id": f"{node.id}::{node.doc_id}", "node_id": node.id, "doc_id": node.doc_id}
+        engine.node_docs_collection.add(
+            ids=[node_doc["id"]],
+            documents=[json.dumps(node_doc)],
+            metadatas=[node_doc],
+        )
+    edge = build_relationship_edge(
+        edge_id=edge_id,
+        src=seed_id,
+        tgt=neighbor.id,
+        doc_id="wisdom-doc",
+    )
+    engine.edge_collection.add(
+        ids=[edge_id],
+        documents=[edge.model_dump_json(field_mode="backend")],
+        metadatas=[{"doc_id": edge.doc_id}],
+    )
+    endpoint_rows = [
+        {
+            "id": f"{edge_id}::{role}::node::{node_id}",
+            "edge_id": edge_id,
+            "endpoint_id": node_id,
+            "endpoint_type": "node",
+            "role": role,
+            "doc_id": edge.doc_id,
+        }
+        for role, node_id in (("src", seed_id), ("tgt", neighbor.id))
+    ]
+    engine.edge_endpoints_collection.add(
+        ids=[row["id"] for row in endpoint_rows],
+        documents=[json.dumps(row) for row in endpoint_rows],
+        metadatas=endpoint_rows,
+    )
+    query_calls = []
+
+    def query_seed(*, query_texts=None, query_embeddings=None, n_results=5, **_kwargs):
+        query_calls.append((query_texts, n_results))
+        del query_embeddings
+        ids = [seed_id][:n_results]
+        return {
+            "ids": [ids],
+            "documents": [[seed.model_dump_json(field_mode="backend")] for _ in ids],
+        }
+
+    engine.backend.node_query = query_seed
+    engine.metadata = object()
+    monkeypatch.setattr(mcp_tools, "wisdom_gq", _FixedResource(GraphQuery(engine)))
+
+    with _claims(
+        "ro", "wisdom", sub="wisdom-reader", scope_parts={"capabilities": []}
+    ):
+        with pytest.raises(PermissionError, match="not permitted"):
+            await server.mcp._execute(
+                contract["operation"], contract["arguments"], enforce_visibility=True
+            )
+    assert query_calls == []
+
+    with _claims(
+        "ro", "wisdom", sub="wisdom-reader", scope_parts={"capabilities": ["read_graph"]}
+    ):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+
+    actual = result.structured_content
+    assert [json.loads(seed_json)["id"] for seed_json in actual["seeds"]] == contract[
+        "expected_seed_ids"
+    ]
+    assert [
+        json.loads(edge_json)["id"] for edge_json in actual["layers"][0]["edges"]
+    ] == contract["expected_first_layer_edge_ids"]
+    assert query_calls == [([contract["arguments"]["text"]], contract["arguments"]["top_k"])]
+
+
+@pytest.mark.asyncio
 async def test_kg_viz_d3_mcp_matches_shared_contract(monkeypatch):
     from types import SimpleNamespace
 

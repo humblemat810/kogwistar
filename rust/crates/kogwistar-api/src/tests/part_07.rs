@@ -2386,6 +2386,54 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
         },
         Arc::new(service.clone()),
     );
+    let wisdom_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/wisdom-semantic-seed-expand-mcp-v1.json"
+    )))
+    .unwrap();
+    let denied_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice", "user_id": "alice", "role": "ro", "roles": ["reader"],
+            "ns": ["wisdom"], "storage_ns": "wisdom",
+            "capabilities": [], "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let embedding_calls_before_denied_read = calls.lock().unwrap().len();
+    let denied_semantic = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+                        "params": {
+                            "name": wisdom_contract["operation"],
+                            "arguments": wisdom_contract["arguments"]
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let denied_semantic: Value = serde_json::from_slice(
+        &to_bytes(denied_semantic.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(denied_semantic.get("error").is_some(), "{denied_semantic}");
+    assert_eq!(
+        calls.lock().unwrap().len(),
+        embedding_calls_before_denied_read,
+        "unauthorized Wisdom retrieval must not invoke embedding"
+    );
     let semantic_response = app
         .clone()
         .oneshot(
@@ -2398,8 +2446,8 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
                     serde_json::to_vec(&json!({
                         "jsonrpc": "2.0", "id": 7, "method": "tools/call",
                         "params": {
-                            "name": "wisdom.semantic_seed_then_expand",
-                            "arguments": {"text": "find the node by meaning", "top_k": 5, "hops": 1}
+                            "name": wisdom_contract["operation"],
+                            "arguments": wisdom_contract["arguments"]
                         }
                     }))
                     .unwrap(),
@@ -2417,12 +2465,12 @@ async fn postgres_wisdom_graph_upsert_is_scoped_atomic_and_acl_checked() {
     let semantic = &semantic["result"];
     assert_eq!(semantic["seeds"].as_array().unwrap().len(), 1);
     let seed: Value = serde_json::from_str(semantic["seeds"][0].as_str().unwrap()).unwrap();
-    assert_eq!(seed["id"], "wisdom-private-node");
+    assert_eq!(seed["id"], wisdom_contract["expected_seed_ids"][0]);
     assert_eq!(semantic["layers"].as_array().unwrap().len(), 1);
     let edge_docs = semantic["layers"][0]["edges"].as_array().unwrap();
     assert_eq!(edge_docs.len(), 1);
     let edge_doc: Value = serde_json::from_str(edge_docs[0].as_str().unwrap()).unwrap();
-    assert_eq!(edge_doc["id"], "wisdom-private-edge");
+    assert_eq!(edge_doc["id"], wisdom_contract["expected_first_layer_edge_ids"][0]);
 
     let graph_semantic_response = app
         .oneshot(
