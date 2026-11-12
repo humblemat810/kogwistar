@@ -1401,6 +1401,73 @@ def test_rust_rejects_invalid_checkpoint_node_before_write_effects(
         writer.add_node(entity)
 
 
+@pytest.mark.requires_rust
+@pytest.mark.parametrize("contract_mode", ["shadow", "rust"])
+def test_rust_rejects_invalid_runtime_edge_before_write_effects(
+    monkeypatch: pytest.MonkeyPatch,
+    contract_mode: str,
+) -> None:
+    """WorkflowRuntimeEdge metadata must validate before embedding or storage."""
+    from types import SimpleNamespace
+
+    from kogwistar.runtime.models import WorkflowRuntimeEdgeMetadata
+
+    pytest.importorskip("kogwistar._rust")
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-runtime-edge-model-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    payload = cast(dict[str, object], fixture["payload"])
+    payload["mentions"] = [
+        runtime_models.WorkflowRuntimeEdge.model_validate(
+            {**payload, "metadata": {**payload["metadata"], "relation": "ok"}}
+        ).mentions[0]
+    ]
+    metadata = cast(dict[str, object], payload["metadata"])
+    metadata["relation"] = 42
+    with pytest.raises(ValidationError, match="relation"):
+        WorkflowRuntimeEdgeMetadata.model_validate(metadata)
+
+    entity = runtime_models.WorkflowRuntimeEdge.model_construct(**payload)
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", contract_mode)
+    effect_must_not_run = lambda *_args, **_kwargs: pytest.fail(
+        "invalid runtime edge reached an embedding or graph effect"
+    )
+    engine = SimpleNamespace(
+        persistence_mode="immediate",
+        namespace="test",
+        pre_add_edge_hooks=[],
+        pre_add_pure_edge_hooks=[],
+        adjudicate=SimpleNamespace(
+            split_endpoints=lambda source_ids, target_ids: (
+                source_ids,
+                [],
+                target_ids,
+                [],
+            )
+        ),
+        persist=SimpleNamespace(assert_endpoints_exist=lambda _edge: None),
+        backend=SimpleNamespace(edge_add=effect_must_not_run),
+        embed=SimpleNamespace(iterative_defensive_emb=effect_must_not_run),
+    )
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.subsystems.write import WriteSubsystem
+
+    writer = WriteSubsystem.__new__(WriteSubsystem)
+    writer._e = cast(GraphKnowledgeEngine, engine)
+    monkeypatch.setattr(writer, "_rust_postgres_projection_upsert", effect_must_not_run)
+    monkeypatch.setattr(writer, "_rust_postgres_add", effect_must_not_run)
+
+    with pytest.raises(
+        RustParityError,
+        match="Rust graph-model contract validation failed",
+    ):
+        writer.add_edge(entity)
+
+
 def test_conversation_node_rejects_invalid_role_assignment() -> None:
     """Runtime mutation must preserve the validated ConversationNode contract."""
     from kogwistar.conversation.models import ConversationNode
