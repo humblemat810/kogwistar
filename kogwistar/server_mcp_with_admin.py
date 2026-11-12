@@ -697,6 +697,23 @@ def viz_d3_bundle(
         use_engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method
     )
 
+    # Match Rust's bundle boundary: omit transport attestations and escape
+    # JSON before embedding it in an HTML script element.
+    for field in (
+        "implementation_authority",
+        "seam_attestation_version",
+        "seam_crossings",
+    ):
+        payload.pop(field, None)
+
+    def inline_json(value: object) -> str:
+        return (
+            json.dumps(value)
+            .replace("&", "\\u0026")
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+        )
+
     # Optional bundle meta (single bundle won't know peer paths; pair bundling is handled by CLI/debugger)
     bundle_meta = {
         "graph_type": gt,
@@ -712,8 +729,8 @@ def viz_d3_bundle(
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
-            "embedded_data": json.dumps(payload),
-            "bundle_meta": json.dumps(bundle_meta),
+            "embedded_data": inline_json(payload),
+            "bundle_meta": inline_json(bundle_meta),
             "is_bundle": True,
         },
     )

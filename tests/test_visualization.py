@@ -176,6 +176,49 @@ def test_go_shell_route_matches_shared_rust_contract() -> None:
 
 
 @pytest.mark.ci
+def test_d3_bundle_route_matches_shared_rust_contract_and_escapes_inline_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fastapi.testclient import TestClient
+
+    import kogwistar.server_mcp_with_admin as server
+
+    contract = json.loads(
+        (ROOT / "contracts/golden/visualization-d3-bundle-http-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    monkeypatch.setattr(
+        server, "to_d3_force", lambda *_args, **_kwargs: dict(contract["payload"])
+    )
+    with TestClient(server.app) as client:
+        response = client.get(contract["path_and_query"])
+
+    assert response.status_code == contract["success_status"]
+    assert response.headers["content-type"] == contract["content_type"]
+    embedded = response.text.split("window.__EMBEDDED_DATA__ = ", 1)[1].split(";", 1)[0]
+    embedded_payload = json.loads(embedded)
+    expected_payload = {
+        key: value
+        for key, value in contract["payload"].items()
+        if key
+        not in {
+            "implementation_authority",
+            "seam_attestation_version",
+            "seam_crossings",
+        }
+    }
+    assert embedded_payload == expected_payload
+    bundle_meta = response.text.split("window.__BUNDLE_META__ = ", 1)[1].split(";", 1)[
+        0
+    ]
+    assert json.loads(bundle_meta) == contract["expected_bundle_meta"]
+    for fragment in contract["forbidden_fragments"]:
+        assert fragment not in response.text
+    assert "\\u003c/script\\u003e" in response.text
+
+
+@pytest.mark.ci
 def test_visualization_uses_acl_policy_for_selected_python_graph_type(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

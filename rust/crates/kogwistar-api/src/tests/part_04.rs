@@ -1730,6 +1730,94 @@
         }
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#application_effect_handler+rust/crates/kogwistar-api/src/sections/response_policy.rs#d3_bundle_html_effect; python=kogwistar/server_mcp_with_admin.py#viz_d3_bundle; fixture=contracts/golden/visualization-d3-bundle-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#d3_bundle_route_matches_shared_python_contract; python_test=tests/test_visualization.py#test_d3_bundle_route_matches_shared_rust_contract_and_escapes_inline_json
+    #[tokio::test]
+    async fn d3_bundle_route_matches_shared_python_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use tower::ServiceExt;
+
+        #[derive(Clone)]
+        struct BundlePayloadService(Value);
+
+        impl ApplicationService for BundlePayloadService {
+            fn execute(
+                &self,
+                _request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let payload = self.0.clone();
+                Box::pin(async move {
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: serde_json::to_vec(&payload).unwrap(),
+                    }
+                })
+            }
+        }
+
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/visualization-d3-bundle-http-v1.json"
+        )))
+        .expect("parse shared D3 bundle contract");
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(BundlePayloadService(contract["payload"].clone())),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(contract["method"].as_str().unwrap())
+                    .uri(contract["path_and_query"].as_str().unwrap())
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
+        assert_eq!(
+            response.headers()["content-type"],
+            contract["content_type"].as_str().unwrap()
+        );
+        let body = String::from_utf8(to_bytes(response.into_body(), 1_000_000).await.unwrap().to_vec())
+            .unwrap();
+        let embedded = body
+            .split_once("window.__EMBEDDED_DATA__ = ")
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(payload, _)| serde_json::from_str::<Value>(payload).unwrap())
+            .expect("bundle contains a JSON graph payload");
+        let mut expected_payload = contract["payload"].clone();
+        for field in [
+            "implementation_authority",
+            "seam_attestation_version",
+            "seam_crossings",
+        ] {
+            expected_payload.as_object_mut().unwrap().remove(field);
+        }
+        assert_eq!(embedded, expected_payload);
+        let bundle_meta = body
+            .split_once("window.__BUNDLE_META__ = ")
+            .and_then(|(_, rest)| rest.split_once(';'))
+            .map(|(metadata, _)| serde_json::from_str::<Value>(metadata).unwrap())
+            .expect("bundle metadata is JSON");
+        assert_eq!(bundle_meta, contract["expected_bundle_meta"]);
+        for fragment in contract["forbidden_fragments"].as_array().unwrap() {
+            assert!(!body.contains(fragment.as_str().unwrap()));
+        }
+        assert!(body.contains("\\u003c/script\\u003e"));
+    }
+
     #[test]
     fn d3_bundle_embeds_data_with_script_safe_json_and_python_metadata() {
         let response = d3_bundle_html_effect(
