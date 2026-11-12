@@ -21,7 +21,11 @@ from kogwistar.runtime import (
     ProjectionLoadResult,
     refresh_checkpointed_named_projection,
 )
-from kogwistar.runtime.models import WorkflowCheckpointNode, WorkflowCompletedNode
+from kogwistar.runtime.models import (
+    WorkflowCancelledNode,
+    WorkflowCheckpointNode,
+    WorkflowCompletedNode,
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -744,6 +748,13 @@ def test_postgres_rebuild_recovers_python_persisted_derived_entity(
     elif fixture_name == "workflow-completed-node-model-v1.json":
         python_model = WorkflowCompletedNode.model_validate(recovered_entity)
         assert type(python_model) is WorkflowCompletedNode
+        assert (
+            python_model.model_dump(field_mode="backend", dump_format="json")
+            == payload
+        )
+    elif fixture_name == "workflow-cancelled-node-model-v1.json":
+        python_model = WorkflowCancelledNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowCancelledNode
         assert (
             python_model.model_dump(field_mode="backend", dump_format="json")
             == payload
