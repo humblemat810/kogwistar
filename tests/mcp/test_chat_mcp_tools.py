@@ -3083,6 +3083,104 @@ async def test_kg_propose_bruteforce_mcp_matches_shared_contract(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_kg_semantic_seed_expand_mcp_matches_shared_contract(monkeypatch):
+    from kogwistar import shortids
+    from kogwistar.graph_query import GraphQuery
+    from kogwistar.server import mcp_tools
+    from tests.primitives.test_graph_query import FakeEngine
+
+    engine = FakeEngine()
+    nodes = {
+        node_id: build_entity_node(node_id=node_id, doc_id="doc-a")
+        for node_id in ("n1", "n2")
+    }
+    for node_id, node in nodes.items():
+        payload = node.model_dump_json(field_mode="backend")
+        engine.node_collection.add(
+            ids=[node_id], documents=[payload], metadatas=[{"doc_id": "doc-a"}]
+        )
+        node_doc = {"id": f"{node_id}::doc-a", "node_id": node_id, "doc_id": "doc-a"}
+        engine.node_docs_collection.add(
+            ids=[node_doc["id"]],
+            documents=[json.dumps(node_doc)],
+            metadatas=[node_doc],
+        )
+
+    endpoint_rows = []
+    for edge_id in ("e1", "e4"):
+        edge = build_relationship_edge(
+            edge_id=edge_id, src="n1", tgt="n2", doc_id="doc-a"
+        )
+        engine.edge_collection.add(
+            ids=[edge_id],
+            documents=[edge.model_dump_json(field_mode="backend")],
+            metadatas=[{"doc_id": "doc-a"}],
+        )
+        for role, node_id in (("src", "n1"), ("tgt", "n2")):
+            row = {
+                "id": f"{edge_id}::{role}::node::{node_id}",
+                "edge_id": edge_id,
+                "endpoint_id": node_id,
+                "endpoint_type": "node",
+                "role": role,
+                "doc_id": "doc-a",
+            }
+            endpoint_rows.append(row)
+    engine.edge_endpoints_collection.add(
+        ids=[row["id"] for row in endpoint_rows],
+        documents=[json.dumps(row) for row in endpoint_rows],
+        metadatas=endpoint_rows,
+    )
+
+    def query_n2(*, query_texts=None, query_embeddings=None, n_results=5, **_kwargs):
+        del query_texts, query_embeddings
+        ids = ["n2"][:n_results]
+        return {
+            "ids": [ids],
+                "documents": [
+                    [
+                        nodes[node_id].model_dump_json(field_mode="backend")
+                        for node_id in ids
+                    ]
+                ],
+        }
+
+    engine.backend.node_query = query_n2
+    engine.metadata = object()
+    monkeypatch.setattr(mcp_tools, "gq", _FixedResource(GraphQuery(engine)))
+    monkeypatch.setattr(shortids, "s2l_id", lambda value: value)
+    monkeypatch.setattr(shortids, "l2s_doc", lambda value: value)
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "kg-semantic-seed-expand-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims("ro", "docs", scope_parts={"capabilities": []}):
+        with pytest.raises(PermissionError, match="not permitted"):
+            await server.mcp._execute(
+                contract["operation"], contract["arguments"], enforce_visibility=True
+            )
+
+    with _claims(
+        "ro", "docs", scope_parts={"capabilities": ["read_graph"]}
+    ):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+    actual = result.structured_content
+    assert [json.loads(seed)["id"] for seed in actual["seeds"]] == contract[
+        "expected_seed_ids"
+    ]
+    assert sorted(
+        json.loads(edge)["id"] for edge in actual["layers"][0]["edges"]
+    ) == contract["expected_first_layer_edge_ids"]
+
+
+@pytest.mark.asyncio
 async def test_kg_k_hop_mcp_matches_shared_contract(monkeypatch, tmp_path):
     from kogwistar.server import mcp_tools
     from tests.core.test_two_stage_chroma import _engine

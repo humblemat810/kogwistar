@@ -1,0 +1,12 @@
+{
+  "contract_version": 1,
+  "operation": "kg_semantic_seed_then_expand_text",
+  "arguments": {
+    "text": "find related nodes",
+    "top_k": 1,
+    "hops": 1,
+    "doc_ids": "doc-a"
+  },
+  "expected_seed_ids": ["n2"],
+  "expected_first_layer_edge_ids": ["e1", "e4"]
+}

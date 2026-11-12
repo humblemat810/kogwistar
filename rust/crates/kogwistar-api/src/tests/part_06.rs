@@ -6923,6 +6923,11 @@
         assert_eq!(redirected_edge_read["nodes"], json!(["n1", "n2"]));
         assert_eq!(redirected_edge_read["edges"], json!([]));
 
+        let semantic_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/kg-semantic-seed-expand-mcp-v1.json"
+        )))
+        .unwrap();
         let semantic_read = app
             .clone()
             .oneshot(
@@ -6937,9 +6942,7 @@
                     .body(Body::from(
                         json!({
                             "jsonrpc":"2.0","id":"semantic","method":"tools/call",
-                            "params":{"name":"kg_semantic_seed_then_expand_text","arguments":{
-                                "text":"find related nodes","top_k":1,"hops":1,"doc_ids":"doc-a"
-                            }}
+                            "params":{"name":semantic_contract["operation"],"arguments":semantic_contract["arguments"]}
                         })
                         .to_string(),
                     ))
@@ -6957,8 +6960,22 @@
             "semantic retrieval should return a structured seed result: {semantic_read}"
         );
         let semantic_seeds = semantic_read["result"]["seeds"].as_array().unwrap();
-        assert_eq!(semantic_seeds.len(), 1, "{semantic_read}");
-        assert!(semantic_seeds[0].as_str().unwrap().contains("n2"));
+        let semantic_seed_ids = semantic_seeds
+            .iter()
+            .filter_map(|seed| seed.as_str())
+            .filter_map(|seed| serde_json::from_str::<Value>(seed).ok())
+            .filter_map(|seed| seed["id"].as_str().map(str::to_owned))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            semantic_seed_ids,
+            semantic_contract["expected_seed_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        );
         let expanded_edge_ids = semantic_read["result"]["layers"][0]["edges"]
             .as_array()
             .unwrap()
@@ -6970,7 +6987,44 @@
                     .to_owned()
             })
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(expanded_edge_ids, ["e1".to_owned(), "e4".to_owned()].into());
+        assert_eq!(
+            expanded_edge_ids,
+            semantic_contract["expected_first_layer_edge_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        );
+        let semantic_denied = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {}", token(&[])))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0","id":"semantic-denied","method":"tools/call",
+                            "params":{"name":semantic_contract["operation"],"arguments":semantic_contract["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let semantic_denied: Value = serde_json::from_slice(
+            &to_bytes(semantic_denied.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(semantic_denied["error"]["code"], -32602);
+        assert_eq!(
+            semantic_denied["error"]["message"],
+            "Tool not advertised by this application service"
+        );
 
         let proposal_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
