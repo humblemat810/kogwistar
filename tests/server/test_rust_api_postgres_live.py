@@ -996,6 +996,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow_completed_node",
         "workflow_cancelled_node",
         "workflow_failed_node",
+        "workflow_node",
     ],
     ids=[
         "node",
@@ -1007,6 +1008,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow-completed-node",
         "workflow-cancelled-node",
         "workflow-failed-node",
+        "workflow-node",
     ],
 )
 def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
@@ -1036,6 +1038,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         WorkflowCancelledNode,
         WorkflowCompletedNode,
         WorkflowFailedNode,
+        WorkflowNode,
         WorkflowStepExecNode,
     )
     from kogwistar.server.bootstrap import load_server_storage_settings
@@ -1117,6 +1120,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     expected_completions: list[WorkflowCompletedNode] = []
     expected_cancellations: list[WorkflowCancelledNode] = []
     expected_failures: list[WorkflowFailedNode] = []
+    expected_workflow_nodes: list[WorkflowNode] = []
     mutations: list[dict[str, object]]
     if entity_kind == "node":
         base_node = node_payload(
@@ -1289,6 +1293,30 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         )
         expected_failures.append(failure)
         mutations = [mutation_for(failure)]
+    elif entity_kind == "workflow_node":
+        workflow_node = WorkflowNode.model_validate(
+            {
+                **node_payload(
+                    node_id=f"typed-http-workflow-node-{uuid.uuid4().hex}",
+                    summary="Workflow definition node persisted through Rust HTTP",
+                ).model_dump(field_mode="backend"),
+                "metadata": {
+                    "entity_type": "workflow_node",
+                    "workflow_id": "typed-http-workflow",
+                    "wf_op": "parse_document",
+                    "wf_version": "v3",
+                    "wf_environment_id": "typed-http-env-v1",
+                    "wf_executor_target": "rust-native",
+                    "wf_start": True,
+                    "wf_terminal": False,
+                    "wf_fanout": True,
+                    "wf_join": False,
+                    "vendor_extension": {"owner": "workflow-test"},
+                },
+            }
+        )
+        expected_workflow_nodes.append(workflow_node)
+        mutations = [mutation_for(workflow_node)]
     else:
         source_node = node_payload(
             node_id=f"typed-http-source-{uuid.uuid4().hex}",
@@ -1492,6 +1520,25 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
                 "retry exhausted",
             ]
             assert recovered_failure.metadata["_class_name"] == "WorkflowFailedNode"
+        elif entity_kind == "workflow_node":
+            expected_workflow_node = expected_workflow_nodes[0]
+            python_nodes = engine.read.get_nodes(
+                ids=[expected_workflow_node.id], node_type=WorkflowNode
+            )
+            assert len(python_nodes) == 1
+            recovered_workflow_node = python_nodes[0]
+            assert isinstance(recovered_workflow_node, WorkflowNode)
+            assert recovered_workflow_node.op == "parse_document"
+            assert recovered_workflow_node.start is True
+            assert recovered_workflow_node.fanout is True
+            assert recovered_workflow_node.metadata["workflow_id"] == "typed-http-workflow"
+            assert recovered_workflow_node.metadata["wf_version"] == "v3"
+            assert recovered_workflow_node.metadata["wf_environment_id"] == "typed-http-env-v1"
+            assert recovered_workflow_node.metadata["wf_executor_target"] == "rust-native"
+            assert recovered_workflow_node.metadata["vendor_extension"] == {
+                "owner": "workflow-test"
+            }
+            assert recovered_workflow_node.metadata["_class_name"] == "WorkflowNode"
         else:
             expected_edge = expected_edges[0]
             python_edges = engine.read.get_edges(
