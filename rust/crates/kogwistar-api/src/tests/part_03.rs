@@ -2533,6 +2533,85 @@
             .get(0);
         assert_eq!(invalid_projection_count, 0);
 
+        let mut malformed_edge_batch = body.clone();
+        let mut invalid_edge = serde_json::from_str::<Value>(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-runtime-edge-model-v1.json"
+        )))
+        .unwrap()["payload"]
+            .clone();
+        invalid_edge["id"] = json!("invalid-workflow-runtime-edge");
+        invalid_edge["metadata"]["relation"] = json!(42);
+        malformed_edge_batch["mutations"] = json!([body["mutations"][0].clone()]);
+        malformed_edge_batch["mutations"][0]["table"] = json!("gke_edges");
+        malformed_edge_batch["mutations"][0]["entity_kind"] = json!("edge");
+        malformed_edge_batch["mutations"][0]["event_id"] =
+            json!("invalid-edge-envelope-event");
+        malformed_edge_batch["mutations"][0]["payload"] = invalid_edge.clone();
+        malformed_edge_batch["mutations"][0]["record"]["id"] =
+            json!("invalid-workflow-runtime-edge");
+        malformed_edge_batch["mutations"][0]["record"]["document"] =
+            json!(r#"{"relation":"supports","source_ids":["parity-node"],"target_ids":["external:target"]}"#);
+        malformed_edge_batch["mutations"][0]["record"]["embedding"] = Value::Null;
+        malformed_edge_batch["mutations"][0]["model_envelope"] = json!({
+            "schema_version": 1,
+            "model_class": "workflow_runtime_edge",
+            "payload": invalid_edge,
+        });
+        malformed_edge_batch["index_jobs"] = json!([{
+            "job_id": "invalid-edge-envelope-index",
+            "namespace": "alpha",
+            "entity_kind": "edge",
+            "entity_id": "invalid-workflow-runtime-edge",
+            "index_kind": "edge_embedding",
+            "op": "UPSERT",
+            "payload_json": "{}",
+            "max_retries": 3
+        }]);
+        let malformed_edge_response = send_mutation(
+            make_app(),
+            graph_upsert_token.clone(),
+            malformed_edge_batch,
+        )
+        .await;
+        assert_eq!(
+            malformed_edge_response.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(embedding_calls.lock().unwrap().is_empty());
+        assert!(service
+            .store
+            .latest_entity_events(
+                "alpha",
+                "edge",
+                &["invalid-workflow-runtime-edge".to_owned()],
+            )
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(service
+            .store
+            .list_index_jobs(
+                Some("alpha"),
+                None,
+                Some("edge"),
+                Some("invalid-workflow-runtime-edge"),
+                None,
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+        let invalid_edge_projection_count: i64 = client
+            .query_one(
+                &format!("SELECT count(*) FROM \"{schema}\".\"gke_edges\" WHERE id=$1"),
+                &[&"invalid-workflow-runtime-edge"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(invalid_edge_projection_count, 0);
+
         let missing_capability =
             send_mutation(make_app(), make_token(&[], "alpha"), body.clone()).await;
         assert_eq!(missing_capability.status(), StatusCode::FORBIDDEN);
