@@ -244,6 +244,7 @@ pub fn cli_health(snapshot: &HealthSnapshot) -> String {
 
 pub fn cli_health_from_str(payload_json: &str) -> Result<String, serde_json::Error> {
     let snapshot: HealthSnapshot = serde_json::from_str(payload_json)?;
+    validate_server_backend(&snapshot.backend).map_err(serde_json::Error::io)?;
     Ok(cli_health(&snapshot))
 }
 
@@ -327,6 +328,10 @@ impl ServerBackend {
     }
 }
 
+pub fn validate_server_backend(value: &str) -> Result<(), std::io::Error> {
+    ServerBackend::from_config(value).map(|_| ())
+}
+
 fn required_backend_setting(
     name: &'static str,
     value: Option<String>,
@@ -371,6 +376,24 @@ mod server_backend_tests {
             required_backend_setting("KOGWISTAR_META_SQLITE_PATH", Some("db.sqlite".to_owned()))
                 .unwrap(),
             "db.sqlite"
+        );
+    }
+
+    #[test]
+    fn cli_health_rejects_backend_outside_server_compositions() {
+        let payload = r#"{
+            "backend":"chroma",
+            "persist_directory":"root",
+            "conversation_persist_directory":"conversation",
+            "workflow_persist_directory":"workflow",
+            "wisdom_persist_directory":"wisdom"
+        }"#;
+        let error = super::cli_health_from_str(payload)
+            .expect_err("CLI health must reject a backend the Rust server cannot compose");
+        assert!(
+            error
+                .to_string()
+                .contains("KOGWISTAR_BACKEND must be pg, sqlite, or in_memory")
         );
     }
 }

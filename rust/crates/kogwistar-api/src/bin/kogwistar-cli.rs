@@ -1,4 +1,4 @@
-use kogwistar_api::{HealthSnapshot, cli_health};
+use kogwistar_api::{HealthSnapshot, cli_health, validate_server_backend};
 
 fn usage() -> ! {
     eprintln!("usage: kogwistar-cli health [backend]");
@@ -13,6 +13,10 @@ fn main() {
     let backend = args.next().unwrap_or_else(|| "sqlite".to_owned());
     if args.next().is_some() {
         usage();
+    }
+    if let Err(error) = validate_server_backend(&backend) {
+        eprintln!("{error}");
+        std::process::exit(2);
     }
     println!(
         "{}",
