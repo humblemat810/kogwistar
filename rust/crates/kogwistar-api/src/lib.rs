@@ -131,7 +131,10 @@ mod tests {
     use super::*;
 
     include!("tests/part_01.rs");
-    include!("tests/part_02.rs");
+    include!("tests/auth.rs");
+    include!("tests/mcp.rs");
+    include!("tests/server_transport.rs");
+    include!("tests/runtime.rs");
     include!("tests/part_03.rs");
     include!("tests/part_04.rs");
     include!("tests/part_05.rs");
