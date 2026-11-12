@@ -731,7 +731,17 @@ def test_postgres_rebuild_recovers_python_persisted_derived_entity(
     )
     restored = json.loads(reopened["canonical_payload"])
     entity_key = json.dumps([entity_kind, payload["id"]], separators=(",", ":"))
-    assert restored["entities"][entity_key]["entity"] == payload
+    recovered_entity = restored["entities"][entity_key]["entity"]
+    assert recovered_entity == payload
+    if fixture_name == "workflow-checkpoint-node-model-v1.json":
+        from kogwistar.runtime.models import WorkflowCheckpointNode
+
+        python_model = WorkflowCheckpointNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowCheckpointNode
+        assert (
+            python_model.model_dump(field_mode="backend", dump_format="json")
+            == payload
+        )
 
 
 def _assert_python_projection_recovery_over_rust_owned_store(
