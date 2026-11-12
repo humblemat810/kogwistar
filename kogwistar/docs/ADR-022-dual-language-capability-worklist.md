@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **170/177 PASS (96.0%)**.
-- **Fine worklist:** **750/866 PASS (86.6%)**; **0 IN PROGRESS**, **116 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **751/866 PASS (86.7%)**; **0 IN PROGRESS**, **115 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, one HTTP dev-token mode gate, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -942,7 +942,7 @@
 | FW-18-01B-PYTHON | DL-18 | NOT STARTED | Verify the Python implementation's final digest for the balanced trace against its frozen expected digest. |
 | FW-18-01B-MIXED | DL-18 | NOT STARTED | Verify the mixed Python/Rust implementation's final digest for the balanced trace against its frozen expected digest. |
 | FW-18-01B-RUST | DL-18 | NOT STARTED | Verify the Rust-native implementation's final digest for the balanced trace against its frozen expected digest. |
-| FW-18-03 | DL-18 | NOT STARTED | Verify seeded workload and expected per-read visibility at the small fixture size. |
+| FW-18-03 | DL-18 | PASS | Invariant: the seeded small workload produces expected read-after-write visibility and canonical final state. Cell: SQLite event/projection backend, 8-item v3 fixture. Oracle: every event/projection read and endpoint check matches the trace; final digest and reopen check match the frozen fixture. Evidence: `.venv\Scripts\python.exe -m pytest tests/core/test_mixed_workload_contract.py::test_small_fixture_expected_trace_and_canonical_state_digest -q -p no:cacheprovider` (**1 passed**). |
 | FW-18-03A | DL-18 | NOT STARTED | Verify seeded workload and expected per-read visibility at the larger fixture size. |
 | FW-18-03B | DL-18 | PARENT | Parent scope; children: FW-18-03B-PY-SMALL,FW-18-03B-RUST-SMALL,FW-18-03B-PY-LARGE,FW-18-03B-RUST-LARGE |
 | FW-18-03B-PY-SMALL | DL-18 | NOT STARTED | Verify the Python trace consumer matches the expected final digest for the small fixture. |
