@@ -986,8 +986,20 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
 
 @pytest.mark.parametrize(
     "entity_kind",
-    ["node", "edge", "workflow_run_node", "workflow_runtime_edge"],
-    ids=["node", "edge", "workflow-run-node", "workflow-runtime-edge"],
+    [
+        "node",
+        "edge",
+        "workflow_run_node",
+        "workflow_runtime_edge",
+        "workflow_step_exec_node",
+    ],
+    ids=[
+        "node",
+        "edge",
+        "workflow-run-node",
+        "workflow-runtime-edge",
+        "workflow-step-exec-node",
+    ],
 )
 def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     entity_kind: str,
@@ -1009,7 +1021,11 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
     from kogwistar.engine_core.models import Edge, Node
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
-    from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
+    from kogwistar.runtime.models import (
+        WorkflowRunNode,
+        WorkflowRuntimeEdge,
+        WorkflowStepExecNode,
+    )
     from kogwistar.server.bootstrap import load_server_storage_settings
     from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
@@ -1084,6 +1100,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     expected_edges: list[ConversationEdge] = []
     expected_workflow_runs: list[WorkflowRunNode] = []
     expected_runtime_edges: list[WorkflowRuntimeEdge] = []
+    expected_step_execs: list[WorkflowStepExecNode] = []
     mutations: list[dict[str, object]]
     if entity_kind == "node":
         base_node = node_payload(
@@ -1161,6 +1178,28 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             mutation_for(target_node),
             mutation_for(runtime_edge),
         ]
+    elif entity_kind == "workflow_step_exec_node":
+        step_exec = WorkflowStepExecNode.model_validate(
+            {
+                **node_payload(
+                    node_id=f"typed-http-step-{uuid.uuid4().hex}",
+                    summary="Workflow step execution persisted through Rust HTTP",
+                ).model_dump(field_mode="backend"),
+                "metadata": {
+                    "entity_type": "workflow_step_exec",
+                    "run_id": f"typed-http-step-run-{uuid.uuid4().hex}",
+                    "workflow_id": "typed-http-workflow",
+                    "workflow_node_id": "typed-http-workflow-node",
+                    "step_seq": 4,
+                    "op": "parse",
+                    "status": "ok",
+                    "duration_ms": 19,
+                    "result_json": '{"parsed":true}',
+                },
+            }
+        )
+        expected_step_execs.append(step_exec)
+        mutations = [mutation_for(step_exec)]
     else:
         source_node = node_payload(
             node_id=f"typed-http-source-{uuid.uuid4().hex}",
@@ -1291,6 +1330,23 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             assert recovered_runtime_edge.metadata["conversation_id"] == conversation_id
             assert recovered_runtime_edge.metadata["run_id"] == expected_runtime_edge.metadata["run_id"]
             assert recovered_runtime_edge.metadata["_class_name"] == "WorkflowRuntimeEdge"
+        elif entity_kind == "workflow_step_exec_node":
+            expected_step_exec = expected_step_execs[0]
+            python_nodes = engine.read.get_nodes(
+                ids=[expected_step_exec.id], node_type=WorkflowStepExecNode
+            )
+            assert len(python_nodes) == 1
+            recovered_step_exec = python_nodes[0]
+            assert isinstance(recovered_step_exec, WorkflowStepExecNode)
+            assert recovered_step_exec.metadata["workflow_id"] == "typed-http-workflow"
+            assert recovered_step_exec.metadata["run_id"] == expected_step_exec.metadata["run_id"]
+            assert recovered_step_exec.metadata["workflow_node_id"] == "typed-http-workflow-node"
+            assert recovered_step_exec.metadata["step_seq"] == 4
+            assert recovered_step_exec.metadata["op"] == "parse"
+            assert recovered_step_exec.metadata["status"] == "ok"
+            assert recovered_step_exec.metadata["duration_ms"] == 19
+            assert recovered_step_exec.metadata["result_json"] == '{"parsed":true}'
+            assert recovered_step_exec.metadata["_class_name"] == "WorkflowStepExecNode"
         else:
             expected_edge = expected_edges[0]
             python_edges = engine.read.get_edges(
