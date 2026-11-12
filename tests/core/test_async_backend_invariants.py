@@ -7,6 +7,7 @@ import uuid
 import pytest
 
 from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.models import Edge, Node
@@ -576,6 +577,24 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
             "result_json": '{"parsed":true}',
         },
     )
+    conversation_node = ConversationNode(
+        id="node::async-pg-derived-conversation",
+        label="conversation turn",
+        type="entity",
+        summary="derived conversation user turn",
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "conversation_node",
+            "level_from_root": 0,
+            "in_conversation_chain": True,
+            "in_ui_chain": True,
+        },
+        role="user",
+        turn_index=0,
+        conversation_id="conversation::derived",
+        user_id="user::reader",
+    )
     target = _mk_node(
         node_id="node::async-pg-derived-target",
         doc_id="doc::async-pg-derived",
@@ -675,6 +694,7 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     monkeypatch.setattr(meta, "graph_projection_records", capture_projection_lock)
     await engine.write.add_node_async(run_node)
     await engine.write.add_node_async(step_exec_node)
+    await engine.write.add_node_async(conversation_node)
     await engine.write.add_node_async(target)
     await engine.write.add_edge_async(runtime_edge)
     await engine.write.add_node_async(acl_previous)
@@ -685,6 +705,7 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert [envelope["model_class"] for envelope in envelopes] == [
         "workflow_run_node",
         "workflow_step_exec_node",
+        "conversation_node",
         "node",
         "workflow_runtime_edge",
         "acl_node",
@@ -700,6 +721,10 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert (
         type(WorkflowStepExecNode.model_validate(event_payloads[step_exec_node.id]))
         is WorkflowStepExecNode
+    )
+    assert (
+        type(ConversationNode.model_validate(event_payloads[conversation_node.id]))
+        is ConversationNode
     )
     assert (
         type(WorkflowRuntimeEdge.model_validate(event_payloads[runtime_edge.id]))
@@ -723,6 +748,11 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     )
     assert step_rows["ids"] == [step_exec_node.id]
     assert step_rows["metadatas"][0]["_class_name"] == "WorkflowStepExecNode"
+    conversation_rows = await async_pg_backend.node_get(
+        ids=[conversation_node.id], include=["documents", "metadatas"]
+    )
+    assert conversation_rows["ids"] == [conversation_node.id]
+    assert conversation_rows["metadatas"][0]["_class_name"] == "ConversationNode"
     assert edge_rows["ids"] == [runtime_edge.id]
     assert edge_rows["metadatas"][0]["relation"] == "next"
     assert edge_rows["metadatas"][0]["node_endpoint_count"] == 2
@@ -743,6 +773,14 @@ async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
     assert len(python_step_node) == 1
     assert type(python_step_node[0]) is WorkflowStepExecNode
     assert python_step_node[0].metadata["result_json"] == '{"parsed":true}'
+    python_conversation_node = engine.read.get_nodes(
+        ids=[conversation_node.id], node_type=ConversationNode
+    )
+    assert len(python_conversation_node) == 1
+    assert type(python_conversation_node[0]) is ConversationNode
+    assert python_conversation_node[0].role == "user"
+    assert python_conversation_node[0].turn_index == 0
+    assert python_conversation_node[0].conversation_id == "conversation::derived"
     projection_lock_requests.clear()
     authorized = engine.decide_acl(
         truth_graph=engine.kg_graph_type,
