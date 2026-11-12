@@ -1976,7 +1976,7 @@ asyncio.run(main())
     async fn dev_token_me_and_logout_share_verified_jwt_contract() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
-        use jsonwebtoken::{EncodingKey, Header, encode};
+        use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation, decode, encode};
         use tower::ServiceExt;
 
         let auth_path = std::env::temp_dir().join(format!(
@@ -1998,6 +1998,12 @@ asyncio.run(main())
                 auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
             },
         });
+        let contract_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../contracts/golden/auth-dev-token-v1.json");
+        let contract: Value = serde_json::from_slice(
+            &std::fs::read(contract_path).expect("read shared dev token contract"),
+        )
+        .expect("parse shared dev token contract");
         let token_response = app
             .clone()
             .oneshot(
@@ -2005,19 +2011,57 @@ asyncio.run(main())
                     .method("POST")
                     .uri("/auth/dev-token")
                     .header("content-type", "application/json")
-                    .body(Body::from(
-                        r#"{"username":"dev@example.com","role":"rw","ns":"docs,workflow","capabilities":"project_view,workflow.run.read"}"#,
-                    ))
+                    .body(Body::from(contract["request"].to_string()))
                     .unwrap(),
             )
             .await
             .unwrap();
         assert_eq!(token_response.status(), StatusCode::OK);
         let token_body = to_bytes(token_response.into_body(), 8192).await.unwrap();
-        let token = serde_json::from_slice::<Value>(&token_body).unwrap()["token"]
-            .as_str()
-            .unwrap()
-            .to_owned();
+        let token_body = serde_json::from_slice::<Value>(&token_body).unwrap();
+        assert_eq!(token_body.as_object().unwrap().keys().collect::<Vec<_>>(), vec!["token"]);
+        let token = token_body["token"].as_str().unwrap().to_owned();
+        let claims = decode::<Value>(
+            &token,
+            &DecodingKey::from_secret(b"dev-secret"),
+            &Validation::new(Algorithm::HS256),
+        )
+        .unwrap()
+        .claims;
+        for (field, expected) in contract["stable_claims"].as_object().unwrap() {
+            assert_eq!(&claims[field], expected, "claim {field}");
+        }
+        assert_eq!(
+            claims["exp"].as_u64().unwrap() - claims["iat"].as_u64().unwrap(),
+            contract["token_lifetime_seconds"].as_u64().unwrap()
+        );
+        let oidc_app = router(ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "oidc".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some("dev-secret".to_owned()),
+                jwks_json: None,
+                issuer: Some("local".to_owned()),
+                audience: None,
+                oidc_providers_json: None,
+                auth_db_url: None,
+            },
+        });
+        let disabled = oidc_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/auth/dev-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(contract["request"].to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled.status(), StatusCode::NOT_FOUND);
         let me = app
             .clone()
             .oneshot(

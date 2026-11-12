@@ -160,24 +160,26 @@ def test_login_rejects_unallowlisted_return_to_in_oidc(client, monkeypatch):
     assert response.json()["detail"] == "return_to target is not allowed"
 
 
-def test_dev_token_accepts_comma_separated_namespaces(client):
-    response = client.post(
-        "/auth/dev-token",
-        json={
-            "username": "dev-user",
-            "role": "rw",
-            "ns": "docs,conversation,workflow,wisdom",
-        },
+def test_dev_token_accepts_comma_separated_namespaces(client, monkeypatch):
+    monkeypatch.setattr(app.state, "auth_mode", "dev", raising=False)
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/auth-dev-token-v1.json"
+        ).read_text(encoding="utf-8")
     )
-
-    assert response.status_code == 200
+    response = client.post("/auth/dev-token", json=contract["request"])
+    assert response.status_code == contract["success_status"]
+    assert sorted(response.json()) == contract["response_fields"]
     token = response.json()["token"]
     claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-    assert isinstance(claims["ns"], list)
-    assert set(claims["ns"]) == {"docs", "conversation", "workflow", "wisdom"}
+    for field, expected in contract["stable_claims"].items():
+        assert claims[field] == expected
+    assert claims["exp"] - claims["iat"] == contract["token_lifetime_seconds"]
 
 
-def test_dev_token_accepts_namespace_list(client):
+def test_dev_token_accepts_namespace_list(client, monkeypatch):
+    monkeypatch.setattr(app.state, "auth_mode", "dev", raising=False)
     response = client.post(
         "/auth/dev-token",
         json={
@@ -192,6 +194,16 @@ def test_dev_token_accepts_namespace_list(client):
     claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     assert isinstance(claims["ns"], list)
     assert set(claims["ns"]) == {"docs", "conversation", "workflow", "wisdom"}
+
+
+def test_dev_token_is_disabled_outside_dev_mode(client, monkeypatch):
+    monkeypatch.setattr(app.state, "auth_mode", "oidc", raising=False)
+    response = client.post(
+        "/auth/dev-token",
+        json={"username": "attacker", "role": "rw", "ns": "docs,workflow"},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Dev token endpoint is disabled"
 
 
 def test_login_redirect(client):

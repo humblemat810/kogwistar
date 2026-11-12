@@ -13,15 +13,16 @@ from fastapi.testclient import TestClient
 
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.server_http_helpers import token_header
 
 
 def _rw_headers(client: TestClient) -> dict[str, str]:
-    resp = client.post(
-        "/auth/dev-token",
-        json={"username": "tester", "role": "rw", "ns": "docs,conversation,workflow"},
+    return token_header(
+        client,
+        username="tester",
+        role="rw",
+        ns="docs,conversation,workflow",
     )
-    resp.raise_for_status()
-    return {"Authorization": f"Bearer {resp.json()['token']}"}
 
 
 def test_graph_upsert_request_preserves_legacy_version_default() -> None:

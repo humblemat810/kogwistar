@@ -381,6 +381,11 @@ class DevTokenInp(BaseModel):
 
 @app.post("/auth/dev-token")
 async def dev_token(request: Request) -> object:
+    auth_mode = str(
+        getattr(request.app.state, "auth_mode", None) or os.getenv("AUTH_MODE") or "oidc"
+    ).strip().lower()
+    if auth_mode != "dev":
+        raise HTTPException(status_code=404, detail="Dev token endpoint is disabled")
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
