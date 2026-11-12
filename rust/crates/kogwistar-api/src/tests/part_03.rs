@@ -1642,6 +1642,64 @@
             let field = field.as_str().unwrap();
             assert!(body["result"].get(field).is_none(), "field {field}");
         }
+        // PYTHON_PARITY_V1: MCP redo response matches Python's workflow MCP projection; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_matches_shared_contract
+        let redo_mcp: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-redo-mcp-v1.json"
+        )))
+        .unwrap();
+        let redo_args = &redo_mcp["arguments"];
+        let redo_workflow_id = redo_args["workflow_id"].as_str().unwrap();
+        let redo_created = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{redo_workflow_id}/nodes"),
+            json!({
+                "designer_id":redo_args["designer_id"],
+                "node_id":"redo-node-contract",
+                "label":"Start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(redo_created.status(), StatusCode::OK);
+        let redo_undone = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{redo_workflow_id}/undo"),
+            json!({"designer_id":redo_args["designer_id"]})
+        );
+        assert_eq!(redo_undone.status(), StatusCode::OK);
+        let redo_request = serde_json::to_vec(&json!({
+            "jsonrpc":"2.0",
+            "id":"redo",
+            "method":"tools/call",
+            "params": {
+                "name":redo_mcp["tool"],
+                "arguments":redo_args
+            }
+        }))
+        .unwrap();
+        let redone = app.clone().oneshot(Request::builder().method("POST").uri("/mcp/workflow")
+            .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
+            .body(Body::from(redo_request)).unwrap()).await.unwrap();
+        assert_eq!(redone.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &to_bytes(redone.into_body(), 65_536).await.unwrap()
+        ).unwrap();
+        for (field, expected) in redo_mcp["fixed_result_fields"].as_object().unwrap() {
+            assert_eq!(&body["result"][field], expected, "field {field}");
+        }
+        for field in redo_mcp["integer_result_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body["result"][field].as_i64().is_some(), "field {field}");
+        }
+        for (field, length) in redo_mcp["array_lengths"].as_object().unwrap() {
+            assert_eq!(body["result"][field].as_array().unwrap().len(), length.as_u64().unwrap() as usize);
+        }
+        assert_eq!(body["result"]["commits"]["1"]["action"], redo_mcp["version_one_action"]);
+        for field in redo_mcp["absent_result_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body["result"].get(field).is_none(), "field {field}");
+        }
         drop(app);
         drop(service);
         drop(store);

@@ -5207,6 +5207,53 @@ async def test_mcp_workflow_design_undo_matches_shared_contract(
     body = _structured(result)
     for field, expected in contract["fixed_result_fields"].items():
         assert body[field] == expected
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_design_redo_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-redo-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    arguments = contract["arguments"]
+    with _claims(
+        "rw",
+        "workflow",
+        sub=arguments["designer_id"],
+        scope_parts={
+            "capabilities": [*contract["caller_capabilities"], "write_graph"]
+        },
+    ):
+        created = await server.mcp.call_tool(
+            "workflow.design_node_upsert",
+            {
+                "workflow_id": arguments["workflow_id"],
+                "designer_id": arguments["designer_id"],
+                "node_id": "redo-node-contract",
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+        )
+        assert created.is_error is False
+        undone = await server.mcp.call_tool(
+            "workflow.design_undo", arguments
+        )
+        assert undone.is_error is False
+        result = await server.mcp.call_tool(contract["tool"], arguments)
+
+    assert result.is_error is False
+    body = _structured(result)
+    for field, expected in contract["fixed_result_fields"].items():
+        assert body[field] == expected, f"{field}: {body!r}"
     for field in contract["integer_result_fields"]:
         assert isinstance(body[field], int)
     for field, length in contract["array_lengths"].items():

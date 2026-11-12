@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.design_redo",
+  "arguments": {
+    "workflow_id": "wf-redo-mcp-contract",
+    "designer_id": "alice"
+  },
+  "caller_capabilities": [
+    "workflow.design.write",
+    "approve_action"
+  ],
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/design/wf-redo-mcp-contract/redo",
+    "body": "{\"workflow_id\":\"wf-redo-mcp-contract\",\"designer_id\":\"alice\"}"
+  },
+  "fixed_result_fields": {
+    "workflow_id": "wf-redo-mcp-contract",
+    "namespace": "wf_design:wf-redo-mcp-contract",
+    "current_version": 1,
+    "active_tip_version": 1,
+    "max_version": 1,
+    "allocated_max_version": 1,
+    "can_undo": true,
+    "can_redo": false,
+    "status": "ok"
+  },
+  "integer_result_fields": ["current_seq", "latest_seq"],
+  "sequence_note": "Sequence values are backend-local offsets; assert integer shape, not equality across Python fake-Chroma and Rust SQLite fixtures.",
+  "array_lengths": {
+    "versions": 2,
+    "selected_versions": 2,
+    "dropped_ranges": 0,
+    "timeline": 3
+  },
+  "version_one_action": "node_upsert",
+  "absent_result_fields": ["materialization_status"]
+}
