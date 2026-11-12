@@ -926,6 +926,7 @@ fn conversation_graph_scope_and_acl_principal(
     (scope, acl_principal)
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#capability_effect; python=kogwistar/server/chat_service.py#ChatRunService.visibility_snapshot; fixture=contracts/golden/workflow-visibility-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api.py#test_view_layer_hardening_endpoints
 fn capability_effect(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,

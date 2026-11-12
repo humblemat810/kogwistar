@@ -3792,6 +3792,34 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
         vis.raise_for_status()
         assert vis.json()["namespaces"]["execution_namespace"] == "workflow"
 
+        visibility_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-visibility-http-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        scoped_token = jwt.encode(
+            {
+                "sub": "reader-1",
+                "role": "ro",
+                "ns": ["workflow"],
+                "capabilities": ["project_view", "read_security_scope"],
+                "tenant": "tenant-a",
+                "workspace": "workspace-b",
+                "project": "project-c",
+                "iss": "local",
+                "exp": int(time.time()) + 300,
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        scoped_visibility = client.get(
+            "/api/workflow/visibility",
+            headers={"Authorization": f"Bearer {scoped_token}"},
+        )
+        assert scoped_visibility.status_code == visibility_contract["success_status"]
+        assert scoped_visibility.json() == visibility_contract["response"]
+
         budget = client.get("/api/workflow/budget/history", headers=wf_ro)
         budget.raise_for_status()
         assert budget.json()["cost_ledger"]["event_count"] == 2

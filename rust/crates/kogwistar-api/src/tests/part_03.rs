@@ -87,6 +87,15 @@
             &to_bytes(visibility.into_body(), 32768).await.unwrap(),
         )
         .unwrap();
+        let visibility_contract_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../contracts/golden/workflow-visibility-http-v1.json");
+        let visibility_contract: Value = serde_json::from_slice(
+            &std::fs::read(visibility_contract_path)
+                .expect("read shared workflow visibility HTTP contract"),
+        )
+        .expect("parse shared workflow visibility HTTP contract");
+        assert_eq!(StatusCode::OK.as_u16(), visibility_contract["success_status"]);
+        assert_eq!(visibility, visibility_contract["response"]);
         assert_eq!(visibility["current_subject"], "reader-1");
         assert_eq!(visibility["namespaces"]["execution_namespace"], "workflow");
         assert_eq!(visibility["security_scope"], "tenant-a");
