@@ -6189,10 +6189,14 @@ async def test_mcp_workflow_operator_dashboard_denies_before_reads(
 
     monkeypatch.setattr(meta_store, "list_server_runs", track_runs)
     monkeypatch.setattr(meta_store, "list_projected_lane_messages", track_messages)
-    contract = {
-        "operation": "workflow.operator_dashboard",
-        "arguments": {"limit": 10},
-    }
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "operator-dashboard-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     for missing in required:
         capabilities = sorted(required - {missing})
@@ -6203,7 +6207,9 @@ async def test_mcp_workflow_operator_dashboard_denies_before_reads(
             scope_parts={"capabilities": capabilities},
         ), pytest.raises(HTTPException) as denied:
             await server.mcp._execute(
-                contract["operation"], contract["arguments"], enforce_visibility=True
+                contract["mcp_operation"],
+                contract["mcp_arguments"],
+                enforce_visibility=True,
             )
         assert denied.value.status_code == 403
 
@@ -6217,7 +6223,8 @@ async def test_mcp_workflow_operator_dashboard_denies_before_reads(
             denied = await server.mcp._handle_call_tool(
                 None,
                 types.CallToolRequestParams(
-                    name=contract["operation"], arguments=contract["arguments"]
+                    name=contract["mcp_operation"],
+                    arguments=contract["mcp_arguments"],
                 ),
             )
         assert denied.is_error is True
@@ -6227,18 +6234,12 @@ async def test_mcp_workflow_operator_dashboard_denies_before_reads(
         "ro", "workflow", sub="dashboard-authorized", scope_parts={"capabilities": sorted(required)}
     ):
         result = await server.mcp._execute(
-            contract["operation"], contract["arguments"], enforce_visibility=True
+            contract["mcp_operation"],
+            contract["mcp_arguments"],
+            enforce_visibility=True,
         )
-    assert set(_structured(result)) >= {
-        "process_table",
-        "operator_inbox",
-        "blocked_runs",
-        "blocked_flow_graph",
-        "message_queue",
-        "dead_letters",
-        "capabilities",
-        "resources",
-    }
+    dashboard = _structured(result)
+    assert all(field in dashboard for field in contract["dashboard_fields"])
 
 
 @pytest.mark.asyncio

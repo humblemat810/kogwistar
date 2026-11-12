@@ -7138,7 +7138,11 @@
             ("workflow.budget_snapshot", json!({}), "cost_ledger"),
             (
                 "workflow.operator_dashboard",
-                json!({"limit": 10}),
+                serde_json::from_str::<Value>(include_str!(
+                    "../../../../../contracts/golden/operator-dashboard-v1.json"
+                ))
+                .unwrap()["mcp_arguments"]
+                    .clone(),
                 "resources",
             ),
             (
@@ -7197,6 +7201,18 @@
                     value["result"]["budget_model"],
                     contract["budget_model"]
                 );
+            }
+            // PYTHON_PARITY_V1: Rust MCP returns the dashboard fields declared by the shared contract; rust=rust/crates/kogwistar-api/src/tests/part_05.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
+            if tool_name == "workflow.operator_dashboard" {
+                let contract: Value = serde_json::from_str(include_str!(
+                    "../../../../../contracts/golden/operator-dashboard-v1.json"
+                ))
+                .unwrap();
+                assert_eq!(contract["mcp_operation"], tool_name);
+                for field in contract["dashboard_fields"].as_array().unwrap() {
+                    let field = field.as_str().unwrap();
+                    assert!(value["result"].get(field).is_some(), "missing {field}");
+                }
             }
             if tool_name == "workflow.run_checkpoint_get" {
                 let contract: Value = serde_json::from_str(include_str!(

@@ -1,5 +1,9 @@
 {
   "schema_version": 1,
+  "mcp_operation": "workflow.operator_dashboard",
+  "mcp_arguments": {
+    "limit": 10
+  },
   "required_capabilities": [
     "project_view",
     "workflow.run.read",
