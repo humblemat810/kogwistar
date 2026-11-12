@@ -3981,14 +3981,14 @@ async def test_mcp_conversation_get_transcript_denies_missing_capability_and_nam
     monkeypatch, engine_triplet
 ):
     import pytest
-    from fastapi import HTTPException
 
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(
+    service = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
     conversation_id = "transcript-authorization-check"
     owner = "transcript-authorization-owner"
+    original_list_transcript = service.list_transcript
     with _claims(
         "rw",
         "conversation",
@@ -4000,15 +4000,19 @@ async def test_mcp_conversation_get_transcript_denies_missing_capability_and_nam
             {"user_id": owner, "conversation_id": conversation_id},
         )
 
+    def denied_transcript_read(_conversation_id: str) -> list[dict[str, object]]:
+        raise AssertionError("denied MCP request reached transcript service")
+
+    monkeypatch.setattr(service, "list_transcript", denied_transcript_read)
     arguments = {"conversation_id": conversation_id}
     with _claims(
         "ro", "conversation", sub=owner, scope_parts={"capabilities": []}
     ):
-        with pytest.raises(HTTPException) as missing_capability:
+        with pytest.raises(PermissionError) as missing_capability:
             await server.mcp._execute(
                 "conversation.get_transcript", arguments, enforce_visibility=True
             )
-        assert missing_capability.value.status_code == 403
+        assert "not permitted" in str(missing_capability.value)
 
     with _claims(
         "ro", "workflow", sub=owner, scope_parts={"capabilities": ["read_graph"]}
@@ -4017,6 +4021,22 @@ async def test_mcp_conversation_get_transcript_denies_missing_capability_and_nam
             await server.mcp._execute(
                 "conversation.get_transcript", arguments, enforce_visibility=True
             )
+
+    monkeypatch.setattr(service, "list_transcript", original_list_transcript)
+    with _claims(
+        "ro", "conversation", sub=owner, scope_parts={"capabilities": ["read_graph"]}
+    ):
+        result = await server.mcp.call_tool("conversation.get_transcript", arguments)
+    assert _structured(result) == {"conversation_id": conversation_id, "turns": []}
+
+    with _claims("ro", "conversation", sub=owner):
+        legacy_result = await server.mcp.call_tool(
+            "conversation.get_transcript", arguments
+        )
+    assert _structured(legacy_result) == {
+        "conversation_id": conversation_id,
+        "turns": [],
+    }
 
 
 @pytest.mark.asyncio

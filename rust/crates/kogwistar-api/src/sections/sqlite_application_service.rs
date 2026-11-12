@@ -421,6 +421,23 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: transcript reads require ro/rw, conversation scope, and read_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#conversation_transcript_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace
+        if name == "conversation.get_transcript" {
+            if surface != "conversation"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "conversation" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("read_graph")
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_V1: conversation status admission requires ro/rw and conversation namespace; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_run_status; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_run_status_denies_unauthorized_effects
         if name == "conversation.run_status" {
             return surface == "conversation"

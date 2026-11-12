@@ -66,6 +66,7 @@ from .. import shortids
 TOOL_ROLES: dict[str, set[str]] = {}
 TOOL_NAMESPACE: dict[str, set[str]] = {}
 TOOL_CAPABILITIES: dict[str, str] = {
+    "conversation.get_transcript": "read_graph",
     "document_id_from_file_name": "read_graph",
     "kg_find_edges": "read_graph",
     "kg_load_persisted": "read_graph",
