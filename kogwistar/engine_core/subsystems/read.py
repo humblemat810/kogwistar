@@ -649,6 +649,11 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         limit: int | None = 10000,
     ) -> dict[str, JsonValue]:
         """Read structural endpoint rows through the engine read boundary."""
+        if self._rust_postgres_projection_selected():
+            raise RuntimeError(
+                "Rust-selected PostgreSQL structural endpoint reads are not "
+                "implemented; refusing Python backend fallback"
+            )
         return _json_object(run_awaitable_blocking(
             self._e.backend.edge_endpoints_get(
                 where=where,
@@ -789,6 +794,11 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             return []
         if endpoint_type not in {"node", "edge"}:
             raise ValueError("endpoint_type must be 'node' or 'edge'")
+        if self._rust_postgres_projection_selected():
+            raise RuntimeError(
+                "Rust-selected PostgreSQL incident-edge reads are not "
+                "implemented; refusing Python backend fallback"
+            )
         selected_edge_type = edge_type or default_edge_type_for_graph_kind(
             self._e.kg_graph_type
         )

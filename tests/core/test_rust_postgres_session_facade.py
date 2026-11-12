@@ -1394,6 +1394,34 @@ def test_postgres_meta_facade_requires_active_rust_transaction_for_row_lock(
         )
 
 
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        ("get_edge_endpoints", "structural endpoint reads"),
+        ("get_incident_edges", "incident-edge reads"),
+    ],
+)
+def test_rust_selected_structural_edge_reads_fail_before_python_backend(
+    monkeypatch, operation, message
+):
+    class Backend:
+        def edge_endpoints_get(self, **_values):
+            raise AssertionError("Rust-selected read crossed into Python backend")
+
+        def edge_get_by_endpoint(self, **_values):
+            raise AssertionError("Rust-selected read crossed into Python backend")
+
+    engine = SimpleNamespace(backend=Backend(), kg_graph_type="knowledge")
+    reader = ReadSubsystem(engine)
+    monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+
+    with pytest.raises(RuntimeError, match=f"{message}.*refusing Python backend fallback"):
+        if operation == "get_edge_endpoints":
+            reader.get_edge_endpoints()
+        else:
+            reader.get_incident_edges("node-1")
+
+
 def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatch):
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     store = RustEnginePostgresMetaStore(
