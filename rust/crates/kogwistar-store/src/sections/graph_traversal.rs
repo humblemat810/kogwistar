@@ -353,12 +353,8 @@ fn graph_viz_selected_records<'a>(
         .iter()
         .filter(|record| {
             !is_tombstoned(&record.metadata)
-                && selection_doc_id.is_none_or(|expected| {
-                    record_field(record, "doc_id")
-                        .and_then(|value| value.as_str().map(str::to_owned))
-                        .as_deref()
-                        == Some(expected)
-                })
+                && selection_doc_id
+                    .is_none_or(|expected| graph_record_matches_doc_id(record, expected))
         })
         .collect::<Vec<_>>();
     // Python's `_filter_by_insertion_method` treats an empty query as no filter.
@@ -371,6 +367,17 @@ fn graph_viz_selected_records<'a>(
         .filter(|record| graph_record_has_reference(record, expected_method, selection_doc_id))
         .collect::<Vec<_>>();
     if matching.is_empty() { base } else { matching }
+}
+
+fn graph_record_matches_doc_id(record: &GraphRecord, expected: &str) -> bool {
+    record_field(record, "doc_id").and_then(|value| value.as_str().map(str::to_owned))
+        .as_deref()
+        == Some(expected)
+        || record
+            .metadata
+            .get("doc_ids")
+            .and_then(Value::as_array)
+            .is_some_and(|doc_ids| doc_ids.iter().any(|doc_id| doc_id.as_str() == Some(expected)))
 }
 
 fn graph_viz_endpoint_complete_edges<'a>(

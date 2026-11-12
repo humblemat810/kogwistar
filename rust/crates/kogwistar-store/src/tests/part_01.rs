@@ -403,6 +403,61 @@ fn graph_visualization_empty_doc_id_matches_python_contract() {
     }
 }
 
+// PYTHON_PARITY_V1: Rust document selection accepts metadata.doc_ids and payload.metadata.doc_id like Python `_ids_by_doc`; rust=rust/crates/kogwistar-store/src/sections/graph_traversal.rs#graph_record_matches_doc_id; python=kogwistar/visualization/graph_viz.py#_ids_by_doc; rust_test=rust/crates/kogwistar-store/src/tests/part_01.rs#graph_visualization_matches_python_document_membership; python_test=tests/test_visualization.py#test_graph_visualization_doc_filter_matches_python_contract
+#[test]
+fn graph_visualization_matches_python_document_membership() {
+    let record = |id: &str, payload: Value, metadata: Map<String, Value>| GraphRecord {
+        id: id.to_owned(),
+        document: Some(payload.to_string()),
+        metadata,
+        embedding: None,
+    };
+    let nodes = vec![
+        record(
+            "node-doc-ids",
+            json!({"id":"node-doc-ids","label":"metadata doc_ids"}),
+            Map::from_iter([("doc_ids".to_owned(), json!(["doc-a"]))]),
+        ),
+        record(
+            "node-payload-metadata",
+            json!({"id":"node-payload-metadata","label":"payload metadata","metadata":{"doc_id":"doc-a"}}),
+            Map::new(),
+        ),
+        record(
+            "node-other-doc",
+            json!({"id":"node-other-doc","label":"other document"}),
+            Map::from_iter([("doc_ids".to_owned(), json!(["doc-b"]))]),
+        ),
+    ];
+    let edges = vec![
+        record(
+            "edge-selected",
+            json!({"id":"edge-selected","label":"connects","source_ids":["node-doc-ids"],"target_ids":["node-payload-metadata"],"doc_id":"doc-a"}),
+            Map::new(),
+        ),
+        record(
+            "edge-incomplete",
+            json!({"id":"edge-incomplete","label":"hidden endpoint","source_ids":["node-doc-ids"],"target_ids":["node-other-doc"],"doc_id":"doc-a"}),
+            Map::new(),
+        ),
+    ];
+
+    let result = graph_viz_d3_from_records(&nodes, &edges, Some("doc-a"), "reify", None);
+    let node_ids = result["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["id"].as_str())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        node_ids,
+        ["edge-selected", "node-doc-ids", "node-payload-metadata"]
+            .into_iter()
+            .collect()
+    );
+    assert_eq!(result["links"].as_array().unwrap().len(), 2);
+}
+
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_hyperedges_match_python_contract; python=kogwistar/visualization/graph_viz.py#to_d3_force; fixture=contracts/golden/visualization-hyperedge-v1.json; rust_test=rust/crates/kogwistar-store/src/lib.rs#graph_visualization_hyperedges_match_python_contract; python_test=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract
 #[test]
 fn graph_visualization_hyperedges_match_python_contract() {

@@ -443,7 +443,11 @@ impl ApplicationService for SqliteRunApplicationService {
         // PYTHON_PARITY_V1: explicit read_graph + docs scope gate for these root graph tools; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/part_06.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_root_graph_mcp_honors_explicit_capability_claims
         if matches!(
             name,
-            "kg_load_persisted" | "kg_propose_bruteforce" | "kg_semantic_seed_then_expand_text"
+            "kg_load_persisted"
+                | "kg_propose_bruteforce"
+                | "kg_semantic_seed_then_expand_text"
+                | "kg_viz_d3_json"
+                | "kg_viz_cytoscape_json"
         ) {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")

@@ -1370,6 +1370,54 @@ def test_visualization_empty_doc_id_matches_python_route_selection_contract() ->
 
 
 @pytest.mark.ci
+def test_doc_visualization_fallback_matches_metadata_doc_membership() -> None:
+    from kogwistar.visualization.graph_viz import _ids_by_doc
+
+    class Backend:
+        def node_docs_get(self, **_kwargs: object) -> dict[str, object]:
+            return {"metadatas": []}
+
+        def edge_endpoints_get(self, **_kwargs: object) -> dict[str, object]:
+            return {"metadatas": []}
+
+        def node_get(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "ids": ["node-doc-ids", "node-payload-metadata", "node-other-doc"],
+                "documents": [
+                    '{"id":"node-doc-ids"}',
+                    '{"id":"node-payload-metadata","metadata":{"doc_id":"doc-a"}}',
+                    '{"id":"node-other-doc"}',
+                ],
+                "metadatas": [
+                    {"doc_ids": ["doc-a"]},
+                    {},
+                    {"doc_ids": ["doc-b"]},
+                ],
+            }
+
+        def edge_get(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "ids": ["edge-doc-id", "edge-other-doc"],
+                "documents": [
+                    '{"id":"edge-doc-id"}',
+                    '{"id":"edge-other-doc"}',
+                ],
+                "metadatas": [
+                    {"doc_id": "doc-a"},
+                    {"doc_id": "doc-b"},
+                ],
+            }
+
+    empty_index = SimpleNamespace(
+        node_ids_by_doc=lambda _doc_id: [],
+        edge_ids_by_doc=lambda _doc_id: [],
+    )
+    nodes, edges = _ids_by_doc(SimpleNamespace(backend=Backend(), read=empty_index), "doc-a")
+    assert nodes == ["node-doc-ids", "node-payload-metadata"]
+    assert edges == ["edge-doc-id"]
+
+
+@pytest.mark.ci
 def test_hyperedge_visualization_matches_shared_python_contract() -> None:
     fixture = json.loads(
         (ROOT / "contracts/golden/visualization-hyperedge-v1.json").read_text(
