@@ -723,6 +723,17 @@ impl SqliteRunApplicationService {
     }
 
     fn replay_dead_letter(&self, request: &ApiEffectRequest, run_id: &str) -> ApiEffectResponse {
+        if principal_role(&request.principal) != "rw"
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "workflow" || namespace == "*")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Replaying dead letters requires rw role and workflow namespace",
+            );
+        }
         if !capability_allowed(
             request,
             &self.capabilities,

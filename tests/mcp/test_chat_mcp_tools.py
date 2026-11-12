@@ -2702,6 +2702,79 @@ async def test_mcp_workflow_service_trigger_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_dead_letter_replay_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-dead-letter-replay-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        scope_parts={"capabilities": contract["caller_capabilities"]},
+    ):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    assert _structured(result) == contract["result"]
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_dead_letter_replay_denies_without_dispatch(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-dead-letter-replay-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    scheduler_calls: list[str] = []
+    monkeypatch.setattr(
+        service.scheduler,
+        "dead_letter",
+        lambda: scheduler_calls.append("read") or [],
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        scope_parts={"capabilities": []},
+    ), pytest.raises(HTTPException) as denied:
+        await server.mcp._execute(
+            contract["tool"], contract["arguments"], enforce_visibility=True
+        )
+
+    assert denied.value.status_code == 403
+    assert scheduler_calls == []
+
+    for role, namespace in (("ro", "workflow"), ("rw", "conversation")):
+        with _claims(
+            role,
+            namespace,
+            scope_parts={"capabilities": contract["caller_capabilities"]},
+        ), pytest.raises(PermissionError):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+    assert scheduler_calls == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_conversation_create_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
