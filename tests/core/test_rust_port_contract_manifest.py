@@ -1289,6 +1289,41 @@ def test_implementation_selector_manifest_matches_runtime_precedence(
     assert all(reader() == "python" for reader in readers.values())
 
 
+def test_implementation_fallback_inventory_has_owned_behavior_and_evidence() -> None:
+    inventory_path = ROOT / "contracts" / "implementation-fallbacks-v1.json"
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    entries = inventory["entries"]
+    expected = {
+        "explicit-python-selection": "explicit_mode_selection",
+        "shadow-oracle-result": "shadow_oracle_return",
+        "metadata-filter-non-json": "python_compatibility_semantics",
+        "short-id-non-json": "python_compatibility_semantics",
+        "runtime-state-non-json": "python_compatibility_semantics",
+        "rust-extension-unavailable": "fail_closed_error",
+    }
+
+    assert inventory["contract_version"] == 1
+    assert {item["id"]: item["class"] for item in entries} == expected
+    for item in entries:
+        assert item["owner"]
+        assert item["owner_symbol"]
+        assert item["behavior"]
+        assert item["source_marker"]
+        assert item["evidence"]
+        assert (ROOT / item["site"]).is_file()
+        owner_module = importlib.import_module(item["owner"])
+        assert Path(owner_module.__file__).resolve() == (ROOT / item["site"]).resolve()
+        assert item["source_marker"] in (ROOT / item["site"]).read_text(encoding="utf-8")
+        owner = owner_module
+        for component in item["owner_symbol"].split("."):
+            owner = getattr(owner, component)
+        assert callable(owner), f"{item['owner']}:{item['owner_symbol']}"
+        for evidence in item["evidence"]:
+            test_path, test_name = evidence.split("::", 1)
+            test_source = (ROOT / test_path).read_text(encoding="utf-8")
+            assert f"def {test_name.split('[')[0]}(" in test_source
+
+
 def test_rust_port_manifest_preserves_consumer_event_envelopes() -> None:
     manifest = _manifest()
     events = {item["type"]: item for item in manifest["event_contracts"]}

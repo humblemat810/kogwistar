@@ -1,0 +1,81 @@
+{
+  "contract_version": 1,
+  "purpose": "Inventory intentional Python compatibility paths and fail-closed Rust selection behavior; this is not a runtime fallback policy.",
+  "entries": [
+    {
+      "id": "explicit-python-selection",
+      "class": "explicit_mode_selection",
+      "owner": "kogwistar._rust_bridge",
+      "owner_symbol": "_implementation_setting",
+      "site": "kogwistar/_rust_bridge.py",
+      "source_marker": "if mode == \"python\":",
+      "behavior": "Python mode executes caller-provided Python results without loading the native extension.",
+      "evidence": [
+        "tests/core/test_rust_bridge_strict_json.py::test_unset_implementation_selectors_preserve_python_bridge_paths",
+        "tests/core/test_rust_port_contract_manifest.py::test_implementation_selector_manifest_matches_runtime_precedence"
+      ]
+    },
+    {
+      "id": "shadow-oracle-result",
+      "class": "shadow_oracle_return",
+      "owner": "kogwistar._rust_bridge",
+      "owner_symbol": "_select",
+      "site": "kogwistar/_rust_bridge.py",
+      "source_marker": "if mode == \"shadow\":",
+      "behavior": "Shadow mode compares Rust and Python, then returns the Python oracle result; mismatch raises.",
+      "evidence": [
+        "tests/core/test_rust_bridge_strict_json.py::test_stable_id_oracle_runs_only_when_selected_or_shadowed",
+        "tests/core/test_rust_contract_differential.py::test_metadata_filter_shadow_does_not_reenter_oracle"
+      ]
+    },
+    {
+      "id": "metadata-filter-non-json",
+      "class": "python_compatibility_semantics",
+      "owner": "kogwistar.engine_core.in_memory_backend",
+      "owner_symbol": "_matches_where",
+      "site": "kogwistar/engine_core/in_memory_backend.py",
+      "source_marker": "if not native_compatible:",
+      "behavior": "Values outside strict JSON ABI retain Python metadata-filter semantics.",
+      "evidence": [
+        "tests/core/test_rust_contract_differential.py::test_metadata_filter_property_table_matches_python"
+      ]
+    },
+    {
+      "id": "short-id-non-json",
+      "class": "python_compatibility_semantics",
+      "owner": "kogwistar.shortids",
+      "owner_symbol": "ShortIdMapper._native_transform",
+      "site": "kogwistar/shortids.py",
+      "source_marker": "not json_contract_compatible(value)",
+      "behavior": "Non-JSON short-ID input bypasses the native transform and continues through the legacy Python implementation.",
+      "evidence": [
+        "tests/core/test_rust_contract_differential.py::test_short_ids_round_trip_ordering_and_non_json_fallback"
+      ]
+    },
+    {
+      "id": "runtime-state-non-json",
+      "class": "python_compatibility_semantics",
+      "owner": "kogwistar.runtime.base_runtime",
+      "owner_symbol": "apply_state_update_inplace",
+      "site": "kogwistar/runtime/base_runtime.py",
+      "source_marker": "if native_state is not None:",
+      "behavior": "Uncopyable or non-JSON process-local state bypasses native reduction and is updated by Python without losing object identity.",
+      "evidence": [
+        "tests/core/test_rust_runtime_non_json_state.py::test_rust_runtime_falls_back_for_uncopyable_process_local_state"
+      ]
+    },
+    {
+      "id": "rust-extension-unavailable",
+      "class": "fail_closed_error",
+      "owner": "kogwistar._rust_bridge",
+      "owner_symbol": "_load_extension",
+      "site": "kogwistar/_rust_bridge.py",
+      "source_marker": "raise RustExtensionUnavailableError(",
+      "behavior": "A selected Rust path raises RustExtensionUnavailableError; it never silently executes Python instead.",
+      "evidence": [
+        "tests/core/test_rust_bridge_strict_json.py::test_selected_rust_server_fails_closed_without_python_fallback",
+        "tests/server/test_rust_api_health.py::test_rust_health_route_fails_closed_without_native_extension"
+      ]
+    }
+  ]
+}
