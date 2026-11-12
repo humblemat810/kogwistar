@@ -1590,7 +1590,7 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
         .collect()
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#recorded_step_snapshots; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-trace-context-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#recorded_step_snapshots_matches_python_fixture; python_test=tests/server/test_chat_server_api.py#test_chat_debug_endpoints_namespace_and_workflow_viz
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#recorded_step_snapshots; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-trace-context-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/inline_owner_authority.rs#recorded_step_snapshots_matches_python_fixture; python_test=tests/server/test_chat_server_api.py#test_chat_debug_endpoints_namespace_and_workflow_viz
 fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
     let trace_events = events
         .iter()
@@ -1961,7 +1961,7 @@ fn answer_workflow_admission_ready(
         })
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#answer_workflow_plan_is_executable; python=kogwistar/conversation/agentic_answering_design.py#build_agentic_answering_workflow_design; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_01.rs#answer_workflow_admission_supports_per_node_python_and_registered_rust_executors; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#answer_workflow_plan_is_executable; python=kogwistar/conversation/agentic_answering_design.py#build_agentic_answering_workflow_design; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/answer_workflow_admission.rs#answer_workflow_admission_supports_per_node_python_and_registered_rust_executors; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
 fn answer_workflow_plan_is_executable(
     workflow_id: &str,
     plan: &RuntimeGraphPlan,

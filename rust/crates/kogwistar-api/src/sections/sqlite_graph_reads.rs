@@ -51,7 +51,7 @@ impl SqliteRunApplicationService {
         )
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_graph_reads.rs#chroma_graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_06.rs#sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_graph_reads.rs#chroma_graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_graph_topology_reads.rs#sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
     async fn chroma_graph_propose_vector_effect(
         &self,
         request: &ApiEffectRequest,
@@ -576,7 +576,7 @@ impl SqliteRunApplicationService {
         &self,
         request: &ApiEffectRequest,
     ) -> ApiEffectResponse {
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_graph_reads.rs#chroma_wisdom_semantic_seed_expand_effect; python=kogwistar/graph_query.py#GraphQuery.semantic_seed_then_expand_text; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding; python_test=tests/mcp/test_chat_mcp_tools.py#test_wisdom_semantic_seed_expand_mcp_contract_and_authorization
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_graph_reads.rs#chroma_wisdom_semantic_seed_expand_effect; python=kogwistar/graph_query.py#GraphQuery.semantic_seed_then_expand_text; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_wisdom_retrieval.rs#sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding; python_test=tests/mcp/test_chat_mcp_tools.py#test_wisdom_semantic_seed_expand_mcp_contract_and_authorization
         self.chroma_semantic_seed_expand_effect(request, "wisdom", Some("wisdom"), 10, 2)
             .await
     }

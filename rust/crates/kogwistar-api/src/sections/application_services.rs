@@ -894,7 +894,7 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
-        // PYTHON_PARITY_V1: transcript reads require ro/rw, conversation scope, and read_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#conversation_transcript_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace
+        // PYTHON_PARITY_V1: transcript reads require ro/rw, conversation scope, and read_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_transcript_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace
         if name == "conversation.get_transcript" {
             if surface != "conversation"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -911,7 +911,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: conversation status admission requires ro/rw and conversation namespace; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_run_status; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_run_status_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: conversation status admission requires ro/rw and conversation namespace; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_run_status; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_run_status_denies_unauthorized_effects
         if name == "conversation.run_status" {
             return surface == "conversation"
                 && matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -920,7 +920,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "conversation" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: cancel admission requires rw/conversation; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#conversation_cancel_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: cancel admission requires rw/conversation; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_cancel_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
         // Capability remains status-aware in the downstream cancel service.
         if name == "conversation.cancel_run" {
             return surface == "conversation"
@@ -930,7 +930,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "conversation" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: require read_graph for explicit capability claims; legacy role defaults remain intact; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#document_id_lookup_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
+        // PYTHON_PARITY_V1: require read_graph for explicit capability claims; legacy role defaults remain intact; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/document_id_tools.rs#document_id_lookup_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
         if name == "document_id_from_file_name" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -947,7 +947,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read before event-store access; rust=kogwistar/rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events+kogwistar/server/chat_service.py#ChatRunService.list_run_events; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_events_denies_missing_read_capability_before_read
+        // PYTHON_PARITY_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read before event-store access; rust=kogwistar/rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events+kogwistar/server/chat_service.py#ChatRunService.list_run_events; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_events_denies_missing_read_capability_before_read
         if name == "workflow.run_events" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -964,7 +964,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("workflow.run.read")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: tool-audit MCP admission requires ro/rw, workflow namespace, project_view, and read_graph before dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_tool_audit+kogwistar/server/chat_service.py#ChatRunService.list_tool_audit; fixture=contracts/golden/workflow-tool-audit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_tool_audit_mcp_admission_matches_python_policy; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_tool_audit_denies_before_reads
+        // PYTHON_PARITY_V1: tool-audit MCP admission requires ro/rw, workflow namespace, project_view, and read_graph before dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_tool_audit+kogwistar/server/chat_service.py#ChatRunService.list_tool_audit; fixture=contracts/golden/workflow-tool-audit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_tool_audit_mcp_admission_matches_python_policy; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_tool_audit_denies_before_reads
         if name == "workflow.tool_audit" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1016,7 +1016,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: vector proposal requires ro/rw + docs namespace + read_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES+propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_01.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+        // PYTHON_PARITY_V1: vector proposal requires ro/rw + docs namespace + read_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES+propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
         if name == "propose_vector" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1033,7 +1033,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: dashboard preflights nested read capabilities before MCP dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard+kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_operator_dashboard_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
+        // PYTHON_PARITY_V1: dashboard preflights nested read capabilities before MCP dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard+kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_operator_dashboard_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
         if name == "workflow.operator_dashboard" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1069,7 +1069,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: orphan repair requires rw/workflow plus project_view before dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; python_service=kogwistar/server/chat_service.py#ChatRunService.repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_message_orphans_repair_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_denies_before_dispatch
+        // PYTHON_PARITY_V1: orphan repair requires rw/workflow plus project_view before dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; python_service=kogwistar/server/chat_service.py#ChatRunService.repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_message_orphans_repair_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_denies_before_dispatch
         if name == "workflow.message_orphans_repair" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1086,7 +1086,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: node upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_node; fixture=contracts/golden/workflow-design-node-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_node_upsert_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_node_upsert_denies_before_dispatch
+        // PYTHON_PARITY_V1: node upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_node; fixture=contracts/golden/workflow-design-node-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_node_upsert_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_node_upsert_denies_before_dispatch
         if name == "workflow.design_node_upsert" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1106,7 +1106,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: undo/redo require rw/workflow plus workflow.design.write and approve_action; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_redo_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_denies_before_dispatch
+        // PYTHON_PARITY_V1: undo/redo require rw/workflow plus workflow.design.write and approve_action; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_redo_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_denies_before_dispatch
         if matches!(name, "workflow.design_undo" | "workflow.design_redo") {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1126,7 +1126,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: node deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_node; fixture=contracts/golden/workflow-design-node-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_node_delete_denies_before_dispatch
+        // PYTHON_PARITY_V1: node deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_node; fixture=contracts/golden/workflow-design-node-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_node_delete_denies_before_dispatch
         if name == "workflow.design_node_delete" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1146,7 +1146,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: edge deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_edge_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_edge_delete_denies_before_dispatch
+        // PYTHON_PARITY_V1: edge deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_edge_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_edge_delete_denies_before_dispatch
         if name == "workflow.design_edge_delete" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1166,7 +1166,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: edge upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_edge; fixture=contracts/golden/workflow-design-edge-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_edge_upsert_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_edge_upsert_denies_before_dispatch
+        // PYTHON_PARITY_V1: edge upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_edge; fixture=contracts/golden/workflow-design-edge-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_edge_upsert_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_edge_upsert_denies_before_dispatch
         if name == "workflow.design_edge_upsert" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1186,7 +1186,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: design history reads require ro/rw, workflow namespace, and workflow.design.inspect; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_history; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-history-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_design_history_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_history_denies_before_read
+        // PYTHON_PARITY_V1: design history reads require ro/rw, workflow namespace, and workflow.design.inspect; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_history; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-history-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_history_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_history_denies_before_read
         if name == "workflow.design_history" {
             if surface != "workflow"
                 || !matches!(principal.get("role").and_then(Value::as_str), Some("ro" | "rw"))
@@ -1203,7 +1203,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("workflow.design.inspect")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: dead-letter snapshots require ro/rw, workflow namespace, and project_view; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letters; python_service=kogwistar/server/chat_service.py#ChatRunService.dead_letter_snapshot; fixture=contracts/golden/workflow-dead-letters-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letters_denies_before_read
+        // PYTHON_PARITY_V1: dead-letter snapshots require ro/rw, workflow namespace, and project_view; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letters; python_service=kogwistar/server/chat_service.py#ChatRunService.dead_letter_snapshot; fixture=contracts/golden/workflow-dead-letters-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letters_denies_before_read
         if name == "workflow.dead_letters" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1220,7 +1220,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: dead-letter replay requires rw/workflow plus service.manage; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay; python_service=kogwistar/server/chat_service.py#ChatRunService.replay_dead_letter; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_dead_letter_replay_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letter_replay_denies_without_dispatch
+        // PYTHON_PARITY_V1: dead-letter replay requires rw/workflow plus service.manage; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay; python_service=kogwistar/server/chat_service.py#ChatRunService.replay_dead_letter; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_dead_letter_replay_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letter_replay_denies_without_dispatch
         if name == "workflow.dead_letter_replay" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1237,7 +1237,7 @@ impl ApplicationService for PostgresRunApplicationService {
             return effective_capabilities(principal, &state).contains("service.manage")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: service declaration MCP admission requires rw/workflow; the effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare+kogwistar/server/chat_service.py#ChatRunService.declare_service; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_declare_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_declare_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: service declaration MCP admission requires rw/workflow; the effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare+kogwistar/server/chat_service.py#ChatRunService.declare_service; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_declare_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_declare_denies_unauthorized_effects
         if name == "workflow.service_declare" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -1246,7 +1246,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: service lifecycle MCP admission requires rw/workflow; effects independently check service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_enable+workflow_service_disable+kogwistar/server/chat_service.py#ChatRunService.enable_service+disable_service; fixtures=contracts/golden/workflow-service-enable-mcp-v1.json+workflow-service-disable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_lifecycle_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_lifecycle_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: service lifecycle MCP admission requires rw/workflow; effects independently check service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_enable+workflow_service_disable+kogwistar/server/chat_service.py#ChatRunService.enable_service+disable_service; fixtures=contracts/golden/workflow-service-enable-mcp-v1.json+workflow-service-disable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_lifecycle_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_lifecycle_denies_unauthorized_effects
         if matches!(name, "workflow.service_enable" | "workflow.service_disable") {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -1255,7 +1255,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: heartbeat MCP admission requires rw/workflow; its effect requires both service.heartbeat and service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat+kogwistar/server/chat_service.py#ChatRunService.record_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_heartbeat_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_heartbeat_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: heartbeat MCP admission requires rw/workflow; its effect requires both service.heartbeat and service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat+kogwistar/server/chat_service.py#ChatRunService.record_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_heartbeat_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_heartbeat_denies_unauthorized_effects
         if name == "workflow.service_heartbeat" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -1264,7 +1264,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: trigger MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_trigger+kogwistar/server/chat_service.py#ChatRunService.trigger_service; fixture=contracts/golden/workflow-service-trigger-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_trigger_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_trigger_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: trigger MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_trigger+kogwistar/server/chat_service.py#ChatRunService.trigger_service; fixture=contracts/golden/workflow-service-trigger-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_trigger_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_trigger_denies_unauthorized_effects
         if name == "workflow.service_trigger" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -1273,7 +1273,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projection; fixture=contracts/golden/workflow-service-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_repair_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projection; fixture=contracts/golden/workflow-service-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_repair_denies_unauthorized_effects
         if name == "workflow.service_repair" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -1282,7 +1282,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: bulk repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_services_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projections; fixture=contracts/golden/workflow-services-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_services_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_services_repair_denies_unauthorized_effects
+        // PYTHON_PARITY_V1: bulk repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_services_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projections; fixture=contracts/golden/workflow-services-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_services_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_services_repair_denies_unauthorized_effects
         if name == "workflow.services_repair" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -1291,7 +1291,7 @@ impl ApplicationService for PostgresRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: approval/revocation require rw/workflow plus approve_action, project_view, and read_security_scope before dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capability_revoke; python_service=kogwistar/server/chat_service.py#ChatRunService.capability_revoke; fixture=contracts/golden/workflow-capability-revoke-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_capability_approve_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capability_revoke_denies_without_mutation
+        // PYTHON_PARITY_V1: approval/revocation require rw/workflow plus approve_action, project_view, and read_security_scope before dispatch; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capability_revoke; python_service=kogwistar/server/chat_service.py#ChatRunService.capability_revoke; fixture=contracts/golden/workflow-capability-revoke-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#workflow_capability_approve_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capability_revoke_denies_without_mutation
         if matches!(name, "workflow.capability_approve" | "workflow.capability_revoke") {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -1311,7 +1311,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: both read snapshots require project_view + read_security_scope; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capabilities_snapshot; python_service=kogwistar/server/chat_service.py#capability_snapshot; fixture=contracts/golden/workflow-capabilities-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_capabilities_snapshot_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capabilities_snapshot_denies_missing_capability_before_snapshot
+        // PYTHON_PARITY_V1: both read snapshots require project_view + read_security_scope; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capabilities_snapshot; python_service=kogwistar/server/chat_service.py#capability_snapshot; fixture=contracts/golden/workflow-capabilities-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_capabilities_snapshot_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capabilities_snapshot_denies_missing_capability_before_snapshot
         if matches!(name, "workflow.visibility_snapshot" | "workflow.capabilities_snapshot") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -1330,7 +1330,7 @@ impl ApplicationService for PostgresRunApplicationService {
                 && capabilities.contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: service read MCP operations require ro/rw, workflow namespace, and both service.inspect and project_view; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list+workflow_service_events+kogwistar/server/chat_service.py#ChatRunService.get_service+list_services+list_service_events; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores+workflow_service_events_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_reads_deny_before_lookup+test_mcp_workflow_service_events_deny_before_read
+        // PYTHON_PARITY_V1: service read MCP operations require ro/rw, workflow namespace, and both service.inspect and project_view; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list+workflow_service_events+kogwistar/server/chat_service.py#ChatRunService.get_service+list_services+list_service_events; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores+workflow_service_events_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_reads_deny_before_lookup+test_mcp_workflow_service_events_deny_before_read
         if matches!(name, "workflow.service_get" | "workflow.service_list" | "workflow.service_events") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")

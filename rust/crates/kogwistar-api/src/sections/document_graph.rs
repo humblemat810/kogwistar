@@ -212,7 +212,7 @@ fn document_projection_input(
     Ok(input)
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#document_projection_write; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#document_projection_write; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_document_projection.rs#postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
 fn document_projection_write(
     request: &ApiEffectRequest,
     capabilities: &SharedCapabilityState,
@@ -1151,7 +1151,7 @@ impl SqliteRunApplicationService {
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#sqlite_public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#sqlite_public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_wisdom_retrieval.rs#sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
     async fn sqlite_public_document_tree_upsert_effect(
         &self,
         request: &ApiEffectRequest,
@@ -1753,7 +1753,7 @@ fn syscall_read_effect(
     }
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#designer_capabilities_effect; python=kogwistar/server_mcp_with_admin.py#designer_capabilities; fixture=contracts/golden/workflow-designer-capabilities-schema-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api.py#test_designer_capabilities_endpoint
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#designer_capabilities_effect; python=kogwistar/server_mcp_with_admin.py#designer_capabilities; fixture=contracts/golden/workflow-designer-capabilities-schema-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api.py#test_designer_capabilities_endpoint
 fn designer_capabilities_effect(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
@@ -2439,7 +2439,7 @@ fn process_table_effect(
     json_effect(StatusCode::OK, json!({"processes": processes}))
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_operator_dashboard_requires_project_view_and_separates_blocked_runs_from_inbox; python_test=tests/server/test_service_daemon_model.py#test_service_operator_dashboard_round_trip
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_monitoring.rs#sqlite_operator_dashboard_requires_project_view_and_separates_blocked_runs_from_inbox; python_test=tests/server/test_service_daemon_model.py#test_service_operator_dashboard_round_trip
 fn operational_effect(
     request: &ApiEffectRequest,
     path: &str,
@@ -2504,7 +2504,7 @@ fn operational_effect(
                 },
             ]),
         ),
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api.py#test_runtime_resource_snapshot_reports_pressure
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_monitoring.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api.py#test_runtime_resource_snapshot_reports_pressure
         "/api/workflow/resources" => json_effect(StatusCode::OK, resources),
         "/api/workflow/budget" => json_effect(
             StatusCode::OK,
@@ -2543,7 +2543,7 @@ fn operational_effect(
                 "limit": limit,
             }),
         ),
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_lane_message_progress; python_service=kogwistar/server/chat_service.py#ChatRunService.lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_lane_progress_matches_shared_contract
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_lane_message_progress; python_service=kogwistar/server/chat_service.py#ChatRunService.lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_lane_progress_matches_shared_contract
         "/api/workflow/lane/progress" => {
             let run_id = query_string(&request.path_and_query, "run_id");
             let conversation_id = query_string(&request.path_and_query, "conversation_id");
@@ -3120,7 +3120,7 @@ fn service_definition_node(input: &ServiceDeclareInput, timestamp: u64) -> (Stri
     )
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#service_event_values; python=kogwistar/server/service_daemon.py#ServiceSupervisor.list_service_events; fixture=contracts/golden/workflow-service-events-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_service_events_fold_authoritative_history_for_rest_and_mcp; python_test=tests/server/test_service_daemon_model.py#test_service_runtime_api_round_trip
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#service_event_values; python=kogwistar/server/service_daemon.py#ServiceSupervisor.list_service_events; fixture=contracts/golden/workflow-service-events-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_service_events.rs#sqlite_service_events_fold_authoritative_history_for_rest_and_mcp; python_test=tests/server/test_service_daemon_model.py#test_service_runtime_api_round_trip
 fn service_event_values(
     events: impl IntoIterator<Item = (i64, String, String, String, String)>,
     service_id: &str,
@@ -3391,7 +3391,7 @@ fn service_projection_values(
     Ok(projections)
 }
 
-// PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#service_projection_from_history; python=kogwistar/server/service_daemon.py#ServiceSupervisor.get_service+ServiceSupervisor._rebuild_projection; fixture=contracts/golden/workflow-service-get-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_service_get_rebuilds_missing_projection_from_history; python_test=tests/server/test_service_daemon_model.py#test_service_get_rebuilds_missing_projection_from_history; note=canonical raw history rebuilds the disposable serving projection when missing.
+// PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#service_projection_from_history; python=kogwistar/server/service_daemon.py#ServiceSupervisor.get_service+ServiceSupervisor._rebuild_projection; fixture=contracts/golden/workflow-service-get-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_service_events.rs#sqlite_service_get_rebuilds_missing_projection_from_history; python_test=tests/server/test_service_daemon_model.py#test_service_get_rebuilds_missing_projection_from_history; note=canonical raw history rebuilds the disposable serving projection when missing.
 fn service_projection_from_history(
     events: impl IntoIterator<Item = (i64, String, String, String, String)>,
     service_id: &str,

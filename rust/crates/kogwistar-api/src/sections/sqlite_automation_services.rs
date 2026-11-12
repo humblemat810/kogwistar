@@ -1456,7 +1456,7 @@ impl SqliteRunApplicationService {
                     "Reading resource snapshot requires read_security_scope capability",
                 );
             }
-            // PYTHON_PARITY_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
+            // PYTHON_PARITY_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
             if matches!(
                 path,
                 "/api/workflow/budget" | "/api/workflow/budget/history"
@@ -1486,7 +1486,7 @@ impl SqliteRunApplicationService {
                     "Reading budget data requires project_view and read_security_scope capabilities",
                 );
             }
-            // PYTHON_PARITY_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
+            // PYTHON_PARITY_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
             if path == "/api/workflow/scheduler/timeline"
                 && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
                     || !principal_strings(&request.principal, "ns")

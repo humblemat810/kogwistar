@@ -1171,7 +1171,7 @@ impl InMemoryStore {
         Ok((rows_for_table("gke_nodes"), rows_for_table("gke_edges")))
     }
 
-    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#claim_visible_provider_event; python=kogwistar/agent/event_journal.py#claim_one,kogwistar/messaging/service.py#claim_pending_attempt; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_native_receive_claims_visible_event_and_routes_it; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=ACL visibility and queue claim share one in-memory writer lock.
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#claim_visible_provider_event; python=kogwistar/agent/event_journal.py#claim_one,kogwistar/messaging/service.py#claim_pending_attempt; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_provider_events.rs#in_memory_native_receive_claims_visible_event_and_routes_it; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=ACL visibility and queue claim share one in-memory writer lock.
     /// Claim one provider-event lane only while holding the same lock used by
     /// graph projection writes, so ACL revocation cannot race visibility and
     /// claim in this process-local backend.

@@ -373,7 +373,7 @@ impl SqliteRunApplicationService {
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#sqlite_chroma_create_conversation_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/conversation-create-syscall-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_07.rs#sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic; python_test=tests/server/test_syscall_api.py#test_syscall_create_conversation_uses_authenticated_owner
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#sqlite_chroma_create_conversation_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/conversation-create-syscall-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_conversation_admission.rs#sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic; python_test=tests/server/test_syscall_api.py#test_syscall_create_conversation_uses_authenticated_owner
     async fn sqlite_chroma_create_conversation_effect(
         &self,
         request: &ApiEffectRequest,
