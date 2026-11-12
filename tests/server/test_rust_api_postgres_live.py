@@ -997,6 +997,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow_cancelled_node",
         "workflow_failed_node",
         "workflow_node",
+        "workflow_edge",
     ],
     ids=[
         "node",
@@ -1009,6 +1010,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow-cancelled-node",
         "workflow-failed-node",
         "workflow-node",
+        "workflow-edge",
     ],
 )
 def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
@@ -1039,6 +1041,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         WorkflowCompletedNode,
         WorkflowFailedNode,
         WorkflowNode,
+        WorkflowEdge,
         WorkflowStepExecNode,
     )
     from kogwistar.server.bootstrap import load_server_storage_settings
@@ -1121,6 +1124,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     expected_cancellations: list[WorkflowCancelledNode] = []
     expected_failures: list[WorkflowFailedNode] = []
     expected_workflow_nodes: list[WorkflowNode] = []
+    expected_workflow_edges: list[WorkflowEdge] = []
     mutations: list[dict[str, object]]
     if entity_kind == "node":
         base_node = node_payload(
@@ -1317,6 +1321,41 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         )
         expected_workflow_nodes.append(workflow_node)
         mutations = [mutation_for(workflow_node)]
+    elif entity_kind == "workflow_edge":
+        source_node = node_payload(
+            node_id=f"typed-http-workflow-edge-source-{uuid.uuid4().hex}",
+            summary="Workflow definition edge source",
+        )
+        target_node = node_payload(
+            node_id=f"typed-http-workflow-edge-target-{uuid.uuid4().hex}",
+            summary="Workflow definition edge target",
+        )
+        base_edge = build_relationship_edge(
+            edge_id=f"typed-http-workflow-edge-{uuid.uuid4().hex}",
+            src=source_node.id,
+            tgt=target_node.id,
+            doc_id="typed-http-source",
+            relation="workflow_transition",
+            embedding=[0.25, 0.5, 0.75],
+            metadata={
+                "entity_type": "workflow_edge",
+                "workflow_id": "typed-http-workflow",
+                "wf_predicate": "state.is_ready",
+                "wf_priority": 12,
+                "wf_is_default": False,
+                "wf_multiplicity": "many",
+                "vendor_extension": {"policy": "workflow-test"},
+            },
+        )
+        workflow_edge = WorkflowEdge.model_validate(
+            base_edge.model_dump(field_mode="backend")
+        )
+        expected_workflow_edges.append(workflow_edge)
+        mutations = [
+            mutation_for(source_node),
+            mutation_for(target_node),
+            mutation_for(workflow_edge),
+        ]
     else:
         source_node = node_payload(
             node_id=f"typed-http-source-{uuid.uuid4().hex}",
@@ -1539,6 +1578,25 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
                 "owner": "workflow-test"
             }
             assert recovered_workflow_node.metadata["_class_name"] == "WorkflowNode"
+        elif entity_kind == "workflow_edge":
+            expected_workflow_edge = expected_workflow_edges[0]
+            python_edges = engine.read.get_edges(
+                ids=[expected_workflow_edge.id], edge_type=WorkflowEdge
+            )
+            assert len(python_edges) == 1
+            recovered_workflow_edge = python_edges[0]
+            assert isinstance(recovered_workflow_edge, WorkflowEdge)
+            assert recovered_workflow_edge.predicate == "state.is_ready"
+            assert recovered_workflow_edge.priority == 12
+            assert recovered_workflow_edge.multiplicity == "many"
+            assert recovered_workflow_edge.is_default is False
+            assert recovered_workflow_edge.source_ids == expected_workflow_edge.source_ids
+            assert recovered_workflow_edge.target_ids == expected_workflow_edge.target_ids
+            assert recovered_workflow_edge.metadata["workflow_id"] == "typed-http-workflow"
+            assert recovered_workflow_edge.metadata["vendor_extension"] == {
+                "policy": "workflow-test"
+            }
+            assert recovered_workflow_edge.metadata["_class_name"] == "WorkflowEdge"
         else:
             expected_edge = expected_edges[0]
             python_edges = engine.read.get_edges(
