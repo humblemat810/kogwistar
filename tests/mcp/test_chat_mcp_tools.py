@@ -5516,6 +5516,53 @@ async def test_mcp_workflow_operator_inbox_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_operator_inbox_denies_before_reads(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    meta_store = service._execution_meta_store()
+    reads: list[str] = []
+    original_list_messages = meta_store.list_projected_lane_messages
+    original_get_nodes = conversation_engine.read.get_nodes
+
+    def track_messages(**kwargs: Any) -> Any:
+        reads.append("messages")
+        return original_list_messages(**kwargs)
+
+    def track_nodes(*args: Any, **kwargs: Any) -> Any:
+        reads.append("nodes")
+        return original_get_nodes(*args, **kwargs)
+
+    monkeypatch.setattr(meta_store, "list_projected_lane_messages", track_messages)
+    monkeypatch.setattr(conversation_engine.read, "get_nodes", track_nodes)
+    arguments = {"inbox_id": "auth-deny", "limit": 10}
+
+    with _claims(
+        "ro", "workflow", sub="inbox-no-cap", scope_parts={"capabilities": []}
+    ), pytest.raises(HTTPException) as denied:
+        await server.mcp._execute(
+            "workflow.operator_inbox", arguments, enforce_visibility=True
+        )
+    assert denied.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="inbox-wrong-scope",
+        scope_parts={"capabilities": ["project_view"]},
+    ), pytest.raises(PermissionError):
+        await server.mcp._execute(
+            "workflow.operator_inbox", arguments, enforce_visibility=True
+        )
+    assert reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):

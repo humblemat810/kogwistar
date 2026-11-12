@@ -3775,6 +3775,78 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn workflow_operator_inbox_authorization_denies_before_backend_access() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-operator-inbox-auth-{nonce}.sqlite3"
+        ));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "operator_inbox_auth",
+        )
+        .unwrap();
+        let authorized = json!({
+            "role":"ro", "ns":["workflow"], "capabilities":["project_view"]
+        });
+        assert!(postgres.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.operator_inbox",
+            &authorized
+        ));
+        assert!(!postgres.supports_mcp_tool_for_principal(
+            "root",
+            "workflow.operator_inbox",
+            &authorized
+        ));
+
+        let denied_principals = [
+            json!({"role":"ro", "ns":["workflow"], "capabilities":[]}),
+            json!({"role":"ro", "ns":["conversation"], "capabilities":["project_view"]}),
+        ];
+        for principal in &denied_principals {
+            assert!(!postgres.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.operator_inbox",
+                principal
+            ));
+            for service in [
+                &sqlite as &dyn ApplicationService,
+                &postgres as &dyn ApplicationService,
+            ] {
+                let response = service
+                    .execute(ApiEffectRequest {
+                        contract_version: 1,
+                        method: "GET".to_owned(),
+                        path_and_query: "/api/workflow/operator/inbox?inbox_id=auth-test".to_owned(),
+                        body: Vec::new(),
+                        principal: principal.clone(),
+                    })
+                    .await;
+                assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+            }
+        }
+        let unavailable = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/workflow/operator/inbox?inbox_id=auth-test".to_owned(),
+                body: Vec::new(),
+                principal: authorized,
+            })
+            .await;
+        assert_eq!(unavailable.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};

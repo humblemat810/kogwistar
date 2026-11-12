@@ -1334,17 +1334,18 @@ impl ApplicationService for SqliteRunApplicationService {
             if request.method == "GET"
                 && request.path_and_query.split('?').next() == Some("/api/workflow/operator/inbox")
             {
+                // PYTHON_PARITY_V1: authorize before checking optional graph projection availability; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#execute_sync; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_inbox+kogwistar/server/chat_service.py#ChatRunService.list_operator_inbox; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_operator_inbox_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_inbox_denies_before_reads
+                if let Some(error) =
+                    operator_inbox_authorization_error(&request, &self.capabilities)
+                {
+                    return error;
+                }
                 if self.chroma_graph.is_none() {
                     return effect_error(
                         StatusCode::NOT_IMPLEMENTED,
                         "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
                         "Operator inbox requires a configured conversation graph projection",
                     );
-                }
-                if let Some(error) =
-                    operator_inbox_authorization_error(&request, &self.capabilities)
-                {
-                    return error;
                 }
                 let scope = security_scope_value(&request.principal);
                 let namespace = scope["storage_namespace"].as_str().unwrap_or("default");
