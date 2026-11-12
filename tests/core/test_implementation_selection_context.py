@@ -122,6 +122,63 @@ def test_rust_sqlite_metadata_fails_closed_without_native_extension(
     assert not database_dir.exists()
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["queue_enqueue", "queue_lease", "lane_project", "lane_claim"],
+)
+def test_rust_queue_and_lane_operations_fail_closed_without_native_extension(
+    operation: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from kogwistar._rust_bridge import RustParityError, RustExtensionUnavailableError
+    from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    database_dir = tmp_path / f"rust-{operation}-no-extension"
+    metadata = build_sqlite_meta_store(database_dir, "meta.sqlite")
+
+    with pytest.raises(RustParityError, match="Rust SQLite store operation failed"):
+        if operation == "queue_enqueue":
+            metadata.enqueue_index_job(
+                job_id="job",
+                namespace="ns",
+                entity_kind="node",
+                entity_id="node",
+                index_kind="doc",
+                op="UPSERT",
+            )
+        elif operation == "queue_lease":
+            metadata.claim_index_jobs(namespace="ns", limit=1, lease_seconds=30)
+        elif operation == "lane_project":
+            metadata.project_lane_message(
+                message_id="message",
+                namespace="ns",
+                inbox_id="inbox",
+                conversation_id="conversation",
+                recipient_id="recipient",
+                sender_id="sender",
+                msg_type="request",
+                status="pending",
+                created_at=1,
+                available_at=0,
+                run_id=None,
+                step_id=None,
+                correlation_id=None,
+                payload_json="{}",
+                error_json=None,
+            )
+        else:
+            metadata.claim_projected_lane_messages(
+                namespace="ns", inbox_id="inbox", claimed_by="worker", limit=1
+            )
+
+    assert not database_dir.exists()
+
+
 def test_rust_postgres_authority_rejects_chroma_before_backend_initialization(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
