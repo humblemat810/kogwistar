@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.design_history",
+  "arguments": {
+    "workflow_id": "wf-mcp-history"
+  },
+  "caller_capabilities": [
+    "workflow.design.inspect"
+  ],
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/design/wf-mcp-history/history",
+    "body": ""
+  },
+  "result": {
+    "workflow_id": "wf-mcp-history",
+    "namespace": "wf_design:wf-mcp-history",
+    "current_version": 0,
+    "active_tip_version": 0,
+    "max_version": 0,
+    "allocated_max_version": 0,
+    "current_seq": 0,
+    "can_undo": false,
+    "can_redo": false,
+    "versions": [
+      {
+        "version": 0,
+        "seq": 0,
+        "created_at_ms": 0
+      }
+    ],
+    "selected_versions": [
+      {
+        "version": 0,
+        "seq": 0,
+        "created_at_ms": 0,
+        "prev_version": 0,
+        "target_seq": 0
+      }
+    ],
+    "dropped_ranges": [],
+    "latest_seq": 0,
+    "timeline": [],
+    "commits": {},
+    "materialization_status": "ready"
+  }
+}

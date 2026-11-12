@@ -1026,6 +1026,18 @@ impl PostgresRunApplicationService {
         workflow_id: &str,
         route: DesignRoute,
     ) -> ApiEffectResponse {
+        if matches!(&route, DesignRoute::History)
+            && (!matches!(request.principal.get("role").and_then(Value::as_str), Some("ro" | "rw"))
+                || !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Inspecting workflow design history requires ro/rw role and workflow namespace",
+            );
+        }
         if matches!(
             &route,
             DesignRoute::EdgeUpsert | DesignRoute::EdgeDelete(_)
