@@ -70,6 +70,36 @@ def _capability_link_errors(
     return errors
 
 
+def _rust_selector_link_errors(
+    capability_ownership: list[dict],
+    selectors: dict[str, dict],
+    matrix_capabilities: list[dict],
+) -> list[str]:
+    errors: list[str] = []
+    ownership_by_capability = {
+        item.get("capability"): item for item in capability_ownership
+    }
+    for capability in matrix_capabilities:
+        if capability.get("rust", {}).get("status") not in {"enabled", "opt-in"}:
+            continue
+        capability_id = capability.get("id", "<missing>")
+        ownership = ownership_by_capability.get(capability_id)
+        if ownership is None:
+            errors.append(f"{capability_id} has no Rust selector ownership")
+            continue
+        selector_name = ownership.get("configuration")
+        selector = selectors.get(selector_name)
+        if selector is None:
+            errors.append(
+                f"{capability_id} references missing runtime selector {selector_name}"
+            )
+        elif "rust" not in selector.get("accepted_modes", []):
+            errors.append(
+                f"{capability_id} supports Rust without selector mode: {selector_name}"
+            )
+    return errors
+
+
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST_PATH = ROOT / "contracts" / "rust-port-v1.json"
 DUAL_LANGUAGE_MANIFEST_PATH = (
@@ -1513,6 +1543,49 @@ def test_implementation_selector_manifest_matches_runtime_precedence(
         item["configuration"] for item in manifest["capability_ownership"]
     }
     assert capability_selectors <= set(selectors)
+    matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    assert not _rust_selector_link_errors(
+        manifest["capability_ownership"], selectors, matrix["capabilities"]
+    )
+
+    rust_capability = next(
+        item
+        for item in matrix["capabilities"]
+        if item["rust"]["status"] in {"enabled", "opt-in"}
+    )
+    rust_ownership = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == rust_capability["id"]
+    )
+    missing_selector = dict(selectors)
+    missing_selector.pop(rust_ownership["configuration"])
+    assert any(
+        "references missing runtime selector" in error
+        for error in _rust_selector_link_errors(
+            manifest["capability_ownership"],
+            missing_selector,
+            matrix["capabilities"],
+        )
+    )
+
+    selector_without_rust = {
+        name: {
+            **selector,
+            "accepted_modes": [
+                mode for mode in selector["accepted_modes"] if mode != "rust"
+            ],
+        }
+        for name, selector in selectors.items()
+    }
+    assert any(
+        "supports Rust without selector mode" in error
+        for error in _rust_selector_link_errors(
+            manifest["capability_ownership"],
+            selector_without_rust,
+            matrix["capabilities"],
+        )
+    )
     assert all(
         item["owner"] == "kogwistar.implementation_selection"
         and item["default"] == "python"
