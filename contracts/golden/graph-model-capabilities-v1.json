@@ -61,5 +61,15 @@
     "workflow_completed_node",
     "workflow_cancelled_node",
     "workflow_failed_node"
-  ]
+  ],
+  "node_contract": {
+    "identity_fields": ["id"],
+    "identity_exceptions": {
+      "doc_node": {
+        "absent_fields": ["id"],
+        "present_fields": ["doc_id"],
+        "reason": "Python DocNode is document-shaped and has no graph entity id field"
+      }
+    }
+  }
 }

@@ -4761,10 +4761,30 @@ mod tests {
         );
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture; python=tests/core/test_graph_model_adapter.py#test_graph_model_capability_contract_matches_shared_fixture; fixture=contracts/golden/graph-model-capabilities-v1.json; rust_test=graph_model::tests::graph_model_capabilities_match_shared_cross_language_fixture
     #[test]
     fn graph_model_capabilities_match_shared_cross_language_fixture() {
         let fixture = capability_fixture();
         assert_eq!(fixture["schema_version"], GRAPH_MODEL_ENVELOPE_VERSION);
+        let identity_fields: BTreeSet<_> = fixture["node_contract"]["identity_fields"]
+            .as_array()
+            .expect("node identity fields")
+            .iter()
+            .map(|field| field.as_str().expect("identity field"))
+            .collect();
+        assert_eq!(identity_fields, BTreeSet::from(["id"]));
+        let identity_exceptions = fixture["node_contract"]["identity_exceptions"]
+            .as_object()
+            .expect("node identity exceptions");
+        let doc_node_exception = &identity_exceptions["doc_node"];
+        assert_eq!(
+            doc_node_exception["absent_fields"][0],
+            Value::String("id".to_owned())
+        );
+        assert_eq!(
+            doc_node_exception["present_fields"][0],
+            Value::String("doc_id".to_owned())
+        );
 
         let mut expected = BTreeMap::new();
         for group in fixture["profiles"].as_array().expect("profile groups") {
@@ -4836,6 +4856,22 @@ mod tests {
             .filter(|profile| profile.entity_kind == GraphEntityKind::Node)
             .map(|profile| profile.model_class.as_str())
             .collect();
+        let node_identity_exceptions: BTreeSet<_> = fixture["node_contract"]["identity_exceptions"]
+            .as_object()
+            .expect("node identity exceptions")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(node_identity_exceptions, BTreeSet::from(["doc_node"]));
+        assert!(node_identity_exceptions.is_subset(&registered_nodes));
+        for node_name in &registered_nodes {
+            let node = GraphModelClass::all()
+                .iter()
+                .copied()
+                .find(|model| model.wire_name() == *node_name)
+                .expect("fixture node exists in Rust registry");
+            assert_eq!(node.entity_kind(), GraphEntityKind::Node);
+        }
         assert_eq!(
             registered_nodes
                 .difference(&paired_nodes)

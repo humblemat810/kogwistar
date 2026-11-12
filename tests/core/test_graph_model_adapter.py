@@ -676,6 +676,21 @@ def test_graph_model_capability_contract_matches_shared_fixture() -> None:
     assert len(paired_nodes) == len(set(paired_nodes))
     assert registered_nodes - set(paired_nodes) == set(fixture["node_only_classes"])
 
+    node_contract = fixture["node_contract"]
+    identity_exceptions = node_contract["identity_exceptions"]
+    assert set(identity_exceptions) == registered_nodes & set(identity_exceptions)
+    for model_class in registered_nodes:
+        model = python_models[model_class]
+        exception = identity_exceptions.get(model_class)
+        if exception is None:
+            for field_name in node_contract["identity_fields"]:
+                assert field_name in model.model_fields, model_class
+        else:
+            for field_name in exception["absent_fields"]:
+                assert field_name not in model.model_fields, model_class
+            for field_name in exception["present_fields"]:
+                assert field_name in model.model_fields, model_class
+
     for edge_name, node_name in edge_node_pairs:
         edge_model = python_models[edge_name]
         node_model = python_models[node_name]
