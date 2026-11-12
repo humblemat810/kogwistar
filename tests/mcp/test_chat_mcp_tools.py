@@ -1187,6 +1187,13 @@ async def test_mcp_chat_tool_visibility_by_namespace(monkeypatch, engine_triplet
         assert "workflow.run_replay" not in names
         assert "doc_parse" not in names
 
+    with _claims("rw", "docs"):
+        tools = await server.mcp.list_tools()
+        names = {tool.name for tool in tools}
+        assert "doc_parse" in names
+        assert "kg_extract" in names
+        assert "store_document" in names
+
     with _claims("ro", "workflow"):
         tools = await server.mcp.list_tools()
         names = {tool.name for tool in tools}

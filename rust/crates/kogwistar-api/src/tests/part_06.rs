@@ -6681,6 +6681,8 @@
         let advertised_tools = listing["result"]["tools"].as_array().unwrap();
         let advertised = advertised_tools.iter()
             .filter_map(|tool| tool["name"].as_str()).collect::<Vec<_>>();
+        assert!(!advertised.contains(&"doc_parse"));
+        assert!(!rust_mcp_tool_supported("root", "doc_parse"));
         let advertised_graph_tools = advertised
             .iter()
             .copied()
@@ -6715,6 +6717,24 @@
         assert_eq!(
             advertised_graph_contracts, expected_graph_contracts,
             "Rust tools/list must preserve Python's graph-tool schemas and metadata"
+        );
+
+        let python_owned_parser = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&["read_graph"])))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"python-owned-parser","method":"tools/call","params":{"name":"doc_parse","arguments":{"inp":{"content":"must not be parsed here"}}}}"#))
+                .unwrap(),
+        ).await.unwrap();
+        let python_owned_parser: Value = serde_json::from_slice(
+            &to_bytes(python_owned_parser.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert_eq!(python_owned_parser["error"]["code"], -32602);
+        assert_eq!(
+            python_owned_parser["error"]["message"],
+            "Tool not advertised by this application service"
         );
 
         let denied = app.clone().oneshot(
