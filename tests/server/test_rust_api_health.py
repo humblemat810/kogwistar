@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from kogwistar._rust_bridge import (
+    RustExtensionUnavailableError,
     api_authorize,
     api_cli_health,
     api_health,
@@ -55,6 +56,20 @@ def test_python_health_handler_keeps_legacy_default_without_native_extension(
     body = server.health()
     assert body["ok"] is True
     assert "backend" in body
+
+
+def test_rust_health_route_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    def native_unavailable() -> object:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        server.health()
 
 
 @pytest.mark.requires_rust
