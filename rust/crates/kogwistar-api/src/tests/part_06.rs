@@ -6729,6 +6729,24 @@
         let denied: Value = serde_json::from_slice(&to_bytes(denied.into_body(), 65_536).await.unwrap()).unwrap();
         assert_eq!(denied["error"]["data"]["code"], "KOGWISTAR_CAPABILITY_FORBIDDEN");
 
+        let load_persisted_denied = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&[])))
+                .body(Body::from(r#"{"jsonrpc":"2.0","id":"load-denied","method":"tools/call","params":{"name":"kg_load_persisted","arguments":{"inp":{"doc_ids":["doc-a"],"sid":false}}}}"#))
+                .unwrap(),
+        ).await.unwrap();
+        let load_persisted_denied: Value = serde_json::from_slice(
+            &to_bytes(load_persisted_denied.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert_eq!(load_persisted_denied["error"]["code"], -32602);
+        assert_eq!(
+            load_persisted_denied["error"]["message"],
+            "Tool not advertised by this application service"
+        );
+
         let load_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/kg-load-persisted-mcp-v1.json"
