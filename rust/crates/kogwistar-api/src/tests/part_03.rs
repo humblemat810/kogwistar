@@ -2420,6 +2420,35 @@
             "Tool not advertised by this application service"
         );
 
+        // Capability admission precedes tool argument parsing and graph reads.
+        let mcp_malformed_arguments = make_app()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", make_docs_token(&[])),
+                    )
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"denied-malformed","method":"tools/call","params":{"name":"kg_neighbors","arguments":null}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mcp_malformed_arguments.status(), StatusCode::OK);
+        let denied_body = to_bytes(mcp_malformed_arguments.into_body(), 65_536)
+            .await
+            .unwrap();
+        let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
+        assert_eq!(denied_value["error"]["code"], -32602);
+        assert_eq!(
+            denied_value["error"]["message"],
+            "Tool not advertised by this application service"
+        );
+
         let find_edges_missing_capability = make_app()
             .oneshot(
                 Request::builder()

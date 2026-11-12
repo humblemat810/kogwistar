@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **170/177 PASS (96.0%)**.
-- **Fine worklist:** **733/864 PASS (84.8%)**; **0 IN PROGRESS**, **131 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **734/864 PASS (85.0%)**; **0 IN PROGRESS**, **130 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, one HTTP dev-token mode gate, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -827,7 +827,7 @@
 | FW-16AM-01 | DL-16AM | NOT STARTED | Inventory public MCP operation names, schemas, and discovery metadata against Python. |
 | FW-16AM-01A | DL-16AM | NOT STARTED | Verify paired request/response and stable error semantics for one advertised MCP operation family. |
 | FW-16AM-01B | DL-16AM | PARENT | Parent scope; children: FW-16AM-01B-ROOT,FW-16AM-01B-CONVERSATION,FW-16AM-01B-WORKFLOW |
-| FW-16AM-01B-ROOT | DL-16AM | NOT STARTED | Verify root MCP authorization rejects a denied operation before effects. |
+| FW-16AM-01B-ROOT | DL-16AM | PASS | Root MCP graph read admission rejects missing `read_graph` before dispatch: Python `tests/mcp/test_chat_mcp_tools.py::test_root_graph_mcp_honors_explicit_capability_claims` makes any graph-query access fail the test; Rust `tests::sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp` verifies a valid and malformed `kg_neighbors` request both return `Tool not advertised by this application service` under empty capabilities. Checks: both focused tests (**1 passed each**), Ruff, `cargo fmt --all --check`, `git diff --check`. |
 | FW-16AM-01B-CONVERSATION | DL-16AM | NOT STARTED | Verify conversation MCP authorization rejects a denied operation before effects. |
 | FW-16AM-01B-WORKFLOW | DL-16AM | NOT STARTED | Verify workflow MCP authorization rejects a denied operation before effects. |
 | FW-16AM-03 | DL-16AM | NOT STARTED | Verify supported server-initiated event type and sequence ordering against Python. |

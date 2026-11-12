@@ -4185,6 +4185,11 @@ async def test_kg_neighbors_mcp_matches_shared_contract(monkeypatch, tmp_path):
 async def test_root_graph_mcp_honors_explicit_capability_claims(monkeypatch):
     from kogwistar.server import mcp_tools
 
+    class ForbiddenGraphQuery:
+        def get(self):
+            pytest.fail("denied MCP request reached graph query handler")
+
+    monkeypatch.setattr(mcp_tools, "gq", ForbiddenGraphQuery())
     with _claims("ro", "docs", scope_parts={"capabilities": []}):
         assert not mcp_tools._tool_allowed(
             "kg_shortest_path", role="ro", namespaces={"docs"}
