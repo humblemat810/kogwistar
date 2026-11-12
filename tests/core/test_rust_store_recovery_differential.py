@@ -25,6 +25,7 @@ from kogwistar.runtime.models import (
     WorkflowCancelledNode,
     WorkflowCheckpointNode,
     WorkflowCompletedNode,
+    WorkflowFailedNode,
 )
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -755,6 +756,13 @@ def test_postgres_rebuild_recovers_python_persisted_derived_entity(
     elif fixture_name == "workflow-cancelled-node-model-v1.json":
         python_model = WorkflowCancelledNode.model_validate(recovered_entity)
         assert type(python_model) is WorkflowCancelledNode
+        assert (
+            python_model.model_dump(field_mode="backend", dump_format="json")
+            == payload
+        )
+    elif fixture_name == "workflow-failed-node-model-v1.json":
+        python_model = WorkflowFailedNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowFailedNode
         assert (
             python_model.model_dump(field_mode="backend", dump_format="json")
             == payload
