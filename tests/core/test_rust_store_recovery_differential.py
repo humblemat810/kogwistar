@@ -405,6 +405,50 @@ def test_sqlite_rebuild_recovers_python_persisted_workflow_checkpoint_node(
     assert restored["entities"][entity_key]["entity"] == payload
 
 
+def test_sqlite_rebuild_recovers_python_persisted_workflow_completed_node(
+    tmp_path: Path,
+) -> None:
+    """Python completion payload survives Rust SQLite replay and reopen."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-completed-node-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id="python-workflow-completed-node",
+        entity_kind="node",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer="workflow-completed-recovery",
+        projection_namespace="derived-node-projection",
+        projection_key="workflow-completed",
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
+    assert restored["entities"][entity_key]["entity"] == payload
+
+
 def test_sqlite_rebuild_recovers_python_persisted_workflow_runtime_edge(tmp_path: Path) -> None:
     """Rust recovery preserves Python WorkflowRuntimeEdge endpoint identity."""
     fixture = json.loads(
@@ -456,6 +500,7 @@ def test_sqlite_rebuild_recovers_python_persisted_workflow_runtime_edge(tmp_path
     [
         ("workflow-run-node-model-v1.json", "node"),
         ("workflow-checkpoint-node-model-v1.json", "node"),
+        ("workflow-completed-node-model-v1.json", "node"),
         ("workflow-runtime-edge-model-v1.json", "edge"),
     ],
 )
