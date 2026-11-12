@@ -434,8 +434,8 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: capability approval requires rw/workflow plus approve_action, project_view, and read_security_scope before dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capability_approve; python_service=kogwistar/server/chat_service.py#ChatRunService.capability_approve; fixture=contracts/golden/workflow-capability-approve-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_capability_approve_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capability_approve_denies_without_mutation
-        if name == "workflow.capability_approve" {
+        // PYTHON_PARITY_V1: approval/revocation require rw/workflow plus approve_action, project_view, and read_security_scope before dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capability_revoke; python_service=kogwistar/server/chat_service.py#ChatRunService.capability_revoke; fixture=contracts/golden/workflow-capability-revoke-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_capability_approve_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capability_revoke_denies_without_mutation
+        if matches!(name, "workflow.capability_approve" | "workflow.capability_revoke") {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
                 || !principal_strings(principal, "ns")

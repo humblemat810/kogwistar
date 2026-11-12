@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.capability_revoke",
+  "arguments": {
+    "capability": "spawn_process",
+    "subject": "admin-1"
+  },
+  "caller_capabilities": [
+    "approve_action",
+    "project_view",
+    "read_security_scope"
+  ],
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/capabilities/revoke",
+    "body": "{\"capability\":\"spawn_process\",\"subject\":\"admin-1\"}"
+  },
+  "expected": {
+    "required_fields": [
+      "specs",
+      "approvals",
+      "revoked",
+      "audit_log",
+      "current_subject",
+      "effective_capabilities"
+    ],
+    "current_subject": "admin-1",
+    "revocation": {
+      "subject": "admin-1",
+      "capabilities": ["spawn_process"]
+    },
+    "effective_capabilities_exclude": ["spawn_process"],
+    "audit_actions": ["approve_action", "project_view"],
+    "audit_required": [["approve_action"], ["project_view", "read_security_scope"]]
+  }
+}

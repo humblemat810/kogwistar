@@ -205,11 +205,24 @@ class ChatRunService:
         action: str,
         capabilities: str | list[str] | tuple[str, ...],
     ) -> JsonObject:
+        self._require_capability(
+            "approve_action",
+            ["approve_action"],
+            approval_message="Approving capability requires approve_action capability",
+        )
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message=(
+                "Inspecting capabilities requires project_view and "
+                "read_security_scope capabilities"
+            ),
+        )
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.grant(
             subject=owner, action=action, capabilities=capabilities
         )
-        return self.capability_snapshot()
+        return self._capability_snapshot_result()
 
     def revoke_capability(
         self,
@@ -217,9 +230,22 @@ class ChatRunService:
         subject: str | None = None,
         capability: str,
     ) -> JsonObject:
+        self._require_capability(
+            "approve_action",
+            ["approve_action"],
+            approval_message="Revoking capability requires approve_action capability",
+        )
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message=(
+                "Inspecting capabilities requires project_view and "
+                "read_security_scope capabilities"
+            ),
+        )
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.revoke(subject=owner, capability=capability)
-        return self.capability_snapshot()
+        return self._capability_snapshot_result()
 
     def _publish(
         self, run_id: str, event_type: str, payload: PublishPayload = None
@@ -712,6 +738,9 @@ class ChatRunService:
                 "read_security_scope capabilities"
             ),
         )
+        return self._capability_snapshot_result()
+
+    def _capability_snapshot_result(self) -> JsonObject:
         return self.capability_kernel.snapshot() | {
             "current_subject": self._capability_subject(),
             "effective_capabilities": list(self._effective_capabilities()),
@@ -724,14 +753,6 @@ class ChatRunService:
         capabilities: str | list[str] | tuple[str, ...],
         subject: str | None = None,
     ) -> JsonObject:
-        self._require_capability(
-            "approve_action",
-            ["approve_action", "project_view", "read_security_scope"],
-            approval_message=(
-                "Approving capability requires approve_action, project_view, "
-                "and read_security_scope capabilities"
-            ),
-        )
         return self.approve_action(
             subject=subject or self._capability_subject(),
             action=action,
@@ -744,11 +765,6 @@ class ChatRunService:
         capability: str,
         subject: str | None = None,
     ) -> JsonObject:
-        self._require_capability(
-            "approve_action",
-            ["approve_action"],
-            approval_message="Revoking capability requires approve_action capability",
-        )
         return self.revoke_capability(subject=subject, capability=capability)
 
     def list_steps(self, run_id: str) -> list[dict[str, Any]]:

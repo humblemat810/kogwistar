@@ -42,6 +42,7 @@
       "workflow.run.write"
     ],
     "audit_actions": ["approve_action", "project_view"],
+    "audit_required": [["approve_action"], ["project_view", "read_security_scope"]],
     "audit_outcome": "allow"
   }
 }

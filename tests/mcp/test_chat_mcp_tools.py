@@ -2418,6 +2418,7 @@ async def test_mcp_workflow_capability_approve_matches_shared_contract(
     )
     audit = payload["audit_log"][-2:]
     assert [entry["action"] for entry in audit] == contract["expected"]["audit_actions"]
+    assert [entry["required"] for entry in audit] == contract["expected"]["audit_required"]
     assert all(entry["outcome"] == "allow" for entry in audit)
 
 
@@ -2443,13 +2444,13 @@ async def test_mcp_workflow_capability_approve_denies_without_mutation(
         for key, capabilities in service.capability_kernel.approvals.items()
     }
     mutation_calls: list[dict[str, Any]] = []
-    original_approve_action = service.approve_action
+    original_grant = service.capability_kernel.grant
 
-    def track_approve_action(**kwargs: Any) -> dict[str, Any]:
+    def track_grant(**kwargs: Any) -> None:
         mutation_calls.append(kwargs)
-        return original_approve_action(**kwargs)
+        original_grant(**kwargs)
 
-    monkeypatch.setattr(service, "approve_action", track_approve_action)
+    monkeypatch.setattr(service.capability_kernel, "grant", track_grant)
     for index, capabilities in enumerate(
         (
             ["project_view"],
@@ -2506,6 +2507,162 @@ async def test_mcp_workflow_capability_approve_denies_without_mutation(
 
     assert mutation_calls == []
     assert service.capability_kernel.approvals == prior_approvals
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_capability_revoke_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-capability-revoke-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service.capability_kernel.grant(
+        subject=contract["expected"]["current_subject"],
+        action="seed",
+        capabilities="spawn_process",
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub=contract["expected"]["current_subject"],
+        scope_parts={"capabilities": contract["caller_capabilities"]},
+    ):
+        result = await server.mcp.call_tool(contract["tool"], contract["arguments"])
+
+    assert result.is_error is False
+    payload = _structured(result)
+    for field in contract["expected"]["required_fields"]:
+        assert field in payload
+    assert payload["current_subject"] == contract["expected"]["current_subject"]
+    assert contract["expected"]["revocation"] in payload["revoked"]
+    assert set(contract["expected"]["effective_capabilities_exclude"]).isdisjoint(
+        payload["effective_capabilities"]
+    )
+    audit = payload["audit_log"][-2:]
+    assert [entry["action"] for entry in audit] == contract["expected"]["audit_actions"]
+    assert [entry["required"] for entry in audit] == contract["expected"]["audit_required"]
+    assert all(entry["outcome"] == "allow" for entry in audit)
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_capability_revoke_denies_without_mutation(
+    monkeypatch, engine_triplet
+):
+    import pytest
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-capability-revoke-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    prior_revoked = {
+        subject: set(capabilities)
+        for subject, capabilities in service.capability_kernel.revoked.items()
+    }
+    mutation_calls: list[dict[str, Any]] = []
+    original_revoke = service.capability_kernel.revoke
+
+    def track_revoke(**kwargs: Any) -> None:
+        mutation_calls.append(kwargs)
+        return original_revoke(**kwargs)
+
+    monkeypatch.setattr(service.capability_kernel, "revoke", track_revoke)
+    for index, capabilities in enumerate(
+        (
+            ["project_view"],
+            ["approve_action"],
+            ["approve_action", "project_view"],
+            ["approve_action", "read_security_scope"],
+        )
+    ):
+        with _claims(
+            "rw",
+            "workflow",
+            sub=f"revoke-missing-capability-{index}",
+            scope_parts={"capabilities": capabilities},
+        ):
+            with pytest.raises(HTTPException) as denied:
+                await server.mcp._execute(
+                    contract["tool"], contract["arguments"], enforce_visibility=True
+                )
+        assert denied.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="revoke-read-only-role",
+        scope_parts={"capabilities": contract["caller_capabilities"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+
+    with _claims(
+        "rw",
+        "conversation",
+        sub="revoke-wrong-namespace",
+        scope_parts={"capabilities": contract["caller_capabilities"]},
+    ):
+        with pytest.raises(PermissionError):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+
+    assert mutation_calls == []
+    assert service.capability_kernel.revoked == prior_revoked
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_capability_revoke_can_revoke_own_snapshot_access(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    subject = "self-revoking-admin"
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub=subject,
+        scope_parts={
+            "capabilities": [
+                "approve_action",
+                "project_view",
+                "read_security_scope",
+            ]
+        },
+    ):
+        result = await server.mcp.call_tool(
+            "workflow.capability_revoke",
+            {"capability": "project_view", "subject": subject},
+        )
+
+    assert result.is_error is False
+    payload = _structured(result)
+    assert {"subject": subject, "capabilities": ["project_view"]} in payload["revoked"]
+    assert "project_view" not in payload["effective_capabilities"]
+    assert [entry["action"] for entry in payload["audit_log"][-2:]] == [
+        "approve_action",
+        "project_view",
+    ]
+    assert all(entry["outcome"] == "allow" for entry in payload["audit_log"][-2:])
 
 
 @pytest.mark.asyncio

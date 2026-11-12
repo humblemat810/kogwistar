@@ -959,7 +959,11 @@ fn capability_effect(
         ),
         "/api/workflow/capabilities/approve" => (
             "approve_action",
-            &["approve_action", "project_view", "read_security_scope"],
+            &["approve_action"],
+        ),
+        "/api/workflow/capabilities/revoke" => (
+            "approve_action",
+            &["approve_action"],
         ),
         _ => ("approve_action", &["approve_action"]),
     };
@@ -968,6 +972,22 @@ fn capability_effect(
             StatusCode::FORBIDDEN,
             "KOGWISTAR_CAPABILITY_FORBIDDEN",
             format!("Forbidden: action '{action}' requires capability {required:?}"),
+        ));
+    }
+    if matches!(
+        path,
+        "/api/workflow/capabilities/approve" | "/api/workflow/capabilities/revoke"
+    ) && !audit_capability(
+        &request.principal,
+        &mut state,
+        "project_view",
+        &["project_view", "read_security_scope"],
+    ) {
+        return Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Forbidden: capability mutation response requires project_view and read_security_scope"
+                .to_owned(),
         ));
     }
     match (request.method.as_str(), path) {
@@ -1051,14 +1071,6 @@ fn capability_effect(
                 .entry((subject, action.to_ascii_lowercase()))
                 .or_default()
                 .extend(capabilities);
-            // Python's approve_action returns capability_snapshot(), which
-            // records its own project_view decision after the grant.
-            let _ = audit_capability(
-                &request.principal,
-                &mut state,
-                "project_view",
-                &["project_view", "read_security_scope"],
-            );
             Some(json_effect(
                 StatusCode::ACCEPTED,
                 capability_snapshot(&request.principal, &state),

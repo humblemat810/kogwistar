@@ -2264,8 +2264,9 @@
             "specs": [],
             "approvals": [expected["approval"]],
             "revoked": [],
-            "audit_log": expected["audit_actions"].as_array().unwrap().iter().map(|action| json!({
+            "audit_log": expected["audit_actions"].as_array().unwrap().iter().enumerate().map(|(index, action)| json!({
                 "action": action,
+                "required": expected["audit_required"][index],
                 "outcome": "allow"
             })).collect::<Vec<_>>(),
             "current_subject": expected["current_subject"],
@@ -2325,6 +2326,144 @@
         let actions = audit.iter().rev().take(2).rev().map(|entry| entry["action"].clone()).collect::<Vec<_>>();
         assert_eq!(actions, *expected["audit_actions"].as_array().unwrap());
         assert!(audit.iter().rev().take(2).all(|entry| entry["outcome"] == "allow"));
+        let required = audit
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|entry| entry["required"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(required, *expected["audit_required"].as_array().unwrap());
+
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.method, contract["rust_request"]["method"]);
+        assert_eq!(request.path_and_query, contract["rust_request"]["path_and_query"]);
+        assert_eq!(request.body, contract["rust_request"]["body"].as_str().unwrap().as_bytes());
+    }
+
+    #[tokio::test]
+    async fn mcp_workflow_capability_revoke_matches_shared_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use tower::ServiceExt;
+
+        #[derive(Clone)]
+        struct RequestRecorder(Arc<Mutex<Option<ApiEffectRequest>>>, Value);
+
+        impl ApplicationService for RequestRecorder {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "workflow" && name == "workflow.capability_revoke"
+            }
+
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let seen = Arc::clone(&self.0);
+                let result = self.1.clone();
+                Box::pin(async move {
+                    *seen.lock().unwrap() = Some(request);
+                    ApiEffectResponse {
+                        status: StatusCode::ACCEPTED.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: serde_json::to_vec(&result).unwrap(),
+                    }
+                })
+            }
+        }
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-capability-revoke-mcp-v1.json"
+        ))
+        .unwrap();
+        let expected = &contract["expected"];
+        let result = json!({
+            "specs": [],
+            "approvals": [],
+            "revoked": [expected["revocation"]],
+            "audit_log": expected["audit_actions"].as_array().unwrap().iter().enumerate().map(|(index, action)| json!({
+                "action": action,
+                "required": expected["audit_required"][index],
+                "outcome": "allow"
+            })).collect::<Vec<_>>(),
+            "current_subject": expected["current_subject"],
+            "effective_capabilities": []
+        });
+        let seen = Arc::new(Mutex::new(None));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(RequestRecorder(Arc::clone(&seen), result)),
+        );
+        let request_body = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {
+                "name": contract["tool"],
+                "arguments": contract["arguments"],
+            }
+        }))
+        .unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(request_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let wire: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 8192).await.unwrap(),
+        )
+        .unwrap();
+        let result = &wire["result"];
+        for field in expected["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(result.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(result["current_subject"], expected["current_subject"]);
+        assert!(result["revoked"]
+            .as_array()
+            .unwrap()
+            .contains(&expected["revocation"]));
+        assert!(expected["effective_capabilities_exclude"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|capability| !result["effective_capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(capability)));
+        let audit = result["audit_log"].as_array().unwrap();
+        let actions = audit
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|entry| entry["action"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(actions, *expected["audit_actions"].as_array().unwrap());
+        assert!(audit.iter().rev().take(2).all(|entry| entry["outcome"] == "allow"));
+        let required = audit
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|entry| entry["required"].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(required, *expected["audit_required"].as_array().unwrap());
 
         let request = seen.lock().unwrap().clone().unwrap();
         assert_eq!(request.method, contract["rust_request"]["method"]);
@@ -2442,38 +2581,43 @@
         let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
 
         for service in services {
-            assert!(service.supports_mcp_tool_for_principal(
-                "workflow",
+            for name in [
                 "workflow.capability_approve",
-                &json!({"role":"rw", "ns":["workflow"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
-            ));
-            for capabilities in [
-                vec![],
-                vec!["approve_action"],
-                vec!["approve_action", "project_view"],
-                vec!["approve_action", "read_security_scope"],
+                "workflow.capability_revoke",
             ] {
+                assert!(service.supports_mcp_tool_for_principal(
+                    "workflow",
+                    name,
+                    &json!({"role":"rw", "ns":["workflow"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
+                ));
+                for capabilities in [
+                    vec![],
+                    vec!["approve_action"],
+                    vec!["approve_action", "project_view"],
+                    vec!["approve_action", "read_security_scope"],
+                ] {
+                    assert!(!service.supports_mcp_tool_for_principal(
+                        "workflow",
+                        name,
+                        &json!({"role":"rw", "ns":["workflow"], "capabilities":capabilities})
+                    ));
+                }
                 assert!(!service.supports_mcp_tool_for_principal(
                     "workflow",
-                    "workflow.capability_approve",
-                    &json!({"role":"rw", "ns":["workflow"], "capabilities":capabilities})
+                    name,
+                    &json!({"role":"ro", "ns":["workflow"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
+                ));
+                assert!(!service.supports_mcp_tool_for_principal(
+                    "workflow",
+                    name,
+                    &json!({"role":"rw", "ns":["conversation"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
+                ));
+                assert!(!service.supports_mcp_tool_for_principal(
+                    "root",
+                    name,
+                    &json!({"role":"rw", "ns":["workflow"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
                 ));
             }
-            assert!(!service.supports_mcp_tool_for_principal(
-                "workflow",
-                "workflow.capability_approve",
-                &json!({"role":"ro", "ns":["workflow"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
-            ));
-            assert!(!service.supports_mcp_tool_for_principal(
-                "workflow",
-                "workflow.capability_approve",
-                &json!({"role":"rw", "ns":["conversation"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
-            ));
-            assert!(!service.supports_mcp_tool_for_principal(
-                "root",
-                "workflow.capability_approve",
-                &json!({"role":"rw", "ns":["workflow"], "capabilities":["approve_action", "project_view", "read_security_scope"]})
-            ));
         }
 
         drop(sqlite);

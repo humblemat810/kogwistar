@@ -454,6 +454,52 @@
             "../../../../../contracts/golden/workflow-capability-revoke-http-v1.json"
         ))
         .unwrap();
+        let revoke_without_view_token = token(json!({
+            "sub": "limited-revoker",
+            "role": "rw",
+            "ns": ["workflow"],
+            "capabilities": ["approve_action"],
+            "iss": "local",
+            "exp": now + 300,
+        }));
+        let denied_revoke = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/capabilities/revoke")
+                    .header("authorization", format!("Bearer {revoke_without_view_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"capability":"spawn_process","subject":"admin-1"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_revoke.status(), StatusCode::FORBIDDEN);
+        let unchanged = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/capabilities")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let unchanged: Value =
+            serde_json::from_slice(&to_bytes(unchanged.into_body(), 32768).await.unwrap())
+                .unwrap();
+        assert!(!unchanged["revoked"].as_array().unwrap().iter().any(|revocation| {
+            revocation["subject"] == "admin-1"
+                && revocation["capabilities"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("spawn_process"))
+        }));
         let revoke = app
             .clone()
             .oneshot(
@@ -500,6 +546,46 @@
                 .unwrap()
                 .contains(capability));
         }
+        let revoke_audit = revoke["audit_log"].as_array().unwrap();
+        let revoke_audit_actions = revoke_audit
+            .iter()
+            .rev()
+            .take(2)
+            .rev()
+            .map(|entry| entry["action"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(revoke_audit_actions, ["approve_action", "project_view"]);
+
+        let self_revoke = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/capabilities/revoke")
+                    .header("authorization", format!("Bearer {admin_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({"capability":"project_view","subject":"admin-1"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(self_revoke.status(), StatusCode::ACCEPTED);
+        let self_revoke: Value =
+            serde_json::from_slice(&to_bytes(self_revoke.into_body(), 32768).await.unwrap())
+                .unwrap();
+        assert!(self_revoke["revoked"].as_array().unwrap().iter().any(|entry| {
+            entry["subject"] == "admin-1"
+                && entry["capabilities"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("project_view"))
+        }));
+        assert!(!self_revoke["effective_capabilities"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("project_view")));
 
         let mcp = app
             .clone()
