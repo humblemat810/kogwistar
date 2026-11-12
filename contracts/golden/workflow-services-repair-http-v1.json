@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "method": "POST",
+  "path": "/api/workflow/services/repair?limit=1",
+  "success_status": 200,
+  "required_body_fields": ["repaired_service_ids"],
+  "expected_repaired_service_count": 1
+}

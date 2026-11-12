@@ -585,6 +585,12 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
             / "contracts/golden/workflow-service-trigger-http-v1.json"
         ).read_text(encoding="utf-8")
     )
+    bulk_repair_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-services-repair-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     with TestClient(server.app) as client:
         headers = _token_header(
@@ -610,6 +616,20 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         )
         declared.raise_for_status()
         assert declared.json()["service_id"] == "svc.rest.demo"
+
+        bulk_repaired = client.request(
+            bulk_repair_contract["method"],
+            bulk_repair_contract["path"],
+            headers=headers,
+        )
+        assert bulk_repaired.status_code == bulk_repair_contract["success_status"]
+        bulk_body = bulk_repaired.json()
+        for field in bulk_repair_contract["required_body_fields"]:
+            assert field in bulk_body
+        assert len(bulk_body["repaired_service_ids"]) == bulk_repair_contract[
+            "expected_repaired_service_count"
+        ]
+        assert "svc.rest.demo" in bulk_body["repaired_service_ids"]
 
         beat = client.post(
             heartbeat_contract["path"].replace("{service_id}", "svc.rest.demo"),

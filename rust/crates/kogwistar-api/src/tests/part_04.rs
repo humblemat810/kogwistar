@@ -747,6 +747,41 @@
             .clear_named_projection("service_registry", "svc-repair")
             .unwrap();
 
+        // PYTHON_PARITY_V1: bulk HTTP response uses ChatRunService.repair_service_projections.
+        let bulk_repair_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-services-repair-http-v1.json"
+        ))
+        .unwrap();
+        let bulk_repaired = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: bulk_repair_contract["method"].as_str().unwrap().to_owned(),
+                path_and_query: bulk_repair_contract["path"].as_str().unwrap().to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(
+            bulk_repaired.status,
+            bulk_repair_contract["success_status"].as_u64().unwrap() as u16
+        );
+        let bulk_body: Value = serde_json::from_slice(&bulk_repaired.body).unwrap();
+        for field in bulk_repair_contract["required_body_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(bulk_body.get(field).is_some(), "missing {field}");
+        }
+        assert_eq!(
+            bulk_body["repaired_service_ids"].as_array().unwrap().len(),
+            bulk_repair_contract["expected_repaired_service_count"]
+                .as_u64()
+                .unwrap() as usize
+        );
+        assert!(bulk_body["repaired_service_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|service_id| service_id == "svc-declared"));
+
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
