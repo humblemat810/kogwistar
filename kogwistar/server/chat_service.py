@@ -1348,8 +1348,11 @@ class ChatRunService:
     def operator_dashboard(self, *, limit: int = 100) -> dict[str, Any]:
         self._require_capability(
             "project_view",
-            ["project_view"],
-            approval_message="Reading operator dashboard requires project_view capability",
+            ["project_view", "workflow.run.read", "read_security_scope"],
+            approval_message=(
+                "Reading operator dashboard requires project_view, "
+                "workflow.run.read, and read_security_scope capabilities"
+            ),
         )
         def _dir_size(path: str | None) -> int:
             import os

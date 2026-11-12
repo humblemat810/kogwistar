@@ -5408,6 +5408,85 @@ async def test_mcp_workflow_message_orphans_repair_denies_before_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_operator_dashboard_denies_before_reads(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    required = {"project_view", "workflow.run.read", "read_security_scope"}
+    meta_store = service._execution_meta_store()
+    reads: list[str] = []
+    original_list_runs = meta_store.list_server_runs
+    original_list_messages = meta_store.list_projected_lane_messages
+
+    def track_runs(**kwargs: Any) -> Any:
+        reads.append("runs")
+        return original_list_runs(**kwargs)
+
+    def track_messages(**kwargs: Any) -> Any:
+        reads.append("messages")
+        return original_list_messages(**kwargs)
+
+    monkeypatch.setattr(meta_store, "list_server_runs", track_runs)
+    monkeypatch.setattr(meta_store, "list_projected_lane_messages", track_messages)
+    contract = {
+        "operation": "workflow.operator_dashboard",
+        "arguments": {"limit": 10},
+    }
+
+    for missing in required:
+        capabilities = sorted(required - {missing})
+        with _claims(
+            "ro",
+            "workflow",
+            sub=f"dashboard-missing-{missing}",
+            scope_parts={"capabilities": capabilities},
+        ), pytest.raises(HTTPException) as denied:
+            await server.mcp._execute(
+                contract["operation"], contract["arguments"], enforce_visibility=True
+            )
+        assert denied.value.status_code == 403
+
+    for role, namespace in (("ro", "conversation"),):
+        with _claims(
+            role,
+            namespace,
+            sub="dashboard-scope-denied",
+            scope_parts={"capabilities": sorted(required)},
+        ):
+            denied = await server.mcp._handle_call_tool(
+                None,
+                types.CallToolRequestParams(
+                    name=contract["operation"], arguments=contract["arguments"]
+                ),
+            )
+        assert denied.is_error is True
+    assert reads == []
+
+    with _claims(
+        "ro", "workflow", sub="dashboard-authorized", scope_parts={"capabilities": sorted(required)}
+    ):
+        result = await server.mcp._execute(
+            contract["operation"], contract["arguments"], enforce_visibility=True
+        )
+    assert set(_structured(result)) >= {
+        "process_table",
+        "operator_inbox",
+        "blocked_runs",
+        "blocked_flow_graph",
+        "message_queue",
+        "dead_letters",
+        "capabilities",
+        "resources",
+    }
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):
