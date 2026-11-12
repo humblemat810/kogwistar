@@ -1403,15 +1403,31 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             "RUST_LOG": "warn",
         }
     )
-    process = subprocess.Popen(
-        [str(SERVER)],
-        cwd=ROOT,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
     base = f"http://127.0.0.1:{port}"
+
+    def start_server() -> subprocess.Popen[str]:
+        return subprocess.Popen(
+            [str(SERVER)],
+            cwd=ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+
+    def wait_for_server(server: subprocess.Popen[str]) -> None:
+        for _ in range(100):
+            if server.poll() is not None:
+                stdout, _ = server.communicate()
+                raise AssertionError(f"Rust server exited\n{stdout}")
+            try:
+                if httpx.get(f"{base}/health", timeout=0.5).status_code == 200:
+                    return
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        raise AssertionError("Rust PostgreSQL server did not become ready")
+
+    process = start_server()
     claims = {
         "sub": "typed-http-owner",
         "agent_id": "typed-http-owner",
@@ -1423,17 +1439,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         "exp": 4_102_444_800,
     }
     try:
-        for _ in range(100):
-            if process.poll() is not None:
-                stdout, _ = process.communicate()
-                raise AssertionError(f"Rust server exited\n{stdout}")
-            try:
-                if httpx.get(f"{base}/health", timeout=0.5).status_code == 200:
-                    break
-            except httpx.HTTPError:
-                time.sleep(0.05)
-        else:
-            raise AssertionError("Rust PostgreSQL server did not become ready")
+        wait_for_server(process)
 
         response = httpx.post(
             f"{base}/internal/graph/mutations",
@@ -1443,6 +1449,35 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         )
         assert response.status_code == 200, response.text
         assert all(result["mutated"] for result in response.json()["results"])
+
+        if entity_kind in {
+            "workflow_edge",
+            "workflow_run_node",
+            "workflow_runtime_edge",
+        }:
+            process.terminate()
+            process.wait(timeout=10)
+            process = start_server()
+            wait_for_server(process)
+            reopened_backend = PgVectorBackend(
+                engine=sa_engine, embedding_dim=3, schema=graph_schema
+            )
+            reopened_backend.ensure_schema()
+            engine = GraphKnowledgeEngine(
+                persist_directory=str(tmp_path / "typed-http-python-read-reopened"),
+                backend=reopened_backend,
+                namespace=namespace,
+                kg_graph_type=graph_type,
+                embedding_function=lambda values: [[0.25, 0.5, 0.75] for _ in values],
+                embedding_profile=EmbeddingProfile(
+                    provider="fixture",
+                    model="typed-http-fixture-v1",
+                    dimension=3,
+                    similarity_metric="cosine",
+                    embedding_kind="single_vector",
+                ),
+                acl_enabled=False,
+            )
 
         if entity_kind == "node":
             expected = expected_nodes[0]

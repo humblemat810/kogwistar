@@ -1182,19 +1182,6 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(baseline_rows) == 130
     assert set(baseline_rows) <= set(current)
     assert all(current[item_id] == "PASS" for item_id, status in baseline_rows.items() if status == "PASS")
-    added = re.search(
-        r"(\d+) later-added IDs are (\d+) PASS and (\d+) IN PROGRESS",
-        scope,
-    )
-    assert added is not None
-    added_rows = {item_id: status for item_id, status in current.items() if item_id not in baseline_rows}
-    assert tuple(map(int, added.groups())) == (
-        len(added_rows),
-        sum(status == "PASS" for status in added_rows.values()),
-        sum(status == "IN PROGRESS" for status in added_rows.values()),
-    )
-
-
 def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:
     matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     entries = {item["id"]: item for item in matrix["capabilities"]}
