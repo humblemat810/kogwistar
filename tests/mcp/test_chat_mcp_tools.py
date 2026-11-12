@@ -884,13 +884,15 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
         metadata={"visibility": "public"},
     )
     source_restricted.mentions = [Grounding(spans=[Span.from_dummy_for_conversation()])]
+    _, source_span_ids = engine.acl.usage_ids_for_item(source_restricted)
+    assert len(source_span_ids) == 1
     with _claims("rw", fixture["truth_graph"], sub="owner-b"):
         engine.write.add_node(source_restricted)
         engine.acl.record_acl(
             grain="span",
             truth_graph=fixture["truth_graph"],
             entity_id=source_restricted.id,
-            target_item_id=f"{source_restricted.id}::mention::0::span::0",
+            target_item_id=source_span_ids[0],
             version=2,
             mode="private",
             owner_id="owner-b",
