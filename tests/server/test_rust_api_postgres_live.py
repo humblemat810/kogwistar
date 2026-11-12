@@ -994,6 +994,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow_step_exec_node",
         "workflow_checkpoint_node",
         "workflow_completed_node",
+        "workflow_cancelled_node",
     ],
     ids=[
         "node",
@@ -1003,6 +1004,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow-step-exec-node",
         "workflow-checkpoint-node",
         "workflow-completed-node",
+        "workflow-cancelled-node",
     ],
 )
 def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
@@ -1029,6 +1031,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         WorkflowRunNode,
         WorkflowRuntimeEdge,
         WorkflowCheckpointNode,
+        WorkflowCancelledNode,
         WorkflowCompletedNode,
         WorkflowStepExecNode,
     )
@@ -1109,6 +1112,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     expected_step_execs: list[WorkflowStepExecNode] = []
     expected_checkpoints: list[WorkflowCheckpointNode] = []
     expected_completions: list[WorkflowCompletedNode] = []
+    expected_cancellations: list[WorkflowCancelledNode] = []
     mutations: list[dict[str, object]]
     if entity_kind == "node":
         base_node = node_payload(
@@ -1244,6 +1248,24 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         )
         expected_completions.append(completion)
         mutations = [mutation_for(completion)]
+    elif entity_kind == "workflow_cancelled_node":
+        cancellation = WorkflowCancelledNode.model_validate(
+            {
+                **node_payload(
+                    node_id=f"typed-http-cancelled-{uuid.uuid4().hex}",
+                    summary="Cancelled workflow persisted through Rust HTTP",
+                ).model_dump(field_mode="backend"),
+                "metadata": {
+                    "entity_type": "workflow_cancelled",
+                    "workflow_id": "typed-http-workflow",
+                    "run_id": f"typed-http-cancelled-run-{uuid.uuid4().hex}",
+                    "conversation_id": conversation_id,
+                    "accepted_step_seq": 6,
+                },
+            }
+        )
+        expected_cancellations.append(cancellation)
+        mutations = [mutation_for(cancellation)]
     else:
         source_node = node_payload(
             node_id=f"typed-http-source-{uuid.uuid4().hex}",
@@ -1417,6 +1439,19 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             assert recovered_completion.metadata["conversation_id"] == conversation_id
             assert recovered_completion.metadata["accepted_step_seq"] == 9
             assert recovered_completion.metadata["_class_name"] == "WorkflowCompletedNode"
+        elif entity_kind == "workflow_cancelled_node":
+            expected_cancellation = expected_cancellations[0]
+            python_nodes = engine.read.get_nodes(
+                ids=[expected_cancellation.id], node_type=WorkflowCancelledNode
+            )
+            assert len(python_nodes) == 1
+            recovered_cancellation = python_nodes[0]
+            assert isinstance(recovered_cancellation, WorkflowCancelledNode)
+            assert recovered_cancellation.metadata["workflow_id"] == "typed-http-workflow"
+            assert recovered_cancellation.metadata["run_id"] == expected_cancellation.metadata["run_id"]
+            assert recovered_cancellation.metadata["conversation_id"] == conversation_id
+            assert recovered_cancellation.metadata["accepted_step_seq"] == 6
+            assert recovered_cancellation.metadata["_class_name"] == "WorkflowCancelledNode"
         else:
             expected_edge = expected_edges[0]
             python_edges = engine.read.get_edges(
