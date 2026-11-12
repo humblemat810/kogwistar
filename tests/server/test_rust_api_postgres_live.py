@@ -984,6 +984,175 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
             process.wait(timeout=10)
 
 
+def test_rust_postgres_http_typed_node_envelope_round_trips_to_python(
+    request: pytest.FixtureRequest,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine,
+    tmp_path: Path,
+) -> None:
+    if not pg_dsn or not pg_schema or sa_engine is None:
+        pytest.skip("PostgreSQL fixture unavailable")
+    if not SERVER.exists():
+        pytest.skip("build kogwistar-server before live typed mutation test")
+    if any(source.stat().st_mtime > SERVER.stat().st_mtime for source in SERVER_SOURCES):
+        pytest.skip("rebuild current kogwistar-server before live typed mutation test")
+
+    from kogwistar.conversation.models import ConversationNode
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.server.bootstrap import load_server_storage_settings
+    from tests._helpers.graph_builders import build_entity_node
+
+    namespace = f"typed-{uuid.uuid4().hex}"
+    graph_type = "knowledge"
+    storage = load_server_storage_settings(
+        {"GKE_BACKEND": "pg", "GKE_PG_URL": pg_dsn, "GKE_PG_SCHEMA": pg_schema}
+    )
+    graph_schema = storage.schema_for(graph_type)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=graph_schema)
+    backend.ensure_schema()
+    request.addfinalizer(lambda: _drop_postgres_schema(sa_engine, graph_schema))
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "typed-http-python-read"),
+        backend=backend,
+        namespace=namespace,
+        kg_graph_type=graph_type,
+        embedding_function=lambda values: [[0.25, 0.5, 0.75] for _ in values],
+        embedding_profile=EmbeddingProfile(
+            provider="fixture",
+            model="typed-http-fixture-v1",
+            dimension=3,
+            similarity_metric="cosine",
+            embedding_kind="single_vector",
+        ),
+        acl_enabled=False,
+    )
+    base_node = build_entity_node(
+        node_id=f"typed-http-{uuid.uuid4().hex}",
+        doc_id="typed-http-source",
+        label="Typed HTTP node",
+        summary="Conversation subtype persisted through Rust HTTP",
+        embedding=[0.25, 0.5, 0.75],
+        metadata={"visibility": "public"},
+    )
+    node = ConversationNode.model_validate(
+        {
+            **base_node.model_dump(field_mode="backend"),
+            "role": "assistant",
+            "turn_index": 5,
+            "conversation_id": "typed-http-conversation",
+            "user_id": "typed-http-owner",
+            "metadata": {
+                **base_node.metadata,
+                "entity_type": "conversation_turn",
+                "level_from_root": 0,
+                "in_conversation_chain": True,
+            },
+        }
+    )
+    document, metadata = engine.write.node_doc_and_meta(node)
+    payload = node.model_dump(
+        field_mode="backend", exclude=["embedding"], dump_format="json"
+    )
+    mutation = {
+        "scope": {"namespace": namespace, "workspace_id": None, "graph_space": None},
+        "table": "gke_nodes",
+        "entity_kind": "node",
+        "event_id": f"{node.id}-typed-http-event",
+        "op": "ADD",
+        "payload": payload,
+        "record": {
+            "id": node.id,
+            "document": document,
+            "metadata": metadata,
+            "embedding": list(node.embedding or []),
+        },
+        "embedding_dim": 3,
+        "model_envelope": build_graph_model_envelope(node, exclude=["embedding"]),
+    }
+
+    port = _port()
+    secret = uuid.uuid4().hex
+    env = os.environ.copy()
+    for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+        env.pop(name, None)
+    env.update(
+        {
+            "AUTH_MODE": "jwt",
+            "JWT_SECRET": secret,
+            "JWT_ALG": "HS256",
+            "KOGWISTAR_BACKEND": "pg",
+            "KOGWISTAR_PG_DSN": pg_dsn,
+            "KOGWISTAR_PG_SCHEMA_BASE": pg_schema,
+            "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+            "KOGWISTAR_SERVER_PORT": str(port),
+            "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
+            "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
+            "RUST_LOG": "warn",
+        }
+    )
+    process = subprocess.Popen(
+        [str(SERVER)],
+        cwd=ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    base = f"http://127.0.0.1:{port}"
+    claims = {
+        "sub": "typed-http-owner",
+        "agent_id": "typed-http-owner",
+        "role": "rw",
+        "roles": ["reader"],
+        "ns": graph_type,
+        "storage_ns": namespace,
+        "capabilities": ["write_graph", "read_graph"],
+        "exp": 4_102_444_800,
+    }
+    try:
+        for _ in range(100):
+            if process.poll() is not None:
+                stdout, _ = process.communicate()
+                raise AssertionError(f"Rust server exited\n{stdout}")
+            try:
+                if httpx.get(f"{base}/health", timeout=0.5).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise AssertionError("Rust PostgreSQL server did not become ready")
+
+        response = httpx.post(
+            f"{base}/internal/graph/mutations",
+            headers={"Authorization": f"Bearer {_hs256_token(secret, claims)}"},
+            json={"contract_version": 1, "atomic": True, "mutations": [mutation]},
+            timeout=10,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["results"][0]["mutated"] is True
+
+        python_nodes = engine.read.get_nodes(ids=[node.id], node_type=ConversationNode)
+        assert len(python_nodes) == 1
+        recovered = python_nodes[0]
+        assert isinstance(recovered, ConversationNode)
+        assert recovered.role == node.role
+        assert recovered.turn_index == node.turn_index
+        assert recovered.conversation_id == node.conversation_id
+        assert recovered.user_id == node.user_id
+        assert recovered.summary == node.summary
+        assert recovered.metadata["_class_name"] == "ConversationNode"
+    finally:
+        process.terminate()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
+
 def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
     request: pytest.FixtureRequest,
     pg_dsn: str | None,
