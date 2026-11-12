@@ -369,6 +369,15 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: heartbeat MCP admission requires rw/workflow; its effect requires both service.heartbeat and service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat+kogwistar/server/chat_service.py#ChatRunService.record_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_heartbeat_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_heartbeat_denies_unauthorized_effects
+        if name == "workflow.service_heartbeat" {
+            return surface == "workflow"
+                && principal_role(principal) == "rw"
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "wisdom.semantic_seed_then_expand" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")

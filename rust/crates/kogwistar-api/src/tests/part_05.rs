@@ -4160,6 +4160,95 @@
     }
 
     #[tokio::test]
+    async fn workflow_service_heartbeat_mcp_admission_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-service-heartbeat-auth-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_service_heartbeat_auth",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let tool = "workflow.service_heartbeat";
+        let service_id = "svc-heartbeat-auth";
+        let heartbeat_path = format!("/api/workflow/services/{service_id}/heartbeat");
+
+        for service in services {
+            let authorized = json!({"role":"rw", "ns":["workflow"]});
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow", tool, &authorized
+            ));
+            for principal in [
+                json!({"role":"ro", "ns":["workflow"]}),
+                json!({"role":"rw", "ns":["conversation"]}),
+            ] {
+                assert!(!service.supports_mcp_tool_for_principal(
+                    "workflow", tool, &principal
+                ));
+            }
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root", tool, &authorized
+            ));
+            for capabilities in [
+                json!([]),
+                json!(["service.heartbeat"]),
+                json!(["service.manage"]),
+            ] {
+                let denied = service
+                    .execute(ApiEffectRequest {
+                        contract_version: 1,
+                        method: "POST".to_owned(),
+                        path_and_query: heartbeat_path.clone(),
+                        body: br#"{"instance_id":"worker-1","payload":{"beat":1}}"#.to_vec(),
+                        principal: json!({"role":"rw", "ns":["workflow"], "capabilities":capabilities}),
+                    })
+                    .await;
+                assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            }
+        }
+
+        let declared = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/services".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "service_id": service_id,
+                    "service_kind": "daemon",
+                    "target_kind": "workflow",
+                    "target_ref": "wf.heartbeat-auth",
+                    "enabled": false,
+                    "autostart": false,
+                    "heartbeat_ttl_ms": 1000
+                }))
+                .unwrap(),
+                principal: json!({"role":"rw", "ns":["workflow"], "capabilities":["service.manage"]}),
+            })
+            .await;
+        assert_eq!(declared.status, StatusCode::OK.as_u16());
+
+        let allowed = sqlite
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: heartbeat_path,
+                body: br#"{"instance_id":"worker-1","payload":{"beat":1}}"#.to_vec(),
+                principal: json!({"role":"rw", "ns":["workflow"], "capabilities":["service.heartbeat", "service.manage"]}),
+            })
+            .await;
+        assert_eq!(allowed.status, StatusCode::OK.as_u16());
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn workflow_service_read_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
