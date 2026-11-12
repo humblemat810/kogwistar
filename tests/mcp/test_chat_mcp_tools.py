@@ -2812,6 +2812,75 @@ async def test_mcp_workflow_tool_audit_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_tool_audit_denies_before_reads(monkeypatch, engine_triplet):
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-tool-audit-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    reads: list[dict[str, object]] = []
+    read_engine = SimpleNamespace(
+        read=SimpleNamespace(
+            get_nodes=lambda *, where, limit: reads.append(
+                {"where": where, "limit": limit}
+            )
+            or []
+        )
+    )
+    monkeypatch.setattr(service, "_conversation_engine", lambda: read_engine)
+
+    for role, namespace, capabilities in (
+        ("ro", "conversation", ["project_view", "read_graph"]),
+        ("ro", "workflow", ["read_graph"]),
+        ("rw", "workflow", ["project_view"]),
+    ):
+        try:
+            with _claims(
+                role,
+                namespace,
+                scope_parts={"capabilities": capabilities},
+            ):
+                await server.mcp._execute(
+                    contract["tool"], contract["arguments"], enforce_visibility=True
+                )
+        except (HTTPException, PermissionError):
+            pass
+        else:
+            pytest.fail(
+                f"unauthorized tool-audit call was allowed: {role=} {namespace=} {capabilities=}"
+            )
+    assert reads == []
+
+    with _claims(
+        "ro",
+        "workflow",
+        scope_parts={"capabilities": ["project_view", "read_graph"]},
+    ):
+        result = await server.mcp._execute(
+            contract["tool"], contract["arguments"], enforce_visibility=True
+        )
+    assert result.is_error is False
+    assert len(reads) == 2
+    assert all(
+        call["limit"] == contract["python_service_arguments"]["limit"]
+        for call in reads
+    )
+    assert _structured(result) == {
+        "conversation_id": contract["python_service_arguments"]["conversation_id"],
+        "items": [],
+    }
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_budget_history_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

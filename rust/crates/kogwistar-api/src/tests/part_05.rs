@@ -4488,6 +4488,60 @@
     }
 
     #[tokio::test]
+    async fn workflow_tool_audit_mcp_admission_matches_python_policy() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_tool_audit_admission",
+        )
+        .unwrap();
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-tool-audit-admission-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        let tool = "workflow.tool_audit";
+        let authorized = json!({
+            "role":"ro",
+            "ns":["workflow"],
+            "capabilities":["project_view", "read_graph"]
+        });
+        assert!(service.supports_mcp_tool_for_principal(
+            "workflow", tool, &authorized
+        ));
+        for (surface, principal) in [
+            ("workflow", json!({"role":"ro", "ns":["conversation"], "capabilities":["project_view", "read_graph"]})),
+            ("root", authorized.clone()),
+            ("workflow", json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]})),
+            ("workflow", json!({"role":"rw", "ns":["workflow"], "capabilities":["read_graph"]})),
+        ] {
+            assert!(!service.supports_mcp_tool_for_principal(surface, tool, &principal));
+        }
+        assert!(!sqlite.supports_mcp_tool_for_principal(
+            "workflow", tool, &authorized
+        ));
+
+        for principal in [
+            json!({"ns":"workflow", "capabilities":["read_graph"]}),
+            json!({"ns":"workflow", "capabilities":["project_view"]}),
+            json!({"ns":"docs", "capabilities":["project_view", "read_graph"]}),
+        ] {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: "/api/workflow/tools/audit?limit=5".to_owned(),
+                    body: Vec::new(),
+                    principal,
+                })
+                .await;
+            assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(sqlite_path);
+    }
+
+    #[tokio::test]
     async fn workflow_service_read_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
