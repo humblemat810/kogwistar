@@ -2462,6 +2462,77 @@
             .unwrap()
         };
 
+        let mut malformed_node_batch = body.clone();
+        malformed_node_batch["mutations"] = json!([body["mutations"][0].clone()]);
+        let checkpoint_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-checkpoint-node-model-v1.json"
+        )))
+        .unwrap();
+        let mut invalid_checkpoint = checkpoint_fixture["payload"].clone();
+        invalid_checkpoint["id"] = json!("invalid-workflow-checkpoint-node");
+        invalid_checkpoint["metadata"]["step_seq"] = json!(-1);
+        malformed_node_batch["mutations"][0]["event_id"] = json!("invalid-node-envelope-event");
+        malformed_node_batch["mutations"][0]["payload"] = invalid_checkpoint.clone();
+        malformed_node_batch["mutations"][0]["record"]["id"] =
+            json!("invalid-workflow-checkpoint-node");
+        malformed_node_batch["mutations"][0]["record"]["embedding"] = Value::Null;
+        malformed_node_batch["mutations"][0]["model_envelope"] = json!({
+            "schema_version": 1,
+            "model_class": "workflow_checkpoint_node",
+            "payload": invalid_checkpoint,
+        });
+        malformed_node_batch["index_jobs"] = json!([{
+            "job_id": "invalid-node-envelope-index",
+            "namespace": "alpha",
+            "entity_kind": "node",
+            "entity_id": "invalid-workflow-checkpoint-node",
+            "index_kind": "node_embedding",
+            "op": "UPSERT",
+            "payload_json": "{}",
+            "max_retries": 3
+        }]);
+        let malformed_response = send_mutation(
+            make_app(),
+            graph_upsert_token.clone(),
+            malformed_node_batch,
+        )
+        .await;
+        assert_eq!(malformed_response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(embedding_calls.lock().unwrap().is_empty());
+        assert!(service
+            .store
+            .latest_entity_events(
+                "alpha",
+                "node",
+                &["invalid-workflow-checkpoint-node".to_owned()],
+            )
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(service
+            .store
+            .list_index_jobs(
+                Some("alpha"),
+                None,
+                Some("node"),
+                Some("invalid-workflow-checkpoint-node"),
+                None,
+                10,
+            )
+            .await
+            .unwrap()
+            .is_empty());
+        let invalid_projection_count: i64 = client
+            .query_one(
+                &format!("SELECT count(*) FROM \"{schema}\".\"gke_nodes\" WHERE id=$1"),
+                &[&"invalid-workflow-checkpoint-node"],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(invalid_projection_count, 0);
+
         let missing_capability =
             send_mutation(make_app(), make_token(&[], "alpha"), body.clone()).await;
         assert_eq!(missing_capability.status(), StatusCode::FORBIDDEN);
