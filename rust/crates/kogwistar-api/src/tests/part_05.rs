@@ -733,6 +733,92 @@
     }
 
     #[tokio::test]
+    async fn mcp_operator_inbox_matches_shared_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, Mutex};
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-operator-inbox-mcp-v1.json"
+        ))
+        .unwrap();
+
+        #[derive(Clone)]
+        struct ContractService(Arc<Mutex<Option<ApiEffectRequest>>>, Value);
+
+        impl ApplicationService for ContractService {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "workflow" && name == "workflow.operator_inbox"
+            }
+
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let seen = Arc::clone(&self.0);
+                let result = self.1.clone();
+                Box::pin(async move {
+                    *seen.lock().unwrap() = Some(request);
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: serde_json::to_vec(&result).unwrap(),
+                    }
+                })
+            }
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(ContractService(
+                Arc::clone(&seen),
+                contract["expected_result"].clone(),
+            )),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&json!({
+                            "jsonrpc":"2.0",
+                            "id":1,
+                            "method":"tools/call",
+                            "params":{
+                                "name":contract["operation"],
+                                "arguments":contract["arguments"]
+                            }
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["result"], contract["expected_result"]);
+        let request = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(request.contract_version, 1);
+        let (method, path) = contract["route"].as_str().unwrap().split_once(' ').unwrap();
+        assert_eq!(request.method, method);
+        assert_eq!(request.path_and_query, path);
+        assert!(request.body.is_empty());
+    }
+
+    #[tokio::test]
     async fn mcp_run_evidence_builds_encoded_read_only_route() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
