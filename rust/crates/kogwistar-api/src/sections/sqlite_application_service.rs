@@ -387,6 +387,15 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
+        // PYTHON_PARITY_V1: repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projection; fixture=contracts/golden/workflow-service-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_service_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_repair_denies_unauthorized_effects
+        if name == "workflow.service_repair" {
+            return surface == "workflow"
+                && principal_role(principal) == "rw"
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "wisdom.semantic_seed_then_expand" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
