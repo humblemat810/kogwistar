@@ -1228,6 +1228,40 @@ def test_projection_snapshot_registry_capability_remains_explicitly_unsupported(
     } <= set(conformance["conformance_profiles"]["projections-snapshots-run-registry"])
 
 
+def test_queue_capability_is_opt_in_until_all_conformance_gates_pass() -> None:
+    capability_id = "queues-leases-lanes"
+    ownership = next(
+        item
+        for item in _manifest()["capability_ownership"]
+        if item["capability"] == capability_id
+    )
+    selector = next(
+        item
+        for item in _manifest()["implementation_selectors"]
+        if item["name"] == ownership["configuration"]
+    )
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item for item in support_matrix["capabilities"] if item["id"] == capability_id
+    )
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == capability_id
+    )
+
+    assert ownership["configuration"] == "KOGWISTAR_IMPL_META_STORE"
+    assert ownership["current_authoritative_writer"] == "python"
+    assert ownership["target_authoritative_writer"] == "rust"
+    assert ownership["rust_cutover_ready"] is False
+    assert selector["default"] == "python"
+    assert set(selector["accepted_modes"]) == {"python", "shadow", "rust"}
+    assert support["python"]["status"] == "enabled"
+    assert support["rust"]["status"] == "opt-in"
+    assert support["mixed"]["status"] == "opt-in"
+    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert "full parity open" in coverage["mixed_coverage"]
+
+
 def test_implementation_selector_manifest_matches_runtime_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
