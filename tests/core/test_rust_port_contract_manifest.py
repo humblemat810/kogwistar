@@ -1403,6 +1403,22 @@ def test_rest_capability_keeps_deferred_route_explicit_and_cutover_gated() -> No
     assert ["DELETE", "/admin/doc/{doc_id}"] in server_gaps["pending_routes"]
 
 
+def test_sse_support_remains_opt_in_until_ordering_and_resume_parity() -> None:
+    capability_id = "server-rest-sse-mcp-cli"
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item for item in support_matrix["capabilities"] if item["id"] == capability_id
+    )
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == capability_id
+    )
+
+    assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
+    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert "sse-ordering-and-resume" in conformance["conformance_profiles"][capability_id]
+
+
 def test_implementation_selector_manifest_matches_runtime_precedence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
