@@ -9464,11 +9464,22 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     assert_eq!(payload["nodes_added"], expected_body["nodes_added"]);
     assert_eq!(payload["edges_added"], expected_body["edges_added"]);
 
+    let mut legacy_nodes = extraction["nodes"].as_array().unwrap().clone();
+    let mut legacy_edges = extraction["edges"].as_array().unwrap().clone();
+    for entity in legacy_nodes.iter_mut().chain(legacy_edges.iter_mut()) {
+        let object = entity.as_object_mut().unwrap();
+        if !object.contains_key("id") {
+            if let Some(local_id) = object.get("local_id").cloned() {
+                object.insert("id".to_owned(), local_id);
+            }
+        }
+        object.remove("local_id");
+    }
     let legacy_tree = json!({
         "doc_id": extraction["doc_id"],
-        "insertion_method": "legacy-parser-v1",
-        "nodes": extraction["nodes"],
-        "edges": extraction["edges"],
+        "insertion_method": extraction["insertion_method"],
+        "nodes": legacy_nodes,
+        "edges": legacy_edges,
     });
     let legacy_tree_response = app
         .oneshot(

@@ -30,7 +30,7 @@ import kogwistar.server_mcp_with_admin as server
 from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_ID
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     WorkflowCancelledNode,
@@ -258,6 +258,9 @@ def test_document_upsert_tree_accepts_nonempty_shared_graph_extraction(
         for key in ("doc_id", "insertion_method", "nodes", "edges")
     }
     for entity in (*request["nodes"], *request["edges"]):
+        local_id = entity.pop("local_id", None)
+        if "id" not in entity and local_id is not None:
+            entity["id"] = local_id
         if "mentions" not in entity and "references" in entity:
             spans = entity.pop("references")
             entity["mentions"] = [{"spans": spans}]
@@ -268,58 +271,50 @@ def test_document_upsert_tree_accepts_nonempty_shared_graph_extraction(
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
     )
-
-    captured: dict[str, object] = {}
-
-    def _fake_persist_document_graph_extraction(*, doc_id, parsed, mode="append"):
-        captured.update(
-            {
-                "doc_id": doc_id,
-                "parsed_type": type(parsed).__name__,
-                "mode": mode,
-                "node_count": len(parsed.nodes),
-                "edge_count": len(parsed.edges),
-            }
-        )
-        return {
-            "document_id": doc_id,
-            "node_ids": ["canonical-node-a", "canonical-node-b"],
-            "edge_ids": ["canonical-edge-a"],
-            "nodes_added": 2,
-            "edges_added": 1,
-        }
-
-    monkeypatch.setattr(
-        engine,
-        "persist_document_graph_extraction",
-        _fake_persist_document_graph_extraction,
-        raising=True,
+    source_document = Document.from_text(
+        extraction["content"],
+        id=request["doc_id"],
+        metadata={"insertion_method": request["insertion_method"]},
     )
+    engine.write.add_document(source_document)
 
     with TestClient(server.app) as client:
         headers = token_header(client, role="rw", ns="docs,conversation,workflow")
         response = client.post("/api/document.upsert_tree", json=request, headers=headers)
 
     assert response.status_code == 200, response.text
-    assert response.json() == {
-        "status": "ok",
-        "inserted_nodes": 2,
-        "inserted_edges": 1,
-        "engine_result": {
-            "document_id": request["doc_id"],
-            "node_ids": ["canonical-node-a", "canonical-node-b"],
-            "edge_ids": ["canonical-edge-a"],
-            "nodes_added": 2,
-            "edges_added": 1,
-        },
-    }
-    assert captured == {
-        "doc_id": request["doc_id"],
-        "parsed_type": "GraphExtractionWithIDs",
-        "mode": "append",
-        "node_count": 2,
-        "edge_count": 1,
-    }
+    result = response.json()
+    engine_result = result["engine_result"]
+    assert result["status"] == "ok"
+    assert result["inserted_nodes"] == 2
+    assert result["inserted_edges"] == 1
+    assert engine_result["document_id"] == request["doc_id"]
+    assert engine_result["nodes_added"] == 2
+    assert engine_result["edges_added"] == 1
+    assert len(engine_result["node_ids"]) == 2
+    assert len(engine_result["edge_ids"]) == 1
+    persisted_nodes = engine.backend.node_get(
+        ids=engine_result["node_ids"], include=["documents"]
+    )
+    persisted_edges = engine.backend.edge_get(
+        ids=engine_result["edge_ids"], include=["documents"]
+    )
+    assert persisted_nodes["ids"] == engine_result["node_ids"]
+    assert persisted_edges["ids"] == engine_result["edge_ids"]
+    stored_nodes = [Node.model_validate_json(item) for item in persisted_nodes["documents"]]
+    stored_edges = [Edge.model_validate_json(item) for item in persisted_edges["documents"]]
+    stored_node_ids = {node.id for node in stored_nodes}
+    assert all(
+        span.doc_id == request["doc_id"]
+        for node in stored_nodes
+        for grounding in node.mentions
+        for span in grounding.spans
+    )
+    assert all(
+        endpoint_id in stored_node_ids
+        for edge in stored_edges
+        for endpoint_id in edge.source_ids + edge.target_ids
+    )
 
 
 def test_document_validate_graph_matches_shared_success_contract(
