@@ -11,8 +11,11 @@ import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
 from kogwistar.document_types import Chunk
+from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
-from kogwistar.engine_core.models import Document
+from kogwistar.engine_core.models import Document, LLMNode, Node
+from kogwistar.engine_core.subsystems.persist import PersistSubsystem
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
 from kogwistar.runtime import (
@@ -105,6 +108,35 @@ def _rebuild(
         "projection_key": projection_key,
         **extra,
     }
+
+
+def _python_persisted_llm_node_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply Python's LLMNode-to-Node persistence promotion to a wire fixture."""
+    llm_payload = {
+        **payload,
+        "mentions": [
+            {
+                **mention,
+                "spans": [
+                    {**span, "insertion_method": "llm_graph_extraction"}
+                    for span in mention["spans"]
+                ],
+            }
+            for mention in payload["mentions"]
+        ],
+    }
+    llm_node = LLMNode.model_validate(llm_payload)
+    promoted = PersistSubsystem._promote_llm_entity_payload(
+        llm_node, insertion_method="llm_graph_extraction"
+    )
+    promoted["id"] = "11111111-2222-4333-8444-555555555555"
+    persisted_node = Node.model_validate(
+        promoted, context={"insertion_method": "llm_graph_extraction"}
+    )
+    persisted_node.embedding = [0.25, 0.75]
+    return persisted_node.model_dump(
+        field_mode="backend", dump_format="json", exclude={"embedding"}
+    )
 
 
 def _assert_projection_shape(payload: dict[str, Any]) -> None:
@@ -557,13 +589,15 @@ def test_sqlite_rebuild_recovers_python_persisted_workflow_terminal_node(
 @pytest.mark.parametrize(
     ("fixture_name", "projection_key"),
     [
+        ("acl-node-model-v1.json", "acl-node"),
+        ("conversation-create-start-node-v1.json", "conversation-node"),
         ("llm-node-model-v1.json", "llm-node"),
         ("llm-node-extraction-model-v1.json", "llm-node-extraction"),
         ("llm-node-flattened-model-v1.json", "llm-node-flattened"),
         ("llm-node-assoc-flattened-model-v1.json", "llm-node-assoc-flattened"),
     ],
 )
-def test_sqlite_rebuild_recovers_python_persisted_llm_derived_node(
+def test_sqlite_rebuild_recovers_python_persisted_derived_node(
     tmp_path: Path,
     fixture_name: str,
     projection_key: str,
@@ -578,6 +612,8 @@ def test_sqlite_rebuild_recovers_python_persisted_llm_derived_node(
         ).read_text(encoding="utf-8")
     )
     payload = fixture["payload"]
+    if fixture_name == "llm-node-model-v1.json":
+        payload = _python_persisted_llm_node_payload(payload)
     python_store = EngineSQLite(tmp_path)
     python_store.ensure_initialized()
     python_store.append_entity_event(
@@ -606,12 +642,25 @@ def test_sqlite_rebuild_recovers_python_persisted_llm_derived_node(
     )
     entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
     restored = json.loads(reopened["canonical_payload"])
-    assert restored["entities"][entity_key]["entity"] == payload
+    recovered_entity = restored["entities"][entity_key]["entity"]
+    assert recovered_entity == payload
+    if fixture_name == "acl-node-model-v1.json":
+        assert type(ACLNode.model_validate(recovered_entity)) is ACLNode
+    elif fixture_name == "conversation-create-start-node-v1.json":
+        assert type(ConversationNode.model_validate(recovered_entity)) is ConversationNode
+    if fixture_name == "llm-node-model-v1.json":
+        python_model = Node.model_validate(restored["entities"][entity_key]["entity"])
+        assert type(python_model) is Node
+        expected_model = Node.model_validate(payload)
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == (
+            expected_model.model_dump(field_mode="backend", dump_format="json")
+        )
 
 
 @pytest.mark.parametrize(
     ("fixture_name", "projection_key"),
     [
+        ("acl-edge-model-v1.json", "acl-edge"),
         ("conversation-edge-model-v1.json", "conversation-edge"),
         ("workflow-edge-model-v1.json", "workflow-edge"),
         ("llm-edge-model-v1.json", "llm-edge"),
@@ -662,12 +711,19 @@ def test_sqlite_rebuild_recovers_python_persisted_derived_edge(
     )
     entity_key = json.dumps(["edge", payload["id"]], separators=(",", ":"))
     restored = json.loads(reopened["canonical_payload"])
-    assert restored["entities"][entity_key]["entity"] == payload
+    recovered_entity = restored["entities"][entity_key]["entity"]
+    assert recovered_entity == payload
+    if fixture_name == "acl-edge-model-v1.json":
+        assert type(ACLEdge.model_validate(recovered_entity)) is ACLEdge
+    elif fixture_name == "conversation-edge-model-v1.json":
+        assert type(ConversationEdge.model_validate(recovered_entity)) is ConversationEdge
 
 
 @pytest.mark.parametrize(
     ("fixture_name", "entity_kind"),
     [
+        ("acl-node-model-v1.json", "node"),
+        ("conversation-create-start-node-v1.json", "node"),
         ("workflow-run-node-model-v1.json", "node"),
         ("workflow-checkpoint-node-model-v1.json", "node"),
         ("workflow-completed-node-model-v1.json", "node"),
@@ -677,6 +733,7 @@ def test_sqlite_rebuild_recovers_python_persisted_derived_edge(
         ("llm-node-extraction-model-v1.json", "node"),
         ("llm-node-flattened-model-v1.json", "node"),
         ("llm-node-assoc-flattened-model-v1.json", "node"),
+        ("acl-edge-model-v1.json", "edge"),
         ("conversation-edge-model-v1.json", "edge"),
         ("workflow-edge-model-v1.json", "edge"),
         ("llm-edge-model-v1.json", "edge"),
@@ -707,6 +764,8 @@ def test_postgres_rebuild_recovers_python_persisted_derived_entity(
         ).read_text(encoding="utf-8")
     )
     payload = fixture["payload"]
+    if fixture_name == "llm-node-model-v1.json":
+        payload = _python_persisted_llm_node_payload(payload)
     namespace = f"derived-recovery-{uuid.uuid4().hex}"
     python_store = EnginePostgresMetaStore(engine=sa_engine, schema=pg_schema)
     python_store.ensure_initialized()
@@ -766,6 +825,32 @@ def test_postgres_rebuild_recovers_python_persisted_derived_entity(
         assert (
             python_model.model_dump(field_mode="backend", dump_format="json")
             == payload
+        )
+    elif fixture_name == "acl-node-model-v1.json":
+        python_model = ACLNode.model_validate(recovered_entity)
+        assert type(python_model) is ACLNode
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "conversation-create-start-node-v1.json":
+        python_model = ConversationNode.model_validate(recovered_entity)
+        assert type(python_model) is ConversationNode
+        expected_model = ConversationNode.model_validate(payload)
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == (
+            expected_model.model_dump(field_mode="backend", dump_format="json")
+        )
+    elif fixture_name == "acl-edge-model-v1.json":
+        python_model = ACLEdge.model_validate(recovered_entity)
+        assert type(python_model) is ACLEdge
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "conversation-edge-model-v1.json":
+        python_model = ConversationEdge.model_validate(recovered_entity)
+        assert type(python_model) is ConversationEdge
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "llm-node-model-v1.json":
+        python_model = Node.model_validate(recovered_entity)
+        assert type(python_model) is Node
+        expected_model = Node.model_validate(payload)
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == (
+            expected_model.model_dump(field_mode="backend", dump_format="json")
         )
 
 
