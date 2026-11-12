@@ -952,7 +952,11 @@ fn capability_effect(
             "read_security_scope",
             &["read_security_scope", "project_view"],
         ),
-        "/api/workflow/capabilities" => ("project_view", &["project_view"]),
+        // PYTHON_PARITY_V1: capability snapshot requires project_view + read_security_scope; rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#capability_effect; python=kogwistar/server/chat_service.py#ChatRunService.capability_snapshot; fixture=contracts/golden/workflow-capabilities-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_capability_kernel_contract.py#test_capability_snapshot_route_exposes_effective_caps
+        "/api/workflow/capabilities" => (
+            "project_view",
+            &["project_view", "read_security_scope"],
+        ),
         _ => ("approve_action", &["approve_action"]),
     };
     if !audit_capability(&request.principal, &mut state, action, required) {

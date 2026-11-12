@@ -149,6 +149,19 @@
             capabilities_contract["allowed_outcome"]
         );
 
+        let denied_capabilities = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/workflow/capabilities")
+                    .header("authorization", format!("Bearer {}", denied_tokens[0]))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_capabilities.status(), StatusCode::FORBIDDEN);
+
         let syscall_catalog_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/syscall-catalog-http-v1.json"
         ))
