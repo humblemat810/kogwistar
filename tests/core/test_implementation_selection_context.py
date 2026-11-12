@@ -101,6 +101,27 @@ def test_non_python_graph_selection_rejects_chroma_before_backend_initialization
     assert not (tmp_path / "chroma-rust-must-not-initialize").exists()
 
 
+def test_rust_sqlite_metadata_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from kogwistar._rust_bridge import RustParityError, RustExtensionUnavailableError
+    from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    database_dir = tmp_path / "rust-meta-no-extension"
+    metadata = build_sqlite_meta_store(database_dir, "meta.sqlite")
+
+    with pytest.raises(RustParityError, match="Rust SQLite store operation failed"):
+        metadata.set_user_seq("user-1", 1)
+
+    assert not database_dir.exists()
+
+
 def test_selector_values_are_frozen_and_nested_scope_does_not_recapture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
