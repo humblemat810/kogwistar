@@ -5598,6 +5598,66 @@ async def test_mcp_workflow_budget_snapshot_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "arguments"),
+    [
+        ("workflow.budget_snapshot", {}),
+        ("workflow.budget_history", {"limit": 10}),
+    ],
+)
+async def test_mcp_workflow_budget_reads_deny_before_ledger_read(
+    monkeypatch, engine_triplet, operation, arguments
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    ledger_reads: list[bool] = []
+    original_snapshot = service.cost_ledger.snapshot
+
+    def track_snapshot() -> Any:
+        ledger_reads.append(True)
+        return original_snapshot()
+
+    monkeypatch.setattr(service.cost_ledger, "snapshot", track_snapshot)
+    required = {"project_view", "read_security_scope"}
+    for missing in required:
+        with _claims(
+            "ro",
+            "workflow",
+            sub=f"budget-missing-{missing}",
+            scope_parts={"capabilities": sorted(required - {missing})},
+        ), pytest.raises(HTTPException) as denied:
+            await server.mcp._execute(
+                operation, arguments, enforce_visibility=True
+            )
+        assert denied.value.status_code == 403
+
+    with _claims(
+        "ro",
+        "conversation",
+        sub="budget-wrong-scope",
+        scope_parts={"capabilities": sorted(required)},
+    ), pytest.raises(PermissionError):
+        await server.mcp._execute(operation, arguments, enforce_visibility=True)
+
+    assert ledger_reads == []
+    with _claims(
+        "rw",
+        "workflow",
+        sub="budget-authorized-rw",
+        scope_parts={"capabilities": sorted(required)},
+    ):
+        authorized = await server.mcp._execute(
+            operation, arguments, enforce_visibility=True
+        )
+    assert _structured(authorized)
+    assert ledger_reads == [True]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):

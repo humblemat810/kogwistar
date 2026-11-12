@@ -1456,6 +1456,21 @@ impl SqliteRunApplicationService {
                     "Reading resource snapshot requires read_security_scope capability",
                 );
             }
+            // PYTHON_PARITY_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
+            if matches!(
+                path,
+                "/api/workflow/budget" | "/api/workflow/budget/history"
+            ) && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
+                || !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*"))
+            {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_SCOPE_FORBIDDEN",
+                    "Reading budget data requires ro/rw role and workflow namespace",
+                );
+            }
             if matches!(
                 path,
                 "/api/workflow/budget" | "/api/workflow/budget/history"

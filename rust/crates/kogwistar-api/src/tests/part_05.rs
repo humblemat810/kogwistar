@@ -3847,6 +3847,98 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn workflow_budget_reads_authorization_denies_before_backend_access() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-budget-auth-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_budget_auth",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let authorized = json!({
+            "role":"ro",
+            "ns":["workflow"],
+            "capabilities":["project_view", "read_security_scope"]
+        });
+        let required = ["project_view", "read_security_scope"];
+        let operations = [
+            ("workflow.budget_snapshot", "/api/workflow/budget"),
+            (
+                "workflow.budget_history",
+                "/api/workflow/budget/history?limit=10",
+            ),
+        ];
+
+        for service in services {
+            for (tool, path) in operations {
+                for role in ["ro", "rw"] {
+                    let mut principal = authorized.clone();
+                    principal["role"] = json!(role);
+                    assert!(service.supports_mcp_tool_for_principal(
+                        "workflow", tool, &principal
+                    ));
+                }
+                assert!(!service.supports_mcp_tool_for_principal("root", tool, &authorized));
+
+                let denied_principals = required
+                    .iter()
+                    .map(|missing| {
+                        json!({
+                            "role":"ro",
+                            "ns":["workflow"],
+                            "capabilities":required.iter().filter(|capability| *capability != missing).collect::<Vec<_>>()
+                        })
+                    })
+                    .chain([json!({
+                        "role":"ro",
+                        "ns":["conversation"],
+                        "capabilities":required
+                    })]);
+
+                for principal in denied_principals {
+                    let response = service
+                        .execute(ApiEffectRequest {
+                            contract_version: 1,
+                            method: "GET".to_owned(),
+                            path_and_query: path.to_owned(),
+                            body: Vec::new(),
+                            principal,
+                        })
+                        .await;
+                    assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+                }
+            }
+        }
+
+        for (_, path) in operations {
+            for role in ["ro", "rw"] {
+                let mut principal = authorized.clone();
+                principal["role"] = json!(role);
+                let authorized_response = sqlite
+                    .execute(ApiEffectRequest {
+                        contract_version: 1,
+                        method: "GET".to_owned(),
+                        path_and_query: path.to_owned(),
+                        body: Vec::new(),
+                        principal,
+                    })
+                    .await;
+                assert_eq!(authorized_response.status, StatusCode::OK.as_u16());
+            }
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};

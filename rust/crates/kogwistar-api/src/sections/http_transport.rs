@@ -1071,6 +1071,7 @@ async fn mcp_dispatch(
                 .expect("MCP arguments serialize"),
                 principal: principal.clone(),
             }),
+            // PYTHON_PARITY_V1: require workflow role/scope plus project_view and read_security_scope before ledger access; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+kogwistar/server/chat_service.py#ChatRunService.budget_snapshot; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_budget_snapshot_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_snapshot_denies_before_ledger_read; contract=contracts/golden/workflow-budget-http-v1.json
             "workflow.budget_snapshot" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
