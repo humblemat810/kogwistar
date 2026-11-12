@@ -5167,6 +5167,103 @@ async def test_mcp_workflow_design_node_upsert_denies_before_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_design_undo_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-undo-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    arguments = contract["arguments"]
+    with _claims(
+        "rw",
+        "workflow",
+        sub=arguments["designer_id"],
+        scope_parts={
+            "capabilities": [*contract["caller_capabilities"], "write_graph"]
+        },
+    ):
+        created = await server.mcp.call_tool(
+            "workflow.design_node_upsert",
+            {
+                "workflow_id": arguments["workflow_id"],
+                "designer_id": arguments["designer_id"],
+                "node_id": "undo-node-contract",
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+        )
+        assert created.is_error is False
+        result = await server.mcp.call_tool(contract["tool"], arguments)
+
+    assert result.is_error is False
+    body = _structured(result)
+    for field, expected in contract["fixed_result_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_result_fields"]:
+        assert isinstance(body[field], int)
+    for field, length in contract["array_lengths"].items():
+        assert len(body[field]) == length
+    assert body["commits"]["1"]["action"] == contract["version_one_action"]
+    for field in contract["absent_result_fields"]:
+        assert field not in body
+
+
+@pytest.mark.asyncio
+async def test_mcp_workflow_design_undo_denies_before_dispatch(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-undo-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    calls: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        service._workflow_design,
+        "workflow_design_undo",
+        lambda **kwargs: calls.append(kwargs) or contract["fixed_result_fields"],
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="alice",
+        scope_parts={"capabilities": ["workflow.design.write"]},
+    ), pytest.raises(HTTPException) as denied:
+        await server.mcp._execute(
+            contract["tool"], contract["arguments"], enforce_visibility=True
+        )
+    assert denied.value.status_code == 403
+
+    for role, namespace in (("ro", "workflow"), ("rw", "conversation")):
+        with _claims(
+            role,
+            namespace,
+            sub="alice",
+            scope_parts={"capabilities": contract["caller_capabilities"]},
+        ), pytest.raises(PermissionError):
+            await server.mcp._execute(
+                contract["tool"], contract["arguments"], enforce_visibility=True
+            )
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_design_requires_designer_id_and_enforces_subject(
     monkeypatch, engine_triplet
 ):

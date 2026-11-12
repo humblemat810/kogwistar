@@ -987,7 +987,7 @@
             key: Some(key.to_owned()),
             ..AuthConfig::default()
         };
-        let claims = json!({"sub":"alice","role":"rw","roles":["reader","rw"],"ns":"workflow","capabilities":["spawn_process","workflow.run.write","workflow.design.write","workflow.design.inspect","write_graph"],"exp":4102444800_u64});
+        let claims = json!({"sub":"alice","role":"rw","roles":["reader","rw"],"ns":"workflow","capabilities":["spawn_process","workflow.run.write","workflow.design.write","workflow.design.inspect","approve_action","write_graph"],"exp":4102444800_u64});
         let token = encode(
             &Header::new(Algorithm::HS256),
             &claims,
@@ -1590,6 +1590,57 @@
         for field in node_upsert_mcp["integer_result_fields"].as_array().unwrap() {
             let field = field.as_str().unwrap();
             assert!(body["result"][field].as_i64().is_some(), "field {field}");
+        }
+        let undo_mcp: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-undo-mcp-v1.json"
+        )))
+        .unwrap();
+        let undo_args = &undo_mcp["arguments"];
+        let created = public_call!(
+            "POST",
+            "/api/workflow/design/wf-undo-mcp-contract/nodes",
+            json!({
+                "workflow_id":undo_args["workflow_id"],
+                "designer_id":undo_args["designer_id"],
+                "node_id":"undo-node-contract",
+                "label":"Start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(created.status(), StatusCode::OK);
+        let undo_request = serde_json::to_vec(&json!({
+            "jsonrpc":"2.0",
+            "id":"undo",
+            "method":"tools/call",
+            "params": {
+                "name":undo_mcp["tool"],
+                "arguments":undo_args
+            }
+        }))
+        .unwrap();
+        let undone = app.clone().oneshot(Request::builder().method("POST").uri("/mcp/workflow")
+            .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
+            .body(Body::from(undo_request)).unwrap()).await.unwrap();
+        assert_eq!(undone.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &to_bytes(undone.into_body(), 65_536).await.unwrap()
+        ).unwrap();
+        for (field, expected) in undo_mcp["fixed_result_fields"].as_object().unwrap() {
+            assert_eq!(&body["result"][field], expected, "field {field}");
+        }
+        for field in undo_mcp["integer_result_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body["result"][field].as_i64().is_some(), "field {field}");
+        }
+        for (field, length) in undo_mcp["array_lengths"].as_object().unwrap() {
+            assert_eq!(body["result"][field].as_array().unwrap().len(), length.as_u64().unwrap() as usize);
+        }
+        assert_eq!(body["result"]["commits"]["1"]["action"], undo_mcp["version_one_action"]);
+        for field in undo_mcp["absent_result_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body["result"].get(field).is_none(), "field {field}");
         }
         drop(app);
         drop(service);

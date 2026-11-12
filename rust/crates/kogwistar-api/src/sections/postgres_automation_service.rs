@@ -1040,7 +1040,8 @@ impl PostgresRunApplicationService {
         }
         if matches!(
             &route,
-            DesignRoute::NodeUpsert
+            DesignRoute::Undo
+                | DesignRoute::NodeUpsert
                 | DesignRoute::NodeDelete(_)
                 | DesignRoute::EdgeUpsert
                 | DesignRoute::EdgeDelete(_)
@@ -1053,7 +1054,7 @@ impl PostgresRunApplicationService {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_SCOPE_FORBIDDEN",
-                "Mutating workflow entities requires rw role and workflow namespace",
+                "Mutating workflow design requires rw role and workflow namespace",
             );
         }
         let required = if matches!(route, DesignRoute::Graph | DesignRoute::History) {
@@ -1061,7 +1062,9 @@ impl PostgresRunApplicationService {
         } else {
             "workflow.design.write"
         };
-        let required_capabilities: &[&str] = if matches!(
+        let required_capabilities: &[&str] = if matches!(&route, DesignRoute::Undo) {
+            &["workflow.design.write", "approve_action"]
+        } else if matches!(
             &route,
             DesignRoute::NodeUpsert
                 | DesignRoute::NodeDelete(_)
