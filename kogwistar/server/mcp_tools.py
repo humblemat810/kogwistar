@@ -35,10 +35,12 @@ from kogwistar.server.auth_middleware import (
     _normalize_namespaces,
     current_role,
     get_app_jwt_settings,
+    get_current_capabilities,
     get_current_namespaces,
     get_current_role,
     get_current_subject,
     get_current_user_id,
+    has_explicit_capabilities_claim,
     require_role,
     require_workflow_access,
     reset_current_role,
@@ -63,6 +65,20 @@ from .. import shortids
 
 TOOL_ROLES: dict[str, set[str]] = {}
 TOOL_NAMESPACE: dict[str, set[str]] = {}
+TOOL_CAPABILITIES: dict[str, str] = {
+    "kg_find_edges": "read_graph",
+    "kg_load_persisted": "read_graph",
+    "kg_propose_bruteforce": "read_graph",
+    "kg_k_hop": "read_graph",
+    "kg_neighbors": "read_graph",
+    "kg_shortest_path": "read_graph",
+    "kg_semantic_seed_then_expand_text": "read_graph",
+    "kg_viz_cytoscape_json": "read_graph",
+    "kg_viz_d3_json": "read_graph",
+    "propose_vector": "read_graph",
+    "wisdom.semantic_seed_then_expand": "read_graph",
+    "wisdom.kg_upsert_graph": "write_graph",
+}
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -147,14 +163,7 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
             else ""
         )
         if name:
-            tool_roles_value = {Role.RO.value}
-            tool_namespace = {NameSpace.DOCS.value}
-            for candidate in _tool_name_candidates(str(name)):
-                tool_roles_value = TOOL_ROLES.get(candidate, tool_roles_value)
-                tool_namespace = TOOL_NAMESPACE.get(candidate, tool_namespace)
-            if role in tool_roles_value and (
-                "*" in nss or not tool_namespace.isdisjoint(nss)
-            ):
+            if _tool_allowed(str(name), role=role, namespaces=nss):
                 out.append(item)
     return out
 
@@ -167,9 +176,18 @@ def _tool_allowed(tool_name: str, *, role: str, namespaces: set[str]) -> bool:
         allowed_namespaces = TOOL_NAMESPACE.get(candidate, allowed_namespaces)
     if role not in allowed_roles:
         return False
-    if "*" in namespaces:
-        return True
-    return not allowed_namespaces.isdisjoint(namespaces)
+    if "*" not in namespaces and allowed_namespaces.isdisjoint(namespaces):
+        return False
+    required_capability = None
+    for candidate in _tool_name_candidates(str(tool_name)):
+        required_capability = TOOL_CAPABILITIES.get(candidate, required_capability)
+    if (
+        required_capability is not None
+        and has_explicit_capabilities_claim()
+        and required_capability not in get_current_capabilities()
+    ):
+        return False
+    return True
 
 
 def require_ns(

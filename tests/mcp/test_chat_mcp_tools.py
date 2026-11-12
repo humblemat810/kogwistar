@@ -6,6 +6,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -2881,6 +2882,49 @@ async def test_kg_neighbors_mcp_matches_shared_contract(monkeypatch, tmp_path):
         )
 
     assert result.structured_content == contract["expected_structured_content"]
+
+
+@pytest.mark.asyncio
+async def test_root_graph_mcp_honors_explicit_capability_claims(monkeypatch):
+    from kogwistar.server import mcp_tools
+
+    with _claims("ro", "docs", scope_parts={"capabilities": []}):
+        assert not mcp_tools._tool_allowed(
+            "kg_shortest_path", role="ro", namespaces={"docs"}
+        )
+        with pytest.raises(PermissionError, match="not permitted"):
+            await server.mcp._execute(
+                "kg_shortest_path",
+                {"src_id": "source", "dst_id": "target"},
+                enforce_visibility=True,
+            )
+        assert mcp_tools._filter_tool_list(
+            [{"name": "kg_shortest_path"}]
+        ) == []
+
+    with _claims("ro", "docs"):
+        assert mcp_tools._tool_allowed(
+            "kg_shortest_path", role="ro", namespaces={"docs"}
+        )
+
+    with _claims(
+        "ro", "docs", scope_parts={"capabilities": ["read_graph"]}
+    ):
+        assert mcp_tools._tool_allowed(
+            "kg_shortest_path", role="ro", namespaces={"docs"}
+        )
+
+    for name, capability in mcp_tools.TOOL_CAPABILITIES.items():
+        role = "rw" if capability == "write_graph" else "ro"
+        namespace = "wisdom" if name.startswith("wisdom.") else "docs"
+        with _claims(role, namespace, scope_parts={"capabilities": []}):
+            assert not mcp_tools._tool_allowed(
+                name, role=role, namespaces={namespace}
+            ), name
+        with _claims(role, namespace, scope_parts={"capabilities": [capability]}):
+            assert mcp_tools._tool_allowed(
+                name, role=role, namespaces={namespace}
+            ), name
 
 
 @pytest.mark.asyncio
