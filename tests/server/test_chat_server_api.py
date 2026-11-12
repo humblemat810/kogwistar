@@ -5202,6 +5202,12 @@ def test_runtime_design_snapshot_restore_matches_full_replay(
 
 def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-designer-capabilities-schema-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     service, _registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
@@ -5256,6 +5262,9 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
 
         node_types = payload["node_types"]
         edge_types = payload["edge_types"]
+        assert payload["schema_version"] == contract["schema_version"]
+        assert node_types[0]["metadata_schema"] == contract["node_metadata_schema"]
+        assert edge_types[0]["metadata_schema"] == contract["edge_metadata_schema"]
         assert node_types[0]["type"] == "workflow_node"
         assert edge_types[0]["type"] == "workflow_edge"
         node_props = node_types[0]["metadata_schema"]["properties"]

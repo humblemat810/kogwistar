@@ -1704,6 +1704,7 @@ fn syscall_read_effect(
     }
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#designer_capabilities_effect; python=kogwistar/server_mcp_with_admin.py#designer_capabilities; fixture=contracts/golden/workflow-designer-capabilities-schema-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_03.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api.py#test_designer_capabilities_endpoint
 fn designer_capabilities_effect(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
@@ -1759,12 +1760,21 @@ fn designer_capabilities_effect(
                 "display_name": "Workflow Node",
                 "metadata_schema": {
                     "type": "object",
+                    "title": "WorkflowNodeMetadata",
+                    "description": "Workflow *design* node metadata (stored in workflow_engine).\n\nRequired keys:\n  - entity_type=\"workflow_node\"\n  - workflow_id\n  - wf_op (unless wf_terminal=True)\n\nOptional:\n  - wf_version: version of the wf_op implementation selected by the resolver;\n    the exact version is part of the frozen execution/replay contract\n  - wf_environment_id: required worker/runtime dependency environment\n  - wf_executor_target: optional per-node worker implementation; omitted\n    preserves legacy operation-prefix routing and Python-worker defaults\n  - wf_fanout: allow multiple outgoing edges to fire in parallel\n  - wf_start: marks the start node in this workflow_id\n  - wf_terminal: marks terminal node\n\nThis is distinct from ``WorkflowDesignArtifact.workflow_version``, which\nversions the workflow design as a whole and does not select step handlers.",
+                    "additionalProperties": true,
+                    "required": ["workflow_id"],
                     "properties": {
-                        "wf_op": {"type": ["string", "null"]},
-                        "wf_start": {"type": "boolean"},
-                        "wf_terminal": {"type": "boolean"},
-                        "wf_fanout": {"type": "boolean"},
-                        "wf_join": {"type": "boolean"},
+                        "entity_type": {"default": "workflow_node", "description": "Must be \"workflow_node\"", "title": "Entity Type", "type": "string"},
+                        "wf_environment_id": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Wf Environment Id"},
+                        "wf_executor_target": {"anyOf": [{"enum": ["python-worker", "rust-native"], "type": "string"}, {"type": "null"}], "default": null, "title": "Wf Executor Target"},
+                        "wf_fanout": {"default": false, "title": "Wf Fanout", "type": "boolean"},
+                        "wf_join": {"default": false, "title": "Wf Join", "type": "boolean"},
+                        "wf_op": {"default": "noop", "title": "Wf Op", "type": "string"},
+                        "wf_start": {"default": false, "title": "Wf Start", "type": "boolean"},
+                        "wf_terminal": {"default": false, "title": "Wf Terminal", "type": "boolean"},
+                        "wf_version": {"default": "v1", "title": "Wf Version", "type": "string"},
+                        "workflow_id": {"title": "Workflow Id", "type": "string"}
                     },
                 },
                 "flags": {
@@ -1779,11 +1789,17 @@ fn designer_capabilities_effect(
                 "display_name": "Workflow Edge",
                 "metadata_schema": {
                     "type": "object",
+                    "title": "WorkflowEdgeMetadata",
+                    "description": "Workflow *design* edge metadata (stored in workflow_engine).\n\nKeys:\n  - entity_type=\"workflow_edge\"\n  - workflow_id\n  - wf_predicate: symbolic predicate name (None means unconditional)\n  - wf_priority: lower first\n  - wf_is_default: used if no predicate matches\n  - wf_multiplicity: \"one\"|\"many\"  (allows fanout)",
+                    "additionalProperties": true,
+                    "required": ["workflow_id"],
                     "properties": {
-                        "wf_predicate": {"type": ["string", "null"]},
-                        "wf_priority": {"type": "integer"},
-                        "wf_is_default": {"type": "boolean"},
-                        "wf_multiplicity": {"enum": ["one", "many"]},
+                        "entity_type": {"default": "workflow_edge", "description": "Must be \"workflow_edge\"", "title": "Entity Type", "type": "string"},
+                        "wf_is_default": {"default": false, "title": "Wf Is Default", "type": "boolean"},
+                        "wf_multiplicity": {"default": "one", "enum": ["one", "many"], "title": "Wf Multiplicity", "type": "string"},
+                        "wf_predicate": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Wf Predicate"},
+                        "wf_priority": {"default": 100, "title": "Wf Priority", "type": "integer"},
+                        "workflow_id": {"title": "Workflow Id", "type": "string"}
                     },
                 },
                 "flags": {

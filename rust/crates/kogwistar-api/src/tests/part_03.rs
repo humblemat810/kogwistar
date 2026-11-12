@@ -806,6 +806,24 @@
             designer["schema_version"],
             "workflow-designer-capabilities/v1"
         );
+        let contract_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../contracts/golden/workflow-designer-capabilities-schema-v1.json");
+        let contract: Value = serde_json::from_slice(
+            &std::fs::read(contract_path).expect("read shared designer schema contract"),
+        )
+        .expect("parse shared designer schema contract");
+        assert_eq!(
+            designer["schema_version"],
+            contract["schema_version"]
+        );
+        assert_eq!(
+            designer["node_types"][0]["metadata_schema"],
+            contract["node_metadata_schema"]
+        );
+        assert_eq!(
+            designer["edge_types"][0]["metadata_schema"],
+            contract["edge_metadata_schema"]
+        );
         assert_eq!(designer["node_types"][0]["type"], "workflow_node");
         assert!(
             designer["node_types"][0]["metadata_schema"]["properties"]
