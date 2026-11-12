@@ -986,8 +986,8 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
 
 @pytest.mark.parametrize(
     "entity_kind",
-    ["node", "edge", "workflow_run_node"],
-    ids=["node", "edge", "workflow-run-node"],
+    ["node", "edge", "workflow_run_node", "workflow_runtime_edge"],
+    ids=["node", "edge", "workflow-run-node", "workflow-runtime-edge"],
 )
 def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     entity_kind: str,
@@ -1009,7 +1009,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
     from kogwistar.engine_core.models import Edge, Node
     from kogwistar.engine_core.postgres_backend import PgVectorBackend
-    from kogwistar.runtime.models import WorkflowRunNode
+    from kogwistar.runtime.models import WorkflowRunNode, WorkflowRuntimeEdge
     from kogwistar.server.bootstrap import load_server_storage_settings
     from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
@@ -1083,6 +1083,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     expected_nodes: list[ConversationNode] = []
     expected_edges: list[ConversationEdge] = []
     expected_workflow_runs: list[WorkflowRunNode] = []
+    expected_runtime_edges: list[WorkflowRuntimeEdge] = []
     mutations: list[dict[str, object]]
     if entity_kind == "node":
         base_node = node_payload(
@@ -1128,6 +1129,38 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         )
         expected_workflow_runs.append(run_node)
         mutations = [mutation_for(run_node)]
+    elif entity_kind == "workflow_runtime_edge":
+        source_node = node_payload(
+            node_id=f"typed-http-runtime-source-{uuid.uuid4().hex}",
+            summary="Workflow runtime edge source",
+        )
+        target_node = node_payload(
+            node_id=f"typed-http-runtime-target-{uuid.uuid4().hex}",
+            summary="Workflow runtime edge target",
+        )
+        base_edge = build_relationship_edge(
+            edge_id=f"typed-http-runtime-edge-{uuid.uuid4().hex}",
+            src=source_node.id,
+            tgt=target_node.id,
+            doc_id="typed-http-source",
+            relation="workflow_step",
+            embedding=[0.25, 0.5, 0.75],
+            metadata={
+                "entity_type": "conversation_edge",
+                "relation": "workflow_step",
+                "conversation_id": conversation_id,
+                "run_id": f"typed-http-runtime-run-{uuid.uuid4().hex}",
+            },
+        )
+        runtime_edge = WorkflowRuntimeEdge.model_validate(
+            base_edge.model_dump(field_mode="backend")
+        )
+        expected_runtime_edges.append(runtime_edge)
+        mutations = [
+            mutation_for(source_node),
+            mutation_for(target_node),
+            mutation_for(runtime_edge),
+        ]
     else:
         source_node = node_payload(
             node_id=f"typed-http-source-{uuid.uuid4().hex}",
@@ -1244,6 +1277,20 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             assert recovered_run.metadata["turn_node_id"] == expected_run.metadata["turn_node_id"]
             assert recovered_run.metadata["status"] == "running"
             assert recovered_run.metadata["_class_name"] == "WorkflowRunNode"
+        elif entity_kind == "workflow_runtime_edge":
+            expected_runtime_edge = expected_runtime_edges[0]
+            python_edges = engine.read.get_edges(
+                ids=[expected_runtime_edge.id], edge_type=WorkflowRuntimeEdge
+            )
+            assert len(python_edges) == 1
+            recovered_runtime_edge = python_edges[0]
+            assert isinstance(recovered_runtime_edge, WorkflowRuntimeEdge)
+            assert recovered_runtime_edge.relation == "workflow_step"
+            assert recovered_runtime_edge.source_ids == expected_runtime_edge.source_ids
+            assert recovered_runtime_edge.target_ids == expected_runtime_edge.target_ids
+            assert recovered_runtime_edge.metadata["conversation_id"] == conversation_id
+            assert recovered_runtime_edge.metadata["run_id"] == expected_runtime_edge.metadata["run_id"]
+            assert recovered_runtime_edge.metadata["_class_name"] == "WorkflowRuntimeEdge"
         else:
             expected_edge = expected_edges[0]
             python_edges = engine.read.get_edges(
