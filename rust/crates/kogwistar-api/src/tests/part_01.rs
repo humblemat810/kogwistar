@@ -2830,6 +2830,11 @@
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly against a disposable database"]
     async fn postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available()
     {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use tower::ServiceExt;
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_vector_query_{}", uuid::Uuid::new_v4().simple());
@@ -3121,6 +3126,190 @@
         assert_eq!(
             denied_proposal_response.status,
             StatusCode::FORBIDDEN.as_u16()
+        );
+
+        let proposal_fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-vector-proposal-acl-v1.json"
+        )))
+        .unwrap();
+        let mcp_scope = GraphScope {
+            namespace: "vector-proposal-mcp".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        for (id, embedding) in [("n1", vec![1.0, 0.0]), ("n2", vec![0.8, 0.6])] {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: mcp_scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(id.to_owned()),
+                        metadata: Map::from_iter([
+                            ("entity_type".to_owned(), json!("node")),
+                            ("label".to_owned(), json!(id)),
+                        ]),
+                        embedding: Some(embedding),
+                    },
+                    embedding_dim: 2,
+                })
+                .await
+                .unwrap();
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: mcp_scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-proposal-{id}"),
+                        document: None,
+                        metadata: Map::from_iter([
+                            ("entity_type".to_owned(), json!("acl_record")),
+                            ("acl_truth_graph".to_owned(), json!("knowledge")),
+                            ("acl_target_entity_id".to_owned(), json!(id)),
+                            ("acl_target_grain".to_owned(), json!("node")),
+                            ("acl_version".to_owned(), json!(1)),
+                            ("acl_mode".to_owned(), json!("public")),
+                        ]),
+                        embedding: None,
+                    },
+                    embedding_dim: 2,
+                })
+                .await
+                .unwrap();
+        }
+        let auth_secret = "postgres-propose-vector-mcp-test-secret";
+        let auth = AuthConfig {
+            mode: "dev".to_owned(),
+            algorithm: Some("HS256".to_owned()),
+            key: Some(auth_secret.to_owned()),
+            issuer: Some("local".to_owned()),
+            ..AuthConfig::default()
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let issue_token = |capabilities: Vec<&str>| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub": "proposal-reader",
+                    "role": "ro",
+                    "ns": ["docs"],
+                    "storage_ns": mcp_scope.namespace,
+                    "capabilities": capabilities,
+                    "iss": "local",
+                    "exp": now + 300
+                }),
+                &EncodingKey::from_secret(auth_secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let reader_token = issue_token(vec!["read_graph"]);
+        let denied_token = issue_token(Vec::new());
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth,
+            },
+            Arc::new(service.clone()),
+        );
+        let listed = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {reader_token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), StatusCode::OK);
+        let listed: Value =
+            serde_json::from_slice(&to_bytes(listed.into_body(), 65_536).await.unwrap()).unwrap();
+        assert!(listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == proposal_fixture["tool"]));
+
+        let call = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {reader_token}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":"proposal",
+                            "method":"tools/call",
+                            "params":{
+                                "name":proposal_fixture["tool"],
+                                "arguments":proposal_fixture["mcp_arguments"]
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(call.status(), StatusCode::OK);
+        let call: Value =
+            serde_json::from_slice(&to_bytes(call.into_body(), 65_536).await.unwrap()).unwrap();
+        assert_eq!(
+            call["result"]["pairs"],
+            proposal_fixture["expected_pairs"]
+        );
+        assert_eq!(call["result"]["implementation_authority"], "rust");
+        assert_eq!(call["result"]["seam_attestation_version"], 1);
+        assert_eq!(call["result"]["seam_crossings"], json!([]));
+
+        let denied_call = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {denied_token}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0",
+                            "id":"denied-proposal",
+                            "method":"tools/call",
+                            "params":{
+                                "name":proposal_fixture["tool"],
+                                "arguments":proposal_fixture["mcp_arguments"]
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(denied_call.status(), StatusCode::OK);
+        let denied_call: Value = serde_json::from_slice(
+            &to_bytes(denied_call.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(denied_call["error"]["code"], -32602);
+        assert_eq!(
+            denied_call["error"]["message"],
+            "Tool not advertised by this application service"
         );
 
         let revoked_node_id = "visible-public";
