@@ -2936,7 +2936,10 @@
     #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_search_index_events_project_to_live_chroma_and_survive_reopen; python=kogwistar/engine_core/search_index/service.py#SearchIndexService.upsert_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_04.rs#sqlite_search_index_events_project_to_live_chroma_and_survive_reopen; python_test=tests/cdc/test_search_index_cdc.py#test_search_index_replay
     async fn sqlite_search_index_events_project_to_live_chroma_and_survive_reopen() {
-        use kogwistar_store::{EventReadStore, GraphEntityKind, GraphRecord, GraphWriteStore, NodeIndexStore};
+        use kogwistar_store::{
+            EventReadStore, EventWriteStore, GraphEntityKind, GraphRecord, GraphWriteStore,
+            NewEntityEvent, NodeIndexStore,
+        };
 
         let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
             .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
@@ -3108,6 +3111,33 @@
             )
             .await
             .unwrap();
+
+        let acl_id = format!("acl-{node_id}");
+        reopened_store
+            .append_entity_event(
+                &namespace,
+                NewEntityEvent {
+                    event_id: format!("{acl_id}-public-v1"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: acl_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload: json!({
+                        "id": acl_id,
+                        "metadata": {
+                            "workspace_id":"workspace-live",
+                            "graph_space":"facts",
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_grain":"node",
+                            "acl_target_entity_id":node_id,
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        }
+                    }),
+                },
+            )
+            .await
+            .unwrap();
         graph
             .upsert_graph_record_of_kind(
                 &namespace,
@@ -3233,13 +3263,16 @@
                 .unwrap();
             assert_eq!(denied.status(), axum::http::StatusCode::FORBIDDEN);
         }
+        let events = EventReadStore::replay_events(&reopened_store, &namespace, 0, 10)
+            .await
+            .unwrap();
         assert_eq!(
-            EventReadStore::replay_events(&reopened_store, &namespace, 0, 10)
-                .await
-                .unwrap()
-                .len(),
+            events
+                .iter()
+                .filter(|event| event.entity_kind == "search_index")
+                .count(),
             1,
-            "denied writes must not append events"
+            "denied writes must not append search-index events"
         );
         let writer_token = jsonwebtoken::encode(
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
@@ -3277,7 +3310,14 @@
         let replayed = EventReadStore::replay_events(&reopened_store, &namespace, 0, 10)
             .await
             .unwrap();
-        assert_eq!(replayed.len(), 2, "retrying the same public write is idempotent");
+        assert_eq!(
+            replayed
+                .iter()
+                .filter(|event| event.entity_kind == "search_index")
+                .count(),
+            2,
+            "retrying the same public write is idempotent"
+        );
         let routed_key = kogwistar_contracts::make_search_index_key(
             &routed_request.index[0].node_id,
             &routed_request.index[0].canonical_title,
@@ -3353,6 +3393,31 @@
                     }))
                     .unwrap(),
                     embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+        reopened_store
+            .append_entity_event(
+                &namespace,
+                NewEntityEvent {
+                    event_id: format!("acl-{node_id}-private-v2"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: format!("acl-{node_id}"),
+                    op: "REPLACE".to_owned(),
+                    payload: json!({
+                        "id": format!("acl-{node_id}"),
+                        "metadata": {
+                            "workspace_id":"workspace-live",
+                            "graph_space":"facts",
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_grain":"node",
+                            "acl_target_entity_id":node_id,
+                            "acl_version":2,
+                            "acl_mode":"private"
+                        }
+                    }),
                 },
             )
             .await
