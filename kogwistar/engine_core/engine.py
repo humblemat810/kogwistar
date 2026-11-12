@@ -1550,13 +1550,20 @@ class GraphKnowledgeEngine:
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
         elif backend is None or (type(backend) is str and backend == "chroma"):
-            from kogwistar._rust_bridge import graph_store_implementation_mode
+            from kogwistar._rust_bridge import (
+                graph_store_implementation_mode,
+                postgres_authority_implementation_mode,
+            )
 
             graph_mode = graph_store_implementation_mode()
             if graph_mode != "python":
                 raise ValueError(
                     "Chroma graph storage is Python-only; "
                     "KOGWISTAR_IMPL_GRAPH_STORE must be 'python'"
+                )
+            if postgres_authority_implementation_mode() == "rust":
+                raise ValueError(
+                    "KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust requires a PostgreSQL backend"
                 )
             # 2) Chroma client + collections; inject embedder on vectorized collections
             ChromaClient, ChromaSettings = _import_chroma_client()

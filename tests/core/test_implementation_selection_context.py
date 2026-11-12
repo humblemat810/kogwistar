@@ -122,6 +122,28 @@ def test_rust_sqlite_metadata_fails_closed_without_native_extension(
     assert not database_dir.exists()
 
 
+def test_rust_postgres_authority_rejects_chroma_before_backend_initialization(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    def unexpected_chroma_import() -> object:
+        pytest.fail("unsupported PostgreSQL authority reached Chroma initialization")
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.engine._import_chroma_client", unexpected_chroma_import
+    )
+
+    with pytest.raises(ValueError, match="requires a PostgreSQL backend"):
+        GraphKnowledgeEngine(
+            backend="chroma",
+            persist_directory=str(tmp_path / "chroma-pg-authority-must-not-initialize"),
+            embedding_function=ConstantEmbeddingFunction(),
+        )
+
+    assert not (tmp_path / "chroma-pg-authority-must-not-initialize").exists()
+
+
 def test_selector_values_are_frozen_and_nested_scope_does_not_recapture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

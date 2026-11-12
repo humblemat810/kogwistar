@@ -159,6 +159,30 @@ def test_selected_rust_postgres_mutations_fail_closed_without_native_meta_store(
             )
 
 
+def test_rust_postgres_meta_store_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar._rust_bridge import (
+        RustExtensionUnavailableError,
+        RustParityError,
+    )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    store = RustEnginePostgresMetaStore(
+        dsn="postgresql://unreachable.invalid/db", schema="strict_test"
+    )
+
+    with pytest.raises(RustParityError, match="Rust PostgreSQL store operation failed"):
+        store.ensure_initialized()
+
+
 def test_python_postgres_authority_keeps_legacy_native_probe_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
