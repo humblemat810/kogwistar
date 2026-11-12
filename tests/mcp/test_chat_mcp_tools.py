@@ -812,6 +812,7 @@ async def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_pa
             pass
 
         def generate_merge_candidates(self, **kwargs):
+            proposal_calls.append(None)
             assert kwargs["new_node"] == fixture["request"]["new_node_ids"]
             assert kwargs["top_k"] == fixture["request"]["top_k"]
             assert kwargs["include_edges"] == fixture["request"]["include_edges"]
@@ -823,8 +824,18 @@ async def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_pa
                 ("visible", "hidden-edge"): (visible_a, hidden_endpoint_edge, 0.1),
             }
 
+    proposal_calls: list[None] = []
     monkeypatch.setattr(mcp_tools, "engine", _FixedResource(engine))
     monkeypatch.setattr(mcp_tools, "VectorProposer", _FakeProposer)
+
+    with _claims("ro", "docs", scope_parts={"capabilities": []}):
+        with pytest.raises(PermissionError, match="not permitted"):
+            await server.mcp._execute(
+                fixture["tool"],
+                {"inp": fixture["request"]},
+                enforce_visibility=True,
+            )
+    assert proposal_calls == []
 
     with _claims("ro", "docs", sub="proposal-reader"):
         result = mcp_tools.propose_vector(
@@ -832,6 +843,7 @@ async def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_pa
         )
 
     assert [pair.model_dump() for pair in result.pairs] == fixture["expected_pairs"]
+    assert len(proposal_calls) == 1
 
     with _claims("ro", "docs", sub="proposal-reader"):
         mcp_result = await server.mcp.call_tool(
@@ -840,6 +852,7 @@ async def test_propose_vector_returns_only_acl_visible_pairs(monkeypatch, tmp_pa
 
     assert mcp_result.is_error is False
     assert _structured(mcp_result) == fixture["expected_result"]
+    assert len(proposal_calls) == 2
 
 
 def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):

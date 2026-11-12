@@ -5844,6 +5844,48 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         )
         .await
         .unwrap();
+    let unauthorized_proposal = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token("docs", &[])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"propose-vector-denied",
+                        "method":"tools/call",
+                        "params":{
+                            "name":proposal_fixture["tool"],
+                            "arguments":{"inp":proposal_fixture["request"]}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized_proposal.status(), StatusCode::OK);
+    let unauthorized_proposal: Value = serde_json::from_slice(
+        &to_bytes(unauthorized_proposal.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        unauthorized_proposal["error"]["code"],
+        json!(-32602)
+    );
+    assert!(unauthorized_proposal["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not advertised"));
     assert_eq!(proposals.status(), StatusCode::OK);
     let proposals: Value =
         serde_json::from_slice(&to_bytes(proposals.into_body(), 65_536).await.unwrap()).unwrap();
