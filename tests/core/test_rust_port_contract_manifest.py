@@ -1383,6 +1383,52 @@ def test_manifest_deterministic_contract_selector_modes_and_unsupported_mode(
         )
 
 
+def test_manifest_postgres_event_log_selector_rejects_split_authority_cells() -> None:
+    from kogwistar.implementation_selection import postgres_authority_selectors_aligned
+
+    manifest = _manifest()
+    capability = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "postgres-sequence-event-log"
+    )
+    selectors = {item["name"]: item for item in manifest["implementation_selectors"]}
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = next(
+        item
+        for item in support_matrix["capabilities"]
+        if item["id"] == "postgres-sequence-event-log"
+    )
+
+    assert capability["configuration"] == "KOGWISTAR_IMPL_META_STORE"
+    assert capability["rust_cutover_ready"] is False
+    assert support["python"]["status"] == "enabled"
+    assert support["rust"]["status"] == "opt-in"
+    assert support["mixed"]["status"] == "opt-in"
+    meta_modes = selectors["KOGWISTAR_IMPL_META_STORE"]["accepted_modes"]
+    graph_modes = selectors["KOGWISTAR_IMPL_GRAPH_STORE"]["accepted_modes"]
+    authority_modes = selectors["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"]["accepted_modes"]
+
+    assert postgres_authority_selectors_aligned(
+        meta_mode="python", graph_mode="python", authority_mode="python"
+    )
+    assert postgres_authority_selectors_aligned(
+        meta_mode="rust", graph_mode="rust", authority_mode="rust"
+    )
+    for meta_mode in meta_modes:
+        for graph_mode in graph_modes:
+            for authority_mode in authority_modes:
+                aligned = meta_mode == graph_mode == authority_mode
+                assert (
+                    postgres_authority_selectors_aligned(
+                        meta_mode=meta_mode,
+                        graph_mode=graph_mode,
+                        authority_mode=authority_mode,
+                    )
+                    is aligned
+                ), (meta_mode, graph_mode, authority_mode)
+
+
 def test_rust_port_manifest_preserves_consumer_event_envelopes() -> None:
     manifest = _manifest()
     events = {item["type"]: item for item in manifest["event_contracts"]}
