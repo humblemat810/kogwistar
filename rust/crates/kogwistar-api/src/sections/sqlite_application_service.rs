@@ -498,7 +498,24 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_V1: dashboard preflights nested read capabilities before MCP dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard+kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_operator_dashboard_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
+        // PYTHON_PARITY_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read before event-store access; rust=kogwistar/rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events+kogwistar/server/chat_service.py#ChatRunService.list_run_events; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_events_denies_missing_read_capability_before_read
+        if name == "workflow.run_events" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            return effective_capabilities(principal, &state).contains("workflow.run.read")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_V1: dashboard preflights nested read capabilities before MCP dispatch; rust=kogwistar/rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard+kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/part_05.rs#workflow_operator_dashboard_mcp_admission_matches_python_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
         if name == "workflow.operator_dashboard" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")

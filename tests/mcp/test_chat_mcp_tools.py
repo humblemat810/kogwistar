@@ -1270,11 +1270,11 @@ async def test_mcp_workflow_run_events_denies_missing_read_capability_before_rea
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
     reads: list[str] = []
-    monkeypatch.setattr(
-        service._run_execution,
-        "list_run_events",
-        lambda run_id, **_kwargs: reads.append(run_id),
-    )
+    def record_events(run_id: str, **_kwargs: object) -> list[dict[str, object]]:
+        reads.append(run_id)
+        return []
+
+    monkeypatch.setattr(service._run_execution, "list_run_events", record_events)
 
     with _claims("ro", "workflow", sub="outsider", scope_parts={"capabilities": []}):
         with pytest.raises(HTTPException) as denied:
@@ -1286,6 +1286,25 @@ async def test_mcp_workflow_run_events_denies_missing_read_capability_before_rea
 
     assert denied.value.status_code == 403
     assert reads == []
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="authorized-reader",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        result = await server.mcp.call_tool(
+            "workflow.run_events", {"run_id": "authorized-run"}
+        )
+    assert _structured(result) == {"run_id": "authorized-run", "events": []}
+    assert reads == ["authorized-run"]
+
+    with _claims("ro", "workflow", sub="legacy-reader"):
+        legacy_result = await server.mcp.call_tool(
+            "workflow.run_events", {"run_id": "legacy-run"}
+        )
+    assert _structured(legacy_result) == {"run_id": "legacy-run", "events": []}
+    assert reads == ["authorized-run", "legacy-run"]
 
 
 @pytest.mark.asyncio

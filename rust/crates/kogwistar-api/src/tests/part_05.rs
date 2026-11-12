@@ -2593,6 +2593,60 @@
     }
 
     #[test]
+    fn workflow_run_events_mcp_admission_matches_python_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-run-events-mcp-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_run_events_mcp_admission",
+        )
+        .unwrap();
+        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+
+        for service in services {
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_events",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.read"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_events",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":[]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_events",
+                &json!({"role":"rw", "ns":["workflow"], "capabilities":["write_graph"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_events",
+                &json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                "workflow.run_events",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.read"]})
+            ));
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_events",
+                &json!({"role":"ro", "ns":["workflow"]})
+            ));
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn workflow_capabilities_snapshot_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
