@@ -992,6 +992,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow_run_node",
         "workflow_runtime_edge",
         "workflow_step_exec_node",
+        "workflow_checkpoint_node",
     ],
     ids=[
         "node",
@@ -999,6 +1000,7 @@ def test_rust_postgres_synchronous_resume_matches_shared_contract(
         "workflow-run-node",
         "workflow-runtime-edge",
         "workflow-step-exec-node",
+        "workflow-checkpoint-node",
     ],
 )
 def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
@@ -1024,6 +1026,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     from kogwistar.runtime.models import (
         WorkflowRunNode,
         WorkflowRuntimeEdge,
+        WorkflowCheckpointNode,
         WorkflowStepExecNode,
     )
     from kogwistar.server.bootstrap import load_server_storage_settings
@@ -1101,6 +1104,7 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
     expected_workflow_runs: list[WorkflowRunNode] = []
     expected_runtime_edges: list[WorkflowRuntimeEdge] = []
     expected_step_execs: list[WorkflowStepExecNode] = []
+    expected_checkpoints: list[WorkflowCheckpointNode] = []
     mutations: list[dict[str, object]]
     if entity_kind == "node":
         base_node = node_payload(
@@ -1200,6 +1204,24 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
         )
         expected_step_execs.append(step_exec)
         mutations = [mutation_for(step_exec)]
+    elif entity_kind == "workflow_checkpoint_node":
+        checkpoint = WorkflowCheckpointNode.model_validate(
+            {
+                **node_payload(
+                    node_id=f"typed-http-checkpoint-{uuid.uuid4().hex}",
+                    summary="Workflow checkpoint persisted through Rust HTTP",
+                ).model_dump(field_mode="backend"),
+                "metadata": {
+                    "entity_type": "workflow_checkpoint",
+                    "run_id": f"typed-http-checkpoint-run-{uuid.uuid4().hex}",
+                    "workflow_id": "typed-http-workflow",
+                    "step_seq": 7,
+                    "state_json": '{"cursor":"page-7","complete":false}',
+                },
+            }
+        )
+        expected_checkpoints.append(checkpoint)
+        mutations = [mutation_for(checkpoint)]
     else:
         source_node = node_payload(
             node_id=f"typed-http-source-{uuid.uuid4().hex}",
@@ -1347,6 +1369,19 @@ def test_rust_postgres_http_typed_envelopes_round_trip_to_python(
             assert recovered_step_exec.metadata["duration_ms"] == 19
             assert recovered_step_exec.metadata["result_json"] == '{"parsed":true}'
             assert recovered_step_exec.metadata["_class_name"] == "WorkflowStepExecNode"
+        elif entity_kind == "workflow_checkpoint_node":
+            expected_checkpoint = expected_checkpoints[0]
+            python_nodes = engine.read.get_nodes(
+                ids=[expected_checkpoint.id], node_type=WorkflowCheckpointNode
+            )
+            assert len(python_nodes) == 1
+            recovered_checkpoint = python_nodes[0]
+            assert isinstance(recovered_checkpoint, WorkflowCheckpointNode)
+            assert recovered_checkpoint.metadata["workflow_id"] == "typed-http-workflow"
+            assert recovered_checkpoint.metadata["run_id"] == expected_checkpoint.metadata["run_id"]
+            assert recovered_checkpoint.metadata["step_seq"] == 7
+            assert recovered_checkpoint.metadata["state_json"] == expected_checkpoint.metadata["state_json"]
+            assert recovered_checkpoint.metadata["_class_name"] == "WorkflowCheckpointNode"
         else:
             expected_edge = expected_edges[0]
             python_edges = engine.read.get_edges(
