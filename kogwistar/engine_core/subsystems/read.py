@@ -650,10 +650,51 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> dict[str, JsonValue]:
         """Read structural endpoint rows through the engine read boundary."""
         if self._rust_postgres_projection_selected():
-            raise RuntimeError(
-                "Rust-selected PostgreSQL structural endpoint reads are not "
-                "implemented; refusing Python backend fallback"
+            from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+            meta = getattr(self._e, "metadata", None)
+            if not isinstance(meta, RustEnginePostgresMetaStore):
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL structural endpoint reads require "
+                    "the native metadata store; refusing Python backend fallback"
+                )
+            if limit is None:
+                raise RuntimeError(
+                    "Rust-selected structural endpoint reads require a finite "
+                    "limit; refusing Python backend fallback"
+                )
+            parsed_filter = self._native_equality_filter(where)
+            if parsed_filter is None:
+                raise RuntimeError(
+                    "Rust-selected structural endpoint reads support equality "
+                    "filters only; refusing Python backend fallback"
+                )
+            selected = include or ["documents", "metadatas"]
+            unsupported = set(selected) - {"documents", "metadatas"}
+            if unsupported:
+                raise RuntimeError(
+                    "Rust-selected structural endpoint reads do not support "
+                    f"include fields {sorted(unsupported)!r}; refusing Python "
+                    "backend fallback"
+                )
+            records = meta.graph_projection_records(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=None,
+                graph_space=None,
+                table=cast(ProjectionBackendLike, self._e.backend)
+                .edge_endpoints.name,
+                ids=None,
+                metadata=parsed_filter,
+                limit=max(0, int(limit)),
             )
+            result: JsonObject = {"ids": [str(record["id"]) for record in records]}
+            if "documents" in selected:
+                result["documents"] = [record.get("document") for record in records]
+            if "metadatas" in selected:
+                result["metadatas"] = [
+                    _json_object(record.get("metadata") or {}) for record in records
+                ]
+            return result
         return _json_object(run_awaitable_blocking(
             self._e.backend.edge_endpoints_get(
                 where=where,

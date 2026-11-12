@@ -1394,23 +1394,74 @@ def test_postgres_meta_facade_requires_active_rust_transaction_for_row_lock(
         )
 
 
-def test_rust_selected_structural_edge_reads_fail_before_python_backend(monkeypatch):
+def test_rust_selected_structural_endpoint_read_uses_native_projection(monkeypatch):
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+
     class Backend:
+        edge_endpoints = SimpleNamespace(name="gke_edge_endpoints")
+
         def edge_endpoints_get(self, **_values):
             raise AssertionError("Rust-selected read crossed into Python backend")
 
         def edge_get_by_endpoint(self, **_values):
             raise AssertionError("Rust-selected read crossed into Python backend")
 
-    engine = SimpleNamespace(backend=Backend(), kg_graph_type="knowledge")
+    engine = SimpleNamespace(
+        backend=Backend(),
+        metadata=RustEnginePostgresMetaStore(dsn="postgresql://example/db", schema="test"),
+        namespace="alpha",
+        kg_graph_type="knowledge",
+    )
     reader = ReadSubsystem(engine)
     monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+    calls = []
+    records = [
+        {
+            "id": "edge-1::src::node::node-1",
+            "document": '{"edge_id":"edge-1","endpoint_id":"node-1"}',
+            "metadata": {"doc_id": "doc-1", "endpoint_type": "node"},
+            "embedding": None,
+        }
+    ]
+
+    def graph_projection_records(**values):
+        calls.append(values)
+        return records
+
+    monkeypatch.setattr(
+        engine.metadata, "graph_projection_records", graph_projection_records
+    )
+    result = reader.get_edge_endpoints(
+        where={"doc_id": "doc-1"}, include=["documents", "metadatas"], limit=5
+    )
+    assert result == {
+        "ids": [records[0]["id"]],
+        "documents": [records[0]["document"]],
+        "metadatas": [records[0]["metadata"]],
+    }
+    assert calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_edge_endpoints",
+            "ids": None,
+            "metadata": {"doc_id": "doc-1"},
+            "limit": 5,
+        }
+    ]
 
     with pytest.raises(
         RuntimeError,
-        match="structural endpoint reads.*refusing Python backend fallback",
+        match="equality filters only.*refusing Python backend fallback",
     ):
-        reader.get_edge_endpoints()
+        reader.get_edge_endpoints(where={"doc_id": {"$ne": "doc-1"}})
+
+    with pytest.raises(
+        RuntimeError,
+        match="include fields.*embeddings.*refusing Python backend fallback",
+    ):
+        reader.get_edge_endpoints(include=["embeddings"])
 
 
 def test_postgres_meta_facade_validates_native_incident_edge_records(monkeypatch):

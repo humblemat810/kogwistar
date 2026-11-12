@@ -79,6 +79,12 @@ pub(crate) async fn graph_projection_records_with_lock<C>(
 where
     C: GenericClient + Sync,
 {
+    // Python's structural join tables are metadata-only; unlike graph entities,
+    // their schema has no embedding column (postgres_backend.py table setup).
+    let has_embedding = !matches!(
+        read.table.as_str(),
+        "gke_edge_endpoints" | "gke_node_docs" | "gke_node_refs" | "gke_edge_refs"
+    );
     graph_projection_records_with_columns(
         client,
         tables,
@@ -86,7 +92,7 @@ where
         after_id,
         keyset_page,
         for_update,
-        true,
+        has_embedding,
     )
     .await
 }

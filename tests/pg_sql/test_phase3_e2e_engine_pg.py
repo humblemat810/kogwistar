@@ -184,9 +184,14 @@ def test_incident_edge_lookup_is_canonical_and_joins_postgres_transaction(
     from kogwistar.engine_core.subsystems.read import ReadSubsystem
 
     class NoPythonReadFallback:
+        def edge_endpoints_get(self, **_values):
+            raise AssertionError("Rust-selected read crossed into Python backend")
+
         def edge_get_by_endpoint(self, **_values):
             raise AssertionError("Rust-selected read crossed into Python backend")
 
+    no_python_backend = NoPythonReadFallback()
+    no_python_backend.edge_endpoints = backend.edge_endpoints
     with monkeypatch.context() as rust_selectors:
         rust_selectors.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
         rust_metadata = RustEnginePostgresMetaStore(
@@ -195,13 +200,47 @@ def test_incident_edge_lookup_is_canonical_and_joins_postgres_transaction(
         rust_reader = ReadSubsystem(
             SimpleNamespace(
                 metadata=rust_metadata,
-                backend=NoPythonReadFallback(),
+                backend=no_python_backend,
                 namespace="default",
                 kg_graph_type="knowledge",
                 _resolve_redirect_chain=lambda *, initial_items, **_values: initial_items,
                 _filter_items_by_resolve_mode=lambda items, _mode: items,
             )
         )
+        python_endpoint_rows = backend.edge_endpoints_get(
+            where={"doc_id": "incident-doc"},
+            include=["documents", "metadatas"],
+            limit=100,
+        )
+        rust_endpoint_rows = rust_reader.get_edge_endpoints(
+            where={"doc_id": "incident-doc"},
+            include=["documents", "metadatas"],
+            limit=100,
+        )
+        assert set(rust_endpoint_rows["ids"]) == set(python_endpoint_rows["ids"])
+        assert sorted(rust_endpoint_rows["documents"]) == sorted(
+            python_endpoint_rows["documents"]
+        )
+        assert sorted(
+            json.dumps(metadata, sort_keys=True)
+            for metadata in rust_endpoint_rows["metadatas"]
+        ) == sorted(
+            json.dumps(metadata, sort_keys=True)
+            for metadata in python_endpoint_rows["metadatas"]
+        )
+        other_namespace_reader = ReadSubsystem(
+            SimpleNamespace(
+                metadata=rust_metadata,
+                backend=no_python_backend,
+                namespace="other-namespace",
+                kg_graph_type="knowledge",
+            )
+        )
+        assert other_namespace_reader.get_edge_endpoints(
+            where={"doc_id": "incident-doc"},
+            include=["documents", "metadatas"],
+            limit=100,
+        )["ids"] == []
         rust_by_left = rust_reader.get_incident_edges(left.safe_get_id())
         assert {edge.safe_get_id() for edge in rust_by_left} == {
             ordinary.safe_get_id(),
