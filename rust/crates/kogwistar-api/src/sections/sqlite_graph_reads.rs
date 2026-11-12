@@ -51,6 +51,53 @@ impl SqliteRunApplicationService {
         )
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_graph_reads.rs#chroma_graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_06.rs#sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+    async fn chroma_graph_propose_vector_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Vector graph proposal requires read_graph capability",
+            );
+        }
+        let input = match GraphVectorProposalRequest::parse(&request.body) {
+            Ok(input) => input,
+            Err(error) => return invalid_graph_request(error),
+        };
+        let where_filter = input
+            .where_filter
+            .as_ref()
+            .filter(|value| value.is_object());
+        if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+            &json!({"metadata": {}, "where": where_filter}).to_string(),
+        ) {
+            return invalid_graph_request(error.to_string());
+        }
+        let (all_nodes, all_edges, visible) =
+            match self.chroma_graph_snapshot_and_candidates(request, "knowledge").await {
+                Ok(snapshot) => snapshot,
+                Err(error) => return error,
+            };
+        let pairs = match graph_vector_proposal_pairs(
+            &all_nodes,
+            &all_edges,
+            visible.nodes(),
+            visible.edges(),
+            &input,
+            where_filter,
+        ) {
+            Ok(pairs) => pairs,
+            Err(error) => return invalid_graph_request(error),
+        };
+        json_effect(
+            StatusCode::OK,
+            rust_native_attested(json!({"pairs": pairs})),
+        )
+    }
+
     // PYTHON_PARITY: kogwistar/server/mcp_tools.py::kg_propose_bruteforce
     async fn chroma_graph_propose_bruteforce_effect(
         &self,

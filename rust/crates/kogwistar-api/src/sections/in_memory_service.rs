@@ -1662,9 +1662,6 @@ impl InMemoryGraphApplicationService {
     }
 
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#graph_vector_proposal_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/part_08.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
-    // Mirrors Python's propose_vector contract for the in-memory backend only;
-    // PostgreSQL and SQLite+Chroma remain unadvertised until their snapshots
-    // can provide the same pre-top-K filtering and ACL guarantees.
     async fn graph_vector_proposal_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let scope = match self.authorized_graph_scope(request) {
             Ok(scope) => scope,
@@ -1701,130 +1698,17 @@ impl InMemoryGraphApplicationService {
         );
         let (visible_nodes, visible_edges) =
             graph_records_visible_by_acl(&all_nodes, &all_edges, "knowledge", &principal);
-        let visible_node_ids = visible_nodes
-            .iter()
-            .map(|record| record.id.as_str())
-            .collect::<BTreeSet<_>>();
-        let visible_edge_ids = visible_edges
-            .iter()
-            .map(|record| record.id.as_str())
-            .collect::<BTreeSet<_>>();
-        let node_seeds = selected_proposal_seeds(&all_nodes, input.new_node_ids.as_deref());
-        let edge_seeds = selected_proposal_seeds(&all_edges, input.new_edge_ids.as_deref());
-        let mut pairs = Vec::new();
-        let mut seen = BTreeSet::new();
-        for (seed, seed_kind) in node_seeds
-            .into_iter()
-            .map(|record| (record, "node"))
-            .chain(edge_seeds.into_iter().map(|record| (record, "edge")))
-        {
-            if seed.metadata.get("entity_type").and_then(Value::as_str) == Some("acl_record") {
-                continue;
-            }
-            if !(if seed_kind == "node" {
-                visible_node_ids.contains(seed.id.as_str())
-            } else {
-                visible_edge_ids.contains(seed.id.as_str())
-            }) {
-                continue;
-            }
-            let Some(query) = seed.embedding.as_deref() else {
-                continue;
-            };
-            let seed_doc = proposal_doc_id(seed);
-            for (candidates, candidate_kind) in [
-                (all_nodes.as_slice(), "node"),
-                (all_edges.as_slice(), "edge"),
-            ] {
-                if candidate_kind == "edge" && !input.include_edges {
-                    continue;
-                }
-                let mut ranked = Vec::new();
-                for candidate in candidates {
-                    if candidate
-                        .metadata
-                        .get("entity_type")
-                        .and_then(Value::as_str)
-                        == Some("acl_record")
-                    {
-                        continue;
-                    }
-                    if candidate_kind == "node" && candidate.id == seed.id {
-                        continue;
-                    }
-                    if candidate
-                        .metadata
-                        .get("lifecycle_status")
-                        .and_then(Value::as_str)
-                        .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
-                    {
-                        continue;
-                    }
-                    let where_matches = match proposal_where_matches(candidate, where_filter) {
-                        Ok(matches) => matches,
-                        Err(error) => return invalid_graph_request(error),
-                    };
-                    if !where_matches {
-                        continue;
-                    }
-                    let candidate_doc = proposal_doc_id(candidate);
-                    if input.allowed_docs.as_ref().is_some_and(|docs| {
-                        !docs.is_empty()
-                            && candidate_doc.is_none_or(|doc| !docs.iter().any(|d| d == doc))
-                    }) {
-                        continue;
-                    }
-                    if input.cross_doc_only && seed_doc.is_some() && seed_doc == candidate_doc {
-                        continue;
-                    }
-                    if input.anchor_doc_id.as_ref().is_some_and(|anchor| {
-                        input.anchor_only
-                            && seed_doc != Some(anchor.as_str())
-                            && candidate_doc != Some(anchor.as_str())
-                    }) {
-                        continue;
-                    }
-                    let Some(distance) =
-                        proposal_cosine_distance(query, candidate.embedding.as_deref())
-                    else {
-                        continue;
-                    };
-                    let in_threshold = if input.score_mode == "distance" {
-                        distance <= input.max_distance
-                    } else {
-                        distance >= input.min_similarity
-                    };
-                    if in_threshold {
-                        ranked.push((candidate, distance));
-                    }
-                }
-                ranked.sort_by(|left, right| left.1.total_cmp(&right.1));
-                for (candidate, _) in ranked.into_iter().take(input.top_k) {
-                    let candidate_visible = if candidate_kind == "node" {
-                        visible_node_ids.contains(candidate.id.as_str())
-                    } else {
-                        visible_edge_ids.contains(candidate.id.as_str())
-                    };
-                    if !candidate_visible {
-                        continue;
-                    }
-                    let (left, right, left_kind, right_kind) = if seed.id <= candidate.id {
-                        (&seed.id, &candidate.id, seed_kind, candidate_kind)
-                    } else {
-                        (&candidate.id, &seed.id, candidate_kind, seed_kind)
-                    };
-                    let key = (left.clone(), right.clone());
-                    if seen.insert(key) {
-                        pairs.push(json!({
-                            "left_id": left,
-                            "left_kind": left_kind,
-                            "right_id": right,
-                            "right_kind": right_kind,
-                        }));
-                    }
-                }
-            }
-        }
+        let pairs = match graph_vector_proposal_pairs(
+            &all_nodes,
+            &all_edges,
+            &visible_nodes,
+            &visible_edges,
+            &input,
+            where_filter,
+        ) {
+            Ok(pairs) => pairs,
+            Err(error) => return invalid_graph_request(error),
+        };
         json_effect(
             StatusCode::OK,
             rust_native_attested(json!({"pairs": pairs})),
@@ -2144,6 +2028,135 @@ fn proposal_cosine_distance(query: &[f32], candidate: Option<&[f32]>) -> Option<
     } else {
         Some(1.0 - dot / (query_norm.sqrt() * candidate_norm.sqrt()))
     }
+}
+
+// Shared by in-memory and persistent graph services so ranking, filters, and
+// ACL-safe result projection stay one Python-parity implementation.
+fn graph_vector_proposal_pairs(
+    all_nodes: &[GraphRecord],
+    all_edges: &[GraphRecord],
+    visible_nodes: &[GraphRecord],
+    visible_edges: &[GraphRecord],
+    input: &GraphVectorProposalRequest,
+    where_filter: Option<&Value>,
+) -> Result<Vec<Value>, String> {
+    let visible_node_ids = visible_nodes
+        .iter()
+        .map(|record| record.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let visible_edge_ids = visible_edges
+        .iter()
+        .map(|record| record.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let node_seeds = selected_proposal_seeds(all_nodes, input.new_node_ids.as_deref());
+    let edge_seeds = selected_proposal_seeds(all_edges, input.new_edge_ids.as_deref());
+    let mut pairs = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (seed, seed_kind) in node_seeds
+        .into_iter()
+        .map(|record| (record, "node"))
+        .chain(edge_seeds.into_iter().map(|record| (record, "edge")))
+    {
+        if seed.metadata.get("entity_type").and_then(Value::as_str) == Some("acl_record") {
+            continue;
+        }
+        if !(if seed_kind == "node" {
+            visible_node_ids.contains(seed.id.as_str())
+        } else {
+            visible_edge_ids.contains(seed.id.as_str())
+        }) {
+            continue;
+        }
+        let Some(query) = seed.embedding.as_deref() else {
+            continue;
+        };
+        let seed_doc = proposal_doc_id(seed);
+        for (candidates, candidate_kind) in [
+            (all_nodes, "node"),
+            (all_edges, "edge"),
+        ] {
+            if candidate_kind == "edge" && !input.include_edges {
+                continue;
+            }
+            let mut ranked = Vec::new();
+            for candidate in candidates {
+                if candidate.metadata.get("entity_type").and_then(Value::as_str)
+                    == Some("acl_record")
+                {
+                    continue;
+                }
+                if candidate_kind == "node" && candidate.id == seed.id {
+                    continue;
+                }
+                if candidate
+                    .metadata
+                    .get("lifecycle_status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+                {
+                    continue;
+                }
+                if !proposal_where_matches(candidate, where_filter)? {
+                    continue;
+                }
+                let candidate_doc = proposal_doc_id(candidate);
+                if input.allowed_docs.as_ref().is_some_and(|docs| {
+                    !docs.is_empty()
+                        && candidate_doc.is_none_or(|doc| !docs.iter().any(|item| item == doc))
+                }) {
+                    continue;
+                }
+                if input.cross_doc_only && seed_doc.is_some() && seed_doc == candidate_doc {
+                    continue;
+                }
+                if input.anchor_doc_id.as_ref().is_some_and(|anchor| {
+                    input.anchor_only
+                        && seed_doc != Some(anchor.as_str())
+                        && candidate_doc != Some(anchor.as_str())
+                }) {
+                    continue;
+                }
+                let Some(distance) =
+                    proposal_cosine_distance(query, candidate.embedding.as_deref())
+                else {
+                    continue;
+                };
+                let in_threshold = if input.score_mode == "distance" {
+                    distance <= input.max_distance
+                } else {
+                    distance >= input.min_similarity
+                };
+                if in_threshold {
+                    ranked.push((candidate, distance));
+                }
+            }
+            ranked.sort_by(|left, right| left.1.total_cmp(&right.1));
+            let visible_ids = if candidate_kind == "node" {
+                &visible_node_ids
+            } else {
+                &visible_edge_ids
+            };
+            for (candidate, _) in ranked.into_iter().take(input.top_k) {
+                if !visible_ids.contains(candidate.id.as_str()) {
+                    continue;
+                }
+                let (left, right, left_kind, right_kind) = if seed.id <= candidate.id {
+                    (&seed.id, &candidate.id, seed_kind, candidate_kind)
+                } else {
+                    (&candidate.id, &seed.id, candidate_kind, seed_kind)
+                };
+                if seen.insert((left.clone(), right.clone())) {
+                    pairs.push(json!({
+                        "left_id": left,
+                        "left_kind": left_kind,
+                        "right_id": right,
+                        "right_kind": right_kind,
+                    }));
+                }
+            }
+        }
+    }
+    Ok(pairs)
 }
 
 impl ApplicationService for InMemoryGraphApplicationService {

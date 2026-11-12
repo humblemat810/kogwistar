@@ -303,6 +303,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     "kg_find_edges"
                         | "kg_load_persisted"
                         | "kg_propose_bruteforce"
+                        | "propose_vector"
                         | "kg_k_hop"
                         | "kg_neighbors"
                         | "kg_shortest_path"
@@ -462,6 +463,7 @@ impl ApplicationService for SqliteRunApplicationService {
             name,
             "kg_load_persisted"
                 | "kg_propose_bruteforce"
+                | "propose_vector"
                 | "kg_semantic_seed_then_expand_text"
                 | "kg_viz_d3_json"
                 | "kg_viz_cytoscape_json"
@@ -1165,6 +1167,9 @@ impl ApplicationService for SqliteRunApplicationService {
                     }
                     Some(INTERNAL_GRAPH_VECTOR_QUERY_ROUTE) => {
                         return self.chroma_graph_vector_query_effect(&request).await;
+                    }
+                    Some(INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE) => {
+                        return self.chroma_graph_propose_vector_effect(&request).await;
                     }
                     Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE) if self.embedding_provider.is_some() => {
                         return self

@@ -1656,6 +1656,16 @@ impl SqliteRunApplicationService {
         request: &ApiEffectRequest,
         truth_graph: &str,
     ) -> Result<GraphAclProjection, ApiEffectResponse> {
+        self.chroma_graph_snapshot_and_candidates(request, truth_graph)
+            .await
+            .map(|(_, _, projection)| projection)
+    }
+
+    async fn chroma_graph_snapshot_and_candidates(
+        &self,
+        request: &ApiEffectRequest,
+        truth_graph: &str,
+    ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>, GraphAclProjection), ApiEffectResponse> {
         let scope_value = security_scope_value(&request.principal);
         let namespace = scope_value["storage_namespace"]
             .as_str()
@@ -1781,12 +1791,9 @@ impl SqliteRunApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        Ok(GraphAclProjection::from_indexed_records(
-            &nodes,
-            &edges,
-            acl_index,
-            &principal,
-        ))
+        let projection =
+            GraphAclProjection::from_indexed_records(&nodes, &edges, acl_index, &principal);
+        Ok((nodes, edges, projection))
     }
 
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#sqlite_search_index_hybrid_effect; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#hybrid_fusion_matches_shared_python_golden_fixture; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture

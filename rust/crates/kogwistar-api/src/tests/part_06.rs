@@ -6159,7 +6159,7 @@
                             }
                             json!({"_kogwistar_namespace":"scope-a","workspace_id":workspace,"graph_space":"facts","_kogwistar_original_metadata":Value::Object(original).to_string()})
                         }).collect::<Vec<_>>(),
-                        "embeddings":[null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null,null]})
+                        "embeddings":ids.iter().map(|id| match *id {"n1" | "n2" | "n4" => json!([0.1,0.2]), _ => Value::Null}).collect::<Vec<_>>()})
                 } else if include_cross_doc_edge {
                     include_cross_doc_edge = false;
                     json!({"ids":["e1","e4"],
@@ -6682,10 +6682,7 @@
         let advertised = advertised_tools.iter()
             .filter_map(|tool| tool["name"].as_str()).collect::<Vec<_>>();
         assert!(!advertised.contains(&"doc_parse"));
-        assert!(
-            !advertised.contains(&"propose_vector"),
-            "SQLite+Chroma must not advertise vector proposals until its backend path is implemented"
-        );
+        assert!(advertised.contains(&"propose_vector"));
         assert!(!rust_mcp_tool_supported("root", "doc_parse"));
         let advertised_graph_tools = advertised
             .iter()
@@ -6741,23 +6738,49 @@
             "Tool not advertised by this application service"
         );
 
-        let unsupported_vector_proposal = app.clone().oneshot(
+        let vector_proposal = app.clone().oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/mcp")
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {}", token(&["read_graph"])))
                 .body(Body::from(
-                    r#"{"jsonrpc":"2.0","id":"unsupported-vector-proposal","method":"tools/call","params":{"name":"propose_vector","arguments":{"inp":{"new_node_ids":["n1"]}}}}"#,
+                    r#"{"jsonrpc":"2.0","id":"vector-proposal","method":"tools/call","params":{"name":"propose_vector","arguments":{"inp":{"new_node_ids":["n2"],"top_k":10,"include_edges":false,"max_distance":1.0}}}}"#,
                 ))
                 .unwrap(),
         ).await.unwrap();
-        let unsupported_vector_proposal: Value = serde_json::from_slice(
-            &to_bytes(unsupported_vector_proposal.into_body(), 65_536).await.unwrap(),
+        let vector_proposal: Value = serde_json::from_slice(
+            &to_bytes(vector_proposal.into_body(), 65_536).await.unwrap(),
         ).unwrap();
-        assert_eq!(unsupported_vector_proposal["error"]["code"], -32602);
+        assert!(vector_proposal.get("error").is_none(), "{vector_proposal}");
+        assert!(
+            vector_proposal["result"]["pairs"].as_array().unwrap().iter().any(|pair| {
+                pair["left_id"] == "n1" && pair["right_id"] == "n2"
+            }),
+            "public vector candidates must be returned: {vector_proposal}"
+        );
+        assert!(
+            !vector_proposal["result"]["pairs"].to_string().contains("n3"),
+            "private vector candidate leaked: {vector_proposal}"
+        );
+
+        let vector_proposal_denied = app.clone().oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(&[])))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"vector-proposal-denied","method":"tools/call","params":{"name":"propose_vector","arguments":{"inp":{"new_node_ids":["n2"],"include_edges":false}}}}"#,
+                ))
+                .unwrap(),
+        ).await.unwrap();
+        let vector_proposal_denied: Value = serde_json::from_slice(
+            &to_bytes(vector_proposal_denied.into_body(), 65_536).await.unwrap(),
+        ).unwrap();
+        assert_eq!(vector_proposal_denied["error"]["code"], -32602);
         assert_eq!(
-            unsupported_vector_proposal["error"]["message"],
+            vector_proposal_denied["error"]["message"],
             "Tool not advertised by this application service"
         );
 
