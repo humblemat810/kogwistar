@@ -5,5 +5,13 @@
   "limit": 10,
   "expected_repaired_message_ids": ["expired-orphan"],
   "active_message_id": "active-claim",
-  "active_message_status": "claimed"
+  "active_message_status": "claimed",
+  "mcp_operation": "workflow.message_orphans_repair",
+  "mcp_arguments": {
+    "inbox_id": "repair-mcp",
+    "limit": 10
+  },
+  "mcp_expected_repaired_message_ids": ["mcp-orphan"],
+  "mcp_active_message_id": "mcp-active",
+  "mcp_active_message_status": "claimed"
 }

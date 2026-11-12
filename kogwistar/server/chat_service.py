@@ -1242,10 +1242,11 @@ class ChatRunService:
             list[Any], list_fn(namespace=scope, inbox_id=inbox_id, status="claimed")
         )
         repaired: list[str] = []
-        now = now_ms()
+        # Lane-message lease_until is stored as Unix seconds, unlike run timestamps.
+        now_epoch_seconds = now_ms() // 1000
         for row in rows:
             lease_until = int(getattr(row, "lease_until", 0) or 0)
-            if lease_until and lease_until > now:
+            if lease_until and lease_until > now_epoch_seconds:
                 continue
             update_fn(message_id=row.message_id, status="pending")
             repaired.append(str(row.message_id))

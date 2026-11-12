@@ -6163,6 +6163,76 @@ async def test_mcp_workflow_message_orphans_repair_denies_before_dispatch(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_message_orphans_repair_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-repair-orphans-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    meta_store = service._execution_meta_store()
+    inbox_id = contract["mcp_arguments"]["inbox_id"]
+    for message_id, lease_seconds in (
+        (contract["mcp_expected_repaired_message_ids"][0], -1),
+        (contract["mcp_active_message_id"], 60),
+    ):
+        meta_store.project_lane_message(
+            message_id=message_id,
+            namespace="workflow",
+            purpose="system",
+            inbox_id=inbox_id,
+            conversation_id="mcp-repair-contract",
+            recipient_id="python-worker",
+            sender_id="scheduler",
+            msg_type="workflow.run.execute",
+            status="pending",
+            created_at=1,
+            available_at=0,
+            run_id=f"run-{message_id}",
+            step_id="start",
+            correlation_id=f"corr-{message_id}",
+            payload_json="{}",
+        )
+        claimed = meta_store.claim_projected_lane_messages(
+            namespace="workflow",
+            inbox_id=inbox_id,
+            claimed_by="repair-contract-worker",
+            limit=1,
+            lease_seconds=lease_seconds,
+            message_ids=[message_id],
+        )
+        assert [row.message_id for row in claimed] == [message_id]
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="orphan-repair-contract",
+        scope_parts={"capabilities": ["project_view"]},
+    ):
+        result = await server.mcp._execute(
+            contract["mcp_operation"],
+            contract["mcp_arguments"],
+            enforce_visibility=True,
+        )
+
+    assert _structured(result) == {
+        "repaired_message_ids": contract["mcp_expected_repaired_message_ids"]
+    }
+    active = meta_store.list_projected_lane_messages(
+        namespace="workflow", inbox_id=inbox_id, status="claimed", limit=10
+    )
+    assert [row.message_id for row in active] == [contract["mcp_active_message_id"]]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_operator_dashboard_denies_before_reads(
     monkeypatch, engine_triplet
 ):

@@ -7271,6 +7271,11 @@
             .update_projected_lane_message_status("dead-mcp-message", "completed", None)
             .unwrap();
 
+        // PYTHON_PARITY_V1: MCP orphan repair requeues expired claims and preserves active ones; rust=rust/crates/kogwistar-api/src/tests/part_05.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_matches_shared_contract
+        let repair_orphans_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-repair-orphans-http-v1.json"
+        ))
+        .unwrap();
         let orphan_lane = |message_id: &str, inbox_id: &str| NewProjectedLaneMessage {
             message_id: message_id.to_owned(),
             namespace: "workflow".to_owned(),
@@ -7296,7 +7301,24 @@
             .project_lane_message(orphan_lane("active-claim", "repair-active"))
             .unwrap();
         store
-            .project_lane_message(orphan_lane("mcp-orphan", "repair-mcp"))
+            .project_lane_message(orphan_lane(
+                repair_orphans_contract["mcp_active_message_id"]
+                    .as_str()
+                    .unwrap(),
+                repair_orphans_contract["mcp_arguments"]["inbox_id"]
+                    .as_str()
+                    .unwrap(),
+            ))
+            .unwrap();
+        store
+            .project_lane_message(orphan_lane(
+                repair_orphans_contract["mcp_expected_repaired_message_ids"][0]
+                    .as_str()
+                    .unwrap(),
+                repair_orphans_contract["mcp_arguments"]["inbox_id"]
+                    .as_str()
+                    .unwrap(),
+            ))
             .unwrap();
         store
             .claim_projected_lane_messages("workflow", "repair-rest", "expired-owner", 1, -1)
@@ -7305,12 +7327,27 @@
             .claim_projected_lane_messages("workflow", "repair-active", "active-owner", 1, 60)
             .unwrap();
         store
-            .claim_projected_lane_messages("workflow", "repair-mcp", "mcp-owner", 1, -1)
+            .claim_projected_lane_messages(
+                "workflow",
+                repair_orphans_contract["mcp_arguments"]["inbox_id"]
+                    .as_str()
+                    .unwrap(),
+                "mcp-active-owner",
+                1,
+                60,
+            )
             .unwrap();
-        let repair_orphans_contract: Value = serde_json::from_str(include_str!(
-            "../../../../../contracts/golden/workflow-repair-orphans-http-v1.json"
-        ))
-        .unwrap();
+        store
+            .claim_projected_lane_messages(
+                "workflow",
+                repair_orphans_contract["mcp_arguments"]["inbox_id"]
+                    .as_str()
+                    .unwrap(),
+                "mcp-owner",
+                1,
+                -1,
+            )
+            .unwrap();
         let secret = "workflow-orphan-repair-test-secret";
         let repair_auth = AuthConfig {
             mode: "jwt".to_owned(),
@@ -7393,7 +7430,16 @@
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {repair_token}"))
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"orphan-repair","method":"tools/call","params":{"name":"workflow.message_orphans_repair","arguments":{"inbox_id":"repair-mcp","limit":10}}}"#,
+                        serde_json::to_vec(&json!({
+                            "jsonrpc":"2.0",
+                            "id":"orphan-repair",
+                            "method":"tools/call",
+                            "params":{
+                                "name":repair_orphans_contract["mcp_operation"],
+                                "arguments":repair_orphans_contract["mcp_arguments"]
+                            }
+                        }))
+                        .unwrap(),
                     ))
                     .unwrap(),
             )
@@ -7404,9 +7450,23 @@
                 .unwrap();
         assert_eq!(
             repaired["result"]["repaired_message_ids"],
-            json!(["mcp-orphan"])
+            repair_orphans_contract["mcp_expected_repaired_message_ids"]
         );
-        for message_id in ["expired-orphan", "active-claim", "mcp-orphan"] {
+        assert_eq!(
+            store
+                .get_projected_lane_message(
+                    repair_orphans_contract["mcp_active_message_id"]
+                        .as_str()
+                        .unwrap()
+                )
+                .unwrap()
+                .unwrap()
+                .status,
+            repair_orphans_contract["mcp_active_message_status"]
+                .as_str()
+                .unwrap()
+        );
+        for message_id in ["expired-orphan", "active-claim", "mcp-orphan", "mcp-active"] {
             store
                 .update_projected_lane_message_status(message_id, "completed", None)
                 .unwrap();
