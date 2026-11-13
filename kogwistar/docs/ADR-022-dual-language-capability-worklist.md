@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **171/177 PASS (96.6%)**.
-- **Fine worklist:** **770/866 PASS (88.9%)**; **0 IN PROGRESS**, **96 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **771/866 PASS (89.0%)**; **0 IN PROGRESS**, **95 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, one HTTP dev-token mode gate, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -1019,7 +1019,7 @@
 | FW-20A-03 | DL-20A | NOT STARTED | Verify counters join to one trace/run identity and count no duplicate state effects. |
 | FW-20A-03A | DL-20A | NOT STARTED | Verify ingress, worker, FFI, serialization, and transaction ownership fields correlate for one mixed trace. |
 | FW-20A-04 | DL-20A | PARENT | Parent scope; children: FW-20A-04-SMALL,FW-20A-04-LARGE |
-| FW-20A-04-SMALL | DL-20A | NOT STARTED | Compare batch and per-item small fixtures and assert identical final-state digests. |
+| FW-20A-04-SMALL | DL-20A | PASS | Invariant: batched and per-item Rust-authority paths preserve the same small graph trace and commit cadence. Cell: 2-item/6-operation deterministic SQLite trace. Oracle: identical final-state digests and operation counts, equal transaction-boundary counts, and fewer FFI crossings for batched writes. Evidence: `.venv\Scripts\python.exe -m pytest tests/core/test_mixed_mcp_benchmark.py::test_rust_batched_write_seam_preserves_trace_and_commit_boundaries -q -p no:cacheprovider` (**1 passed**). |
 | FW-20A-04-LARGE | DL-20A | NOT STARTED | Compare batch and per-item large fixtures and assert identical final-state digests. |
 | FW-20A-04A | DL-20A | NOT STARTED | Define regression thresholds for crossings, serialized bytes, and latency using measured baseline. |
 | FW-20A-02 | DL-20A | NOT STARTED | Add batch-versus-per-item graph fixture and verify no duplicated state effects. |
