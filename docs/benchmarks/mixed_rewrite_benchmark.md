@@ -1532,3 +1532,39 @@ two-sample backend comparison, not evidence that PostgreSQL is universally
 faster or that model inference is included. The report and trace are retained
 under `.tmp/fw19-01a-fixed-indexing-2000-container/`; the containers had
 verified limits of 3 CPU/6 GiB and 1 CPU/2 GiB respectively.
+
+### 2026-11-14 fixed-resource PostgreSQL graph event/projection operations
+
+Ran the existing `scripts/postgres_authority_benchmark.py` with 2,000 records
+per workload and two fresh schemas/samples, comparing Python and Rust
+`EnginePostgresMetaStore` authorities in the CPython 3.15.1 free-threaded Rust
+endpoint image. The benchmark container was limited to 3 CPU/6 GiB and the
+PostgreSQL/pgvector 17 container to 1 CPU/2 GiB (4 CPU/8 GiB total allocation).
+The installed PostgreSQL store source came from image revision
+`8f1c779d238ae0f0bcfaa81afb9cf777c03d8fe9`; relevant current Python and Rust
+PostgreSQL store modules have no diff from that revision. Precomputed JSON
+payloads were used; no embedding or LLM ran. Each benchmark sample used a
+fresh schema, and the script verified expected row counts for event replay
+and projection listing.
+
+| PostgreSQL operation | Python median ms | Rust median ms | Rust/Python latency ratio |
+| --- | ---: | ---: | ---: |
+| Individual event append | 18,698.8 | 20,702.1 | 1.11x (Rust slower) |
+| Grouped event append | 12,426.1 | 9,480.7 | 0.76x |
+| Per-record atomic conversation event + projection | 27,154.3 | 25,146.0 | 0.93x |
+| Grouped conversation transaction | 17,689.7 | 12,795.5 | 0.72x |
+| Event replay batch | 98.0 | 33.5 | 0.34x |
+| Projection list | 137.5 | 35.0 | 0.25x |
+
+The two-sample comparison suggests Rust authority improves batched replay and
+projection reads on this fixture, while individual event append was slower;
+per-record atomic conversation writes were close. Grouped rows change commit
+boundaries and are only sensitivity probes, not evidence to batch user-facing
+transactions. The script checks row counts but does not compare canonical
+cross-language state digests, so this is performance evidence only, not a
+parity verdict. Its `p95_elapsed_ms` with two samples is the slower sample, not
+a statistically reliable tail estimate. It exercises PostgreSQL metadata
+event/projection calls, not `GraphKnowledgeEngine`, MCP, ACL, or full request
+paths. The raw report is ignored under
+`.tmp/fw19-01-fixed-pg-graph-2000/report.json`; container limits were verified
+with Docker inspect.
