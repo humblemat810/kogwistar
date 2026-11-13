@@ -9,7 +9,7 @@ from threading import Event
 
 import pytest
 
-from kogwistar._rust_bridge import RustParityError
+from kogwistar._rust_bridge import RustParityError, capture_rust_bridge_calls
 from kogwistar.agent import (
     DurableCatalogStore,
     DurableSkillCatalogMaterializer,
@@ -26,6 +26,7 @@ from kogwistar.engine_core.rust_meta_sqlite import (
     _RustTransactionToken,
     build_sqlite_meta_store,
 )
+from kogwistar.workers.index_job_worker import IndexJobWorker
 from tests._helpers.graph_builders import build_entity_node
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -662,3 +663,64 @@ def test_public_graph_engine_uses_rust_meta_owner(
         row[2] == "product-node"
         for row in engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
     )
+
+
+def test_rust_index_worker_trace_joins_enqueue_claim_and_ack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def backend_factory(engine):
+        backend = InMemoryBackend(engine)
+        engine.backend_kind = backend.backend_kind = "memory"
+        names = (
+            "node_index",
+            "node",
+            "edge",
+            "edge_endpoints",
+            "document",
+            "domain",
+            "node_docs",
+            "node_refs",
+            "edge_refs",
+        )
+        engine.collection_lock = {name: _DummyLock() for name in names}
+        for name in names:
+            setattr(engine, f"{name}_collection", getattr(backend, name))
+        return backend
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        kg_graph_type="knowledge",
+        embedding_function=lambda texts: [[0.0, 1.0] for _ in texts],
+        backend_factory=backend_factory,
+    )
+    try:
+        with capture_rust_bridge_calls() as trace:
+            engine.write.add_node(
+                build_entity_node(
+                    node_id="indexed-node", doc_id="indexed-doc", embedding=[0.0, 1.0]
+                )
+            )
+            worker = IndexJobWorker(
+                engine=engine,
+                batch_size=8,
+                max_inflight=1,
+                max_jobs_per_tick=8,
+            )
+            tick = worker.tick()
+
+        jobs = engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
+        bridge = trace.snapshot()
+        assert tick.claimed == tick.done == len(jobs) == 2
+        assert all(job.status == "DONE" for job in jobs)
+        assert bridge["ffi_calls"] > 0
+        assert bridge["input_bytes"] > 0
+        assert bridge["output_bytes"] > 0
+        assert bridge["transaction_active_calls"] > 0
+        assert bridge["transaction_boundary_calls"] >= 2
+        assert bridge["calls_by_method"] == {"store_sqlite_json": bridge["ffi_calls"]}
+        assert bridge["calls_by_operation"]["enqueue_index_job"] == 2
+        assert bridge["calls_by_operation"]["claim_index_jobs"] >= 1
+        assert bridge["calls_by_operation"]["mark_index_job_done"] == 2
+    finally:
+        engine.close()
