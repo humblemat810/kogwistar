@@ -1897,19 +1897,7 @@ async def _run_native_concurrent_one(
         for phase in phases
         for step in phase["steps"]
     }
-    binary_name = (
-        "mixed_mcp_authority_benchmark.exe"
-        if os.name == "nt"
-        else "mixed_mcp_authority_benchmark"
-    )
-    binary = (
-        Path(__file__).resolve().parents[1]
-        / "rust"
-        / "target"
-        / "release"
-        / "examples"
-        / binary_name
-    )
+    binary = _native_binary_path()
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
