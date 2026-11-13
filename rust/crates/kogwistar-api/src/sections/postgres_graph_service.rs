@@ -607,12 +607,10 @@ impl PostgresRunApplicationService {
                     let mut node_ids_by_doc = BTreeMap::<String, BTreeSet<String>>::new();
                     let mut edge_ids_by_doc = BTreeMap::<String, BTreeSet<String>>::new();
                     for row in node_rows {
-                        if let (Some(doc_id), Some(node_id)) = (
-                            graph_record_string_id(&row, "doc_id"),
-                            graph_record_string_id(&row, "node_id"),
-                        ) {
-                            node_ids_by_doc.entry(doc_id).or_default().insert(node_id);
-                        }
+                        node_ids_by_doc
+                            .entry(row.doc_id)
+                            .or_default()
+                            .insert(row.node_id);
                     }
                     for row in edge_rows {
                         if let (Some(doc_id), Some(edge_id)) = (
@@ -1002,9 +1000,10 @@ impl PostgresRunApplicationService {
                             &indexes.edge_endpoints
                         };
                         let node_filter = index_filter(insertion_method.is_some());
-                        let node_rows = if insertion_method.is_none() {
+                        let node_ids_for_doc: Vec<String> = if insertion_method.is_none() {
                             uow.graph_node_document_candidates(&node_filter, 100_001)
                                 .await
+                                .map(|rows| rows.into_iter().map(|row| row.node_id).collect())
                         } else {
                             uow.graph_metadata_projection_records(GraphProjectionRead {
                                 scope: scope.clone(),
@@ -1014,6 +1013,11 @@ impl PostgresRunApplicationService {
                                 limit: 100_001,
                             })
                             .await
+                            .map(|rows| {
+                                rows.iter()
+                                    .filter_map(|row| graph_record_string_id(row, "node_id"))
+                                    .collect()
+                            })
                         }
                         .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
                         let edge_rows = uow
@@ -1026,16 +1030,12 @@ impl PostgresRunApplicationService {
                             })
                             .await
                             .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
-                        if node_rows.len() > 100_000 || edge_rows.len() > 100_000 {
+                        if node_ids_for_doc.len() > 100_000 || edge_rows.len() > 100_000 {
                             return Err(PostgresStoreError::Backend(
                                 "document join-index result exceeds 100000 records".to_owned(),
                             ));
                         }
-                        for row in node_rows {
-                            if let Some(id) = graph_record_string_id(&row, "node_id") {
-                                node_ids.insert(id);
-                            }
-                        }
+                        node_ids.extend(node_ids_for_doc);
                         for row in edge_rows {
                             if let Some(id) = graph_record_string_id(&row, "edge_id") {
                                 edge_ids.insert(id);

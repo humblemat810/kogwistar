@@ -36,6 +36,14 @@ pub enum PostgresStoreError {
 
 pub type PostgresStoreResult<T> = Result<T, PostgresStoreError>;
 
+/// Unscoped `node_docs` index hit; never authoritative for entity visibility.
+/// Consumers must load each `node_id` through a scope- and ACL-filtered graph read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NodeDocumentIndexCandidate {
+    pub doc_id: String,
+    pub node_id: String,
+}
+
 /// One compare-and-swap item for an atomic named-projection batch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NamedProjectionCas {

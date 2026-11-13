@@ -61,8 +61,8 @@ mod types;
 pub use types::{
     AppendedRawEvent, GraphDeleteMutation, GraphIndexTableNames, GraphMetadataPatchMutation,
     GraphProjectionMetadataPatch, GraphProjectionUpsert, GraphTableNames, NamedProjectionCas,
-    NewRawEntityEvent, PostgresStoreError, PostgresStoreResult, RawEntityEvent,
-    Stage1GraphProjection,
+    NewRawEntityEvent, NodeDocumentIndexCandidate, PostgresStoreError, PostgresStoreResult,
+    RawEntityEvent, Stage1GraphProjection,
 };
 
 /// Cloneable async store backed by `deadpool-postgres` and `tokio-postgres`.

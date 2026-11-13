@@ -332,7 +332,7 @@ impl PostgresUnitOfWork<'_> {
         &self,
         filter: &kogwistar_store::MetadataFilter,
         limit: usize,
-    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+    ) -> PostgresStoreResult<Vec<NodeDocumentIndexCandidate>> {
         graph_node_document_candidates(&self.transaction, &self.tables, filter, limit).await
     }
 

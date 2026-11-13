@@ -115,7 +115,7 @@ pub(crate) async fn graph_node_document_candidates<C>(
     tables: &Tables,
     filter: &kogwistar_store::MetadataFilter,
     limit: usize,
-) -> PostgresStoreResult<Vec<GraphRecord>>
+) -> PostgresStoreResult<Vec<NodeDocumentIndexCandidate>>
 where
     C: GenericClient + Sync,
 {
@@ -149,14 +149,36 @@ where
     let rows = client
         .query(
             &format!(
-                "SELECT id, document, metadata::TEXT, NULL::TEXT FROM {table} WHERE {where_clause} ORDER BY id LIMIT ${}::TEXT::BIGINT",
+                "SELECT metadata::TEXT FROM {table} WHERE {where_clause} ORDER BY metadata->>'doc_id', metadata->>'node_id' LIMIT ${}::TEXT::BIGINT",
                 values.len()
             ),
             &params,
         )
         .await
         .map_err(backend)?;
-    rows.iter().map(graph_record_from_row).collect()
+    rows.iter()
+        .map(|row| {
+            let metadata: Value = serde_json::from_str(&row.get::<_, String>(0))?;
+            let doc_id = metadata
+                .get("doc_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    PostgresStoreError::Backend("node_docs row missing doc_id".to_owned())
+                })?;
+            let node_id = metadata
+                .get("node_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| {
+                    PostgresStoreError::Backend("node_docs row missing node_id".to_owned())
+                })?;
+            Ok(NodeDocumentIndexCandidate {
+                doc_id: doc_id.to_owned(),
+                node_id: node_id.to_owned(),
+            })
+        })
+        .collect()
 }
 
 async fn graph_projection_records_with_columns<C>(
