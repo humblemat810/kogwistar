@@ -1594,3 +1594,25 @@ backend query, per-request authentication, HTTP/MCP, graph-edge endpoint checks,
 or cross-backend scaling. The deterministic generated workload, parity digest,
 limits, runtime versions, warm-up, and raw samples are recorded in the ignored
 `.tmp/fw19-01b-acl-2000/acl_projection_report.v1.json`.
+
+### 2026-11-14 PostgreSQL semantic projection-worker attribution
+
+Ran `rust/crates/kogwistar-api/examples/projection_worker_attribution.rs` against PostgreSQL 16 with
+`pgvector/pgvector:pg16`, using a fresh schema per warm-up/sample. The PostgreSQL container was configured
+for 2 CPUs and 2 GiB; the Rust worker executable ran natively on Windows and was not itself resource-capped.
+Each 100-job sample seeded matching canonical graph rows and durable index jobs before timing, then ran the
+real projection worker with precomputed 384-dimensional embeddings. Embedding inference and setup were outside
+the timed interval. Every measured sample acknowledged 100 jobs and read back 100 graph projections with
+embeddings. One warm-up and three measured samples completed.
+
+| Metric | Median | Samples |
+| --- | ---: | --- |
+| Worker elapsed | 6,038.8 ms | 6,080.9 / 6,038.8 / 5,942.6 ms |
+| Provider stage | 0.790 ms | 0.632 / 1.256 / 0.790 ms |
+| Graph projection writes | 2,146.8 ms | 2,171.9 / 2,146.8 / 2,080.6 ms |
+| Throughput | 16.56 jobs/s | elapsed-time CV 1.18% |
+
+The residual worker time includes durable accepted-result writes, queue claim/acknowledgement, and worker
+coordination; it is not attributed to embedding inference. This isolates provider and graph-write time from
+MCP ingress, but does not compare Python/Rust implementations or cap the worker process. Command:
+`$env:KOGWISTAR_TEST_POSTGRES_DSN='postgres://postgres:bench-only@127.0.0.1:55435/kogwistar_bench'; cargo run -p kogwistar-api --example projection_worker_attribution -- 100 3`.

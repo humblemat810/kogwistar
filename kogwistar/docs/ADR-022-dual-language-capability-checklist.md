@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Capability Checklist
 
-**Updated:** 2026-11-13
+**Updated:** 2026-11-14
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 A `PASS` requires implementation evidence. Each row records the current gate, status, and concise evidence; chronological change history belongs in Git commits.
 
