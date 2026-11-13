@@ -10,6 +10,8 @@ from kogwistar.engine_core.storage_backend import (
     StorageBackend,
     get_atomic_mutation_capability,
 )
+from kogwistar.engine_core.chroma_backend import ChromaBackend
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
 
 def test_atomic_mutation_capability_is_explicit() -> None:
@@ -18,6 +20,16 @@ def test_atomic_mutation_capability_is_explicit() -> None:
 
     assert atomic.supports_atomic_mutation is True
     assert eventual.supports_atomic_mutation is False
+
+
+def test_builtin_backends_declare_their_actual_batch_atomicity() -> None:
+    postgres = get_atomic_mutation_capability(PgVectorBackend)
+    chroma = get_atomic_mutation_capability(ChromaBackend)
+
+    assert postgres.mode == "atomic"
+    assert postgres.supports_atomic_mutation is True
+    assert chroma.mode == "eventual"
+    assert chroma.supports_atomic_mutation is False
 
 
 def test_noop_uow_cannot_be_used_for_atomic_replacement() -> None:
