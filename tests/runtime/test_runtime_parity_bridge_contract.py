@@ -7,11 +7,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from kogwistar.runtime.models import (
     RunFailure,
@@ -26,6 +28,7 @@ from kogwistar.runtime.models import (
 )
 from kogwistar.runtime.replay import load_checkpoint, replay_to
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
+from kogwistar.runtime.telemetry import EventEmitter
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 
@@ -789,6 +792,107 @@ def test_workflow_step_trace_joins_dispatch_and_rust_store_transaction(
         assert bridge["calls_by_operation"]["raw_append"] == 1
     finally:
         store.close()
+
+
+def test_workflow_step_batch_matches_per_item_store_effect_with_fewer_crossings(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+
+    def run(
+        path: Path, *, batch: bool
+    ) -> tuple[
+        dict[str, object], dict[str, object], list[tuple[int, str, str, str, str]]
+    ]:
+        store = RustEngineSQLite(tmp_path, path.name)
+        store.ensure_initialized()
+        workflow_id = "wf_batch_trace"
+        nodes, edges = _seed_trace_bridge_graph(workflow_id)
+        emitter = _TraceEmitter()
+        resolver = MappingStepResolver()
+        operations: list[JsonObject] = [
+            {
+                "kind": "raw_append",
+                "namespace": "workflow-batch-trace",
+                "event_id": f"event-{index}",
+                "entity_kind": "node",
+                "entity_id": f"node-{index}",
+                "op": "UPSERT",
+                "payload_json": json.dumps({"index": index}, separators=(",", ":")),
+            }
+            for index in range(2)
+        ]
+
+        @resolver.register("start")
+        def _start(_ctx):
+            # Batch owns one atomic commit; per-item calls retain separate commits.
+            if batch:
+                store.execute_batch(operations)
+            else:
+                for operation in operations:
+                    store.append_entity_event(
+                            **{
+                                key: value
+                                for key, value in operation.items()
+                                if key != "kind"
+                            }
+                        )
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"persisted_count": len(operations)})],
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=cast(
+                GraphKnowledgeEngine, _JoinWorkflowEngine(nodes, edges)
+            ),
+            conversation_engine=cast(
+                GraphKnowledgeEngine, _JoinConversationEngine()
+            ),
+            step_resolver=resolver,
+            predicate_registry={},
+            trace=True,
+            events=cast(EventEmitter, emitter),
+            transaction_mode="none",
+        )
+        try:
+            result = runtime.run(
+                workflow_id=workflow_id,
+                conversation_id="conv-workflow-batch-trace",
+                turn_node_id="turn-workflow-batch-trace",
+                run_id="run-workflow-batch-trace",
+                initial_state={},
+            )
+            assert result.status == "succeeded"
+            trace = next(
+                payload for kind, payload in emitter.emitted if kind == "completed"
+            )
+            events = list(store.iter_entity_events(namespace="workflow-batch-trace"))
+            return (
+                dict(result.final_state or {}),
+                cast(dict[str, object], trace["rust_bridge"]),
+                events,
+            )
+        finally:
+            store.close()
+
+    per_item_state, per_item_trace, per_item_events = run(
+        tmp_path / "workflow-per-item.sqlite", batch=False
+    )
+    batch_state, batch_trace, batch_events = run(
+        tmp_path / "workflow-batch.sqlite", batch=True
+    )
+
+    assert per_item_state["persisted_count"] == batch_state["persisted_count"] == 2
+    assert per_item_events == batch_events
+    assert per_item_trace["ffi_calls"] == 2
+    assert batch_trace["ffi_calls"] == 1
+    assert per_item_trace["calls_by_operation"] == {"raw_append": 2}
+    assert batch_trace["calls_by_operation"] == {"batch": 1}
+    assert per_item_trace["input_bytes"] > batch_trace["input_bytes"] > 0
+    assert per_item_trace["output_bytes"] > 0
+    assert batch_trace["output_bytes"] > 0
 
 
 @pytest.mark.ci_full
