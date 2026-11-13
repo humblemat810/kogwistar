@@ -743,14 +743,16 @@ def test_workflow_step_trace_joins_dispatch_and_rust_store_transaction(
     emitted = _TraceEmitter()
     resolver = MappingStepResolver()
     dispatched: list[str] = []
+    dispatch_identities: list[dict[str, object]] = []
 
     class _TransactionalConversationEngine(_JoinConversationEngine):
         def uow(self):
             return store.transaction()
 
     @resolver.register("start")
-    def _start(_ctx):
+    def _start(ctx):
         dispatched.append("start")
+        dispatch_identities.append(ctx.trace_ctx.as_fields())
         store.append_entity_event(
             namespace="workflow-trace",
             event_id="workflow-step-event",
@@ -789,6 +791,21 @@ def test_workflow_step_trace_joins_dispatch_and_rust_store_transaction(
 
         assert [kind for kind, _payload in emitted.emitted] == ["started", "completed"]
         started, completed = (payload for _kind, payload in emitted.emitted)
+        identity_fields = ("run_id", "token_id", "step_seq", "node_id")
+        assert len(dispatch_identities) == 1
+        identity = tuple(dispatch_identities[0][key] for key in identity_fields)
+        assert tuple(started[key] for key in identity_fields) == identity
+        assert tuple(completed[key] for key in identity_fields) == identity
+        assert sum(
+            tuple(payload[key] for key in identity_fields) == identity
+            for kind, payload in emitted.emitted
+            if kind == "started"
+        ) == 1
+        assert sum(
+            tuple(payload[key] for key in identity_fields) == identity
+            for kind, payload in emitted.emitted
+            if kind == "completed"
+        ) == 1
         assert completed["run_id"] == started["run_id"] == "run-trace-rust-storage"
         assert completed["node_id"] == started["node_id"] == "start"
         bridge = completed["rust_bridge"]
