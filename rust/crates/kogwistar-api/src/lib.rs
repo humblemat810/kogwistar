@@ -183,7 +183,12 @@ mod tests {
     include!("tests/tcp_transport.rs");
     include!("tests/sqlite_graph_topology_reads.rs");
     include!("tests/sqlite_transcript_reads.rs");
-    include!("tests/postgres_agentic_answer.rs");
+    // Mirrors tests/kg_conversation's agentic-answer grouping.
+    mod postgres_agentic_answer {
+        use super::*;
+
+        include!("tests/postgres_agentic_answer.rs");
+    }
     include!("tests/native_answer_views.rs");
     include!("tests/workflow_run_access.rs");
     include!("tests/workflow_monitoring.rs");
