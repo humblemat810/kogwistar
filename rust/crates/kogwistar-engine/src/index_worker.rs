@@ -10,6 +10,7 @@ use kogwistar_store::{
 };
 use sha2::{Digest, Sha256};
 use std::future::Future;
+use std::time::Instant;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IndexWorkerSummary {
@@ -19,6 +20,13 @@ pub struct IndexWorkerSummary {
     pub claim_lost: usize,
     pub retried: usize,
     pub failed: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IndexWorkerTiming {
+    /// Cumulative time spent in provider futures that completed, in nanoseconds.
+    /// Excludes queue operations and provider calls abandoned after lease loss.
+    pub completed_provider_elapsed_ns: u128,
 }
 
 fn worker_error(error: impl ToString) -> StoreError {
@@ -46,7 +54,9 @@ where
     F: FnMut(IndexJob) -> Fut,
     Fut: Future<Output = StoreResult<String>>,
 {
-    run_index_jobs_once_inner(store, limit, lease_seconds, namespace, provider).await
+    run_index_jobs_once_inner(store, limit, lease_seconds, namespace, provider, false)
+        .await
+        .map(|(summary, _)| summary)
 }
 
 /// Safe provider boundary: the callback cannot access claim/lease tokens or
@@ -64,9 +74,40 @@ where
     F: FnMut(IndexJobProviderInput) -> Fut,
     Fut: Future<Output = StoreResult<String>>,
 {
-    run_index_jobs_once_inner(store, limit, lease_seconds, namespace, move |job| {
-        provider(IndexJobProviderInput::from(&job))
-    })
+    run_index_jobs_once_inner(
+        store,
+        limit,
+        lease_seconds,
+        namespace,
+        move |job| provider(IndexJobProviderInput::from(&job)),
+        false,
+    )
+    .await
+    .map(|(summary, _)| summary)
+}
+
+/// Observed variant of [`run_index_jobs_once_with_provider_input`] that also
+/// reports completed provider-future time. Existing summary API stays unchanged.
+pub async fn run_index_jobs_once_with_provider_input_observed<S, F, Fut>(
+    store: &S,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    mut provider: F,
+) -> StoreResult<(IndexWorkerSummary, IndexWorkerTiming)>
+where
+    S: IndexJobWriteStore,
+    F: FnMut(IndexJobProviderInput) -> Fut,
+    Fut: Future<Output = StoreResult<String>>,
+{
+    run_index_jobs_once_inner(
+        store,
+        limit,
+        lease_seconds,
+        namespace,
+        move |job| provider(IndexJobProviderInput::from(&job)),
+        true,
+    )
     .await
 }
 
@@ -76,7 +117,8 @@ async fn run_index_jobs_once_inner<S, F, Fut>(
     lease_seconds: i64,
     namespace: Option<&str>,
     mut provider: F,
-) -> StoreResult<IndexWorkerSummary>
+    measure_provider: bool,
+) -> StoreResult<(IndexWorkerSummary, IndexWorkerTiming)>
 where
     S: IndexJobWriteStore,
     F: FnMut(IndexJob) -> Fut,
@@ -89,6 +131,7 @@ where
         claimed: jobs.len(),
         ..IndexWorkerSummary::default()
     };
+    let mut timing = IndexWorkerTiming::default();
 
     for job in jobs {
         let Some(claim_token) = job.claim_token.as_deref() else {
@@ -110,15 +153,35 @@ where
             continue;
         }
         let retry = job.retry_count + 1;
-        match with_lease_renewal(
-            store,
-            &job.job_id,
-            claim_token,
-            lease_seconds,
-            provider(job.clone()),
-        )
-        .await?
-        {
+        let provider_future = provider(job.clone());
+        let provider_result = if measure_provider {
+            let provider_elapsed_ns = &mut timing.completed_provider_elapsed_ns;
+            let timed_provider = async {
+                let started = Instant::now();
+                let result = provider_future.await;
+                *provider_elapsed_ns =
+                    provider_elapsed_ns.saturating_add(started.elapsed().as_nanos());
+                result
+            };
+            with_lease_renewal(
+                store,
+                &job.job_id,
+                claim_token,
+                lease_seconds,
+                timed_provider,
+            )
+            .await?
+        } else {
+            with_lease_renewal(
+                store,
+                &job.job_id,
+                claim_token,
+                lease_seconds,
+                provider_future,
+            )
+            .await?
+        };
+        match provider_result {
             None => summary.claim_lost += 1,
             Some(Ok(result_json)) => {
                 let admission = store
@@ -168,7 +231,7 @@ where
             }
         }
     }
-    Ok(summary)
+    Ok((summary, timing))
 }
 
 #[cfg(test)]
@@ -231,7 +294,7 @@ mod tests {
     async fn admits_provider_result_and_marks_claim_done() {
         let store = InMemoryStore::new();
         enqueue(&store, 3).await;
-        let summary = run_index_jobs_once_with_provider_input(
+        let (summary, timing) = run_index_jobs_once_with_provider_input_observed(
             &store,
             1,
             30,
@@ -242,6 +305,7 @@ mod tests {
                 assert_eq!(input.namespace, "ns");
                 assert_eq!(input.entity_id, "node-1");
                 assert_eq!(input.payload_json.as_deref(), Some("{}"));
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                 let provider_payload = serde_json::to_value(&input).unwrap();
                 for authority_field in [
                     "claim_token",
@@ -259,6 +323,7 @@ mod tests {
         .unwrap();
         assert_eq!(summary.accepted, 1);
         assert_eq!(summary.claim_lost, 0);
+        assert!(timing.completed_provider_elapsed_ns >= 1_000_000);
         assert_eq!(
             store
                 .index_job_result("job-1")
