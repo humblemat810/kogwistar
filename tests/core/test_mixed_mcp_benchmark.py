@@ -9,10 +9,40 @@ import pytest
 from scripts import mixed_mcp_benchmark
 from scripts import mixed_concurrent_benchmark
 from scripts.mixed_mcp_benchmark import (
+    _bind_trace_identity,
     _run_concurrent_mcp_profiles,
     _run_one,
     _run_one_sync,
 )
+
+
+def test_sample_metrics_are_bound_to_trace_and_reject_duplicate_counts() -> None:
+    result = {
+        "operations": 2,
+        "per_operation": {"write": {"count": 1}, "read": {"count": 1}},
+        "seam_metrics": {"tool_dispatches": 2},
+    }
+
+    bound = _bind_trace_identity(
+        result, run_id="run-a", trace_sha256="trace-a", expected_operations=2
+    )
+
+    assert bound["run_id"] == "run-a"
+    assert bound["trace_sha256"] == "trace-a"
+    with pytest.raises(RuntimeError, match="operation counters"):
+        _bind_trace_identity(
+            {**result, "per_operation": {"write": {"count": 3}}},
+            run_id="run-a",
+            trace_sha256="trace-a",
+            expected_operations=2,
+        )
+    with pytest.raises(RuntimeError, match="dispatch counters"):
+        _bind_trace_identity(
+            {**result, "seam_metrics": {"tool_dispatches": 1}},
+            run_id="run-a",
+            trace_sha256="trace-a",
+            expected_operations=2,
+        )
 from scripts.mixed_workload import build_read_after_write_trace
 
 
@@ -266,8 +296,12 @@ def test_benchmark_accepts_a_resource_matched_mode_subset(tmp_path, monkeypatch)
     native_binary.write_bytes(b"native-placeholder")
     monkeypatch.setenv("KOGWISTAR_MIXED_NATIVE_BINARY", str(native_binary))
     async def fake_run_one(*args, **kwargs):
+        trace = args[1]
         return {
             "state_digest": "same-state",
+            "operations": len(trace),
+            "per_operation": {"write_record": {"count": len(trace)}},
+            "seam_metrics": {"tool_dispatches": len(trace)},
             "elapsed_ms": 1.0,
             "startup_ms": 1.0,
             "throughput_ops_per_sec": 1.0,
@@ -372,6 +406,9 @@ def test_mcp_run_prepares_and_reuses_tool_arguments_once(monkeypatch, tmp_path) 
         argument_list_ids.append(id(trace_arguments))
         return {
             "state_digest": "same-state",
+            "operations": len(trace),
+            "per_operation": {"write_record": {"count": len(trace)}},
+            "seam_metrics": {"tool_dispatches": len(trace)},
             "elapsed_ms": 100.0,
             "startup_ms": 1.0,
             "throughput_ops_per_sec": 30.0,
@@ -385,6 +422,9 @@ def test_mcp_run_prepares_and_reuses_tool_arguments_once(monkeypatch, tmp_path) 
         argument_list_ids.append(id(trace_arguments))
         return {
             "state_digest": "same-state",
+            "operations": len(trace),
+            "per_operation": {"write_record": {"count": len(trace)}},
+            "seam_metrics": {"tool_dispatches": len(trace)},
             "elapsed_ms": 100.0,
             "startup_ms": 1.0,
             "throughput_ops_per_sec": 30.0,
@@ -421,3 +461,11 @@ def test_mcp_run_prepares_and_reuses_tool_arguments_once(monkeypatch, tmp_path) 
     assert len(set(argument_list_ids)) == 1
     assert report["tool_argument_preparation_ms"] >= 0
     assert report["state_digest_equal"] is True
+    assert len(report["trace_sha256"]) == 64
+    assert all(
+        sample["run_id"] == report["run_id"]
+        and sample["trace_sha256"] == report["trace_sha256"]
+        and sample["operations"] == 6
+        for mode in report["modes"].values()
+        for sample in [mode["warmup"], *mode["samples"]]
+    )

@@ -112,6 +112,33 @@ def _validate_native_seam_metrics(
         raise RuntimeError(f"{label} native metrics report no serialized payloads")
     return value
 
+
+def _bind_trace_identity(
+    result: dict[str, Any], *, run_id: str, trace_sha256: str, expected_operations: int
+) -> dict[str, Any]:
+    """Bind sample counters to their deterministic run trace and reject omissions."""
+    if result.get("operations") != expected_operations:
+        raise RuntimeError(
+            f"benchmark sample reports {result.get('operations')} operations; "
+            f"expected {expected_operations}"
+        )
+    per_operation = result.get("per_operation")
+    if not isinstance(per_operation, dict) or any(
+        not isinstance(metrics, dict)
+        or not isinstance(metrics.get("count"), int)
+        or isinstance(metrics.get("count"), bool)
+        or metrics["count"] < 0
+        for metrics in per_operation.values()
+    ) or sum(metrics["count"] for metrics in per_operation.values()) != expected_operations:
+        raise RuntimeError("benchmark sample operation counters do not match its trace")
+    seam_metrics = result.get("seam_metrics")
+    if (
+        not isinstance(seam_metrics, dict)
+        or seam_metrics.get("tool_dispatches") != expected_operations
+    ):
+        raise RuntimeError("benchmark sample dispatch counters do not match its trace")
+    return {**result, "run_id": run_id, "trace_sha256": trace_sha256}
+
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -2341,7 +2368,9 @@ def run_benchmark(
     run_id = uuid.uuid4().hex[:12]
     run_root = output / run_id
     run_root.mkdir(parents=True, exist_ok=False)
-    trace = write_trace(run_root / "mcp_trace.v1.json", items)
+    trace_path = run_root / "mcp_trace.v1.json"
+    trace = write_trace(trace_path, items)
+    trace_sha256 = hashlib.sha256(trace_path.read_bytes()).hexdigest()
     results: dict[str, Any] = {}
     digests: set[str] = set()
     progress_path = run_root / "progress.v3.json"
@@ -2384,6 +2413,12 @@ def run_benchmark(
             if mode in SYNC_MODES
             else _run_async(_run_one(warmup_path, trace, mode, trace_arguments=trace_arguments))
         )
+        warmup = _bind_trace_identity(
+            warmup,
+            run_id=run_id,
+            trace_sha256=trace_sha256,
+            expected_operations=len(trace),
+        )
         mode_samples = []
         progress["partial_samples"][mode] = {"warmup": warmup, "samples": mode_samples}
         for sample in range(samples):
@@ -2404,6 +2439,12 @@ def run_benchmark(
                 _run_one_sync(path, trace, mode, trace_arguments=trace_arguments)
                 if mode in SYNC_MODES
                 else _run_async(_run_one(path, trace, mode, trace_arguments=trace_arguments))
+            )
+            result = _bind_trace_identity(
+                result,
+                run_id=run_id,
+                trace_sha256=trace_sha256,
+                expected_operations=len(trace),
             )
             digests.add(result["state_digest"])
             mode_samples.append(result)
@@ -2456,6 +2497,8 @@ def run_benchmark(
     report = {
         "schema": "kogwistar-mixed-mcp-report/v3",
         "run_id": run_id,
+        "trace_path": str(trace_path),
+        "trace_sha256": trace_sha256,
         "items": items,
         "samples_per_mode": samples,
         "warmup_samples_per_mode": 1,
