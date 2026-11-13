@@ -718,6 +718,79 @@ def test_runtime_step_trace_correlates_actual_rust_bridge_calls(
     assert "rust_bridge" not in plain_trace
 
 
+def test_workflow_step_trace_joins_dispatch_and_rust_store_transaction(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+
+    store = RustEngineSQLite(tmp_path, "workflow-step-trace.sqlite")
+    store.ensure_initialized()
+    workflow_id = "wf_trace_rust_storage"
+    nodes, edges = _seed_trace_bridge_graph(workflow_id)
+    workflow_engine = _JoinWorkflowEngine(nodes, edges)
+    emitted = _TraceEmitter()
+    resolver = MappingStepResolver()
+    dispatched: list[str] = []
+
+    class _TransactionalConversationEngine(_JoinConversationEngine):
+        def uow(self):
+            return store.transaction()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        dispatched.append("start")
+        store.append_entity_event(
+            namespace="workflow-trace",
+            event_id="workflow-step-event",
+            entity_kind="node",
+            entity_id="workflow-step-node",
+            op="UPSERT",
+            payload_json='{"source":"step-worker"}',
+        )
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"persisted": True})]
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=_TransactionalConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=emitted,
+        transaction_mode="step",
+    )
+    try:
+        result = runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-trace-rust-storage",
+            turn_node_id="turn-trace-rust-storage",
+            run_id="run-trace-rust-storage",
+            initial_state={},
+        )
+        assert result.status == "succeeded"
+        assert result.final_state["persisted"] is True
+        assert dispatched == ["start"]
+        rows = list(store.iter_entity_events(namespace="workflow-trace"))
+        assert len(rows) == 1
+        assert rows[0][2:4] == ("workflow-step-node", "UPSERT")
+
+        assert [kind for kind, _payload in emitted.emitted] == ["started", "completed"]
+        started, completed = (payload for _kind, payload in emitted.emitted)
+        assert completed["run_id"] == started["run_id"] == "run-trace-rust-storage"
+        assert completed["node_id"] == started["node_id"] == "start"
+        bridge = completed["rust_bridge"]
+        assert bridge["ffi_calls"] >= 4
+        assert bridge["input_bytes"] > 0
+        assert bridge["output_bytes"] > 0
+        assert bridge["transaction_active_calls"] >= 1
+        assert bridge["transaction_boundary_calls"] == 2
+        assert bridge["calls_by_operation"]["raw_append"] == 1
+    finally:
+        store.close()
+
+
 @pytest.mark.ci_full
 def test_runtime_step_trace_correlates_installed_rust_extension(
     monkeypatch: pytest.MonkeyPatch,
