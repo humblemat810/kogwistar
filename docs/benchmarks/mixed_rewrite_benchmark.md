@@ -1406,3 +1406,25 @@ per sample; this trace's dominant measured component is the client-observed
 HTTP round-trip, but that residual must not be labeled network latency because
 it includes Rust routing, tool dispatch, storage, and response transfer. Local
 raw report is ignored at `.tmp/fw20-01-transport-20261113/report.v3.json`.
+
+### 2026-11-13 Rust MCP authorization-stage attribution
+
+On Windows, ran the production Rust `/mcp` router through Tower `oneshot` with
+signed HS256 JWTs: 100 authorized `tools/call` requests plus one denied `ro`
+request. Each successful request verified credentials once, checked the
+required role once, checked the requested tool once, and returned the expected
+JSON-RPC result. The denied request returned 403 after one auth and one role
+check, with no tool authorization or application dispatch. This removes
+repeated JWT verification inside one request without changing response shape or
+authorization decisions.
+
+Release test command:
+`cargo +1.97.1-x86_64-pc-windows-msvc test --release --manifest-path rust/Cargo.toml -p kogwistar-api mcp_authenticated_call_verifies_once_and_attributes_authorization_stages -- --nocapture`
+Result: **1 passed**. One local sample reported 100-request endpoint mean
+**68.56 us**; per-stage p50/p95: JWT authentication **12.5/23 us**, required
+role check **0.4/0.8 us**, tool check **0.2/0.4 us**. These values are
+descriptive single-run figures, not a statistically stable throughput result.
+Timings are attached to test-only HTTP response extensions; production adds no
+timing fields to the wire. This exercises the production router in process,
+not a TCP socket or external MCP client. Tool authorization used a focused
+test service, so numbers do not represent backend/store authorization cost.

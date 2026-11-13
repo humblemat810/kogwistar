@@ -142,6 +142,7 @@ mod tests {
     include!("tests/native_runtime_effects.rs");
     include!("tests/answer_workflow_admission.rs");
     include!("tests/auth.rs");
+    include!("tests/mcp_auth_timing.rs");
     include!("tests/mcp.rs");
     include!("tests/server_transport.rs");
     include!("tests/runtime.rs");

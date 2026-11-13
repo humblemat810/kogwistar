@@ -353,8 +353,13 @@ fn bearer_token(headers: &HeaderMap) -> Option<&str> {
         .then_some(token.trim())
 }
 
+#[cfg(test)]
 fn jwt_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'static str> {
     let claims = jwt_claims(headers, config)?;
+    Ok(roles_from_claims(&claims))
+}
+
+fn roles_from_claims(claims: &Value) -> Vec<String> {
     let mut roles = Vec::new();
     if let Some(role) = claims.get("role").and_then(Value::as_str) {
         roles.push(role.to_ascii_lowercase());
@@ -367,7 +372,7 @@ fn jwt_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'
                 .map(str::to_ascii_lowercase),
         );
     }
-    Ok(roles)
+    roles
 }
 
 fn jwt_claims(headers: &HeaderMap, config: &AuthConfig) -> Result<Value, &'static str> {
@@ -416,28 +421,39 @@ fn jwt_claims(headers: &HeaderMap, config: &AuthConfig) -> Result<Value, &'stati
 }
 
 fn request_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'static str> {
-    if config.configured() {
-        jwt_roles(headers, config)
-    } else {
-        Ok(roles_from_headers(headers))
-    }
+    request_auth_context(headers, config).map(|(_, roles)| roles)
 }
 
 fn request_principal(headers: &HeaderMap, config: &AuthConfig) -> Value {
-    if config.configured() {
-        return jwt_claims(headers, config).unwrap_or_else(|_| json!({}));
-    }
-    let roles = roles_from_headers(headers);
-    let role = if roles.iter().any(|role| role == "rw") {
-        "rw"
-    } else {
-        "ro"
-    };
-    json!({"sub": "anonymous", "role": role, "roles": roles, "ns": "workflow"})
+    request_auth_context(headers, config)
+        .map(|(principal, _)| principal)
+        .unwrap_or_else(|_| json!({}))
 }
 
-fn request_mcp_session_owner(headers: &HeaderMap, config: &AuthConfig) -> Value {
-    let principal = request_principal(headers, config);
+// PYTHON_PARITY_NOTE_V1: derive one request-local principal and role set from verified claims before MCP role/tool checks; rust=rust/crates/kogwistar-api/src/sections/auth_state.rs#request_auth_context; python=kogwistar/server/auth_middleware.py#_decode_role_from_headers+kogwistar/server/mcp_tools.py#_tool_allowed; rust_test=rust/crates/kogwistar-api/src/tests/mcp_auth_timing.rs#mcp_authenticated_call_verifies_once_and_attributes_authorization_stages; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
+fn request_auth_context(
+    headers: &HeaderMap,
+    config: &AuthConfig,
+) -> Result<(Value, Vec<String>), &'static str> {
+    if config.configured() {
+        let principal = jwt_claims(headers, config)?;
+        let roles = roles_from_claims(&principal);
+        Ok((principal, roles))
+    } else {
+        let roles = roles_from_headers(headers);
+        let role = if roles.iter().any(|role| role == "rw") {
+            "rw"
+        } else {
+            "ro"
+        };
+        Ok((
+            json!({"sub": "anonymous", "role": role, "roles": roles, "ns": "workflow"}),
+            roles,
+        ))
+    }
+}
+
+fn mcp_session_owner(principal: &Value, config: &AuthConfig) -> Value {
     if config.configured() {
         json!({
             "client_id": principal.get("client_id").or_else(|| principal.get("azp")),
@@ -445,8 +461,22 @@ fn request_mcp_session_owner(headers: &HeaderMap, config: &AuthConfig) -> Value 
             "subject": principal.get("sub"),
         })
     } else {
-        principal
+        principal.clone()
     }
+}
+
+fn authorized_mcp_principal(
+    headers: &HeaderMap,
+    required_roles: &[String],
+    config: &AuthConfig,
+) -> Result<Value, &'static str> {
+    let (principal, roles) = request_auth_context(headers, config)?;
+    authorize(&ApiAuthRequest {
+        roles,
+        required_roles: required_roles.to_vec(),
+    })
+    .then_some(principal)
+    .ok_or("required role missing")
 }
 
 fn has_required_role(headers: &HeaderMap, required_roles: &[String], config: &AuthConfig) -> bool {

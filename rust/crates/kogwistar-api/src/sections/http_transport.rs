@@ -63,6 +63,77 @@ async fn health_handler(State(state): State<Arc<ServerState>>) -> Json<Value> {
     Json(value)
 }
 
+#[derive(Clone, Default)]
+struct McpRequestTimings {
+    #[cfg(test)]
+    authentication_count: u32,
+    #[cfg(test)]
+    authentication_ns: u128,
+    #[cfg(test)]
+    required_role_authorization_count: u32,
+    #[cfg(test)]
+    required_role_authorization_ns: u128,
+    #[cfg(test)]
+    tool_authorization_ns: Vec<u128>,
+}
+
+impl McpRequestTimings {
+    #[inline]
+    fn authentication<T>(&mut self, operation: impl FnOnce() -> T) -> T {
+        #[cfg(test)]
+        let started = Instant::now();
+        let result = operation();
+        #[cfg(test)]
+        {
+            self.authentication_count += 1;
+            self.authentication_ns += started.elapsed().as_nanos();
+        }
+        result
+    }
+
+    #[inline]
+    fn required_role_authorization<T>(&mut self, operation: impl FnOnce() -> T) -> T {
+        #[cfg(test)]
+        let started = Instant::now();
+        let result = operation();
+        #[cfg(test)]
+        {
+            self.required_role_authorization_count += 1;
+            self.required_role_authorization_ns += started.elapsed().as_nanos();
+        }
+        result
+    }
+
+    #[inline]
+    fn tool_authorization<T>(&mut self, operation: impl FnOnce() -> T) -> T {
+        #[cfg(test)]
+        let started = Instant::now();
+        let result = operation();
+        #[cfg(test)]
+        {
+            self.tool_authorization_ns.push(started.elapsed().as_nanos());
+        }
+        result
+    }
+}
+
+fn attach_mcp_request_timings(
+    response: Response,
+    timings: McpRequestTimings,
+) -> Response {
+    #[cfg(test)]
+    {
+        let mut response = response;
+        response.extensions_mut().insert(timings);
+        response
+    }
+    #[cfg(not(test))]
+    {
+        let _ = timings;
+        response
+    }
+}
+
 async fn openapi_handler() -> Response {
     (
         StatusCode::OK,
@@ -155,8 +226,20 @@ async fn mcp_handler(
     OriginalUri(uri): OriginalUri,
     Json(payload): Json<Value>,
 ) -> Response {
-    if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
-        return forbidden_response();
+    let mut timings = McpRequestTimings::default();
+    let auth_context = timings.authentication(|| request_auth_context(&headers, &state.api.auth));
+    let (principal, roles) = match auth_context {
+        Ok(context) => context,
+        Err(_) => return attach_mcp_request_timings(forbidden_response(), timings),
+    };
+    let role_allowed = timings.required_role_authorization(|| {
+        authorize(&ApiAuthRequest {
+            roles,
+            required_roles: state.api.required_roles.clone(),
+        })
+    });
+    if !role_allowed {
+        return attach_mcp_request_timings(forbidden_response(), timings);
     }
     let response_mode = headers
         .get(header::ACCEPT)
@@ -193,7 +276,7 @@ async fn mcp_handler(
         return StatusCode::NOT_ACCEPTABLE.into_response();
     }
     let is_initialize = payload.get("method").and_then(Value::as_str) == Some("initialize");
-    let session_owner = request_mcp_session_owner(&headers, &state.api.auth);
+    let session_owner = mcp_session_owner(&principal, &state.api.auth);
     let incoming_protocol_version = headers
         .get("mcp-protocol-version")
         .and_then(|value| value.to_str().ok());
@@ -274,9 +357,11 @@ async fn mcp_handler(
     let mut response = mcp_dispatch(
         state.clone(),
         headers.clone(),
+        principal,
         uri,
         payload,
         response_mode.is_some(),
+        &mut timings,
     )
     .await;
     if standard_tool_call {
@@ -299,7 +384,7 @@ async fn mcp_handler(
         );
     }
     if response_mode.is_none() || response.status() != StatusCode::OK {
-        return response;
+        return attach_mcp_request_timings(response, timings);
     }
     let protocol_version = response
         .headers()
@@ -331,16 +416,21 @@ async fn mcp_handler(
     if let Some(session_id) = session_id {
         response.headers_mut().insert("mcp-session-id", session_id);
     }
-    response
+    attach_mcp_request_timings(response, timings)
 }
 
 async fn mcp_delete_handler(
     State(state): State<Arc<ServerState>>,
     headers: HeaderMap,
 ) -> Response {
-    if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
-        return forbidden_response();
-    }
+    let principal = match authorized_mcp_principal(
+        &headers,
+        &state.api.required_roles,
+        &state.api.auth,
+    ) {
+        Ok(principal) => principal,
+        Err(_) => return forbidden_response(),
+    };
     let Some(session_id) = headers
         .get("mcp-session-id")
         .and_then(|value| value.to_str().ok())
@@ -350,7 +440,7 @@ async fn mcp_delete_handler(
     let protocol_version = headers
         .get("mcp-protocol-version")
         .and_then(|value| value.to_str().ok());
-    let session_owner = request_mcp_session_owner(&headers, &state.api.auth);
+    let session_owner = mcp_session_owner(&principal, &state.api.auth);
     match state
         .mcp_sessions
         .close(session_id, &session_owner, protocol_version)
@@ -363,9 +453,14 @@ async fn mcp_delete_handler(
 }
 
 async fn mcp_get_handler(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
-    if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
-        return forbidden_response();
-    }
+    let principal = match authorized_mcp_principal(
+        &headers,
+        &state.api.required_roles,
+        &state.api.auth,
+    ) {
+        Ok(principal) => principal,
+        Err(_) => return forbidden_response(),
+    };
     let accepts_sse = headers
         .get(header::ACCEPT)
         .and_then(|value| value.to_str().ok())
@@ -389,7 +484,7 @@ async fn mcp_get_handler(State(state): State<Arc<ServerState>>, headers: HeaderM
     let protocol_version = headers
         .get("mcp-protocol-version")
         .and_then(|value| value.to_str().ok());
-    let session_owner = request_mcp_session_owner(&headers, &state.api.auth);
+    let session_owner = mcp_session_owner(&principal, &state.api.auth);
     let last_event_id = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok());
@@ -481,13 +576,12 @@ async fn mcp_get_handler(State(state): State<Arc<ServerState>>, headers: HeaderM
 async fn mcp_dispatch(
     state: Arc<ServerState>,
     headers: HeaderMap,
+    principal: Value,
     uri: axum::http::Uri,
     payload: Value,
     standard_mcp: bool,
+    timings: &mut McpRequestTimings,
 ) -> Response {
-    if !has_required_role(&headers, &state.api.required_roles, &state.api.auth) {
-        return forbidden_response();
-    }
     let id = payload.get("id").cloned().unwrap_or(Value::Null);
     let method = payload
         .get("method")
@@ -553,7 +647,6 @@ async fn mcp_dispatch(
         return Json(mcp_result(id, json!({}))).into_response();
     }
     if method == "tools/list" {
-        let principal = request_principal(&headers, &state.api.auth);
         let contract: Value = serde_json::from_str(FROZEN_MCP_TOOLS_JSON)
             .expect("committed MCP tool contract is valid JSON");
         let tools = contract["surfaces"][surface]
@@ -564,11 +657,15 @@ async fn mcp_dispatch(
                     .filter(|tool| {
                         tool.get("name")
                             .and_then(Value::as_str)
-                            .is_some_and(|name| {
-                                state
-                                    .application
-                                    .supports_mcp_tool_for_principal(surface, name, &principal)
+                        .is_some_and(|name| {
+                            timings.tool_authorization(|| {
+                                state.application.supports_mcp_tool_for_principal(
+                                    surface,
+                                    name,
+                                    &principal,
+                                )
                             })
+                        })
                     })
                     .cloned()
                     .collect::<Vec<_>>()
@@ -577,16 +674,17 @@ async fn mcp_dispatch(
         return Json(mcp_result(id, json!({"tools": tools}))).into_response();
     }
     if method == "tools/call" {
-        let principal = request_principal(&headers, &state.api.auth);
         let params = payload.get("params").cloned().unwrap_or_else(|| json!({}));
         let tool_name = params
             .get("name")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if !state
-            .application
-            .supports_mcp_tool_for_principal(surface, tool_name, &principal)
-        {
+        let tool_allowed = timings.tool_authorization(|| {
+            state
+                .application
+                .supports_mcp_tool_for_principal(surface, tool_name, &principal)
+        });
+        if !tool_allowed {
             return Json(json!({
                 "jsonrpc": "2.0",
                 "id": id,
