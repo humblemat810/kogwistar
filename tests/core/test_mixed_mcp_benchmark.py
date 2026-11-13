@@ -295,6 +295,11 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
     assert in_process["state_digest"] == rust_authority_http["state_digest"]
     assert in_process["operations"] == http["operations"] == len(trace)
     assert in_process["per_operation"].keys() == http["per_operation"].keys()
+    for operation, metrics in http["per_operation"].items():
+        assert metrics["count"] == sum(
+            step["operation"] == operation for step in trace
+        )
+        assert 0 <= metrics["p50_ms"] <= metrics["p95_ms"] <= metrics["p99_ms"]
     assert http["startup_ms"] > 0
     assert http["elapsed_ms"] > 0
     assert in_process["host_process_cpu_elapsed_ms"] > 0
