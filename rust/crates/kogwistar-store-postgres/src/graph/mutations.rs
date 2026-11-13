@@ -357,19 +357,14 @@ where
                 .map_err(backend)?;
         }
     } else if mutation.entity_kind == "node" {
+        // `node_docs` omits scope metadata by contract, unlike scoped refs.
         client
             .execute(
                 &format!(
-                    "DELETE FROM {} WHERE metadata ->> 'node_id' = $1 AND {}",
-                    tables.node_docs,
-                    graph_scope_identity_predicate(2)
+                    "DELETE FROM {} WHERE metadata ->> 'node_id' = $1",
+                    tables.node_docs
                 ),
-                &[
-                    &mutation.entity_id,
-                    &mutation.scope.namespace,
-                    &mutation.scope.workspace_id.as_deref().unwrap_or(""),
-                    &mutation.scope.graph_space.as_deref().unwrap_or(""),
-                ],
+                &[&mutation.entity_id],
             )
             .await
             .map_err(backend)?;

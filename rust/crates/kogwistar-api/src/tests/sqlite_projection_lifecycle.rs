@@ -4,7 +4,7 @@
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use jsonwebtoken::{EncodingKey, Header, encode};
-        use kogwistar_store::GraphWriteStore;
+        use kogwistar_store::{GraphMutation, GraphMutationBatch, GraphScope, GraphWriteStore};
         use tower::ServiceExt;
 
         let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
@@ -176,6 +176,32 @@
         let upsert_conversation_node = |id: String, mut metadata: serde_json::Map<String, Value>| async {
             metadata.insert("workspace_id".to_owned(), json!(live_workspace));
             metadata.insert("graph_space".to_owned(), json!("conversation"));
+            let payload = json!({"id":id,"metadata":metadata});
+            service
+                .store
+                .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                    mutations: vec![GraphMutation {
+                        scope: GraphScope {
+                            namespace: namespace.clone(),
+                            workspace_id: Some(live_workspace.clone()),
+                            graph_space: Some("conversation".to_owned()),
+                        },
+                        table: "gke_nodes".to_owned(),
+                        entity_kind: "node".to_owned(),
+                        event_id: format!("conversation-seed-{id}"),
+                        op: "ADD".to_owned(),
+                        payload: payload.clone(),
+                        record: GraphRecord {
+                            id: id.clone(),
+                            document: None,
+                            metadata: metadata.clone(),
+                            embedding: None,
+                        },
+                        embedding_dim: 2,
+                    }],
+                    index_jobs: Vec::new(),
+                })
+                .unwrap();
             graph
                 .upsert_graph_record_of_kind(
                     &namespace,

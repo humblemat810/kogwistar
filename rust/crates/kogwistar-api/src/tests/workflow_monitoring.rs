@@ -519,7 +519,7 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL; uses a unique Chroma collection"]
 async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
-    use kogwistar_store::GraphWriteStore;
+    use kogwistar_store::{GraphMutation, GraphMutationBatch, GraphScope, GraphWriteStore};
 
     let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
         .expect("ignored Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
@@ -535,7 +535,7 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
     )
     .await
     .unwrap();
-    let node_metadata = serde_json::from_value(json!({
+    let node_metadata: serde_json::Map<String, Value> = serde_json::from_value(json!({
         "entity_type":"lane_message",
         "conversation_id":"operator-conversation",
         "workspace_id":"workspace-a",
@@ -554,13 +554,13 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
             GraphRecord {
                 id: "sqlite-visible-message".to_owned(),
                 document: Some("authorized operator message".to_owned()),
-                metadata: node_metadata,
+                metadata: node_metadata.clone(),
                 embedding: Some(vec![0.6, 0.8]),
             },
         )
         .await
         .unwrap();
-    let acl_metadata = serde_json::from_value(json!({
+    let acl_metadata: serde_json::Map<String, Value> = serde_json::from_value(json!({
         "entity_type":"acl_record",
         "workspace_id":"workspace-a",
         "graph_space":"conversation",
@@ -578,7 +578,7 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
             GraphRecord {
                 id: "sqlite-visible-message-acl".to_owned(),
                 document: None,
-                metadata: acl_metadata,
+                metadata: acl_metadata.clone(),
                 embedding: Some(vec![0.6, 0.8]),
             },
         )
@@ -592,6 +592,44 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
     let service = SqliteRunApplicationService::open(&sqlite_path)
         .unwrap()
         .with_chroma_graph(graph);
+    let graph_scope = GraphScope {
+        namespace: "workflow".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let canonical_record = |id: &str,
+                            document: Option<&str>,
+                            metadata: serde_json::Map<String, Value>| {
+        GraphMutation {
+            scope: graph_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("operator-inbox-{suffix}-{id}"),
+            op: "ADD".to_owned(),
+            payload: json!({"id":id,"document":document,"metadata":metadata}),
+            record: GraphRecord {
+                id: id.to_owned(),
+                document: document.map(str::to_owned),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 2,
+        }
+    };
+    service
+        .store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: vec![
+                canonical_record(
+                    "sqlite-visible-message",
+                    Some("authorized operator message"),
+                    node_metadata,
+                ),
+                canonical_record("sqlite-visible-message-acl", None, acl_metadata),
+            ],
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
     service
         .store
         .project_lane_message(NewProjectedLaneMessage {
@@ -617,7 +655,7 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
         "sub":"alice", "role":"ro", "ns":["workflow"],
         "storage_ns":"workflow", "workspace_id":"workspace-a",
         "graph_space":"conversation", "security_scope":"team-a",
-        "capabilities":["project_view"]
+        "capabilities":["project_view","workflow.run.read","read_security_scope"]
     });
     let response = service
         .execute(ApiEffectRequest {

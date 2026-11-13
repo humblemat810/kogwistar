@@ -48,19 +48,15 @@ where
     if mutation.entity_kind != "node" {
         return Ok(());
     }
+    // `node_docs` is deliberately scope-free; node IDs are globally unique.
+    // Scope predicates here never match these derived rows and leave stale docs.
     client
         .execute(
             &format!(
-                "DELETE FROM {} WHERE metadata ->> 'node_id' = $1 AND {}",
-                tables.node_docs,
-                graph_scope_identity_predicate(2)
+                "DELETE FROM {} WHERE metadata ->> 'node_id' = $1",
+                tables.node_docs
             ),
-            &[
-                &mutation.record.id,
-                &mutation.scope.namespace,
-                &mutation.scope.workspace_id.as_deref().unwrap_or(""),
-                &mutation.scope.graph_space.as_deref().unwrap_or(""),
-            ],
+            &[&mutation.record.id],
         )
         .await
         .map_err(backend)?;
