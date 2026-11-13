@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **173/177 PASS (97.7%)**.
-- **Fine worklist:** **799/873 PASS (91.5%)**; **0 IN PROGRESS**, **74 NOT STARTED**, **0 BLOCKED**.
+- **Fine worklist:** **800/873 PASS (91.6%)**; **0 IN PROGRESS**, **73 NOT STARTED**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, one HTTP dev-token mode gate, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -914,7 +914,7 @@
 | FW-17-01C-WINDOWS | DL-17 | NOT STARTED | Verify required Rust toolchain and CI result on Windows; label optional jobs. |
 | FW-17-01C-MACOS | DL-17 | NOT STARTED | Verify required Rust toolchain and CI result on macOS; label optional jobs. |
 | FW-17-03 | DL-17 | PARENT | Parent scope; children: FW-17-03-CP312,FW-17-03-CP313,FW-17-03-CP314 |
-| FW-17-03-CP312 | DL-17 | NOT STARTED | Verify published wheel metadata and dependency installation on CPython 3.12. |
+| FW-17-03-CP312 | DL-17 | PASS | Invariant: published Kogwistar wheel installs its declared dependencies and imports on supported CPython 3.12. Cell: clean uv venv with CPython 3.12.13 and PyPI `kogwistar==0.6.15`. Oracle: install succeeds; distribution metadata reports 0.6.15; `kogwistar` imports from that venv's `site-packages`. Evidence: `uv venv --python 3.12 .tmp/fw17-cp312-wheel-check`; `uv pip install --python .tmp/fw17-cp312-wheel-check/Scripts/python.exe kogwistar==0.6.15`; isolated import/metadata probe (**passed**, 50 packages installed; 64 declared requirements). This checks the published wheel installation/import only, not native extension parity or other Python/platform cells. |
 | FW-17-03-CP313 | DL-17 | NOT STARTED | Verify published wheel metadata and dependency installation on CPython 3.13. |
 | FW-17-03-CP314 | DL-17 | NOT STARTED | Verify published wheel metadata and dependency installation on CPython 3.14. |
 | FW-17-03A | DL-17 | PARENT | Parent scope; children: FW-17-03A-312-LINUX,FW-17-03A-312-WINDOWS,FW-17-03A-312-MACOS,FW-17-03A-313-LINUX,FW-17-03A-313-WINDOWS,FW-17-03A-313-MACOS,FW-17-03A-314-LINUX,FW-17-03A-314-WINDOWS,FW-17-03A-314-MACOS |
