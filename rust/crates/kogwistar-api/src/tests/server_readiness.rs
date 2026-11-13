@@ -284,12 +284,19 @@
     }
 
     #[tokio::test]
-    async fn sqlite_metadata_store_cannot_advertise_or_route_graph_authority() {
+    async fn metadata_only_sqlite_mcp_discovery_hides_graph_operations() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::Request,
+        };
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-api-sqlite-graph-authority-{}.sqlite",
             uuid::Uuid::new_v4()
         ));
-        let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        let sqlite = Arc::new(SqliteRunApplicationService::open(&sqlite_path).unwrap());
 
         assert_eq!(
             sqlite.graph_authority_capability(),
@@ -301,6 +308,70 @@
         assert!(!sqlite.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
         assert!(
             !sqlite.supports_http_operation("GET", "/api/conversations/{conversation_id}/turns")
+        );
+
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            sqlite.clone(),
+        );
+        let listing = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"list","method":"tools/list"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(listing.status(), StatusCode::OK);
+        let listing: Value = serde_json::from_slice(
+            &to_bytes(listing.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        let names = listing["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect::<Vec<_>>();
+        for unsupported in ["kg_neighbors", "kg_find_edges", "propose_vector"] {
+            assert!(!names.contains(&unsupported), "advertised {unsupported}: {names:?}");
+        }
+
+        let rejected = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"denied","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"node_id":"missing"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::OK);
+        let rejected: Value = serde_json::from_slice(
+            &to_bytes(rejected.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(rejected["error"]["code"], -32602);
+        assert_eq!(
+            rejected["error"]["message"],
+            "Tool not advertised by this application service"
         );
 
         let response = sqlite
