@@ -30,7 +30,8 @@ dependencies = [
   "anyio>=4.0",
   "Jinja2>=3.1",
   "fastapi>=0.111",
-  "mcp>=2.2.0,<3",
+  # PyPy on Windows cannot install MCP's pywin32 dependency; keep MCP opt-in there.
+  "mcp>=2.2.0,<3; implementation_name != 'pypy' or sys_platform != 'win32'",
   "httpx>=0.28.1",
   "jsonschema>=4.21,<5",
   "python-jose[cryptography]>=3.3",

@@ -139,6 +139,28 @@ def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
     assert "mcp<2" not in requirements
 
 
+def test_mcp_is_optional_for_pypy_on_windows_but_available_elsewhere() -> None:
+    import tomllib
+    from packaging.requirements import Requirement
+
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = metadata["project"]["dependencies"]
+    server_dependencies = metadata["project"]["optional-dependencies"]["server"]
+
+    mcp_dependency = next(Requirement(item) for item in dependencies if item.startswith("mcp"))
+    assert mcp_dependency.marker is not None
+    assert not mcp_dependency.marker.evaluate(
+        {"implementation_name": "pypy", "sys_platform": "win32"}
+    )
+    assert mcp_dependency.marker.evaluate(
+        {"implementation_name": "pypy", "sys_platform": "linux"}
+    )
+    assert mcp_dependency.marker.evaluate(
+        {"implementation_name": "cpython", "sys_platform": "win32"}
+    )
+    assert "mcp>=2.2.0,<3" in server_dependencies
+
+
 def test_pypy311_profile_includes_event_agent_schema_validation_dependency() -> None:
     requirements = PYPI_REQUIREMENTS.read_text(encoding="utf-8")
 
