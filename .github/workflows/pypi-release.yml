@@ -168,8 +168,69 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  pypy-wheel:
+    needs: verify-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: pypy-3.11-v7.3.20
+          cache: pip
+          cache-dependency-path: requirements-pypy-3.11-experimental.txt
+
+      - name: Build and smoke-test pure-Python PyPy wheel
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ needs.verify-release.outputs.version }}
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip setuptools wheel packaging
+          python setup.py bdist_wheel --dist-dir dist
+          wheel="$(find dist -maxdepth 1 -name 'kogwistar-*-py3-none-any.whl' -print -quit)"
+          test -n "$wheel"
+          python - "$wheel" <<'PY'
+          import sys
+          from email.parser import Parser
+          from zipfile import ZipFile
+
+          from packaging.utils import parse_wheel_filename
+
+          wheel = sys.argv[1]
+          _, version, _, tags = parse_wheel_filename(wheel)
+          if not any(str(tag) == "py3-none-any" for tag in tags):
+              raise SystemExit(f"expected a pure Python wheel, got {tags}")
+          with ZipFile(wheel) as archive:
+              names = archive.namelist()
+              metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
+              metadata = Parser().parsestr(archive.read(metadata_name).decode())
+          native_modules = [
+              name for name in names
+              if name.startswith("kogwistar/_rust.")
+              or name.endswith((".so", ".pyd", ".dll", ".dylib"))
+          ]
+          if native_modules:
+              raise SystemExit(f"pure Python wheel contains native modules: {native_modules}")
+          if metadata["Version"] != str(version):
+              raise SystemExit("wheel filename and METADATA versions differ")
+          if metadata["Requires-Python"] != ">=3.11":
+              raise SystemExit(f"unexpected Requires-Python: {metadata['Requires-Python']}")
+          print(f"wheel={wheel} version={version} requires-python={metadata['Requires-Python']}")
+          PY
+          python -m pip install "$wheel"
+          cd "$RUNNER_TEMP"
+          python "$GITHUB_WORKSPACE/scripts/pypy311_pure_wheel_smoke.py" \
+            --expected-version "$EXPECTED_VERSION"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: wheel-pypy311-pure
+          path: dist/*.whl
+          if-no-files-found: error
+
   audit-artifacts:
-    needs: [wheels, sdist]
+    needs: [wheels, sdist, pypy-wheel]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-python@v7
