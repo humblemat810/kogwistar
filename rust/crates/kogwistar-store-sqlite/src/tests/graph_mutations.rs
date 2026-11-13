@@ -582,6 +582,158 @@ fn canonical_graph_retry_after_reopen_does_not_duplicate_events_or_index_intents
 }
 
 #[test]
+fn canonical_graph_batch_matches_per_item_for_node_edge_and_index_effects() {
+    let (batched_store, batched_path) = store("canonical-graph-batch-parity");
+    let (per_item_store, per_item_path) = store("canonical-graph-per-item-parity");
+    let make_mutations = || {
+        let first = mutation("parity-node-event-1", "parity-node-1");
+        let second = mutation("parity-node-event-2", "parity-node-2");
+        let mut edge = mutation("parity-edge-event", "parity-edge");
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        edge.table = "gke_edges".to_owned();
+        edge.entity_kind = "edge".to_owned();
+        edge.payload = fixture["cases"][1]["payload"].clone();
+        edge.payload["id"] = serde_json::json!("parity-edge");
+        edge.payload["source_ids"] = serde_json::json!(["parity-node-1"]);
+        edge.payload["target_ids"] = serde_json::json!(["parity-node-2"]);
+        edge.payload["metadata"]["workspace_id"] = serde_json::json!("workspace-a");
+        edge.payload["metadata"]["graph_space"] = serde_json::json!("conversation");
+        edge.record.id = "parity-edge".to_owned();
+        edge.record.document = Some(edge.payload.to_string());
+        edge.record.metadata = edge.payload["metadata"].as_object().unwrap().clone();
+        vec![first, second, edge]
+    };
+
+    let mutations = make_mutations();
+    let batch_results = batched_store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations,
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(batch_results.len(), 3);
+    assert!(
+        batch_results
+            .iter()
+            .all(|result| result.inserted && result.mutated)
+    );
+
+    for mutation in make_mutations() {
+        per_item_store
+            .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: vec![mutation],
+                index_jobs: Vec::new(),
+            })
+            .unwrap();
+    }
+
+    let batch_events = batched_store
+        .replay_raw_events("conversation", 0, 100)
+        .unwrap();
+    let per_item_events = per_item_store
+        .replay_raw_events("conversation", 0, 100)
+        .unwrap();
+    let event_identity = |events: &[crate::RawEntityEvent]| {
+        events
+            .iter()
+            .map(|event| {
+                (
+                    event.seq,
+                    event.event_id.clone(),
+                    event.entity_kind.clone(),
+                    event.entity_id.clone(),
+                    event.op.clone(),
+                    event.payload_json.clone(),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        event_identity(&batch_events),
+        event_identity(&per_item_events)
+    );
+    assert_eq!(batch_events.len(), 3, "each graph entity must persist once");
+
+    for key in [
+        "node:parity-node-1",
+        "node:parity-node-2",
+        "edge:parity-edge",
+    ] {
+        let batched_projection = batched_store
+            .get_stage1_node_projection("conversation", key)
+            .unwrap()
+            .unwrap();
+        let per_item_projection = per_item_store
+            .get_stage1_node_projection("conversation", key)
+            .unwrap()
+            .unwrap();
+        assert_eq!(batched_projection.payload, per_item_projection.payload);
+        assert_eq!(
+            batched_projection.last_authoritative_seq,
+            per_item_projection.last_authoritative_seq
+        );
+    }
+
+    let job_identity = |store: &SqliteStore| {
+        let jobs = store
+            .list_index_jobs(Some("conversation"), None, None, None, None, 100)
+            .unwrap();
+        let mut identity = jobs
+            .iter()
+            .map(|job| {
+                (
+                    job.entity_kind.clone(),
+                    job.entity_id.clone(),
+                    job.index_kind.clone(),
+                    job.op.clone(),
+                    job.status.clone(),
+                    job.payload_json.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        identity.sort();
+        identity
+    };
+    let expected_jobs = job_identity(&batched_store);
+    assert_eq!(expected_jobs, job_identity(&per_item_store));
+    assert_eq!(
+        expected_jobs.len(),
+        3,
+        "each entity must enqueue one index intent"
+    );
+
+    let retry_results = batched_store
+        .apply_canonical_graph_mutation_batch(GraphMutationBatch {
+            mutations: make_mutations(),
+            index_jobs: Vec::new(),
+        })
+        .unwrap();
+    assert!(
+        retry_results
+            .iter()
+            .all(|result| !result.inserted && !result.mutated)
+    );
+    assert_eq!(
+        event_identity(
+            &batched_store
+                .replay_raw_events("conversation", 0, 100)
+                .unwrap()
+        ),
+        event_identity(&batch_events),
+        "retry must not duplicate canonical graph events"
+    );
+    assert_eq!(expected_jobs, job_identity(&batched_store));
+
+    drop(batched_store);
+    drop(per_item_store);
+    let _ = fs::remove_file(batched_path);
+    let _ = fs::remove_file(per_item_path);
+}
+
+#[test]
 fn canonical_edge_mutation_uses_shared_embedding_job_kind() {
     let (store, path) = store("canonical-edge-projection-kind");
     let mut edge = mutation("edge-event-1", "edge-1");
