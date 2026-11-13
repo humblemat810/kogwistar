@@ -14,6 +14,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
+use std::time::Instant;
 
 const ACTION_VERSION: i64 = 1;
 
@@ -25,6 +26,14 @@ pub struct ProjectionWorkerSummary {
     pub claim_lost: usize,
     pub retried: usize,
     pub failed: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectionWorkerTiming {
+    /// Completed provider-batch wall time; excludes queue admission and projection writes.
+    pub completed_provider_elapsed_ns: u128,
+    /// Graph projection-operation wall time; includes lease renewal while the write is pending.
+    pub graph_projection_elapsed_ns: u128,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -253,6 +262,7 @@ where
         lease_seconds,
         namespace,
         None,
+        false,
         move |jobs| {
             let calls = jobs
                 .into_iter()
@@ -271,6 +281,7 @@ where
         },
     )
     .await
+    .map(|(summary, _)| summary)
 }
 
 /// Safe provider boundary that withholds the queue claim token and transition
@@ -296,6 +307,7 @@ where
         lease_seconds,
         namespace,
         None,
+        false,
         move |jobs| {
             let calls = jobs
                 .into_iter()
@@ -315,6 +327,7 @@ where
         },
     )
     .await
+    .map(|(summary, _)| summary)
 }
 
 /// Safe batch provider boundary for a namespace-scoped claim. Existing
@@ -340,6 +353,7 @@ where
         lease_seconds,
         namespace,
         None,
+        false,
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -349,6 +363,7 @@ where
         },
     )
     .await
+    .map(|(summary, _)| summary)
 }
 
 /// Safe provider boundary for a queue claim restricted to supported index
@@ -418,6 +433,83 @@ where
         lease_seconds,
         None,
         Some(filter),
+        false,
+        move |jobs| {
+            let inputs = jobs
+                .iter()
+                .map(IndexJobProviderInput::from)
+                .collect::<Vec<_>>();
+            provider(inputs)
+        },
+    )
+    .await
+    .map(|(summary, _)| summary)
+}
+
+/// Opt-in provider/projection stage attribution for namespace-scoped work.
+/// Existing APIs remain unchanged and skip timing instrumentation.
+pub async fn run_graph_projection_jobs_once_with_batch_provider_input_observed<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    mut provider: F,
+) -> StoreResult<(ProjectionWorkerSummary, ProjectionWorkerTiming)>
+where
+    Q: IndexJobWriteStore,
+    G: GraphProjectionWriteStore,
+    F: FnMut(Vec<IndexJobProviderInput>) -> Fut,
+    Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
+{
+    run_graph_projection_jobs_once_inner(
+        queue,
+        graph,
+        limit,
+        lease_seconds,
+        namespace,
+        None,
+        true,
+        move |jobs| {
+            let inputs = jobs
+                .iter()
+                .map(IndexJobProviderInput::from)
+                .collect::<Vec<_>>();
+            provider(inputs)
+        },
+    )
+    .await
+}
+
+/// Opt-in provider/projection stage attribution for atomically filtered work.
+/// Existing APIs remain unchanged and skip timing instrumentation.
+pub async fn run_graph_projection_jobs_once_filtered_with_batch_provider_input_observed<
+    Q,
+    G,
+    F,
+    Fut,
+>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    filter: IndexJobClaimFilter,
+    mut provider: F,
+) -> StoreResult<(ProjectionWorkerSummary, ProjectionWorkerTiming)>
+where
+    Q: IndexJobWriteStore,
+    G: GraphProjectionWriteStore,
+    F: FnMut(Vec<IndexJobProviderInput>) -> Fut,
+    Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
+{
+    run_graph_projection_jobs_once_inner(
+        queue,
+        graph,
+        limit,
+        lease_seconds,
+        None,
+        Some(filter),
+        true,
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -436,8 +528,9 @@ async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
     lease_seconds: i64,
     namespace: Option<&str>,
     claim_filter: Option<IndexJobClaimFilter>,
+    measure_stages: bool,
     mut provider: F,
-) -> StoreResult<ProjectionWorkerSummary>
+) -> StoreResult<(ProjectionWorkerSummary, ProjectionWorkerTiming)>
 where
     Q: IndexJobWriteStore,
     G: GraphProjectionWriteStore,
@@ -457,6 +550,7 @@ where
         claimed: jobs.len(),
         ..ProjectionWorkerSummary::default()
     };
+    let mut timing = ProjectionWorkerTiming::default();
 
     let mut provider_groups: Vec<Vec<IndexJob>> = Vec::new();
     for job in &jobs {
@@ -493,9 +587,19 @@ where
         if claims.len() != group.len() {
             return Err(backend_error("claimed index job has no claim token"));
         }
-        let (batch_result, lost) =
-            with_batch_lease_renewal(queue, &claims, lease_seconds, provider(group.clone()))
-                .await?;
+        let provider_future = provider(group.clone());
+        let (batch_result, lost) = if measure_stages {
+            let elapsed_ns = &mut timing.completed_provider_elapsed_ns;
+            let timed_provider = async {
+                let started = Instant::now();
+                let result = provider_future.await;
+                *elapsed_ns = elapsed_ns.saturating_add(started.elapsed().as_nanos());
+                result
+            };
+            with_batch_lease_renewal(queue, &claims, lease_seconds, timed_provider).await?
+        } else {
+            with_batch_lease_renewal(queue, &claims, lease_seconds, provider_future).await?
+        };
         batch_claims_lost.extend(lost);
 
         let expected = group
@@ -650,32 +754,45 @@ where
                 continue;
             }
         };
-        let projection =
-            with_lease_renewal(queue, &job.job_id, claim_token, lease_seconds, async {
-                match action {
-                    ProjectionAction::Upsert(record) => {
-                        graph
-                            .upsert_graph_projection_record_with_outcome(
-                                &job.namespace,
-                                &job.entity_kind,
-                                record,
-                            )
-                            .await
-                    }
-                    ProjectionAction::Delete => {
-                        // A repeated delete after lost acknowledgement is already the
-                        // desired state, so `false` is still a successful projection.
-                        graph
-                            .delete_graph_projection_record_with_outcome(
-                                &job.namespace,
-                                &job.entity_kind,
-                                &job.entity_id,
-                            )
-                            .await
-                    }
+        let projection_operation = async {
+            let started = measure_stages.then(Instant::now);
+            let result = match action {
+                ProjectionAction::Upsert(record) => {
+                    graph
+                        .upsert_graph_projection_record_with_outcome(
+                            &job.namespace,
+                            &job.entity_kind,
+                            record,
+                        )
+                        .await
                 }
-            })
-            .await?;
+                ProjectionAction::Delete => {
+                    // A repeated delete after lost acknowledgement is already the
+                    // desired state, so `false` is still a successful projection.
+                    graph
+                        .delete_graph_projection_record_with_outcome(
+                            &job.namespace,
+                            &job.entity_kind,
+                            &job.entity_id,
+                        )
+                        .await
+                }
+            };
+            if let Some(started) = started {
+                timing.graph_projection_elapsed_ns = timing
+                    .graph_projection_elapsed_ns
+                    .saturating_add(started.elapsed().as_nanos());
+            }
+            result
+        };
+        let projection = with_lease_renewal(
+            queue,
+            &job.job_id,
+            claim_token,
+            lease_seconds,
+            projection_operation,
+        )
+        .await?;
         let Some(projection) = projection else {
             summary.claim_lost += 1;
             continue;
@@ -702,7 +819,7 @@ where
             summary.claim_lost += 1;
         }
     }
-    Ok(summary)
+    Ok((summary, timing))
 }
 
 #[cfg(test)]
@@ -858,6 +975,49 @@ mod tests {
         for id in ["node-1", "node-2"] {
             assert!(graph.graph_record("workspace", id).await.unwrap().is_some());
         }
+    }
+
+    #[tokio::test]
+    async fn observed_projection_attributes_provider_and_graph_write_stages() {
+        let queue = InMemoryStore::new();
+        enqueue(&queue, "UPSERT").await;
+        let graph = InMemoryStore::new();
+
+        let (summary, timing) = run_graph_projection_jobs_once_with_batch_provider_input_observed(
+            &queue,
+            &graph,
+            1,
+            30,
+            Some("workspace"),
+            |inputs| async move {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                Ok(inputs
+                    .into_iter()
+                    .map(|input| (input.job_id, Ok(candidate())))
+                    .collect())
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.claimed, 1);
+        assert_eq!(summary.projected, 1);
+        assert!(timing.completed_provider_elapsed_ns >= 1_000_000);
+        assert!(timing.graph_projection_elapsed_ns > 0);
+        assert!(
+            graph
+                .graph_record("workspace", "node-1")
+                .await
+                .unwrap()
+                .unwrap()
+                .embedding
+                .is_some()
+        );
+        let done = queue
+            .index_jobs(Some("workspace"), Some("DONE"), None, None, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(done.len(), 1);
     }
 
     #[tokio::test]
