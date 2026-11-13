@@ -1428,3 +1428,42 @@ Timings are attached to test-only HTTP response extensions; production adds no
 timing fields to the wire. This exercises the production router in process,
 not a TCP socket or external MCP client. Tool authorization used a focused
 test service, so numbers do not represent backend/store authorization cost.
+
+### 2026-11-13 resource-matched endpoint rerun
+
+Reran the canonical 100-item / 300-operation SQLite trace in the fixed-resource
+Docker endpoint image using CPython 3.15.1 free-threaded, one warm-up and three
+fresh samples per mode. All modes shared CPU/RAM limits (4 CPUs, 8 GiB, swap
+equal to RAM, network egress disabled); the cgroup manifest verified those
+limits. Python HTTP and Python HTTP plus Rust SQLite authority ran in the same
+runtime/container as Rust-native HTTP. Reported digests, trace SHA, per-operation
+counts, dispatch counts, and transport counts reconcile across warm-up and all
+samples. Trace SHA is
+`bc539bc8c2bb7247f3d1d2d10d1c338854447ae4cdd4eceda6820031a77c478d`; final
+state digest is
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+| Mode | Median ops/s | Throughput CV | Startup median | FFI calls | Serialized bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python Streamable HTTP | 5.047 | 1.36% | 550.9 ms | 0 | 262,335 |
+| Python HTTP + Rust SQLite authority | 4.888 | 0.80% | 571.5 ms | 1,000 | 810,636 |
+| Rust-native HTTP | 34.681 | 5.04% | 324.5 ms | 0 | 269,027 |
+
+Median per-operation p95/p99 latency across the three measured samples:
+
+| Mode | Write p95/p99 ms | Event read p95/p99 ms | Projection read p95/p99 ms |
+| --- | ---: | ---: | ---: |
+| Python Streamable HTTP | 177.195 / 182.233 | 246.305 / 272.725 | 230.079 / 235.948 |
+| Python HTTP + Rust SQLite authority | 206.909 / 213.650 | 155.467 / 159.706 | 300.092 / 336.655 |
+| Rust-native HTTP | 34.924 / 45.116 | 28.803 / 30.103 | 32.591 / 35.331 |
+
+For this workload only, Rust-native measured 6.87x Python HTTP throughput; the
+mixed Python/Rust-authority route measured 0.97x Python HTTP. This supports the
+seam-free Rust path as a real performance option, while showing that the
+language boundary plus 1,000 FFI calls does not automatically make a mixed
+stack faster. Three samples are descriptive, and Rust-native throughput CV is
+5.04%, just above the report's stable-latency threshold; do not generalize this
+ratio to other backends, sizes, or workloads. The run does not isolate storage
+latency from routing, transport, or tool execution. Container image/source
+manifest and raw samples are local, ignored artifacts under
+`.tmp/fw20-04-current/` (source revision `8f1c779d238ae0f0bcfaa81afb9cf777c03d8fe9`).
