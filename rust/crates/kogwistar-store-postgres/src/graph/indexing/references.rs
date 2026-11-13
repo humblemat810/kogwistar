@@ -48,8 +48,8 @@ where
     if mutation.entity_kind != "node" {
         return Ok(());
     }
-    // `node_docs` is deliberately scope-free; node IDs are globally unique.
-    // Scope predicates here never match these derived rows and leave stale docs.
+    // Node-document rows keep namespace metadata for scoped candidate inspection.
+    // Node IDs remain globally unique, so replacement/deletion stays keyed by ID.
     client
         .execute(
             &format!(
@@ -86,9 +86,10 @@ where
             "mention_count": 1,
         });
         let row_json = serde_json::to_string(&row)?;
-        // Python keeps this derived index scope-free; node IDs are globally
-        // unique in the graph projection, and this table's primary key is id.
-        let metadata_json = serde_json::to_string(&row)?;
+        let row_metadata = row.as_object().ok_or_else(|| {
+            PostgresStoreError::Backend("node-doc row must be an object".to_owned())
+        })?;
+        let metadata_json = serde_json::to_string(&graph_metadata(&mutation.scope, row_metadata)?)?;
         let affected = client
             .execute(
                 &format!(

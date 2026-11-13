@@ -2000,7 +2000,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 row = {"id": rid, "node_id": node.id, "doc_id": did, "mention_count": 1}
                 ids.append(rid)
                 docs.append(json.dumps(row))
-                metas.append(row)
+                metas.append({**row, "namespace": self._e.namespace})
             run_awaitable_blocking(self._e.backend.node_docs_add(
                 ids=ids,
                 documents=docs,

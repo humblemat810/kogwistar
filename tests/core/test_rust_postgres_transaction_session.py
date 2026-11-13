@@ -744,6 +744,58 @@ def test_rust_graph_mutation_materializes_python_readable_node_docs(
     assert node["metadatas"][0]["doc_ids"] == '["source-a","source-b"]'
 
 
+def test_python_node_docs_metadata_preserves_namespace(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    _, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    namespace = f"python-node-docs-{uuid.uuid4().hex}"
+    engine = GraphKnowledgeEngine(
+        backend=backend,
+        namespace=namespace,
+        embedding_function=lambda documents_or_texts: [
+            [1.0, 0.0, 0.0] for _ in documents_or_texts
+        ],
+    )
+    node = build_entity_node(
+        node_id=f"python-node-{uuid.uuid4().hex}",
+        doc_id="python-source",
+        embedding=[1.0, 0.0, 0.0],
+    )
+    engine.write.add_node(node)
+
+    rows = backend.node_docs_get(
+        where={"node_id": node.id}, include=["documents", "metadatas"]
+    )
+    assert rows["ids"] == [f"{node.id}::python-source"]
+    assert rows["documents"] == [
+        json.dumps(
+            {
+                "id": f"{node.id}::python-source",
+                "node_id": node.id,
+                "doc_id": "python-source",
+                "mention_count": 1,
+            }
+        )
+    ]
+    assert rows["metadatas"] == [
+        {
+            "id": f"{node.id}::python-source",
+            "node_id": node.id,
+            "doc_id": "python-source",
+            "mention_count": 1,
+            "namespace": namespace,
+        }
+    ]
+
+
 def test_rust_authority_reconciles_metadata_join_jobs_natively(
     monkeypatch: pytest.MonkeyPatch,
     pg_dsn: str | None,
