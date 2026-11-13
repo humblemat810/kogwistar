@@ -1495,3 +1495,40 @@ store-call time is about 8.04 s/sample versus about 8.64 s total measured endpoi
 calls account for most of this narrow sequential endpoint workload. This is attribution, not proof that
 all workloads or backends are storage-bound. Raw artifacts are ignored under
 `.tmp/fw20-03-storage-current/endpoint/` (run `5edebe25c19e`; source manifest records the source snapshot).
+
+### 2026-11-14 fixed-resource 2,000-item indexing backend comparison
+
+Ran `scripts/mixed_backend_benchmark.py` with a deterministic 2,000-item trace,
+one warm-up and two fresh samples for each configuration, plus 100 evenly
+spaced vector top-1 queries per sample. Embedding inference was excluded;
+384-dimensional normalized vectors were precomputed. The benchmark container
+was limited to 3 CPUs/6 GiB and its PostgreSQL/pgvector container to 1 CPU/2
+GiB (4 CPUs/8 GiB total allocation). Run used CPython 3.13 on Docker Desktop;
+the database and Chroma files lived on container-local storage, not a Windows
+bind mount, after an initial bind-mounted attempt showed misleadingly slow
+SQLite I/O and was discarded. Backend close/reopen and self top-1 checks passed.
+
+All configurations produced the same canonical graph digest
+`09d0f00aa25cfd42a23c6ad76fe9ccffe980e8c0008626dd6166cafe20d99d77` and
+vector-input digest
+`c38f043d1bee13cc2cff912b46f03b7dcf80ee41fac60c2af65646cf57126677`; trace
+SHA-256 is
+`0f6481ac87ca85df50fedf2ee1410e198a4b9c55bf4ec4a5e0c344c0c0bddc71`. Each
+sample exercised 2,000 graph writes, 2,000 event reads, 2,000 projection
+reads, and (where applicable) 2,000 vector upserts plus 100 vector queries.
+
+| Configuration | Median elapsed | Graph ops/s, inclusive of vector work | Throughput CV | Vector upsert p50/p95 | Query p50/p95 | Backend bytes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| SQLite event/projection only | 46.39 s | 129.37 | 1.73% | N/A (no vector index) | N/A | app SQLite: 12,066,816 |
+| Chroma + Chroma SQLite metadata + app SQLite | 155.52 s | 38.58 | 0.42% | 53.96 / 80.30 ms | 4.76 / 5.67 ms | 7,154,400 |
+| PostgreSQL/pgvector + app SQLite | 73.62 s | 81.50 | 0.25% | 12.33 / 15.28 ms | 6.83 / 7.79 ms | 8,691,712 median |
+
+The graph-operation throughput denominator excludes the separately counted
+vector-query calls but elapsed time includes them; do not read it as isolated
+index throughput. Chroma upserts were about 4.4x slower than pgvector at the
+median in this single-worker, per-record API shape; query latency was lower
+for Chroma. SQLite-only is not a semantic-search alternative. This is a narrow
+two-sample backend comparison, not evidence that PostgreSQL is universally
+faster or that model inference is included. The report and trace are retained
+under `.tmp/fw19-01a-fixed-indexing-2000-container/`; the containers had
+verified limits of 3 CPU/6 GiB and 1 CPU/2 GiB respectively.
