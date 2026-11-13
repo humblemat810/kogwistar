@@ -1568,3 +1568,29 @@ event/projection calls, not `GraphKnowledgeEngine`, MCP, ACL, or full request
 paths. The raw report is ignored under
 `.tmp/fw19-01-fixed-pg-graph-2000/report.json`; container limits were verified
 with Docker inspect.
+
+### 2026-11-14 fixed-resource 2,000-item ACL projection
+
+Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000
+ACL records, one warm-up and five fresh ACL-cache/index samples, 20 projections
+per sample. Python exercised cached `ACLGraph.decide`; Rust exercised
+`GraphAclProjection.filter_records` with its ACL index prepared before timing.
+The Docker container ran CPython 3.11.2 and Rust 1.97.1, limited to 4 CPUs and
+8 GiB; cgroup v1 limits were read and verified. No database, HTTP, token auth,
+edge endpoint filtering, or ACL-loader I/O is included.
+
+| ACL projection kernel | Median ms/projection | Sample CV | Visible nodes | Canonical digest |
+| --- | ---: | ---: | ---: | --- |
+| Python cached `ACLGraph.decide` | 18.564 | 11.45% | 1,583 | `a3669ba5d1611cfd2e8ff48e2205806d66d03656ac4b40820a3f9f948e76316d` |
+| Rust indexed `GraphAclProjection.filter_records` | 2.407 | 8.40% | 1,583 | `a3669ba5d1611cfd2e8ff48e2205806d66d03656ac4b40820a3f9f948e76316d` |
+
+Rust/Python median latency ratio was **0.130** (about **7.7x** faster for this
+in-memory kernel). The comparison is not language-only: Python evaluates one
+target per `ACLGraph.decide` call, while Rust filters a batch through
+`GraphAclProjection.filter_records`; the ratio includes this API/algorithm-shape
+difference. This is a descriptive five-sample profile, with moderate
+variation; it is not an end-to-end ACL speedup claim. It does not include
+backend query, per-request authentication, HTTP/MCP, graph-edge endpoint checks,
+or cross-backend scaling. The deterministic generated workload, parity digest,
+limits, runtime versions, warm-up, and raw samples are recorded in the ignored
+`.tmp/fw19-01b-acl-2000/acl_projection_report.v1.json`.
