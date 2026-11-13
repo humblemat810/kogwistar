@@ -37,3 +37,20 @@ The current published package metadata declares `Requires-Python >=3.12`.
 Therefore, PyPy 3.11 support is currently documented and tested from a source
 checkout. Lowering the package requirement so that pip accepts PyPy 3.11 from
 PyPI should be included in a future package release.
+
+## Verified downstream paths
+
+The current downstream parser evidence uses `graph-knowledge-doc-parser==0.2.17`
+and the published `kogwistar==0.6.15` package. These are scoped consumer checks,
+not a claim of complete parser or backend parity:
+
+| Path | Verified cell | Evidence boundary |
+| --- | --- | --- |
+| Python authority | Windows CPython 3.14.3; in-memory engines; deterministic fake parser | Ingestion succeeded and one exported node was readable from the knowledge engine. No external DB, vector backend, or live LLM. |
+| Mixed | Windows CPython 3.14.6; Python parser/runtime with Rust SQLite metadata authority | Fake-backend ingestion passed; a separate deterministic Chroma smoke completed. This does not verify Rust graph authority. |
+| Rust-native graph | Windows CPython 3.14.3 consumer; Rust HTTP service; PostgreSQL/pgvector 16 | One deterministic source produced one canonical node, then Rust visualization read it back. No multi-node/edge, live LLM, or vector-inference parity claim. |
+
+The 0.6.16 release note describes an unpublished candidate and its PyPy
+dependency-marker changes. Do not treat that candidate as a PyPI installation
+result until the release workflow publishes it and a clean PyPy 3.11.13/7.3.20
+install/import check passes. Current published PyPI evidence remains 0.6.15.
