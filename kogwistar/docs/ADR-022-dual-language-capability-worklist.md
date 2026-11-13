@@ -6,7 +6,7 @@
 ## Completion Snapshot
 
 - **Coarse checklist:** **174/177 PASS (98.3%)**.
-- **Fine worklist:** **805/875 PASS (92.0%)**; **0 IN PROGRESS**, **69 NOT STARTED**, **1 FAIL**, **0 BLOCKED**.
+- **Fine worklist:** **806/875 PASS (92.1%)**; **0 IN PROGRESS**, **68 NOT STARTED**, **1 FAIL**, **0 BLOCKED**.
 - **Frozen inventory:** DL-03 contains 83 HTTP-route parity leaves, one HTTP dev-token mode gate, 62 MCP contract leaves, and 62 MCP authorization leaves. These remain one operation/contract per parity or authorization verdict; the HTTP path is not a license to bundle a whole route family. The PostgreSQL Rust-native answer smoke verifies provider-event publication/handling, and its transport test negotiates Streamable HTTP and inspects the structured MCP result. Do not add rows solely to improve a percentage.
 - **Equal-size tasklet (S=1):** every counted leaf row is exactly one unit of work: one invariant, one target cell, one focused check, and one binary oracle. Equal size means the same acceptance boundary and active-work budget, not identical source-line count. Target 20 minutes, hard cap 30 minutes of active engineering; environment setup, CI/runtime waiting, and test execution time are excluded. A Python/Rust pair is one cell only when one parity oracle covers one behavior. Commit/rollback may jointly prove one transaction-atomicity invariant; unrelated outcomes are separate tasklets.
 - **Tasklet definition:** before work starts, rewrite the row as `Invariant: <one observable behavior> | Cell: <one operation/path/backend/runtime/transport/fixture> | Oracle: <one expected result> | Check: <one focused command> | Active: <=30 min`. An open row that cannot be expressed this way is not a tasklet yet and must not move to `IN PROGRESS` until resized. Existing rows are acceptance targets, not permission to bundle several independent outcomes under one ID.
@@ -1000,7 +1000,7 @@
 | FW-20-01B-POSTGRES-LARGE | DL-20 | NOT STARTED | Attribute worker-transfer latency for the large fixture on PostgreSQL/pgvector. |
 | FW-20-03 | DL-20 | PARENT | Parent scope; children: FW-20-03-TIMING,FW-20-03-COUNTER |
 | FW-20-03-TIMING | DL-20 | NOT STARTED | Add ingress/transport stage timing without changing request semantics. |
-| FW-20-03-COUNTER | DL-20 | NOT STARTED | Add an ingress/transport operation counter without changing request semantics. |
+| FW-20-03-COUNTER | DL-20 | PASS | Invariant: HTTP MCP ingress count equals trace operations without changing graph results. Cell: benchmark in-process and real local HTTP transports. Oracle: exact counters reconcile; missing/mismatched ingress, FFI, or transaction counters reject. Evidence: `tests/core/test_mixed_mcp_benchmark.py::test_trace_attribution_joins_http_ingress_and_rust_transaction_owner` (**1 passed**), `::test_trace_attribution_rejects_unjoined_or_missing_counters` (**4 passed**), and `::test_mcp_registry_and_local_http_run_the_same_trace` (**1 passed**, real local Streamable HTTP). |
 | FW-20-03A | DL-20 | PARENT | Parent scope; children: FW-20-03A-AUTHENTICATION,FW-20-03A-AUTHORIZATION,FW-20-03A-GRAPH-STORAGE |
 | FW-20-03A-AUTHENTICATION | DL-20 | NOT STARTED | Add an authentication-stage timing counter with a focused attribution test. |
 | FW-20-03A-AUTHORIZATION | DL-20 | NOT STARTED | Add an authorization-stage timing counter with a focused attribution test. |
