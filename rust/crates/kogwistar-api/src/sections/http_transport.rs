@@ -540,7 +540,7 @@ async fn mcp_dispatch(
             id,
             json!({
                 "protocolVersion": protocol_version,
-                "capabilities": {"tools": {"listChanged": false}},
+                "capabilities": {"tools": {"listChanged": false}, "logging": {}},
                 "serverInfo": {"name": server_name, "version": env!("CARGO_PKG_VERSION")},
             }),
         ))

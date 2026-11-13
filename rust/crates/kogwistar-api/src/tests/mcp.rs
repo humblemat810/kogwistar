@@ -326,7 +326,7 @@
                 json!({
                     "jsonrpc": "2.0",
                     "method": "notifications/message",
-                    "params": {"message": "before stream"}
+                    "params": {"level": "info", "data": "before stream"}
                 }),
             )
             .unwrap();
@@ -371,7 +371,7 @@
                 json!({
                     "jsonrpc": "2.0",
                     "method": "notifications/message",
-                    "params": {"message": "while connected"}
+                    "params": {"level": "info", "data": "while connected"}
                 }),
             )
             .unwrap();
@@ -469,9 +469,9 @@ received_methods = []
 
 async def on_message(message):
     method = getattr(message, "method", None)
-    if method in {{"notifications/message", "notifications/tools/list_changed"}}:
+    if method == "notifications/message":
         received_methods.append(method)
-    if len(received_methods) == 2:
+    if received_methods:
         received.set()
 
 async def record_session(response):
@@ -489,10 +489,7 @@ async def main():
             async with ClientSession(read, write, message_handler=on_message) as session:
                 await session.initialize()
                 await asyncio.wait_for(received.wait(), timeout=20)
-                assert received_methods == [
-                    "notifications/message",
-                    "notifications/tools/list_changed",
-                ], received_methods
+                assert received_methods == ["notifications/message"], received_methods
                 print("python-sdk-server-notification-received")
 
 asyncio.run(main())
@@ -553,19 +550,7 @@ asyncio.run(main())
                 }),
             )
             .unwrap();
-        let tools_changed_event_id = mcp_sessions
-            .publish(
-                &session_id,
-                &session_owner,
-                Some("2025-11-25"),
-                json!({
-                    "jsonrpc": "2.0",
-                    "method": "notifications/tools/list_changed"
-                }),
-            )
-            .unwrap();
         assert_eq!(logging_event_id, "1");
-        assert_eq!(tools_changed_event_id, "2");
         let child_deadline = Instant::now() + Duration::from_secs(25);
         while child.try_wait().unwrap().is_none() && Instant::now() < child_deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -597,7 +582,7 @@ asyncio.run(main())
             json!({
                 "jsonrpc": "2.0",
                 "method": "notifications/message",
-                "params": {"index": index}
+                "params": {"level": "info", "data": {"index": index}}
             })
         };
 
@@ -611,6 +596,7 @@ asyncio.run(main())
         );
         for unsupported_method in [
             "notifications/progress",
+            "notifications/tools/list_changed",
             "notifications/resources/list_changed",
             "notifications/prompts/list_changed",
         ] {
@@ -633,11 +619,30 @@ asyncio.run(main())
                 json!({
                     "jsonrpc": "2.0",
                     "method": "notifications/message",
-                    "params": {"message": "x".repeat(5000)}
+                    "params": {"level": "info", "data": "x".repeat(5000)}
                 })
             ),
             Err(McpSessionError::OutboundMessageTooLarge)
         );
+        for invalid_log in [
+            json!({"level": "info"}),
+            json!({"level": "bogus", "data": "x"}),
+            json!({"level": "info", "data": "x", "logger": 7}),
+        ] {
+            assert_eq!(
+                registry.publish(
+                    &session_id,
+                    &owner,
+                    None,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "notifications/message",
+                        "params": invalid_log
+                    })
+                ),
+                Err(McpSessionError::InvalidOutboundMessage)
+            );
+        }
         assert!(matches!(
             registry.subscribe_get(&session_id, &owner, None, Some("not-a-sequence")),
             Err(McpSessionError::InvalidLastEventId)
@@ -663,22 +668,23 @@ asyncio.run(main())
         ));
         registry.finish_get(&session_id);
 
-        let tools_changed = json!({
+        let final_log = json!({
             "jsonrpc": "2.0",
-            "method": "notifications/tools/list_changed"
+            "method": "notifications/message",
+            "params": {"level": "notice", "data": "tail"}
         });
         assert_eq!(
             registry
-                .publish(&session_id, &owner, None, tools_changed.clone())
+                .publish(&session_id, &owner, None, final_log.clone())
                 .unwrap(),
             "258"
         );
-        let resumed_tools_change = registry
+        let resumed_log = registry
             .subscribe_get(&session_id, &owner, None, Some("257"))
             .unwrap();
-        assert_eq!(resumed_tools_change.replay.len(), 1);
-        assert_eq!(resumed_tools_change.replay[0].event_id(), "258");
-        assert_eq!(resumed_tools_change.replay[0].message(), &tools_changed);
+        assert_eq!(resumed_log.replay.len(), 1);
+        assert_eq!(resumed_log.replay[0].event_id(), "258");
+        assert_eq!(resumed_log.replay[0].message(), &final_log);
         registry.finish_get(&session_id);
     }
 

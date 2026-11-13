@@ -154,11 +154,22 @@ impl McpSessionRegistry {
         {
             return Err(McpSessionError::InvalidOutboundMessage);
         }
-        // Only notification families exercised by the current server transport contract may be replayed.
-        if !matches!(
-            message.get("method").and_then(Value::as_str),
-            Some("notifications/message" | "notifications/tools/list_changed")
-        ) {
+        let valid_log_message = message.get("method").and_then(Value::as_str)
+            == Some("notifications/message")
+            && message
+                .get("params")
+                .and_then(Value::as_object)
+                .is_some_and(|params| {
+                    matches!(
+                        params.get("level").and_then(Value::as_str),
+                        Some(
+                            "debug" | "info" | "notice" | "warning" | "error" | "critical"
+                                | "alert" | "emergency"
+                        )
+                    ) && params.contains_key("data")
+                        && params.get("logger").is_none_or(Value::is_string)
+                });
+        if !valid_log_message {
             return Err(McpSessionError::InvalidOutboundMessage);
         }
 

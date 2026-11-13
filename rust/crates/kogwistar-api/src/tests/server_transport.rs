@@ -355,6 +355,7 @@
             initialize_value["result"]["capabilities"]["tools"]["listChanged"],
             false
         );
+        assert_eq!(initialize_value["result"]["capabilities"]["logging"], json!({}));
 
         let invalid_initialize = app
             .clone()
