@@ -179,7 +179,31 @@ mod tests {
     include!("tests/postgres_graph_effects.rs");
     include!("tests/postgres_inline_effects.rs");
     include!("tests/conversation_admission.rs");
-    include!("tests/sqlite_runtime.rs");
+    // Mirrors Python ChatRunService submit/admission behavior.
+    mod sqlite_runtime_admission {
+        use super::*;
+        include!("tests/sqlite_runtime/admission.rs");
+    }
+    // Mirrors the Python answer-workflow execution and persistence path.
+    mod sqlite_runtime_answer_execution {
+        use super::*;
+        include!("tests/sqlite_runtime/answer_execution.rs");
+    }
+    // Mirrors conversation syscall payload and transcript compatibility.
+    mod sqlite_runtime_conversation_compatibility {
+        use super::*;
+        include!("tests/sqlite_runtime/conversation_compatibility.rs");
+    }
+    // Mirrors Python runtime spawn, suspend, and resume lifecycle behavior.
+    mod sqlite_runtime_worker_lifecycle {
+        use super::*;
+        include!("tests/sqlite_runtime/worker_lifecycle.rs");
+    }
+    // Mirrors Python worker routing, identity pinning, and predicate selection.
+    mod sqlite_runtime_worker_selection {
+        use super::*;
+        include!("tests/sqlite_runtime/worker_selection.rs");
+    }
     include!("tests/tcp_transport.rs");
     include!("tests/sqlite_graph_topology_reads.rs");
     include!("tests/sqlite_transcript_reads.rs");
