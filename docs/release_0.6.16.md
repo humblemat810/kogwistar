@@ -7,6 +7,11 @@
 - Keep MCP available by default except on PyPy for Windows, where its
   `pywin32` dependency has no compatible wheel. Installing the explicit
   `[server]` extra still requests MCP and may fail on that platform.
+- Keep `python-jose` available on PyPy for Windows but omit its optional
+  `cryptography` extra, which has no compatible PyPy/Windows wheel. This
+  excludes cryptography-dependent asymmetric JWT and OIDC operations there;
+  HMAC JWT behavior remains available. Server/OIDC support on that target is
+  not claimed.
 - Keep MCP enabled in Linux PyPy CI and on CPython platforms.
 
 ## Verification

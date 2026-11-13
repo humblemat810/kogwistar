@@ -139,7 +139,7 @@ def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
     assert "mcp<2" not in requirements
 
 
-def test_mcp_is_optional_for_pypy_on_windows_but_available_elsewhere() -> None:
+def test_pypy_windows_base_dependencies_omit_unsupported_native_extras() -> None:
     import tomllib
     from packaging.requirements import Requirement
 
@@ -147,17 +147,24 @@ def test_mcp_is_optional_for_pypy_on_windows_but_available_elsewhere() -> None:
     dependencies = metadata["project"]["dependencies"]
     server_dependencies = metadata["project"]["optional-dependencies"]["server"]
 
-    mcp_dependency = next(Requirement(item) for item in dependencies if item.startswith("mcp"))
-    assert mcp_dependency.marker is not None
-    assert not mcp_dependency.marker.evaluate(
-        {"implementation_name": "pypy", "sys_platform": "win32"}
-    )
-    assert mcp_dependency.marker.evaluate(
-        {"implementation_name": "pypy", "sys_platform": "linux"}
-    )
-    assert mcp_dependency.marker.evaluate(
-        {"implementation_name": "cpython", "sys_platform": "win32"}
-    )
+    requirements = [Requirement(item) for item in dependencies]
+    mcp = next(requirement for requirement in requirements if requirement.name == "mcp")
+    jose = [requirement for requirement in requirements if requirement.name == "python-jose"]
+    assert mcp.marker is not None
+    assert all(requirement.marker is not None for requirement in jose)
+
+    windows_pypy = {"implementation_name": "pypy", "sys_platform": "win32"}
+    linux_pypy = {"implementation_name": "pypy", "sys_platform": "linux"}
+    windows_cpython = {"implementation_name": "cpython", "sys_platform": "win32"}
+    assert not mcp.marker.evaluate(windows_pypy)
+    assert mcp.marker.evaluate(linux_pypy)
+    assert mcp.marker.evaluate(windows_cpython)
+    assert sum(requirement.marker.evaluate(windows_pypy) for requirement in jose) == 1
+    assert not any("cryptography" in requirement.extras for requirement in jose if requirement.marker.evaluate(windows_pypy))
+    assert sum(requirement.marker.evaluate(linux_pypy) for requirement in jose) == 1
+    assert any("cryptography" in requirement.extras for requirement in jose if requirement.marker.evaluate(linux_pypy))
+    assert sum(requirement.marker.evaluate(windows_cpython) for requirement in jose) == 1
+    assert any("cryptography" in requirement.extras for requirement in jose if requirement.marker.evaluate(windows_cpython))
     assert "mcp>=2.2.0,<3" in server_dependencies
 
 
