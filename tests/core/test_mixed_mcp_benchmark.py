@@ -486,6 +486,73 @@ def test_native_seam_metrics_require_complete_zero_ffi_attestation() -> None:
     ) == metrics
 
 
+def test_native_graph_storage_attribution_matches_operation_trace_counts() -> None:
+    metrics = {
+        "scope": "rust_native_server",
+        "complete": True,
+        "tool_dispatches": 3,
+        "ffi_calls": 0,
+        "serialized_bytes": 42,
+        "transaction_boundaries": 1,
+        "transport_requests": 3,
+        "graph_storage": {
+            "write_record": {"calls": 1, "duration_ns": 100},
+            "read_event": {"calls": 1, "duration_ns": 20},
+            "read_projection": {"calls": 2, "duration_ns": 30},
+        },
+    }
+
+    assert mixed_mcp_benchmark._validate_native_seam_metrics(
+        metrics,
+        expected_operations=3,
+        label="test",
+        expected_graph_storage_calls={
+            "write_record": 1,
+            "read_event": 1,
+            "read_projection": 2,
+        },
+    ) == metrics
+
+
+@pytest.mark.parametrize(
+    "storage",
+    [
+        None,
+        {"write_record": {"calls": 0, "duration_ns": 0}},
+        {
+            "write_record": {"calls": 1, "duration_ns": 0},
+            "read_event": {"calls": 1, "duration_ns": 20},
+            "read_projection": {"calls": 2, "duration_ns": 30},
+        },
+    ],
+)
+def test_native_graph_storage_attribution_rejects_missing_or_mismatched_counts(
+    storage: object,
+) -> None:
+    metrics: dict[str, object] = {
+        "scope": "rust_native_server",
+        "complete": True,
+        "tool_dispatches": 3,
+        "ffi_calls": 0,
+        "serialized_bytes": 42,
+        "transaction_boundaries": 1,
+        "transport_requests": 3,
+        "graph_storage": storage,
+    }
+
+    with pytest.raises(RuntimeError, match="graph-storage|graph-storage attribution"):
+        mixed_mcp_benchmark._validate_native_seam_metrics(
+            metrics,
+            expected_operations=3,
+            label="test",
+            expected_graph_storage_calls={
+                "write_record": 1,
+                "read_event": 1,
+                "read_projection": 2,
+            },
+        )
+
+
 def test_transport_attribution_summarizes_separate_client_and_server_stages() -> None:
     assert mixed_mcp_benchmark._latency_summary_ms([1.0, 2.0, 3.0]) == {
         "count": 3,

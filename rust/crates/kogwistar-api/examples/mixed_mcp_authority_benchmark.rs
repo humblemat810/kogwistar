@@ -68,9 +68,54 @@ struct NativeMetrics {
     transport_requests: AtomicU64,
     response_serialization_ns: AtomicU64,
     response_serialization_count: AtomicU64,
+    graph_storage: GraphStorageMetrics,
+}
+
+#[derive(Default)]
+struct GraphStorageMetrics {
+    write_record_calls: AtomicU64,
+    write_record_ns: AtomicU64,
+    read_event_calls: AtomicU64,
+    read_event_ns: AtomicU64,
+    read_projection_calls: AtomicU64,
+    read_projection_ns: AtomicU64,
+}
+
+#[derive(Clone, Copy)]
+enum GraphStorageOperation {
+    WriteRecord,
+    ReadEvent,
+    ReadProjection,
 }
 
 impl NativeMetrics {
+    fn measure_graph_storage<T, E>(
+        &self,
+        operation: GraphStorageOperation,
+        action: impl FnOnce() -> Result<T, E>,
+    ) -> Result<T, E> {
+        let started = Instant::now();
+        let result = action();
+        let elapsed = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let (calls, duration) = match operation {
+            GraphStorageOperation::WriteRecord => (
+                &self.graph_storage.write_record_calls,
+                &self.graph_storage.write_record_ns,
+            ),
+            GraphStorageOperation::ReadEvent => (
+                &self.graph_storage.read_event_calls,
+                &self.graph_storage.read_event_ns,
+            ),
+            GraphStorageOperation::ReadProjection => (
+                &self.graph_storage.read_projection_calls,
+                &self.graph_storage.read_projection_ns,
+            ),
+        };
+        calls.fetch_add(1, Ordering::Relaxed);
+        duration.fetch_add(elapsed, Ordering::Relaxed);
+        result
+    }
+
     fn snapshot(&self) -> Value {
         json!({
             "scope": "rust_native_server",
@@ -82,6 +127,20 @@ impl NativeMetrics {
             "transport_requests": self.transport_requests.load(Ordering::Relaxed),
             "response_serialization_ns": self.response_serialization_ns.load(Ordering::Relaxed),
             "response_serialization_count": self.response_serialization_count.load(Ordering::Relaxed),
+            "graph_storage": {
+                "write_record": {
+                    "calls": self.graph_storage.write_record_calls.load(Ordering::Relaxed),
+                    "duration_ns": self.graph_storage.write_record_ns.load(Ordering::Relaxed),
+                },
+                "read_event": {
+                    "calls": self.graph_storage.read_event_calls.load(Ordering::Relaxed),
+                    "duration_ns": self.graph_storage.read_event_ns.load(Ordering::Relaxed),
+                },
+                "read_projection": {
+                    "calls": self.graph_storage.read_projection_calls.load(Ordering::Relaxed),
+                    "duration_ns": self.graph_storage.read_projection_ns.load(Ordering::Relaxed),
+                },
+            },
         })
     }
 }
@@ -590,59 +649,61 @@ async fn mcp_call(
             let entity_id_owned = entity_id.to_owned();
             let edge_id_owned = edge_id.to_owned();
             let (node_seq, edge_seq) = state
-                .store
-                .immediate_transaction(|uow| {
-                    let node_event = uow.append_raw_entity_event(
-                        "mcp_benchmark",
-                        NewRawEntityEvent {
-                            event_id: format!("mcp-node-event-{index:05}"),
-                            entity_kind: "node".to_owned(),
-                            entity_id: entity_id_owned.clone(),
-                            op: "UPSERT".to_owned(),
-                            payload_json: node_json,
-                        },
-                    )?;
-                    let edge_event = uow.append_raw_entity_event(
-                        "mcp_benchmark",
-                        NewRawEntityEvent {
-                            event_id: format!("mcp-edge-event-{index:05}"),
-                            entity_kind: "edge".to_owned(),
-                            entity_id: edge_id_owned.clone(),
-                            op: "UPSERT".to_owned(),
-                            payload_json: edge_json,
-                        },
-                    )?;
-                    uow.replace_named_projection(
-                        "mcp_benchmark_projection",
-                        &format!("node:{entity_id_owned}"),
-                        NamedProjectionWrite {
-                            payload: Map::from_iter([
-                                ("entity_kind".to_owned(), json!("node")),
-                                ("entity_id".to_owned(), json!(entity_id_owned)),
-                                ("entity".to_owned(), node_value),
-                            ]),
-                            last_authoritative_seq: node_event.event.seq,
-                            last_materialized_seq: node_event.event.seq,
-                            projection_schema_version: 1,
-                            materialization_status: "ready".to_owned(),
-                        },
-                    )?;
-                    uow.replace_named_projection(
-                        "mcp_benchmark_projection",
-                        &format!("edge:{edge_id_owned}"),
-                        NamedProjectionWrite {
-                            payload: Map::from_iter([
-                                ("entity_kind".to_owned(), json!("edge")),
-                                ("entity_id".to_owned(), json!(edge_id_owned)),
-                                ("entity".to_owned(), edge_value),
-                            ]),
-                            last_authoritative_seq: edge_event.event.seq,
-                            last_materialized_seq: edge_event.event.seq,
-                            projection_schema_version: 1,
-                            materialization_status: "ready".to_owned(),
-                        },
-                    )?;
-                    Ok((node_event.event.seq, edge_event.event.seq))
+                .metrics
+                .measure_graph_storage(GraphStorageOperation::WriteRecord, || {
+                    state.store.immediate_transaction(|uow| {
+                        let node_event = uow.append_raw_entity_event(
+                            "mcp_benchmark",
+                            NewRawEntityEvent {
+                                event_id: format!("mcp-node-event-{index:05}"),
+                                entity_kind: "node".to_owned(),
+                                entity_id: entity_id_owned.clone(),
+                                op: "UPSERT".to_owned(),
+                                payload_json: node_json,
+                            },
+                        )?;
+                        let edge_event = uow.append_raw_entity_event(
+                            "mcp_benchmark",
+                            NewRawEntityEvent {
+                                event_id: format!("mcp-edge-event-{index:05}"),
+                                entity_kind: "edge".to_owned(),
+                                entity_id: edge_id_owned.clone(),
+                                op: "UPSERT".to_owned(),
+                                payload_json: edge_json,
+                            },
+                        )?;
+                        uow.replace_named_projection(
+                            "mcp_benchmark_projection",
+                            &format!("node:{entity_id_owned}"),
+                            NamedProjectionWrite {
+                                payload: Map::from_iter([
+                                    ("entity_kind".to_owned(), json!("node")),
+                                    ("entity_id".to_owned(), json!(entity_id_owned)),
+                                    ("entity".to_owned(), node_value),
+                                ]),
+                                last_authoritative_seq: node_event.event.seq,
+                                last_materialized_seq: node_event.event.seq,
+                                projection_schema_version: 1,
+                                materialization_status: "ready".to_owned(),
+                            },
+                        )?;
+                        uow.replace_named_projection(
+                            "mcp_benchmark_projection",
+                            &format!("edge:{edge_id_owned}"),
+                            NamedProjectionWrite {
+                                payload: Map::from_iter([
+                                    ("entity_kind".to_owned(), json!("edge")),
+                                    ("entity_id".to_owned(), json!(edge_id_owned)),
+                                    ("entity".to_owned(), edge_value),
+                                ]),
+                                last_authoritative_seq: edge_event.event.seq,
+                                last_materialized_seq: edge_event.event.seq,
+                                projection_schema_version: 1,
+                                materialization_status: "ready".to_owned(),
+                            },
+                        )?;
+                        Ok((node_event.event.seq, edge_event.event.seq))
+                    })
                 })
                 .map_err(|error| internal_error(error.to_string()))?;
             state
@@ -662,8 +723,12 @@ async fn mcp_call(
                 .ok_or_else(|| invalid("expected_source_id is required"))?;
             let node_seq = 2 + 2 * index as i64;
             let events = state
-                .store
-                .replay_raw_events("mcp_benchmark", node_seq - 1, 2)
+                .metrics
+                .measure_graph_storage(GraphStorageOperation::ReadEvent, || {
+                    state
+                        .store
+                        .replay_raw_events("mcp_benchmark", node_seq - 1, 2)
+                })
                 .map_err(|error| internal_error(error.to_string()))?;
             if events.len() != 2
                 || events[0].seq != node_seq
@@ -694,13 +759,23 @@ async fn mcp_call(
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid("expected_source_id is required"))?;
             let projection = state
-                .store
-                .get_named_projection("mcp_benchmark_projection", &format!("node:{entity_id}"))
+                .metrics
+                .measure_graph_storage(GraphStorageOperation::ReadProjection, || {
+                    state.store.get_named_projection(
+                        "mcp_benchmark_projection",
+                        &format!("node:{entity_id}"),
+                    )
+                })
                 .map_err(|error| internal_error(error.to_string()))?;
             let projection = projection.ok_or_else(|| invalid("expected projection is missing"))?;
             let edge_projection = state
-                .store
-                .get_named_projection("mcp_benchmark_projection", &format!("edge:{edge_id}"))
+                .metrics
+                .measure_graph_storage(GraphStorageOperation::ReadProjection, || {
+                    state.store.get_named_projection(
+                        "mcp_benchmark_projection",
+                        &format!("edge:{edge_id}"),
+                    )
+                })
                 .map_err(|error| internal_error(error.to_string()))?
                 .ok_or_else(|| invalid("expected edge projection is missing"))?;
             if projection

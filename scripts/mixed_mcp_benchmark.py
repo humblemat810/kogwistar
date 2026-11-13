@@ -80,7 +80,11 @@ class _SeamMetrics:
 
 
 def _validate_native_seam_metrics(
-    value: object, *, expected_operations: int, label: str
+    value: object,
+    *,
+    expected_operations: int,
+    label: str,
+    expected_graph_storage_calls: dict[str, int] | None = None,
 ) -> dict[str, object]:
     """Require complete, native-owned seam evidence before reporting a sample."""
 
@@ -110,6 +114,33 @@ def _validate_native_seam_metrics(
             )
     if value["serialized_bytes"] <= 0:
         raise RuntimeError(f"{label} native metrics report no serialized payloads")
+    if expected_graph_storage_calls is not None:
+        storage = value.get("graph_storage")
+        if not isinstance(storage, dict):
+            raise RuntimeError(f"{label} metrics omit graph-storage attribution")
+        for operation, expected_calls in expected_graph_storage_calls.items():
+            metric = storage.get(operation)
+            if not isinstance(metric, dict):
+                raise RuntimeError(
+                    f"{label} metrics omit graph-storage operation {operation}"
+                )
+            calls = metric.get("calls")
+            duration_ns = metric.get("duration_ns")
+            if (
+                not isinstance(calls, int)
+                or isinstance(calls, bool)
+                or calls != expected_calls
+                or not isinstance(duration_ns, int)
+                or isinstance(duration_ns, bool)
+                or duration_ns < 0
+                or (calls > 0 and duration_ns <= 0)
+                or (calls == 0 and duration_ns != 0)
+            ):
+                raise RuntimeError(
+                    f"{label} graph-storage attribution mismatch for {operation}: "
+                    f"calls={calls!r}, duration_ns={duration_ns!r}, "
+                    f"expected_calls={expected_calls}"
+                )
     return value
 
 
@@ -2166,10 +2197,17 @@ def _run_native_server(
         cpu_ms = (cpu_after.user + cpu_after.system - cpu_before.user - cpu_before.system) * 1000
         with urllib.request.urlopen(f"{url}/metrics", timeout=5) as response:
             native_seam_metrics = json.loads(response.read())
+        expected_graph_storage_calls = {
+            "write_record": sum(step["operation"] == "write_record" for step in trace),
+            "read_event": sum(step["operation"] == "read_event" for step in trace),
+            "read_projection": 2
+            * sum(step["operation"] == "read_projection" for step in trace),
+        }
         native_seam_metrics = _validate_native_seam_metrics(
             native_seam_metrics,
             expected_operations=len(trace),
             label="Rust MCP",
+            expected_graph_storage_calls=expected_graph_storage_calls,
         )
         transport_attribution = {
             "scope": "rust_native_mcp_benchmark",

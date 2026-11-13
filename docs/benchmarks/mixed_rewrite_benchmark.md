@@ -1467,3 +1467,31 @@ ratio to other backends, sizes, or workloads. The run does not isolate storage
 latency from routing, transport, or tool execution. Container image/source
 manifest and raw samples are local, ignored artifacts under
 `.tmp/fw20-04-current/` (source revision `8f1c779d238ae0f0bcfaa81afb9cf777c03d8fe9`).
+
+### 2026-11-14 Rust-native SQLite graph-storage attribution
+
+Instrumented only the benchmark Rust-native endpoint's actual `SqliteStore` calls; no production store
+trait or MCP response changed. `write_record` times its single `immediate_transaction` including commit,
+`read_event` times one `replay_raw_events` call, and `read_projection` times its two individual
+`get_named_projection` calls. Tool validation, payload preparation, graph-result checks, HTTP, and response
+serialization remain outside these storage intervals.
+
+Ran the fixed-resource Docker endpoint matrix with CPython 3.15.1 free-threaded, SQLite, 4 CPUs, 8 GiB
+memory/swap, network egress disabled, 100 items, one warm-up, and three fresh samples. Cgroups verified
+limits. All modes completed the same 300-operation trace, with trace SHA
+`bc539bc8c2bb7247f3d1d2d10d1c338854447ae4cdd4eceda6820031a77c478d` and final digest
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`. Rust-native median throughput was
+**34.740 ops/s** (CV **1.43%**).
+
+| Rust-native SQLite store call | Calls/sample | Median total time/sample | Median time/call |
+| --- | ---: | ---: | ---: |
+| `immediate_transaction` (`write_record`) | 100 | 2,960.0 ms | 29.600 ms |
+| `replay_raw_events` (`read_event`) | 100 | 2,240.2 ms | 22.402 ms |
+| `get_named_projection` (`read_projection`) | 200 | 2,835.7 ms | 14.178 ms |
+
+The three operation call counts reconcile exactly with the trace (projection operation count multiplied by
+two store calls); each sample preserves transaction boundaries, trace SHA, and graph digest. Summed
+store-call time is about 8.04 s/sample versus about 8.64 s total measured endpoint time, so SQLite store
+calls account for most of this narrow sequential endpoint workload. This is attribution, not proof that
+all workloads or backends are storage-bound. Raw artifacts are ignored under
+`.tmp/fw20-03-storage-current/endpoint/` (run `5edebe25c19e`; source manifest records the source snapshot).
