@@ -70,7 +70,7 @@ impl SqliteUnitOfWork<'_> {
                     payload_json,
                 },
             )?;
-            let event = raw_to_entity_event(appended.event).map_err(SqliteStoreError::from)?;
+            let event = raw_to_entity_event(appended.event)?;
             let current = self.latest_entity_events(
                 &mutation.scope.namespace,
                 &mutation.entity_kind,
@@ -79,8 +79,7 @@ impl SqliteUnitOfWork<'_> {
             let current_events = current
                 .into_values()
                 .map(raw_to_entity_event)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(SqliteStoreError::from)?;
+                .collect::<Result<Vec<_>, _>>()?;
             if let Some(revision) =
                 kogwistar_engine::canonical_revision::read_canonical_entity_revision(
                     &current_events,

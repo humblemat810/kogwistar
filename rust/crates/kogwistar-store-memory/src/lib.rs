@@ -16,6 +16,8 @@ use kogwistar_store::{
     integer_timestamp, timestamp_i64, validate_graph_mutation, validate_graph_mutation_batch,
     validate_graph_mutation_replay,
 };
+
+pub type GraphNodeEdgeVectorSnapshot = (Vec<GraphRecord>, Vec<GraphRecord>, Vec<Vec<VectorMatch>>);
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
@@ -1310,7 +1312,7 @@ impl InMemoryStore {
         limit: usize,
         table: &str,
         queries: &[VectorQuery],
-    ) -> StoreResult<(Vec<GraphRecord>, Vec<GraphRecord>, Vec<Vec<VectorMatch>>)> {
+    ) -> StoreResult<GraphNodeEdgeVectorSnapshot> {
         if !matches!(table, "gke_nodes" | "gke_edges") {
             return Err(StoreError::Backend {
                 backend: "memory-graph-snapshot".to_owned(),
@@ -3127,7 +3129,12 @@ mod tests {
         };
         for _ in 0..1_000 {
             let (nodes, edges, matches) = store
-                .graph_node_edge_vector_snapshot(&scope, 10, "gke_nodes", &[query.clone()])
+                .graph_node_edge_vector_snapshot(
+                    &scope,
+                    10,
+                    "gke_nodes",
+                    std::slice::from_ref(&query),
+                )
                 .expect("consistent graph and vector snapshot succeeds");
             assert!(edges.is_empty());
             let generation = nodes[0].metadata["generation"].as_i64().unwrap();

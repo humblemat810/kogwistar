@@ -900,7 +900,7 @@ fn graph_visualization_projects_acl_visible_records_in_both_formats() {
     tombstoned
         .metadata
         .insert("lifecycle_status".to_owned(), json!("tombstoned"));
-    let nodes = vec![source, target, hidden];
+    let nodes = [source, target, hidden];
     let edges = vec![visible_edge.clone(), unrelated_edge, tombstoned];
 
     let d3 = graph_viz_d3_from_records(&nodes[..2], &edges, Some("d1"), "reify", None);

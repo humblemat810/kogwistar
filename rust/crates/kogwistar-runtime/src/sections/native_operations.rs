@@ -937,7 +937,7 @@ fn event_route_for_claim(
         .state
         .get("agent_event_max_advisory_hooks_per_run")
         .map(|value| {
-            value.as_i64().filter(|count| *count >= 0).ok_or_else(|| {
+            value.as_i64().filter(|count| *count >= 0).ok_or({
                 RuntimeNativeExecutionError::InvalidState {
                     field: "agent_event_max_advisory_hooks_per_run",
                     reason: "expected a non-negative integer",
