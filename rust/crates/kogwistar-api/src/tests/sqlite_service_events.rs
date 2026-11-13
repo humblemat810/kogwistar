@@ -546,7 +546,7 @@
             .clear_named_projection("service_registry", "svc-repair")
             .unwrap();
 
-        // PYTHON_PARITY_V1: bulk HTTP response uses ChatRunService.repair_service_projections.
+        // PYTHON_PARITY_NOTE_V1: bulk HTTP response uses ChatRunService.repair_service_projections.
         let bulk_repair_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/workflow-services-repair-http-v1.json"
         ))

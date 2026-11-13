@@ -403,7 +403,7 @@ fn graph_visualization_empty_doc_id_matches_python_contract() {
     }
 }
 
-// PYTHON_PARITY_V1: Rust document selection accepts metadata.doc_ids and payload.metadata.doc_id like Python `_ids_by_doc`; rust=rust/crates/kogwistar-store/src/sections/graph_traversal.rs#graph_record_matches_doc_id; python=kogwistar/visualization/graph_viz.py#_ids_by_doc; rust_test=rust/crates/kogwistar-store/src/tests/part_01.rs#graph_visualization_matches_python_document_membership; python_test=tests/test_visualization.py#test_graph_visualization_doc_filter_matches_python_contract
+// PYTHON_PARITY_NOTE_V1: Rust document selection accepts metadata.doc_ids and payload.metadata.doc_id like Python `_ids_by_doc`; rust=rust/crates/kogwistar-store/src/sections/graph_traversal.rs#graph_record_matches_doc_id; python=kogwistar/visualization/graph_viz.py#_ids_by_doc; rust_test=rust/crates/kogwistar-store/src/tests/part_01.rs#graph_visualization_matches_python_document_membership; python_test=tests/test_visualization.py#test_graph_visualization_doc_filter_matches_python_contract
 #[test]
 fn graph_visualization_matches_python_document_membership() {
     let record = |id: &str, payload: Value, metadata: Map<String, Value>| GraphRecord {

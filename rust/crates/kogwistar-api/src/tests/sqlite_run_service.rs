@@ -1033,7 +1033,7 @@
                     contract["budget_model"]
                 );
             }
-            // PYTHON_PARITY_V1: Rust MCP returns the dashboard fields declared by the shared contract; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
+            // PYTHON_PARITY_NOTE_V1: Rust MCP returns the dashboard fields declared by the shared contract; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
             if tool_name == "workflow.operator_dashboard" {
                 let contract: Value = serde_json::from_str(include_str!(
                     "../../../../../contracts/golden/operator-dashboard-v1.json"
@@ -1102,7 +1102,7 @@
             .update_projected_lane_message_status("dead-mcp-message", "completed", None)
             .unwrap();
 
-        // PYTHON_PARITY_V1: MCP orphan repair requeues expired claims and preserves active ones; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_matches_shared_contract
+        // PYTHON_PARITY_NOTE_V1: MCP orphan repair requeues expired claims and preserves active ones; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_matches_shared_contract
         let repair_orphans_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/workflow-repair-orphans-http-v1.json"
         ))

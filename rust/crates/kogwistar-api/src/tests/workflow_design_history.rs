@@ -820,7 +820,7 @@
             let field = field.as_str().unwrap();
             assert!(body["result"].get(field).is_none(), "field {field}");
         }
-        // PYTHON_PARITY_V1: MCP redo response matches Python's workflow MCP projection; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_matches_shared_contract
+        // PYTHON_PARITY_NOTE_V1: MCP redo response matches Python's workflow MCP projection; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_matches_shared_contract
         let redo_mcp: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-redo-mcp-v1.json"

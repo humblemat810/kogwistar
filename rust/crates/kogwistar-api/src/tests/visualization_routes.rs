@@ -141,7 +141,7 @@
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#application_effect_handler+rust/crates/kogwistar-api/src/sections/response_policy.rs#d3_bundle_html_effect; python=kogwistar/server_mcp_with_admin.py#viz_d3_bundle; fixture=contracts/golden/visualization-d3-bundle-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/visualization_routes.rs#d3_bundle_route_matches_shared_python_contract; python_test=tests/test_visualization.py#test_d3_bundle_route_matches_shared_rust_contract_and_escapes_inline_json
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#d3_bundle_html_effect; python=kogwistar/server_mcp_with_admin.py#viz_d3_bundle; fixture=contracts/golden/visualization-d3-bundle-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/visualization_routes.rs#d3_bundle_route_matches_shared_python_contract; python_test=tests/test_visualization.py#test_d3_bundle_route_matches_shared_rust_contract_and_escapes_inline_json
     #[tokio::test]
     async fn d3_bundle_route_matches_shared_python_contract() {
         use axum::body::{Body, to_bytes};

@@ -3434,14 +3434,6 @@ mod tests {
         );
     }
 
-    fn capability_fixture() -> Value {
-        serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../../contracts/golden/graph-model-capabilities-v1.json"
-        )))
-        .expect("valid shared graph capability fixture")
-    }
-
     #[test]
     fn every_python_node_and_edge_fixture_has_a_typed_rust_view() {
         for case in fixture()["cases"].as_array().expect("fixture cases") {
@@ -4761,10 +4753,14 @@ mod tests {
         );
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture; python=tests/core/test_graph_model_adapter.py#test_graph_model_capability_contract_matches_shared_fixture; fixture=contracts/golden/graph-model-capabilities-v1.json; rust_test=graph_model::tests::graph_model_capabilities_match_shared_cross_language_fixture
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture; python=tests/core/test_graph_model_adapter.py#test_graph_model_capability_contract_matches_shared_fixture; fixture=contracts/golden/graph-model-capabilities-v1.json; rust_test=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture
     #[test]
     fn graph_model_capabilities_match_shared_cross_language_fixture() {
-        let fixture = capability_fixture();
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-model-capabilities-v1.json"
+        )))
+        .expect("valid shared graph capability fixture");
         assert_eq!(fixture["schema_version"], GRAPH_MODEL_ENVELOPE_VERSION);
         let identity_fields: BTreeSet<_> = fixture["node_contract"]["identity_fields"]
             .as_array()

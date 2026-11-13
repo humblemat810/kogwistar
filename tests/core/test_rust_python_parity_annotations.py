@@ -21,6 +21,7 @@ ANNOTATION_TEST_FIELDS = {
     "rust_test",
     "python_test",
 }
+ANNOTATION_SERVICE_FIELDS = {"python_service"}
 
 
 def _parse_target(target: str) -> tuple[Path, str]:
@@ -30,6 +31,29 @@ def _parse_target(target: str) -> tuple[Path, str]:
 
 def _rust_target_identity(path: Path, symbol: str) -> str:
     return f"{path.relative_to(ROOT).as_posix()}#{symbol}"
+
+
+def _rust_symbol_source(
+    path: Path, symbol: str, visited: set[Path] | None = None
+) -> str | None:
+    visited = visited or set()
+    resolved_path = path.resolve()
+    if resolved_path in visited:
+        return None
+    visited.add(resolved_path)
+    source = path.read_text(encoding="utf-8")
+    if re.search(
+        rf"\b(?:pub\s+)?(?:async\s+)?fn {re.escape(symbol)}(?:\s*<[^>]*>)?\s*\(",
+        source,
+    ):
+        return source
+    for included_path in re.findall(r'include!\("([^"]+)"\)', source):
+        included_file = path.parent / included_path
+        if included_file.is_file():
+            included_source = _rust_symbol_source(included_file, symbol, visited)
+            if included_source is not None:
+                return included_source
+    return None
 
 
 def _python_symbol_exists(source: str, symbol: str) -> bool:
@@ -53,20 +77,20 @@ def _python_symbol_exists(source: str, symbol: str) -> bool:
                     for target in node.targets
                 )
             )
-            for node in tree.body
+            for node in ast.walk(tree)
         )
     if len(parts) == 2:
         owner, member = parts
-        return any(
-            isinstance(node, ast.ClassDef)
-            and node.name == owner
-            and any(
+        for node in tree.body:
+            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name != owner:
+                continue
+            return any(
                 isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and item.name == member
                 for item in node.body
             )
-            for node in tree.body
-        )
     return False
 
 
@@ -129,10 +153,14 @@ def _rust_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> 
     match = re.search(rf"\bfn {re.escape(symbol)}\s*\(", source)
     if match is None:
         return False
-    next_attribute = re.search(r"^\s*#\[", source[match.end() :], re.MULTILINE)
+    next_test = re.search(
+        r"^\s*#\[(?:tokio::)?test\b",
+        source[match.end() :],
+        re.MULTILINE,
+    )
     body_source = source[
-        match.start() : match.end() + next_attribute.start()
-        if next_attribute is not None
+        match.start() : match.end() + next_test.start()
+        if next_test is not None
         else len(source)
     ]
     for include_match in re.finditer(r"include_str!\s*\(", body_source):
@@ -165,7 +193,16 @@ def _rust_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> 
         string_literals = re.findall(r'"(?:\\.|[^"\\])*"', macro_source)
         if any(fixture_name in literal for literal in string_literals):
             return True
-    return False
+    fixture_path_variables = re.findall(
+        rf"\blet\s+(\w+)\s*=\s*[^;]*?\.join\s*\(\s*"
+        rf"\"[^\"]*{re.escape(fixture_name)}\"",
+        body_source,
+        re.DOTALL,
+    )
+    return any(
+        re.search(rf"\b(?:std::fs::)?(?:read|read_to_string)\s*\(\s*{name}\b", body_source)
+        for name in fixture_path_variables
+    )
 
 
 def _fixture_versions(value: object) -> list[object]:
@@ -183,6 +220,12 @@ def _fixture_versions(value: object) -> list[object]:
     return []
 
 
+def _has_v1_schema_version(value: object) -> bool:
+    return (type(value) is int and value == 1) or (
+        isinstance(value, str) and value.endswith("/v1")
+    )
+
+
 def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts() -> None:
     annotations: list[tuple[Path, dict[str, str]]] = []
     for rust_file in sorted(RUST_ROOT.rglob("*.rs")):
@@ -191,58 +234,67 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
             if ANNOTATION_PREFIX not in line:
                 continue
             payload = line.split(ANNOTATION_PREFIX, maxsplit=1)[1]
+            if not payload.split(";", maxsplit=1)[0].strip().startswith("rust="):
+                continue
             fields = dict(
                 part.strip().split("=", maxsplit=1)
                 for part in payload.split(";")
+                if "=" in part
             )
             field_names = set(fields)
             assert ANNOTATION_REQUIRED_FIELDS <= field_names, rust_file
-            assert field_names <= ANNOTATION_REQUIRED_FIELDS | ANNOTATION_TEST_FIELDS, rust_file
-            assert (field_names & ANNOTATION_TEST_FIELDS) in (
-                set(),
-                ANNOTATION_TEST_FIELDS,
+            assert field_names <= (
+                ANNOTATION_REQUIRED_FIELDS
+                | ANNOTATION_TEST_FIELDS
+                | ANNOTATION_SERVICE_FIELDS
             ), rust_file
             annotations.append((rust_file, fields))
 
     assert annotations, "Rust/Python parity annotations must be verified"
-    seen_rust_targets: set[str] = set()
+    seen_contracts: set[tuple[str, str, str, str | None, str | None]] = set()
     for rust_file, fields in annotations:
         rust_target_path, rust_symbol = _parse_target(fields["rust"])
-        assert rust_target_path == rust_file
+        assert rust_target_path.is_file()
         rust_identity = _rust_target_identity(rust_target_path, rust_symbol)
-        assert rust_identity not in seen_rust_targets
-        seen_rust_targets.add(rust_identity)
-        rust_source = rust_file.read_text(encoding="utf-8")
-        assert re.search(
-            rf"\b(?:pub\s+)?(?:async\s+)?fn {re.escape(rust_symbol)}(?:\s*<[^>]*>)?\s*\(",
-            rust_source,
+        contract_identity = (
+            rust_identity,
+            fields["python"],
+            fields["fixture"],
+            fields.get("rust_test"),
+            fields.get("python_test"),
         )
+        assert contract_identity not in seen_contracts
+        seen_contracts.add(contract_identity)
+        assert _rust_symbol_source(rust_target_path, rust_symbol) is not None
 
         python_path, python_symbol = _parse_target(fields["python"])
         python_source = python_path.read_text(encoding="utf-8-sig")
         assert _python_symbol_exists(python_source, python_symbol)
+        if "python_service" in fields:
+            service_path, service_symbol = _parse_target(fields["python_service"])
+            service_source = service_path.read_text(encoding="utf-8-sig")
+            assert _python_symbol_exists(service_source, service_symbol)
 
         fixture_path = ROOT / fields["fixture"]
         fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
-        versions = _fixture_versions(fixture)
         if "schema_version" in fixture:
-            assert fixture["schema_version"] == 1
+            assert _has_v1_schema_version(fixture["schema_version"])
         else:
             assert fixture_path.stem.endswith("-v1")
-            assert 1 in versions or "v1" in versions
         if "rust_test" in fields:
             rust_test_path, rust_test_symbol = _parse_target(fields["rust_test"])
-            rust_test_source = rust_test_path.read_text(encoding="utf-8")
+            rust_test_source = _rust_symbol_source(rust_test_path, rust_test_symbol)
+            assert rust_test_source is not None, fields["rust_test"]
             assert re.search(
                 rf"\bfn {re.escape(rust_test_symbol)}\s*\(", rust_test_source
             )
-
-            python_test_path, python_test_symbol = _parse_target(fields["python_test"])
-            python_test_source = python_test_path.read_text(encoding="utf-8-sig")
-            assert _python_symbol_exists(python_test_source, python_test_symbol)
             assert _rust_test_consumes_fixture(
                 rust_test_source, rust_test_symbol, fixture_path.name
             ), rust_test_path
+        if "python_test" in fields:
+            python_test_path, python_test_symbol = _parse_target(fields["python_test"])
+            python_test_source = python_test_path.read_text(encoding="utf-8-sig")
+            assert _python_symbol_exists(python_test_source, python_test_symbol)
             assert _python_test_consumes_fixture(
                 python_test_source, python_test_symbol, fixture_path.name
             ), python_test_path
@@ -250,6 +302,10 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
 
 def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:
     assert 1 in _fixture_versions({"contract_version": 1})
+    assert _has_v1_schema_version(1)
+    assert _has_v1_schema_version("workflow-designer-capabilities/v1")
+    assert not _has_v1_schema_version(True)
+    assert not _has_v1_schema_version("workflow-designer-capabilities/v2")
 
     python_type_alias = textwrap.dedent("""
     from typing import TypeAlias

@@ -1243,7 +1243,7 @@ impl SqliteRunApplicationService {
         native_result_from_request(handoff, request, &self.native_operations)
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#persist_sqlite_native_stream_semantic_event; python=kogwistar/agent/event_journal.py#LaneProviderEventJournal.publish; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=rust/crates/kogwistar-contracts/src/agent_event.rs#durable_provider_event_matches_python_golden_fixture; python_test=tests/agent/test_provider_event_cross_language_contract.py#test_python_durable_provider_event_matches_shared_rust_golden_fixture
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_native_answer_context.rs#persist_sqlite_native_stream_semantic_event; python=kogwistar/agent/event_journal.py#LaneProviderEventJournal.publish; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=rust/crates/kogwistar-contracts/src/agent_event.rs#durable_provider_event_matches_python_golden_fixture; python_test=tests/agent/test_provider_event_cross_language_contract.py#test_python_durable_provider_event_matches_shared_rust_golden_fixture
     async fn persist_sqlite_native_stream_semantic_event(
         &self,
         request: &kogwistar_runtime::RuntimeNativeStepRequest,

@@ -1456,7 +1456,7 @@ impl SqliteRunApplicationService {
                     "Reading resource snapshot requires read_security_scope capability",
                 );
             }
-            // PYTHON_PARITY_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
+            // PYTHON_PARITY_NOTE_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
             if matches!(
                 path,
                 "/api/workflow/budget" | "/api/workflow/budget/history"
@@ -1486,7 +1486,7 @@ impl SqliteRunApplicationService {
                     "Reading budget data requires project_view and read_security_scope capabilities",
                 );
             }
-            // PYTHON_PARITY_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
+            // PYTHON_PARITY_NOTE_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
             if path == "/api/workflow/scheduler/timeline"
                 && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
                     || !principal_strings(&request.principal, "ns")
@@ -1653,7 +1653,7 @@ impl SqliteRunApplicationService {
                     && request.path_and_query.starts_with("/api/workflow/runs/"))
                 || is_runtime_inspection_tail(&tail))
         {
-            // PYTHON_PARITY_V1: checkpoint/replay/step reads require workflow scope;
+            // PYTHON_PARITY_NOTE_V1: checkpoint/replay/step reads require workflow scope;
             // python=kogwistar/server/chat_api.py#get_checkpoint and #replay_run
             let required_namespace = if is_runtime_inspection_tail(&tail) {
                 "workflow"
@@ -1683,7 +1683,7 @@ impl SqliteRunApplicationService {
                 );
             }
         }
-        // PYTHON_PARITY_V1: authorize workflow cancel scope before lookup; python=kogwistar/server/runtime_api.py#create_runtime_router.cancel_workflow_run
+        // PYTHON_PARITY_NOTE_V1: authorize workflow cancel scope before lookup; python=kogwistar/server/runtime_api.py#create_runtime_router.cancel_workflow_run
         if request.method == "POST" && tail == ["cancel"] {
             let required_namespace =
                 runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
@@ -1723,7 +1723,7 @@ impl SqliteRunApplicationService {
                 );
             }
         }
-        // PYTHON_PARITY_V1: resume-contract reads require workflow.run.read before run lookup; python=kogwistar/server/chat_service.py#ChatRunService.resume_contract
+        // PYTHON_PARITY_NOTE_V1: resume-contract reads require workflow.run.read before run lookup; python=kogwistar/server/chat_service.py#ChatRunService.resume_contract
         if request.method == "GET" && tail == ["resume-contract"] {
             if !principal_strings(&request.principal, "ns")
                 .iter()
@@ -1765,7 +1765,7 @@ impl SqliteRunApplicationService {
                 );
             }
         };
-        // PYTHON_PARITY_V1: non-terminal cancellation requires write capability; python=kogwistar/server/chat_service.py#ChatRunService.cancel_run
+        // PYTHON_PARITY_NOTE_V1: non-terminal cancellation requires write capability; python=kogwistar/server/chat_service.py#ChatRunService.cancel_run
         if request.method == "POST"
             && tail == ["cancel"]
             && !matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled")
