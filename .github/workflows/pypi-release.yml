@@ -247,6 +247,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip twine packaging
           python -m twine check dist/*
+          python scripts/audit_pypi_release_artifacts.py \
+            --dist dist \
+            --expected-version "${{ needs.verify-release.outputs.version }}"
           find dist -maxdepth 1 -type f -printf '%f\n' | sort
 
   publish:
@@ -275,6 +278,9 @@ jobs:
         run: |
           python -m pip install --upgrade pip twine packaging
           python -m twine check dist/*
+          python scripts/audit_pypi_release_artifacts.py \
+            --dist dist \
+            --expected-version "${{ needs.verify-release.outputs.version }}"
           find dist -maxdepth 1 -type f -printf '%f\n' | sort
 
       - name: Publish to PyPI through Trusted Publishing

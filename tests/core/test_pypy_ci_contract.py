@@ -291,11 +291,57 @@ def test_pypi_release_builds_and_audits_pypy311_pure_wheel() -> None:
     assert "kogwistar-*-py3-none-any.whl" in workflow
     assert "name: wheel-pypy311-pure" in workflow
     assert "needs: [wheels, sdist, pypy-wheel]" in workflow
+    assert workflow.count("scripts/audit_pypi_release_artifacts.py") == 2
     assert "scripts/pypy311_pure_wheel_smoke.py" in workflow
     assert "platform.python_implementation() != \"PyPy\"" in smoke
     assert "sys.version_info[:2] != (3, 11)" in smoke
     assert "importlib.metadata.version(\"kogwistar\")" in smoke
     assert "site-packages" in smoke
+
+
+def test_pypi_release_artifact_audit_requires_pypy_wheel_and_native_matrix(
+    tmp_path: Path,
+) -> None:
+    from io import BytesIO
+    from tarfile import TarInfo, open as tar_open
+    from zipfile import ZipFile
+
+    from scripts.audit_pypi_release_artifacts import audit_release_artifacts
+
+    version = "0.6.99"
+    metadata = (
+        "Metadata-Version: 2.1\n"
+        "Name: kogwistar\n"
+        f"Version: {version}\n"
+        "Requires-Python: >=3.11\n\n"
+    )
+    wheel_names = [
+        f"kogwistar-{version}-py3-none-any.whl",
+        f"kogwistar-{version}-cp312-abi3-manylinux_2_28_x86_64.whl",
+        f"kogwistar-{version}-cp312-abi3-win_amd64.whl",
+        f"kogwistar-{version}-cp312-abi3-macosx_14_0_x86_64.whl",
+        f"kogwistar-{version}-cp312-abi3-macosx_14_0_arm64.whl",
+    ]
+    for filename in wheel_names:
+        with ZipFile(tmp_path / filename, "w") as archive:
+            archive.writestr(f"kogwistar-{version}.dist-info/METADATA", metadata)
+
+    sdist = tmp_path / f"kogwistar-{version}.tar.gz"
+    payload = b"source"
+    with tar_open(sdist, "w:gz") as archive:
+        info = TarInfo(f"kogwistar-{version}/README.md")
+        info.size = len(payload)
+        archive.addfile(info, BytesIO(payload))
+
+    assert audit_release_artifacts(tmp_path, version) == {
+        "sdists": 1,
+        "native_wheels": 4,
+        "pure_wheels": 1,
+    }
+
+    (tmp_path / wheel_names[0]).unlink()
+    with pytest.raises(ValueError, match="PyPy-compatible pure wheel"):
+        audit_release_artifacts(tmp_path, version)
 
 
 def test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips() -> None:
