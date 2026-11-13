@@ -326,6 +326,16 @@ impl PostgresUnitOfWork<'_> {
         graph_metadata_projection_records(&self.transaction, &self.tables, read).await
     }
 
+    /// Read scope-free node/document candidates; consumers must revalidate
+    /// each entity under its requested scope and ACL before returning it.
+    pub async fn graph_node_document_candidates(
+        &self,
+        filter: &kogwistar_store::MetadataFilter,
+        limit: usize,
+    ) -> PostgresStoreResult<Vec<GraphRecord>> {
+        graph_node_document_candidates(&self.transaction, &self.tables, filter, limit).await
+    }
+
     /// Read staged graph candidates by document through this transaction.
     pub async fn stage1_graph_projections_for_documents(
         &self,

@@ -432,8 +432,13 @@
         assert_eq!(accepted.status(), StatusCode::OK);
         let accepted_body = to_bytes(accepted.into_body(), 65_536).await.unwrap();
         let response: Value = serde_json::from_slice(&accepted_body).unwrap();
+        assert!(response["result"].is_object(), "unexpected MCP admission response: {response:#}");
+        assert!(
+            response["result"]["run_id"].is_string(),
+            "MCP ask did not return admitted run id: {response:#}"
+        );
         let run_id = response["result"]["run_id"].as_str().unwrap();
-        let turn_id = response["result"]["turn_node_id"].as_str().unwrap();
+        let turn_id = response["result"]["user_turn_node_id"].as_str().unwrap();
         let nodes = service
             .conversation_store
             .graph_projection_records(GraphProjectionRead {

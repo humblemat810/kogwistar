@@ -108,6 +108,57 @@ where
     graph_projection_records_with_columns(client, tables, read, None, false, false, false).await
 }
 
+/// Read Python-compatible scope-free node/document index candidates. Callers
+/// must reload entities through scoped graph projections and ACL checks.
+pub(crate) async fn graph_node_document_candidates<C>(
+    client: &C,
+    tables: &Tables,
+    filter: &kogwistar_store::MetadataFilter,
+    limit: usize,
+) -> PostgresStoreResult<Vec<GraphRecord>>
+where
+    C: GenericClient + Sync,
+{
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let table = graph_table(tables, NODE_DOCS_TABLE)?;
+    let mut clauses = Vec::with_capacity(filter.equals.len());
+    let mut values = Vec::with_capacity(filter.equals.len());
+    for (index, (key, value)) in filter.equals.iter().enumerate() {
+        let value_json = serde_json::to_string(value)?;
+        clauses.push(format!(
+            "metadata -> ${}::TEXT = {}::JSONB",
+            index + 1,
+            sql_text_literal(&value_json)
+        ));
+        values.push(key.clone());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX).to_string();
+    values.push(limit);
+    let params: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = values
+        .iter()
+        .map(|value| value as &(dyn tokio_postgres::types::ToSql + Sync))
+        .collect();
+    let where_clause = if clauses.is_empty() {
+        "TRUE".to_owned()
+    } else {
+        clauses.join(" AND ")
+    };
+    let rows = client
+        .query(
+            &format!(
+                "SELECT id, document, metadata::TEXT, NULL::TEXT FROM {table} WHERE {where_clause} ORDER BY id LIMIT ${}::TEXT::BIGINT",
+                values.len()
+            ),
+            &params,
+        )
+        .await
+        .map_err(backend)?;
+    rows.iter().map(graph_record_from_row).collect()
+}
+
 async fn graph_projection_records_with_columns<C>(
     client: &C,
     tables: &Tables,

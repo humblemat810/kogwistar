@@ -46,6 +46,20 @@
         })
         .await
         .unwrap();
+        let auth_connection = rusqlite::Connection::open(&auth_path).unwrap();
+        auth_connection
+            .execute(
+                "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?1, ?2, ?3)",
+                ("agentic_answering.v2", "alice", "rw"),
+            )
+            .unwrap();
+        auth_connection
+            .execute(
+                "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?1, ?2, ?3)",
+                ("packaged-rust-native-design-e2e", "alice", "rw"),
+            )
+            .unwrap();
+        drop(auth_connection);
         drop(auth);
         let auth_config = AuthConfig {
             auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
@@ -1132,8 +1146,8 @@
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
             &json!({
                 "sub":"alice","user_id":"alice","actor_id":"alice","role":"rw","roles":["rw"],
-                "ns":"alpha","storage_ns":"alpha",
-                "capabilities":["spawn_process","workflow.run.write","workflow.design.write","workflow.design.inspect","read_graph","write_graph"],
+                "ns":["alpha","workflow"],"storage_ns":"alpha",
+                "capabilities":["spawn_process","workflow.run.write","workflow.run.read","workflow.design.write","workflow.design.inspect","read_graph","write_graph"],
                 "exp": now_seconds + 300
             }),
             &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),

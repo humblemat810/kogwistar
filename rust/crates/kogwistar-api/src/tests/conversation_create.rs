@@ -467,7 +467,11 @@
             .await
             .unwrap();
         let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
-        assert_eq!(denied_value["error"]["code"], -32000);
+        assert_eq!(denied_value["error"]["code"], -32602);
+        assert_eq!(
+            denied_value["error"]["message"],
+            "Tool not advertised by this application service"
+        );
         assert!(denied_value.get("result").is_none());
 
         let denied_wrong_namespace = app
@@ -478,7 +482,11 @@
             .await
             .unwrap();
         let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
-        assert_eq!(denied_value["error"]["code"], -32000);
+        assert_eq!(denied_value["error"]["code"], -32602);
+        assert_eq!(
+            denied_value["error"]["message"],
+            "Tool not advertised by this application service"
+        );
         assert!(denied_value.get("result").is_none());
 
         drop(application);

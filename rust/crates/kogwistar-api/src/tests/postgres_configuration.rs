@@ -17,7 +17,7 @@
         let schema = format!("rust_api_design_write_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
-        let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
+        let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect","workflow.run.write","spawn_process","write_graph","approve_action"]});
         for body in [
             json!({"designer_id":"alice","node_id":"start","label":"Start","op":"increment-counter","start":true,"metadata":{"wf_executor_target":"rust-native"}}),
             json!({"designer_id":"alice","node_id":"end","label":"End","op":"emit-result","terminal":true,"metadata":{"wf_executor_target":"rust-native"}}),
@@ -31,7 +31,12 @@
                     principal: principal.clone(),
                 })
                 .await;
-            assert_eq!(response.status, 200);
+            assert_eq!(
+                response.status,
+                200,
+                "design node upsert failed: {}",
+                String::from_utf8_lossy(&response.body)
+            );
         }
         let edge = service
             .execute_async(ApiEffectRequest {
@@ -73,7 +78,12 @@
                 }),
             ))
             .await;
-        assert_eq!(submit.status, StatusCode::ACCEPTED);
+        assert_eq!(
+            submit.status,
+            StatusCode::ACCEPTED,
+            "run admission failed: {}",
+            String::from_utf8_lossy(&submit.body)
+        );
         let first_claim = service
             .execute_async(request(
                 "POST",

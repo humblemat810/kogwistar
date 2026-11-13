@@ -149,6 +149,29 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
             .await
             .unwrap();
     }
+    let foreign_document = mention_document("foreign-node");
+    service
+        .store
+        .apply_graph_mutation(GraphMutation {
+            scope: GraphScope {
+                namespace: "other".to_owned(),
+                ..scope.clone()
+            },
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "foreign-node-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: foreign_document.clone(),
+            record: GraphRecord {
+                id: "foreign-node".to_owned(),
+                document: Some(foreign_document.to_string()),
+                metadata: serde_json::Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 2,
+        })
+        .await
+        .unwrap();
     let latest = service
         .store
         .latest_entity_events("docs", "node", &["node-a".to_owned()])
@@ -354,7 +377,8 @@ async fn postgres_kg_load_persisted_matches_document_and_method_lookup_contract(
     };
     assert_eq!(
         decode_ids(short_json["result"]["node_ids"].as_array().unwrap()),
-        ["node-a", "node-b"]
+        ["node-a", "node-b"],
+        "short-ID graph result: {short_json}"
     );
     assert_eq!(
         decode_ids(short_json["result"]["edge_ids"].as_array().unwrap()),

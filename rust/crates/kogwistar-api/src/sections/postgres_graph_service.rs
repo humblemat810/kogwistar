@@ -579,8 +579,13 @@ impl PostgresRunApplicationService {
                         metadata: MetadataFilter::default(),
                         limit: MAX_INDEX_ROWS + 1,
                     };
+                    // Python's `node_docs` join index is scope-free; use it
+                    // only for candidate IDs, then reload graph entities with `scope` below.
                     let node_rows = uow
-                        .graph_metadata_projection_records(read_index(&indexes.node_docs))
+                        .graph_node_document_candidates(
+                            &MetadataFilter::default(),
+                            MAX_INDEX_ROWS + 1,
+                        )
                         .await
                         .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
                     let edge_rows = uow
@@ -996,15 +1001,21 @@ impl PostgresRunApplicationService {
                         } else {
                             &indexes.edge_endpoints
                         };
-                        let node_rows = uow
-                            .graph_metadata_projection_records(GraphProjectionRead {
+                        let node_filter = index_filter(insertion_method.is_some());
+                        let node_rows = if insertion_method.is_none() {
+                            uow.graph_node_document_candidates(&node_filter, 100_001)
+                                .await
+                        } else {
+                            uow.graph_metadata_projection_records(GraphProjectionRead {
                                 scope: scope.clone(),
                                 table: node_table.clone(),
                                 ids: None,
-                                metadata: index_filter(insertion_method.is_some()),
+                                metadata: node_filter,
                                 limit: 100_001,
                             })
-                            .await.map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                            .await
+                        }
+                        .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
                         let edge_rows = uow
                             .graph_metadata_projection_records(GraphProjectionRead {
                                 scope: scope.clone(),
@@ -1013,7 +1024,8 @@ impl PostgresRunApplicationService {
                                 metadata: index_filter(insertion_method.is_some()),
                                 limit: 100_001,
                             })
-                            .await.map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+                            .await
+                            .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
                         if node_rows.len() > 100_000 || edge_rows.len() > 100_000 {
                             return Err(PostgresStoreError::Backend(
                                 "document join-index result exceeds 100000 records".to_owned(),

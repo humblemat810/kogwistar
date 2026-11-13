@@ -110,7 +110,7 @@ async fn sqlite_workflow_process_table_is_discovered_with_scope_and_capability()
             principal: authorized,
         })
         .await;
-    assert_eq!(response.status, StatusCode::OK.as_u16());
+    assert_eq!(response.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&response.body));
     let body: Value = serde_json::from_slice(&response.body).unwrap();
     assert!(body["processes"].as_array().unwrap().iter().any(|process| {
         process["process_id"] == "workflow-process-table-completed-run"
@@ -468,7 +468,7 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
     let principal = json!({
         "sub":"alice", "role":"ro", "ns":["workflow"],
         "storage_ns":"workflow", "security_scope":"team-a",
-        "capabilities":["project_view"]
+        "capabilities":["project_view","workflow.run.read","read_security_scope"]
     });
     let response = service
         .execute(ApiEffectRequest {
@@ -480,7 +480,12 @@ async fn postgres_operator_inbox_joins_acl_visible_conversation_nodes_and_filter
             principal: principal.clone(),
         })
         .await;
-    assert_eq!(response.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        response.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
     let result: Value = serde_json::from_slice(&response.body).unwrap();
     let messages = result["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
@@ -624,7 +629,12 @@ async fn sqlite_chroma_operator_inbox_joins_acl_visible_conversation_nodes() {
             principal: principal.clone(),
         })
         .await;
-    assert_eq!(response.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        response.status,
+        StatusCode::OK.as_u16(),
+        "operator inbox response: {}",
+        String::from_utf8_lossy(&response.body)
+    );
     let result: Value = serde_json::from_slice(&response.body).unwrap();
     let messages = result["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
