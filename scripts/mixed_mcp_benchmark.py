@@ -114,7 +114,12 @@ def _validate_native_seam_metrics(
 
 
 def _bind_trace_identity(
-    result: dict[str, Any], *, run_id: str, trace_sha256: str, expected_operations: int
+    result: dict[str, Any],
+    *,
+    run_id: str,
+    trace_sha256: str,
+    expected_operations: int,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     """Bind sample counters to their deterministic run trace and reject omissions."""
     if result.get("operations") != expected_operations:
@@ -137,7 +142,112 @@ def _bind_trace_identity(
         or seam_metrics.get("tool_dispatches") != expected_operations
     ):
         raise RuntimeError("benchmark sample dispatch counters do not match its trace")
-    return {**result, "run_id": run_id, "trace_sha256": trace_sha256}
+    bound = {**result, "run_id": run_id, "trace_sha256": trace_sha256}
+    if mode is None:
+        return bound
+
+    expected_transport_requests = (
+        expected_operations
+        if mode in {"http", "rust_authority_http", "rust_native"}
+        else 0
+    )
+    if seam_metrics.get("transport_requests", 0) != expected_transport_requests:
+        raise RuntimeError("benchmark ingress counters do not match its trace")
+
+    transaction_owner = {
+        "in_process": "python_meta_store",
+        "http": "python_meta_store",
+        "rust_authority": "rust_meta_store",
+        "rust_authority_http": "rust_meta_store",
+        "rust_authority_batch_write": "rust_meta_store",
+        "rust_native": "rust_native_store",
+    }.get(mode)
+    if transaction_owner is None:
+        raise RuntimeError(f"benchmark sample has unknown transaction owner for {mode!r}")
+
+    trace_join: dict[str, object] = {
+        "mode": mode,
+        "run_id": run_id,
+        "trace_sha256": trace_sha256,
+        "expected_operations": expected_operations,
+        "ingress_requests": expected_transport_requests,
+        "tool_dispatches": seam_metrics["tool_dispatches"],
+        "ffi_calls": seam_metrics.get("ffi_calls"),
+        "serialized_bytes": seam_metrics.get("serialized_bytes"),
+        "transaction_boundaries": seam_metrics.get("transaction_boundaries"),
+        "transaction_owner": transaction_owner,
+    }
+    if mode in {"rust_authority", "rust_authority_http", "rust_authority_batch_write"}:
+        native = result.get("native_bridge_trace")
+        if not isinstance(native, dict):
+            raise RuntimeError("Rust-authority trace is missing observed bridge counters")
+        if (
+            native.get("measurement") != "untimed_isolated_database_replay"
+            or native.get("state_digest_matches") is not True
+        ):
+            raise RuntimeError("Rust-authority trace replay is not tied to matching graph state")
+        if native.get("ffi_calls") != seam_metrics.get("ffi_calls"):
+            raise RuntimeError("Rust-authority FFI counters disagree with observed bridge trace")
+        # Replay owns one isolated store session; open/close counts can differ
+        # from the measured host lifecycle while graph/transaction calls must match.
+        measured_operations = seam_metrics.get("ffi_by_operation")
+        observed_operations = native.get("calls_by_operation")
+        if not isinstance(measured_operations, dict) or not isinstance(
+            observed_operations, dict
+        ):
+            raise RuntimeError("Rust-authority trace lacks per-operation counters")
+        ignored_lifecycle_calls = {"open_init", "close"}
+        if {
+            key: value
+            for key, value in observed_operations.items()
+            if key not in ignored_lifecycle_calls
+        } != {
+            key: value
+            for key, value in measured_operations.items()
+            if key not in ignored_lifecycle_calls
+        }:
+            raise RuntimeError("Rust-authority operation counters disagree with observed bridge trace")
+        if native.get("transaction_boundary_calls") != seam_metrics.get("transaction_boundaries"):
+            raise RuntimeError("Rust-authority transaction boundaries disagree with observed bridge trace")
+        if (
+            not isinstance(native.get("transaction_active_calls"), int)
+            or native["transaction_active_calls"] < 0
+            or not isinstance(native.get("input_bytes"), int)
+            or native["input_bytes"] <= 0
+            or not isinstance(native.get("output_bytes"), int)
+            or native["output_bytes"] <= 0
+        ):
+            raise RuntimeError("Rust-authority trace lacks transaction or serialization evidence")
+        operations = native.get("calls_by_operation")
+        if not isinstance(operations, dict):
+            raise RuntimeError("Rust-authority trace lacks transaction ownership evidence")
+        if mode == "rust_authority_batch_write":
+            batch_count = operations.get("batch", 0)
+            if not isinstance(batch_count, int) or batch_count <= 0:
+                raise RuntimeError("Rust-authority batch trace lacks native atomic write evidence")
+            trace_join["transaction_owner_operation"] = "batch"
+        else:
+            if native["transaction_active_calls"] <= 0:
+                raise RuntimeError("Rust-authority trace lacks active Rust transaction calls")
+            begin_count = operations.get("begin_transaction", 0)
+            commit_count = operations.get("commit_transaction", 0)
+            if (
+                not isinstance(begin_count, int)
+                or not isinstance(commit_count, int)
+                or begin_count <= 0
+                or begin_count != commit_count
+            ):
+                raise RuntimeError(
+                    "Rust-authority transactions lack balanced Rust-owned commit evidence"
+                )
+            trace_join["observed_transaction_begins"] = begin_count
+            trace_join["observed_transaction_commits"] = commit_count
+        trace_join["observed_bridge_input_bytes"] = native["input_bytes"]
+        trace_join["observed_bridge_output_bytes"] = native["output_bytes"]
+        trace_join["transaction_active_calls"] = native["transaction_active_calls"]
+        trace_join["bridge_replay_state_matches"] = True
+    bound["trace_join"] = trace_join
+    return bound
 
 
 def _compare_batch_write_modes(
@@ -1668,6 +1778,18 @@ async def _run_one(
     state = _final_state(path)
     host_cpu_elapsed_ms = (time.process_time_ns() - host_cpu_started) / 1_000_000
     host_rss_end = int(host_process.memory_info().rss)
+    bridge_trace = None
+    if mode == "rust_authority_http":
+        bridge_trace = _diagnose_rust_authority_trace(
+            path.parent,
+            trace,
+            trace_arguments,
+            batch_write_transactions=False,
+            expected_state_digest=_digest(state),
+            expected_ffi_calls=seam_metrics.ffi_calls,
+            expected_ffi_by_operation=dict(seam_metrics.ffi_by_operation),
+            expected_transaction_boundaries=seam_metrics.transaction_boundaries,
+        )
     result = {
         "state_digest": _digest(state),
         "elapsed_ms": elapsed_ms,
@@ -1695,6 +1817,8 @@ async def _run_one(
             ),
         ),
     }
+    if bridge_trace is not None:
+        result["native_bridge_trace"] = bridge_trace
     if mode == "rust_native":
         result["native_cpu_elapsed_ms"] = native_result["cpu_elapsed_ms"]
         result["native_peak_rss_bytes"] = native_result["peak_rss_bytes"]
@@ -1764,6 +1888,7 @@ def _run_one_sync(
             expected_state_digest=_digest(state),
             expected_ffi_calls=seam_metrics.ffi_calls,
             expected_ffi_by_operation=dict(seam_metrics.ffi_by_operation),
+            expected_transaction_boundaries=seam_metrics.transaction_boundaries,
         )
     return {
         "state_digest": _digest(state),
@@ -1801,6 +1926,7 @@ def _diagnose_rust_authority_trace(
     expected_state_digest: str,
     expected_ffi_calls: int,
     expected_ffi_by_operation: dict[str, int],
+    expected_transaction_boundaries: int,
 ) -> dict[str, object]:
     """Cross-check manual FFI accounting on a disposable, untimed replay."""
     with tempfile.TemporaryDirectory(prefix="kogwistar-bridge-trace-", dir=root) as directory:
@@ -1832,10 +1958,40 @@ def _diagnose_rust_authority_trace(
             f"manual operations={expected_ffi_by_operation}; "
             f"observed operations={metrics['calls_by_operation']}"
         )
+    batch_calls = metrics["calls_by_operation"].get("batch", 0)
+    observed_transaction_boundaries = metrics["transaction_boundary_calls"]
+    if batch_write_transactions:
+        # One Rust batch call contains one native begin/commit pair.
+        if observed_transaction_boundaries != 0 or batch_calls <= 0:
+            raise RuntimeError("Rust batch trace lacks expected atomic transaction ownership")
+        observed_transaction_boundaries = 2 * batch_calls
+    if observed_transaction_boundaries != expected_transaction_boundaries:
+        raise RuntimeError(
+            "manual transaction-boundary metrics disagree with observed Rust bridge calls: "
+            f"{expected_transaction_boundaries} != {observed_transaction_boundaries}"
+        )
+    observed_graph_calls = {
+        key: value
+        for key, value in metrics["calls_by_operation"].items()
+        if key not in {"open_init", "close"}
+    }
+    expected_graph_calls = {
+        key: value
+        for key, value in expected_ffi_by_operation.items()
+        if key not in {"open_init", "close"}
+    }
+    if observed_graph_calls != expected_graph_calls:
+        raise RuntimeError(
+            "manual per-operation metrics disagree with observed Rust bridge calls: "
+            f"manual={expected_graph_calls}; observed={observed_graph_calls}"
+        )
     return {
         "measurement": "untimed_isolated_database_replay",
         "state_digest_matches": True,
         **metrics,
+        "transaction_boundary_calls": observed_transaction_boundaries,
+        "explicit_transaction_boundary_calls": metrics["transaction_boundary_calls"],
+        "batch_transaction_calls": batch_calls,
     }
 
 
@@ -2538,6 +2694,7 @@ def run_benchmark(
             run_id=run_id,
             trace_sha256=trace_sha256,
             expected_operations=len(trace),
+            mode=mode,
         )
         mode_samples = []
         progress["partial_samples"][mode] = {"warmup": warmup, "samples": mode_samples}
@@ -2565,6 +2722,7 @@ def run_benchmark(
                 run_id=run_id,
                 trace_sha256=trace_sha256,
                 expected_operations=len(trace),
+                mode=mode,
             )
             digests.add(result["state_digest"])
             mode_samples.append(result)

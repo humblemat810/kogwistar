@@ -45,6 +45,136 @@ def test_sample_metrics_are_bound_to_trace_and_reject_duplicate_counts() -> None
         )
 
 
+def _joined_rust_http_sample() -> dict[str, object]:
+    operations = {
+        "begin_transaction": 1,
+        "commit_transaction": 1,
+        "raw_append": 2,
+    }
+    return {
+        "operations": 2,
+        "per_operation": {"write": {"count": 1}, "read": {"count": 1}},
+        "seam_metrics": {
+            "scope": "python_host_boundary",
+            "complete": True,
+            "tool_dispatches": 2,
+            "transport_requests": 2,
+            "ffi_calls": 4,
+            "ffi_by_operation": operations,
+            "serialized_bytes": 100,
+            "transaction_boundaries": 2,
+        },
+        "native_bridge_trace": {
+            "measurement": "untimed_isolated_database_replay",
+            "state_digest_matches": True,
+            "ffi_calls": 4,
+            "calls_by_operation": operations,
+            "transaction_boundary_calls": 2,
+            "transaction_active_calls": 1,
+            "input_bytes": 90,
+            "output_bytes": 60,
+        },
+    }
+
+
+def _fake_benchmark_sample(trace: list[dict[str, object]], mode: str) -> dict[str, object]:
+    operations = {"begin_transaction": 1, "commit_transaction": 1}
+    sample: dict[str, object] = {
+        "state_digest": "same-state",
+        "operations": len(trace),
+        "per_operation": {"write_record": {"count": len(trace)}},
+        "seam_metrics": {
+            "scope": "python_host_boundary",
+            "complete": True,
+            "tool_dispatches": len(trace),
+            "transport_requests": len(trace)
+            if mode in {"http", "rust_authority_http", "rust_native"}
+            else 0,
+        },
+        "elapsed_ms": 1.0,
+        "startup_ms": 1.0,
+        "throughput_ops_per_sec": 1.0,
+        "host_process_cpu_elapsed_ms": 1.0,
+        "host_process_rss_delta_bytes": 1,
+        "native_cpu_elapsed_ms": 1.0,
+        "native_peak_rss_bytes": 1,
+    }
+    if mode in {"rust_authority", "rust_authority_http"}:
+        seam = sample["seam_metrics"]
+        assert isinstance(seam, dict)
+        seam.update(
+            ffi_calls=2,
+            ffi_by_operation=operations,
+            serialized_bytes=10,
+            transaction_boundaries=2,
+        )
+        sample["native_bridge_trace"] = {
+            "measurement": "untimed_isolated_database_replay",
+            "state_digest_matches": True,
+            "ffi_calls": 2,
+            "calls_by_operation": operations,
+            "transaction_boundary_calls": 2,
+            "transaction_active_calls": 1,
+            "input_bytes": 10,
+            "output_bytes": 10,
+        }
+    return sample
+def test_trace_attribution_joins_http_ingress_and_rust_transaction_owner() -> None:
+    result = _bind_trace_identity(
+        _joined_rust_http_sample(),
+        run_id="run-a",
+        trace_sha256="trace-a",
+        expected_operations=2,
+        mode="rust_authority_http",
+    )
+
+    assert result["trace_join"] == {
+        "mode": "rust_authority_http",
+        "run_id": "run-a",
+        "trace_sha256": "trace-a",
+        "expected_operations": 2,
+        "ingress_requests": 2,
+        "tool_dispatches": 2,
+        "ffi_calls": 4,
+        "serialized_bytes": 100,
+        "transaction_boundaries": 2,
+        "transaction_owner": "rust_meta_store",
+        "observed_bridge_input_bytes": 90,
+        "observed_bridge_output_bytes": 60,
+        "transaction_active_calls": 1,
+        "observed_transaction_begins": 1,
+        "observed_transaction_commits": 1,
+        "bridge_replay_state_matches": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "value", "message"),
+    [
+        ("seam_metrics", "transport_requests", 1, "ingress"),
+        ("seam_metrics", "ffi_calls", 3, "FFI"),
+        ("seam_metrics", "transaction_boundaries", 1, "transaction boundaries"),
+        ("native_bridge_trace", "transaction_active_calls", 0, "active Rust transaction calls"),
+    ],
+)
+def test_trace_attribution_rejects_unjoined_or_missing_counters(
+    section: str, key: str, value: int, message: str
+) -> None:
+    result = _joined_rust_http_sample()
+    nested = result[section]
+    assert isinstance(nested, dict)
+    nested[key] = value
+
+    with pytest.raises(RuntimeError, match=message):
+        _bind_trace_identity(
+            result,
+            run_id="run-a",
+            trace_sha256="trace-a",
+            expected_operations=2,
+            mode="rust_authority_http",
+        )
+
+
 def _batch_comparison_mode(
     *, elapsed_ms: float, ffi_calls: int, serialized_bytes: int
 ) -> dict[str, object]:
@@ -152,6 +282,13 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
             tmp_path / "rust-authority-http.sqlite3", trace, "rust_authority_http"
         )
     )
+    rust_http_joined = _bind_trace_identity(
+        rust_authority_http,
+        run_id="integration-run",
+        trace_sha256="integration-trace",
+        expected_operations=len(trace),
+        mode="rust_authority_http",
+    )
 
     assert in_process["state_digest"] == rust_authority["state_digest"]
     assert in_process["state_digest"] == http["state_digest"]
@@ -167,6 +304,9 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
     assert rust_authority_http["seam_metrics"]["ffi_calls"] > 0
     assert rust_authority_http["seam_metrics"]["tool_dispatches"] == len(trace)
     assert rust_authority_http["seam_metrics"]["transport_requests"] == len(trace)
+    assert rust_http_joined["trace_join"]["transaction_owner"] == "rust_meta_store"
+    assert rust_http_joined["trace_join"]["ingress_requests"] == len(trace)
+    assert rust_http_joined["trace_join"]["bridge_replay_state_matches"] is True
 
 
 def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
@@ -390,19 +530,7 @@ def test_benchmark_accepts_a_resource_matched_mode_subset(tmp_path, monkeypatch)
     monkeypatch.setenv("KOGWISTAR_MIXED_NATIVE_BINARY", str(native_binary))
     async def fake_run_one(*args, **kwargs):
         trace = args[1]
-        return {
-            "state_digest": "same-state",
-            "operations": len(trace),
-            "per_operation": {"write_record": {"count": len(trace)}},
-            "seam_metrics": {"tool_dispatches": len(trace)},
-            "elapsed_ms": 1.0,
-            "startup_ms": 1.0,
-            "throughput_ops_per_sec": 1.0,
-            "host_process_cpu_elapsed_ms": 1.0,
-            "host_process_rss_delta_bytes": 1,
-            "native_cpu_elapsed_ms": 1.0,
-            "native_peak_rss_bytes": 1,
-        }
+        return _fake_benchmark_sample(trace, args[2])
 
     monkeypatch.setattr(mixed_mcp_benchmark, "_run_one", fake_run_one)
     def fake_asyncio_run(coroutine):
@@ -497,35 +625,31 @@ def test_mcp_run_prepares_and_reuses_tool_arguments_once(monkeypatch, tmp_path) 
 
     async def fake_run_one(path, trace, mode, *, trace_arguments):
         argument_list_ids.append(id(trace_arguments))
-        return {
-            "state_digest": "same-state",
-            "operations": len(trace),
-            "per_operation": {"write_record": {"count": len(trace)}},
-            "seam_metrics": {"tool_dispatches": len(trace)},
-            "elapsed_ms": 100.0,
-            "startup_ms": 1.0,
-            "throughput_ops_per_sec": 30.0,
-            "host_process_cpu_elapsed_ms": 20.0,
-            "host_process_rss_delta_bytes": 0,
-            "native_cpu_elapsed_ms": 10.0,
-            "native_peak_rss_bytes": 1024,
-        }
+        result = _fake_benchmark_sample(trace, mode)
+        result.update(
+            elapsed_ms=100.0,
+            startup_ms=1.0,
+            throughput_ops_per_sec=30.0,
+            host_process_cpu_elapsed_ms=20.0,
+            host_process_rss_delta_bytes=0,
+            native_cpu_elapsed_ms=10.0,
+            native_peak_rss_bytes=1024,
+        )
+        return result
 
     def fake_run_one_sync(path, trace, mode, *, trace_arguments):
         argument_list_ids.append(id(trace_arguments))
-        return {
-            "state_digest": "same-state",
-            "operations": len(trace),
-            "per_operation": {"write_record": {"count": len(trace)}},
-            "seam_metrics": {"tool_dispatches": len(trace)},
-            "elapsed_ms": 100.0,
-            "startup_ms": 1.0,
-            "throughput_ops_per_sec": 30.0,
-            "host_process_cpu_elapsed_ms": 20.0,
-            "host_process_rss_delta_bytes": 0,
-            "native_cpu_elapsed_ms": 10.0,
-            "native_peak_rss_bytes": 1024,
-        }
+        result = _fake_benchmark_sample(trace, mode)
+        result.update(
+            elapsed_ms=100.0,
+            startup_ms=1.0,
+            throughput_ops_per_sec=30.0,
+            host_process_cpu_elapsed_ms=20.0,
+            host_process_rss_delta_bytes=0,
+            native_cpu_elapsed_ms=10.0,
+            native_peak_rss_bytes=1024,
+        )
+        return result
 
     def fake_asyncio_run(coroutine):
         try:
