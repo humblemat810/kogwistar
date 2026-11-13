@@ -139,6 +139,126 @@ def _bind_trace_identity(
         raise RuntimeError("benchmark sample dispatch counters do not match its trace")
     return {**result, "run_id": run_id, "trace_sha256": trace_sha256}
 
+
+def _compare_batch_write_modes(
+    per_item: dict[str, Any], batch: dict[str, Any]
+) -> dict[str, Any]:
+    """Enforce deterministic seam budgets and report latency only with enough signal."""
+    if per_item.get("state_digest") != batch.get("state_digest"):
+        raise RuntimeError("batch-write benchmark modes produced different graph states")
+    per_samples = per_item.get("samples")
+    batch_samples = batch.get("samples")
+    if not isinstance(per_samples, list) or not isinstance(batch_samples, list):
+        raise RuntimeError("batch-write comparison requires measured samples")
+    trace_identities = {
+        (sample.get("run_id"), sample.get("trace_sha256"))
+        for sample in (*per_samples, *batch_samples)
+        if isinstance(sample, dict)
+    }
+    if (
+        len(trace_identities) != 1
+        or not all(isinstance(value, str) and value for value in next(iter(trace_identities), ()))
+    ):
+        raise RuntimeError("batch-write modes do not share one run and trace identity")
+    if any(
+        not isinstance(sample, dict)
+        or sample.get("state_digest") != per_item.get("state_digest")
+        for sample in (*per_samples, *batch_samples)
+    ):
+        raise RuntimeError("batch-write sample state differs from its mode digest")
+    per_operation_counts = [
+        sample.get("operations") if isinstance(sample, dict) else None
+        for sample in per_samples
+    ]
+    batch_operation_counts = [
+        sample.get("operations") if isinstance(sample, dict) else None
+        for sample in batch_samples
+    ]
+    if (
+        not per_operation_counts
+        or any(not isinstance(value, int) or isinstance(value, bool) for value in per_operation_counts)
+        or len(set(per_operation_counts)) != 1
+        or batch_operation_counts != per_operation_counts
+    ):
+        raise RuntimeError("batch-write benchmark modes ran different operation counts")
+    def stable_counter(mode: dict[str, Any], name: str) -> int:
+        samples = mode.get("samples")
+        if not isinstance(samples, list) or not samples:
+            raise RuntimeError("batch-write comparison requires measured samples")
+        values = [
+            sample.get("seam_metrics", {}).get(name)
+            if isinstance(sample, dict)
+            and isinstance(sample.get("seam_metrics"), dict)
+            else None
+            for sample in samples
+        ]
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in values):
+            raise RuntimeError(f"batch-write samples have invalid {name} counters")
+        if len(set(values)) != 1:
+            raise RuntimeError(f"batch-write samples disagree on {name} counters")
+        return values[0]
+
+    tx_per = stable_counter(per_item, "transaction_boundaries")
+    tx_batch = stable_counter(batch, "transaction_boundaries")
+    if not isinstance(tx_per, int) or tx_batch != tx_per:
+        raise RuntimeError("batch-write mode changed transaction commit boundaries")
+    ffi_per = stable_counter(per_item, "ffi_calls")
+    ffi_batch = stable_counter(batch, "ffi_calls")
+    bytes_per = stable_counter(per_item, "serialized_bytes")
+    bytes_batch = stable_counter(batch, "serialized_bytes")
+    if not all(isinstance(value, int) and value > 0 for value in (ffi_per, bytes_per)):
+        raise RuntimeError("per-item benchmark has invalid seam counters")
+    if not all(
+        isinstance(value, int) and value >= 0 for value in (ffi_batch, bytes_batch)
+    ):
+        raise RuntimeError("batch benchmark has invalid seam counters")
+
+    ffi_ratio = ffi_batch / ffi_per
+    byte_ratio = bytes_batch / bytes_per
+    if ffi_ratio > 0.60:
+        raise RuntimeError(f"batch FFI ratio {ffi_ratio:.3f} exceeds 0.60 budget")
+    if byte_ratio > 1.01:
+        raise RuntimeError(f"batch serialized-byte ratio {byte_ratio:.3f} exceeds 1.01 budget")
+
+    latency_status = "inconclusive_insufficient_samples"
+    latency_ratio: float | None = None
+    if (
+        isinstance(per_samples, list)
+        and isinstance(batch_samples, list)
+        and len(per_samples) >= 5
+        and len(batch_samples) >= 5
+    ):
+        per_elapsed = [float(sample["elapsed_ms"]) for sample in per_samples]
+        batch_elapsed = [float(sample["elapsed_ms"]) for sample in batch_samples]
+        per_variation = _sample_variation(per_elapsed)
+        batch_variation = _sample_variation(batch_elapsed)
+        if (
+            per_variation["coefficient_of_variation_pct"] <= 5.0
+            and batch_variation["coefficient_of_variation_pct"] <= 5.0
+        ):
+            latency_ratio = statistics.median(batch_elapsed) / statistics.median(per_elapsed)
+            if latency_ratio > 1.20:
+                raise RuntimeError(
+                    f"batch latency ratio {latency_ratio:.3f} exceeds 1.20 budget"
+                )
+            latency_status = "evaluated_pass"
+        else:
+            latency_status = "inconclusive_noisy_samples"
+    return {
+        "thresholds": {
+            "ffi_ratio_max": 0.60,
+            "serialized_byte_ratio_max": 1.01,
+            "latency_ratio_max": 1.20,
+            "latency_min_samples_per_mode": 5,
+            "latency_max_coefficient_of_variation_pct": 5.0,
+        },
+        "ffi_ratio": ffi_ratio,
+        "serialized_byte_ratio": byte_ratio,
+        "transaction_boundaries_equal": True,
+        "latency_ratio": latency_ratio,
+        "latency_status": latency_status,
+    }
+
 import uvicorn
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
@@ -2487,6 +2607,11 @@ def run_benchmark(
         for mode_result in results.values()
     ):
         raise RuntimeError("MCP registry and HTTP transports persisted different states")
+    batch_write_regression = None
+    if {"rust_authority", "rust_authority_batch_write"}.issubset(results):
+        batch_write_regression = _compare_batch_write_modes(
+            results["rust_authority"], results["rust_authority_batch_write"]
+        )
     concurrent_report = None
     if include_concurrent:
         progress["active"] = {"phase": "concurrent_profiles", "items": concurrent_items}
@@ -2504,6 +2629,7 @@ def run_benchmark(
         "warmup_samples_per_mode": 1,
         "tool_argument_preparation_ms": argument_preparation_ms,
         "state_digest_equal": True,
+        "batch_write_regression": batch_write_regression,
         "modes": results,
         "concurrent": concurrent_report,
     }

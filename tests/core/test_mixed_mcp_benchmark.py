@@ -43,6 +43,99 @@ def test_sample_metrics_are_bound_to_trace_and_reject_duplicate_counts() -> None
             trace_sha256="trace-a",
             expected_operations=2,
         )
+
+
+def _batch_comparison_mode(
+    *, elapsed_ms: float, ffi_calls: int, serialized_bytes: int
+) -> dict[str, object]:
+    return {
+        "state_digest": "same-state",
+        "samples": [
+            {
+                "state_digest": "same-state",
+                "run_id": "run-a",
+                "trace_sha256": "trace-a",
+                "operations": 600,
+                "elapsed_ms": elapsed_ms,
+                "throughput_ops_per_sec": 600_000 / elapsed_ms,
+                "seam_metrics": {
+                    "transaction_boundaries": 202,
+                    "ffi_calls": ffi_calls,
+                    "serialized_bytes": serialized_bytes,
+                },
+            }
+            for _ in range(2)
+        ],
+    }
+
+
+def test_batch_comparison_enforces_seam_budgets_and_defers_noisy_latency() -> None:
+    per_item = _batch_comparison_mode(
+        elapsed_ms=1000.0, ffi_calls=900, serialized_bytes=100_000
+    )
+    batch = _batch_comparison_mode(
+        elapsed_ms=1100.0, ffi_calls=400, serialized_bytes=100_500
+    )
+
+    result = mixed_mcp_benchmark._compare_batch_write_modes(per_item, batch)
+
+    assert result["transaction_boundaries_equal"] is True
+    assert result["ffi_ratio"] == pytest.approx(400 / 900)
+    assert result["serialized_byte_ratio"] == pytest.approx(1.005)
+    assert result["latency_status"] == "inconclusive_insufficient_samples"
+
+
+def test_batch_comparison_rejects_different_trace_identity() -> None:
+    per_item = _batch_comparison_mode(
+        elapsed_ms=1000.0, ffi_calls=900, serialized_bytes=100_000
+    )
+    batch = _batch_comparison_mode(
+        elapsed_ms=1000.0, ffi_calls=400, serialized_bytes=100_500
+    )
+    batch["samples"] = [
+        {**sample, "trace_sha256": "different-trace"}
+        for sample in batch["samples"]
+    ]
+
+    with pytest.raises(RuntimeError, match="run and trace identity"):
+        mixed_mcp_benchmark._compare_batch_write_modes(per_item, batch)
+
+
+@pytest.mark.parametrize(
+    ("batch_kwargs", "error"),
+    [
+        ({"elapsed_ms": 1000.0, "ffi_calls": 550, "serialized_bytes": 100_000}, "FFI ratio"),
+        ({"elapsed_ms": 1000.0, "ffi_calls": 400, "serialized_bytes": 102_000}, "serialized-byte ratio"),
+    ],
+)
+def test_batch_comparison_fails_when_deterministic_budgets_are_exceeded(
+    batch_kwargs: dict[str, float | int], error: str
+) -> None:
+    per_item = _batch_comparison_mode(
+        elapsed_ms=1000.0, ffi_calls=900, serialized_bytes=100_000
+    )
+    batch = _batch_comparison_mode(**batch_kwargs)
+
+    with pytest.raises(RuntimeError, match=error):
+        mixed_mcp_benchmark._compare_batch_write_modes(per_item, batch)
+
+
+def test_batch_comparison_enforces_latency_budget_only_with_stable_five_sample_sets() -> None:
+    per_item = _batch_comparison_mode(
+        elapsed_ms=1000.0, ffi_calls=900, serialized_bytes=100_000
+    )
+    batch = _batch_comparison_mode(
+        elapsed_ms=1250.0, ffi_calls=400, serialized_bytes=100_500
+    )
+    per_item["samples"] = [
+        {**sample, "elapsed_ms": 1000.0} for sample in per_item["samples"]
+    ] + [{**per_item["samples"][0], "elapsed_ms": 1000.0} for _ in range(3)]
+    batch["samples"] = [
+        {**sample, "elapsed_ms": 1250.0} for sample in batch["samples"]
+    ] + [{**batch["samples"][0], "elapsed_ms": 1250.0} for _ in range(3)]
+
+    with pytest.raises(RuntimeError, match="latency ratio"):
+        mixed_mcp_benchmark._compare_batch_write_modes(per_item, batch)
 from scripts.mixed_workload import build_read_after_write_trace
 
 

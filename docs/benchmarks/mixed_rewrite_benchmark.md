@@ -1311,3 +1311,22 @@ After that full run, the task-local trace test was strengthened to route bridge
 calls through `asyncio.to_thread`. The updated test passed independently under
 CPython 3.12, 3.13, and 3.14. PyPy 3.11 was not verified: the available local
 environment lacks pytest and pydantic, so the test could not be run there.
+
+### Batch-write regression budgets
+
+When both `rust_authority` and `rust_authority_batch_write` are requested,
+`mixed_mcp_benchmark.py` now includes a `batch_write_regression` result in its
+report. Both paths must have the same canonical state digest, operation counts,
+and transaction-boundary count. Across fresh measured samples, FFI calls must
+be at most 60% of per-item mode and serialized bytes at most 101%. These limits
+are deliberately below/near the 2,000-item baseline (run `3144e05a3b6f`): FFI
+ratio **0.4445**, serialized-byte ratio **0.9990**, equal **4,000** transaction
+boundaries, and median elapsed **107,333 ms** per-item versus **94,791 ms**
+batched. This two-sample local run is a reference, not a general speedup claim.
+
+Latency regression is evaluated only with at least five fresh samples per mode
+and coefficient of variation no greater than 5% in both modes; batch median
+elapsed time above 120% of per-item is a regression. Otherwise the report marks
+latency `inconclusive_insufficient_samples` or `inconclusive_noisy_samples` and
+does not silently call it a pass. This guard separates deterministic seam
+budgets from host-noisy timing and preserves the existing opt-in batch mode.
