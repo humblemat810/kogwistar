@@ -3,7 +3,7 @@
 //! Run with `KOGWISTAR_TEST_POSTGRES_DSN` set. Each warmup/sample gets a fresh
 //! schema; provider vectors are precomputed so no embedding inference is timed.
 
-use kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_observed;
+use kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed;
 use kogwistar_store::{
     GraphProjectionRead, GraphRecord, GraphScope, IndexJobReadStore, NewIndexJob,
 };
@@ -19,6 +19,7 @@ struct Sample {
     elapsed_ms: f64,
     provider_ms: f64,
     graph_projection_ms: f64,
+    worker_transfer_ms: f64,
     jobs: usize,
     records: usize,
 }
@@ -86,32 +87,46 @@ async fn run_sample(
         embedding
     };
     let started = Instant::now();
-    let (summary, timing) = run_graph_projection_jobs_once_with_batch_provider_input_observed(
-        &store,
-        &store,
-        items,
-        60,
-        Some("benchmark"),
-        move |inputs| {
-            let embedding = precomputed_embedding.clone();
-            async move {
-                Ok(inputs
-                    .into_iter()
-                    .map(|input| {
-                        let mut record = GraphRecord::new(input.entity_id.clone());
-                        record.document = Some(format!("benchmark node {}", input.entity_id));
-                        record
-                            .metadata
-                            .insert("entity_type".to_owned(), json!("node"));
-                        record.embedding = Some(embedding.clone());
-                        (input.job_id, Ok(record))
-                    })
-                    .collect())
-            }
-        },
-    )
-    .await?;
+    let (summary, attribution) =
+        run_graph_projection_jobs_once_with_batch_provider_input_attributed(
+            &store,
+            &store,
+            items,
+            60,
+            Some("benchmark"),
+            move |inputs| {
+                let embedding = precomputed_embedding.clone();
+                async move {
+                    Ok(inputs
+                        .into_iter()
+                        .map(|input| {
+                            let mut record = GraphRecord::new(input.entity_id.clone());
+                            record.document = Some(format!("benchmark node {}", input.entity_id));
+                            record
+                                .metadata
+                                .insert("entity_type".to_owned(), json!("node"));
+                            record.embedding = Some(embedding.clone());
+                            (input.job_id, Ok(record))
+                        })
+                        .collect())
+                }
+            },
+        )
+        .await?;
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+
+    if attribution
+        .provider_and_projection
+        .completed_provider_elapsed_ns
+        == 0
+        || attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns
+            == 0
+        || attribution.worker_transfer_elapsed_ns == 0
+    {
+        return Err("one or more worker attribution stages reported zero elapsed time".into());
+    }
 
     if summary.claimed != items || summary.projected + summary.reused != items {
         let all_jobs = store
@@ -184,8 +199,15 @@ async fn run_sample(
 
     Ok(Sample {
         elapsed_ms,
-        provider_ms: timing.completed_provider_elapsed_ns as f64 / 1_000_000.0,
-        graph_projection_ms: timing.graph_projection_elapsed_ns as f64 / 1_000_000.0,
+        provider_ms: attribution
+            .provider_and_projection
+            .completed_provider_elapsed_ns as f64
+            / 1_000_000.0,
+        graph_projection_ms: attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns as f64
+            / 1_000_000.0,
+        worker_transfer_ms: attribution.worker_transfer_elapsed_ns as f64 / 1_000_000.0,
         jobs: jobs.len(),
         records: records.len(),
     })
@@ -234,6 +256,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|sample| sample.graph_projection_ms)
         .collect::<Vec<_>>();
+    let worker_transfer = measured
+        .iter()
+        .map(|sample| sample.worker_transfer_ms)
+        .collect::<Vec<_>>();
     println!(
         "{}",
         json!({
@@ -246,6 +272,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             "median_elapsed_ms": median(&elapsed),
             "median_provider_ms": median(&provider),
             "median_graph_projection_ms": median(&projection),
+            "median_worker_transfer_ms": median(&worker_transfer),
             "median_throughput_jobs_per_sec": items as f64 * 1_000.0 / median(&elapsed),
             "scope": "background_worker_only_not_mcp_request_latency"
         })

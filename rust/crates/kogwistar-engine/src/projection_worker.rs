@@ -36,6 +36,28 @@ pub struct ProjectionWorkerTiming {
     pub graph_projection_elapsed_ns: u128,
 }
 
+/// Queue handoff attribution returned only by the additive detailed API.
+/// `worker_transfer_elapsed_ns` covers foreground claim/admission/ack/retry
+/// calls; background lease renewal is intentionally excluded.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ProjectionWorkerAttribution {
+    pub provider_and_projection: ProjectionWorkerTiming,
+    pub worker_transfer_elapsed_ns: u128,
+}
+
+async fn measure_worker_transfer<T, F>(enabled: bool, elapsed_ns: &mut u128, future: F) -> T
+where
+    F: Future<Output = T>,
+{
+    if !enabled {
+        return future.await;
+    }
+    let started = Instant::now();
+    let result = future.await;
+    *elapsed_ns = elapsed_ns.saturating_add(started.elapsed().as_nanos());
+    result
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum ProjectionAction {
     Upsert(GraphRecord),
@@ -263,6 +285,7 @@ where
         namespace,
         None,
         false,
+        false,
         move |jobs| {
             let calls = jobs
                 .into_iter()
@@ -281,7 +304,7 @@ where
         },
     )
     .await
-    .map(|(summary, _)| summary)
+    .map(|(summary, _, _)| summary)
 }
 
 /// Safe provider boundary that withholds the queue claim token and transition
@@ -308,6 +331,7 @@ where
         namespace,
         None,
         false,
+        false,
         move |jobs| {
             let calls = jobs
                 .into_iter()
@@ -327,7 +351,7 @@ where
         },
     )
     .await
-    .map(|(summary, _)| summary)
+    .map(|(summary, _, _)| summary)
 }
 
 /// Safe batch provider boundary for a namespace-scoped claim. Existing
@@ -354,6 +378,7 @@ where
         namespace,
         None,
         false,
+        false,
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -363,7 +388,7 @@ where
         },
     )
     .await
-    .map(|(summary, _)| summary)
+    .map(|(summary, _, _)| summary)
 }
 
 /// Safe provider boundary for a queue claim restricted to supported index
@@ -434,6 +459,7 @@ where
         None,
         Some(filter),
         false,
+        false,
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -443,7 +469,7 @@ where
         },
     )
     .await
-    .map(|(summary, _)| summary)
+    .map(|(summary, _, _)| summary)
 }
 
 /// Opt-in provider/projection stage attribution for namespace-scoped work.
@@ -470,6 +496,7 @@ where
         namespace,
         None,
         true,
+        false,
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -479,6 +506,51 @@ where
         },
     )
     .await
+    .map(|(summary, timing, _)| (summary, timing))
+}
+
+/// Opt-in provider, graph-write, and durable queue-handoff attribution.
+/// Existing observed and non-observed APIs retain their return contracts.
+pub async fn run_graph_projection_jobs_once_with_batch_provider_input_attributed<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    limit: usize,
+    lease_seconds: i64,
+    namespace: Option<&str>,
+    mut provider: F,
+) -> StoreResult<(ProjectionWorkerSummary, ProjectionWorkerAttribution)>
+where
+    Q: IndexJobWriteStore,
+    G: GraphProjectionWriteStore,
+    F: FnMut(Vec<IndexJobProviderInput>) -> Fut,
+    Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
+{
+    let (summary, provider_and_projection, worker_transfer_elapsed_ns) =
+        run_graph_projection_jobs_once_inner(
+            queue,
+            graph,
+            limit,
+            lease_seconds,
+            namespace,
+            None,
+            true,
+            true,
+            move |jobs| {
+                let inputs = jobs
+                    .iter()
+                    .map(IndexJobProviderInput::from)
+                    .collect::<Vec<_>>();
+                provider(inputs)
+            },
+        )
+        .await?;
+    Ok((
+        summary,
+        ProjectionWorkerAttribution {
+            provider_and_projection,
+            worker_transfer_elapsed_ns,
+        },
+    ))
 }
 
 /// Opt-in provider/projection stage attribution for atomically filtered work.
@@ -510,6 +582,7 @@ where
         None,
         Some(filter),
         true,
+        false,
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -519,6 +592,7 @@ where
         },
     )
     .await
+    .map(|(summary, timing, _)| (summary, timing))
 }
 
 async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
@@ -529,28 +603,33 @@ async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
     namespace: Option<&str>,
     claim_filter: Option<IndexJobClaimFilter>,
     measure_stages: bool,
+    measure_transfer: bool,
     mut provider: F,
-) -> StoreResult<(ProjectionWorkerSummary, ProjectionWorkerTiming)>
+) -> StoreResult<(ProjectionWorkerSummary, ProjectionWorkerTiming, u128)>
 where
     Q: IndexJobWriteStore,
     G: GraphProjectionWriteStore,
     F: FnMut(Vec<IndexJob>) -> Fut,
     Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
 {
-    let jobs = if let Some(filter) = claim_filter {
-        queue
-            .claim_index_jobs_filtered(limit, lease_seconds, filter)
-            .await?
-    } else {
-        queue
-            .claim_index_jobs(limit, lease_seconds, namespace)
-            .await?
-    };
+    let mut timing = ProjectionWorkerTiming::default();
+    let mut worker_transfer_elapsed_ns = 0;
+    let jobs = measure_worker_transfer(measure_transfer, &mut worker_transfer_elapsed_ns, async {
+        if let Some(filter) = claim_filter {
+            queue
+                .claim_index_jobs_filtered(limit, lease_seconds, filter)
+                .await
+        } else {
+            queue
+                .claim_index_jobs(limit, lease_seconds, namespace)
+                .await
+        }
+    })
+    .await?;
     let mut summary = ProjectionWorkerSummary {
         claimed: jobs.len(),
         ..ProjectionWorkerSummary::default()
     };
-    let mut timing = ProjectionWorkerTiming::default();
 
     let mut provider_groups: Vec<Vec<IndexJob>> = Vec::new();
     for job in &jobs {
@@ -664,50 +743,78 @@ where
                 match provider_results.remove(&job.job_id) {
                     Some(Ok(record)) => Some(record),
                     Some(Err(error)) => {
-                        retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary)
-                            .await?;
+                        measure_worker_transfer(
+                            measure_transfer,
+                            &mut worker_transfer_elapsed_ns,
+                            retry_or_fail(
+                                queue,
+                                &job,
+                                claim_token,
+                                &error.to_string(),
+                                &mut summary,
+                            ),
+                        )
+                        .await?;
                         continue;
                     }
                     None => {
-                        retry_or_fail(
-                            queue,
-                            &job,
-                            claim_token,
-                            "batch provider omitted a claimed upsert job",
-                            &mut summary,
+                        measure_worker_transfer(
+                            measure_transfer,
+                            &mut worker_transfer_elapsed_ns,
+                            retry_or_fail(
+                                queue,
+                                &job,
+                                claim_token,
+                                "batch provider omitted a claimed upsert job",
+                                &mut summary,
+                            ),
                         )
                         .await?;
                         continue;
                     }
                 }
             } else {
-                queue
-                    .mark_index_job_failed(
+                measure_worker_transfer(
+                    measure_transfer,
+                    &mut worker_transfer_elapsed_ns,
+                    queue.mark_index_job_failed(
                         &job.job_id,
                         "unsupported graph projection operation",
                         true,
                         Some(claim_token),
-                    )
-                    .await?;
+                    ),
+                )
+                .await?;
                 summary.failed += 1;
                 continue;
             };
             let candidate_json = action_value(&job, candidate.as_ref()).to_string();
             if let Err(error) = parse_action(&job, &candidate_json) {
-                queue
-                    .mark_index_job_failed(&job.job_id, &error.to_string(), true, Some(claim_token))
-                    .await?;
+                measure_worker_transfer(
+                    measure_transfer,
+                    &mut worker_transfer_elapsed_ns,
+                    queue.mark_index_job_failed(
+                        &job.job_id,
+                        &error.to_string(),
+                        true,
+                        Some(claim_token),
+                    ),
+                )
+                .await?;
                 summary.failed += 1;
                 continue;
             }
-            match queue
-                .accept_index_job_result(
+            match measure_worker_transfer(
+                measure_transfer,
+                &mut worker_transfer_elapsed_ns,
+                queue.accept_index_job_result(
                     &job.job_id,
                     claim_token,
                     &candidate_json,
                     &result_digest(&candidate_json),
-                )
-                .await?
+                ),
+            )
+            .await?
             {
                 admission if admission.status == "accepted" || admission.status == "existing" => {
                     let result_json = admission.result_json.ok_or_else(|| {
@@ -732,14 +839,17 @@ where
             .as_deref()
             .is_some_and(|expected| expected == result_digest(&action_json));
         if !digest_matches {
-            queue
-                .mark_index_job_failed(
+            measure_worker_transfer(
+                measure_transfer,
+                &mut worker_transfer_elapsed_ns,
+                queue.mark_index_job_failed(
                     &job.job_id,
                     "accepted projection action is missing or has an invalid SHA-256 digest",
                     true,
                     Some(claim_token),
-                )
-                .await?;
+                ),
+            )
+            .await?;
             summary.failed += 1;
             continue;
         }
@@ -747,9 +857,17 @@ where
         let action = match parse_action(&job, &action_json) {
             Ok(action) => action,
             Err(error) => {
-                queue
-                    .mark_index_job_failed(&job.job_id, &error.to_string(), true, Some(claim_token))
-                    .await?;
+                measure_worker_transfer(
+                    measure_transfer,
+                    &mut worker_transfer_elapsed_ns,
+                    queue.mark_index_job_failed(
+                        &job.job_id,
+                        &error.to_string(),
+                        true,
+                        Some(claim_token),
+                    ),
+                )
+                .await?;
                 summary.failed += 1;
                 continue;
             }
@@ -800,13 +918,21 @@ where
         let projection = match projection {
             Ok(outcome) => outcome,
             Err(error) => {
-                retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary).await?;
+                measure_worker_transfer(
+                    measure_transfer,
+                    &mut worker_transfer_elapsed_ns,
+                    retry_or_fail(queue, &job, claim_token, &error.to_string(), &mut summary),
+                )
+                .await?;
                 continue;
             }
         };
-        if queue
-            .mark_index_job_done(&job.job_id, Some(claim_token))
-            .await?
+        if measure_worker_transfer(
+            measure_transfer,
+            &mut worker_transfer_elapsed_ns,
+            queue.mark_index_job_done(&job.job_id, Some(claim_token)),
+        )
+        .await?
         {
             match projection {
                 // The replacement action is durably queued by the projection
@@ -819,7 +945,7 @@ where
             summary.claim_lost += 1;
         }
     }
-    Ok((summary, timing))
+    Ok((summary, timing, worker_transfer_elapsed_ns))
 }
 
 #[cfg(test)]
@@ -1018,6 +1144,46 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(done.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn attributed_projection_reports_durable_worker_transfer_separately() {
+        let queue = InMemoryStore::new();
+        enqueue(&queue, "UPSERT").await;
+        let graph = InMemoryStore::new();
+
+        let (summary, attribution) =
+            run_graph_projection_jobs_once_with_batch_provider_input_attributed(
+                &queue,
+                &graph,
+                1,
+                30,
+                Some("workspace"),
+                |inputs| async move {
+                    Ok(inputs
+                        .into_iter()
+                        .map(|input| (input.job_id, Ok(candidate())))
+                        .collect())
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(summary.claimed, 1);
+        assert_eq!(summary.projected, 1);
+        assert!(
+            attribution
+                .provider_and_projection
+                .completed_provider_elapsed_ns
+                > 0
+        );
+        assert!(
+            attribution
+                .provider_and_projection
+                .graph_projection_elapsed_ns
+                > 0
+        );
+        assert!(attribution.worker_transfer_elapsed_ns > 0);
     }
 
     #[tokio::test]

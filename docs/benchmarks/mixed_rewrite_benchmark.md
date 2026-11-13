@@ -1612,7 +1612,14 @@ embeddings. One warm-up and three measured samples completed.
 | Graph projection writes | 2,146.8 ms | 2,171.9 / 2,146.8 / 2,080.6 ms |
 | Throughput | 16.56 jobs/s | elapsed-time CV 1.18% |
 
-The residual worker time includes durable accepted-result writes, queue claim/acknowledgement, and worker
-coordination; it is not attributed to embedding inference. This isolates provider and graph-write time from
-MCP ingress, but does not compare Python/Rust implementations or cap the worker process. Command:
+The initial timing API did not distinguish queue handoff from residual worker cost. This isolates provider and
+graph-write time from MCP ingress, but does not compare Python/Rust implementations or cap the worker process. Command:
 `$env:KOGWISTAR_TEST_POSTGRES_DSN='postgres://postgres:bench-only@127.0.0.1:55435/kogwistar_bench'; cargo run -p kogwistar-api --example projection_worker_attribution -- 100 3`.
+
+The additive detailed API then measured foreground queue handoff separately, preserving the existing observed
+API return type and avoiding transfer instrumentation on existing observed callers. Final run produced median
+worker/provider/projection/queue times of **6,008.8 / 0.610 / 2,042.1 / 2,802.8 ms** respectively; queue
+handoff was **46.6%** of worker elapsed time, graph projection writes **34.0%**, and the precomputed provider
+callback under 1 ms. Samples were 6,067.1 / 6,008.8 / 5,930.8 ms overall (CV **1.14%**). The remaining
+elapsed time includes coordination and asynchronous lease renewal; the queue counter excludes background
+lease-renewal tasks to avoid overlap with provider/write timing.
