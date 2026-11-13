@@ -303,6 +303,8 @@
             GraphAuthorityCapability::Unsupported
         );
         assert!(!sqlite.supports_mcp_tool("root", "kg_neighbors"));
+        assert!(!sqlite.supports_mcp_tool("root", "kg_load_persisted"));
+        assert!(!sqlite.supports_mcp_tool("root", "kg_propose_bruteforce"));
         assert!(!sqlite.supports_http_operation("POST", "/internal/graph/neighbors"));
         assert!(!sqlite.supports_http_operation("POST", "/internal/conversation/transcript"));
         assert!(!sqlite.supports_http_operation("GET", "/api/conversations/{conversation_id}"));
@@ -345,34 +347,66 @@
             .iter()
             .filter_map(|tool| tool["name"].as_str())
             .collect::<Vec<_>>();
-        for unsupported in ["kg_neighbors", "kg_find_edges", "propose_vector"] {
+        for unsupported in [
+            "kg_neighbors",
+            "kg_find_edges",
+            "kg_load_persisted",
+            "kg_propose_bruteforce",
+            "propose_vector",
+        ] {
             assert!(!names.contains(&unsupported), "advertised {unsupported}: {names:?}");
         }
 
-        let rejected = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/mcp")
-                    .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader")
-                    .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"denied","method":"tools/call","params":{"name":"kg_neighbors","arguments":{"node_id":"missing"}}}"#,
-                    ))
-                    .unwrap(),
+        for (id, name, arguments) in [
+            (
+                "denied-neighbors",
+                "kg_neighbors",
+                json!({"node_id":"missing"}),
+            ),
+            (
+                "denied-load",
+                "kg_load_persisted",
+                json!({"inp":{"doc_ids":["doc-a"]}}),
+            ),
+            (
+                "denied-propose",
+                "kg_propose_bruteforce",
+                json!({"inp":{}}),
+            ),
+        ] {
+            let rejected = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp")
+                        .header("content-type", "application/json")
+                        .header("x-kogwistar-roles", "reader")
+                        .body(Body::from(
+                            json!({
+                                "jsonrpc":"2.0",
+                                "id":id,
+                                "method":"tools/call",
+                                "params":{"name":name,"arguments":arguments}
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(rejected.status(), StatusCode::OK);
+            let rejected: Value = serde_json::from_slice(
+                &to_bytes(rejected.into_body(), 65_536).await.unwrap(),
             )
-            .await
             .unwrap();
-        assert_eq!(rejected.status(), StatusCode::OK);
-        let rejected: Value = serde_json::from_slice(
-            &to_bytes(rejected.into_body(), 65_536).await.unwrap(),
-        )
-        .unwrap();
-        assert_eq!(rejected["error"]["code"], -32602);
-        assert_eq!(
-            rejected["error"]["message"],
-            "Tool not advertised by this application service"
-        );
+            assert_eq!(rejected["error"]["code"], -32602, "{name}: {rejected}");
+            assert_eq!(
+                rejected["error"]["message"],
+                "Tool not advertised by this application service",
+                "{name}: {rejected}"
+            );
+        }
 
         let response = sqlite
             .execute(ApiEffectRequest {
@@ -427,6 +461,7 @@
             "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED"
         );
 
+        drop(app);
         drop(sqlite);
         remove_test_sqlite(&sqlite_path);
     }
