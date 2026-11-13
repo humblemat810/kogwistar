@@ -1657,9 +1657,39 @@ class WorkflowRuntime(
                         continue
 
                     from kogwistar._rust_bridge import (
+                        capture_rust_bridge_calls,
                         runtime_implementation_mode,
                         runtime_plan_successors,
                     )
+
+                    def _plan_successors_with_trace(
+                        *,
+                        payload: JsonObject,
+                        python_value: JsonObject | None = None,
+                    ) -> JsonObject:
+                        with capture_rust_bridge_calls() as bridge_trace:
+                            plan = runtime_plan_successors(
+                                payload=payload, python_value=python_value
+                            )
+                        bridge_summary = bridge_trace.snapshot()
+                        if bridge_summary["ffi_calls"]:
+                            try:
+                                self.emitter.emit(
+                                    type="runtime_scheduler_bridge",
+                                    ctx=_lifecycle_trace_context(
+                                        token_id=str(token_id),
+                                        step_seq=int(step_seq_current),
+                                        node_id="scheduler",
+                                    ),
+                                    payload={
+                                        "operation": "runtime_plan_successors",
+                                        "source_node_id": str(node_id),
+                                        "rust_bridge": bridge_summary,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                        return plan
 
                     runtime_mode = runtime_implementation_mode()
                     successor_payload = {
@@ -1707,7 +1737,7 @@ class WorkflowRuntime(
                                     "spawned": index > 0,
                                 }
                             )
-                        runtime_plan_successors(
+                        _plan_successors_with_trace(
                             payload=successor_payload,
                             python_value=cast(
                                 JsonObject,
@@ -1718,7 +1748,9 @@ class WorkflowRuntime(
                             ),
                         )
                     elif runtime_mode == "rust":
-                        native_plan = runtime_plan_successors(payload=successor_payload)
+                        native_plan = _plan_successors_with_trace(
+                            payload=successor_payload
+                        )
                         native_tokens, native_join_outstanding = successor_plan(
                             native_plan
                         )

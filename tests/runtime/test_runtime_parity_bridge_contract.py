@@ -139,6 +139,7 @@ class _JoinWorkflowEngine:
 class _TraceEmitter:
     def __init__(self) -> None:
         self.emitted: list[tuple[str, dict[str, object]]] = []
+        self.bridge_events: list[dict[str, object]] = []
 
     def step_started(self, ctx):
         self.emitted.append(("started", ctx.as_fields()))
@@ -149,6 +150,13 @@ class _TraceEmitter:
         payload["duration_ms"] = duration_ms
         payload.update(extra or {})
         self.emitted.append(("completed", payload))
+
+    def emit(self, *, type, ctx, payload=None):
+        event = dict(ctx.as_fields())
+        event.update(payload or {})
+        if type == "runtime_scheduler_bridge":
+            self.bridge_events.append(event)
+        return f"event-{len(self.bridge_events)}"
 
 
 def _mk_nodes():
@@ -792,6 +800,64 @@ def test_workflow_step_trace_joins_dispatch_and_rust_store_transaction(
         assert bridge["calls_by_operation"]["raw_append"] == 1
     finally:
         store.close()
+
+
+def test_scheduler_rust_bridge_trace_joins_run_without_step_double_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "shadow")
+
+    workflow_id = "wf_scheduler_bridge_trace"
+    nodes = [
+        _join_node("start", workflow_id=workflow_id, op="start", start=True),
+        _join_node("end", workflow_id=workflow_id, op="end", terminal=True),
+    ]
+    edges = [_join_edge("next", workflow_id=workflow_id, src="start", dst="end")]
+    emitter = _TraceEmitter()
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = WorkflowRuntime(
+        workflow_engine=_JoinWorkflowEngine(nodes, edges),
+        conversation_engine=_JoinConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=emitter,
+    )
+    result = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-scheduler-bridge-trace",
+        turn_node_id="turn-scheduler-bridge-trace",
+        run_id="run-scheduler-bridge-trace",
+        initial_state={},
+    )
+
+    assert result.status == "succeeded"
+    scheduler_events = emitter.bridge_events
+    assert len(scheduler_events) == 1
+    scheduler_event = scheduler_events[0]
+    assert scheduler_event["run_id"] == result.run_id
+    assert scheduler_event["step_seq"] == 0
+    assert scheduler_event["node_id"] == "scheduler"
+    assert scheduler_event["operation"] == "runtime_plan_successors"
+    assert scheduler_event["source_node_id"] == "start"
+    bridge = scheduler_event["rust_bridge"]
+    assert bridge["ffi_calls"] == 1
+    assert bridge["calls_by_method"] == {"runtime_plan_successors": 1}
+    completed_steps = [
+        payload for kind, payload in emitter.emitted if kind == "completed"
+    ]
+    assert len(completed_steps) == 2
+    assert all("rust_bridge" not in payload for payload in completed_steps)
 
 
 def test_workflow_step_batch_matches_per_item_store_effect_with_fewer_crossings(
