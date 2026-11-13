@@ -77,6 +77,78 @@ def _joined_rust_http_sample() -> dict[str, object]:
     }
 
 
+def test_rust_trace_join_allows_session_lifecycle_count_differences() -> None:
+    result = _joined_rust_http_sample()
+    seam = result["seam_metrics"]
+    bridge = result["native_bridge_trace"]
+    assert isinstance(seam, dict)
+    assert isinstance(bridge, dict)
+    seam["ffi_calls"] = 105
+    seam["ffi_by_operation"] = {
+        "open_init": 1,
+        "begin_transaction": 1,
+        "commit_transaction": 1,
+        "raw_append": 2,
+        "close": 100,
+    }
+    bridge["ffi_calls"] = 6
+    bridge["calls_by_operation"] = {
+        "open_init": 1,
+        "begin_transaction": 1,
+        "commit_transaction": 1,
+        "raw_append": 2,
+        "close": 1,
+    }
+
+    joined = _bind_trace_identity(
+        result,
+        run_id="run-a",
+        trace_sha256="trace-a",
+        expected_operations=2,
+        mode="rust_authority_http",
+    )
+
+    assert joined["trace_join"]["ffi_calls"] == 105
+    assert joined["trace_join"]["observed_bridge_replay_ffi_calls"] == 6
+
+
+def test_rust_trace_join_rejects_graph_call_count_difference() -> None:
+    result = _joined_rust_http_sample()
+    bridge = result["native_bridge_trace"]
+    assert isinstance(bridge, dict)
+    bridge["ffi_calls"] = 3
+    bridge["calls_by_operation"] = {
+        "begin_transaction": 1,
+        "commit_transaction": 1,
+        "raw_append": 1,
+    }
+
+    with pytest.raises(RuntimeError, match="operation counters disagree"):
+        _bind_trace_identity(
+            result,
+            run_id="run-a",
+            trace_sha256="trace-a",
+            expected_operations=2,
+            mode="rust_authority_http",
+        )
+
+
+def test_rust_trace_join_rejects_inconsistent_host_ffi_total() -> None:
+    result = _joined_rust_http_sample()
+    seam = result["seam_metrics"]
+    assert isinstance(seam, dict)
+    seam["ffi_calls"] = 5
+
+    with pytest.raises(RuntimeError, match="host FFI total"):
+        _bind_trace_identity(
+            result,
+            run_id="run-a",
+            trace_sha256="trace-a",
+            expected_operations=2,
+            mode="rust_authority_http",
+        )
+
+
 def _fake_benchmark_sample(trace: list[dict[str, object]], mode: str) -> dict[str, object]:
     operations = {"begin_transaction": 1, "commit_transaction": 1}
     sample: dict[str, object] = {
@@ -141,6 +213,7 @@ def test_trace_attribution_joins_http_ingress_and_rust_transaction_owner() -> No
         "transaction_owner": "rust_meta_store",
         "observed_bridge_input_bytes": 90,
         "observed_bridge_output_bytes": 60,
+        "observed_bridge_replay_ffi_calls": 4,
         "transaction_active_calls": 1,
         "observed_transaction_begins": 1,
         "observed_transaction_commits": 1,

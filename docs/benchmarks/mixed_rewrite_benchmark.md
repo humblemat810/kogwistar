@@ -1293,10 +1293,11 @@ The benchmark's Rust-authority FFI counter is cross-checked against
 temporary SQLite database. Fixture initialization occurs before manual
 instrumentation is attached, so root-event/projection setup cannot inflate the
 measured operation count. The replay must match the timed run's canonical
-state digest, total FFI calls, and per-operation call counts or fail closed.
-This validates that the benchmark's seam accounting corresponds to actual
-Python-to-extension calls without adding trace bookkeeping to measured
-latencies.
+state digest, graph-operation call counts, and transaction boundaries or fail
+closed. Host and replay FFI totals are each reconciled with their own operation
+maps; lifecycle `open_init`/`close` counts may differ because the timed
+transport and isolated replay have different session lifetimes. This validates
+graph seam accounting without adding trace bookkeeping to measured latencies.
 
 On Windows CPython 3.13, Ruff passed and the focused bridge plus mixed-MCP
 regression suites passed **21 tests** in 228.59 seconds, including actual
@@ -1311,6 +1312,44 @@ After that full run, the task-local trace test was strengthened to route bridge
 calls through `asyncio.to_thread`. The updated test passed independently under
 CPython 3.12, 3.13, and 3.14. PyPy 3.11 was not verified: the available local
 environment lacks pytest and pydantic, so the test could not be run there.
+
+### 2026-11-13 100-item endpoint comparison
+
+Ran the same deterministic 100-item / 300-operation SQLite graph trace with one
+warm-up and five fresh samples per mode on Windows CPython 3.13.3, Intel
+i7-11800H, 63.7 GiB host RAM. No container limits were applied. Trace SHA-256
+was `179b8ea2fd925487dce6ea9088b879045a1ed2b97ae8d8a83efad2f65672b2d9`; all
+mode final-state digests matched
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`. SQLite
+footprint was 786,432 bytes. Throughput and per-operation tail latency below
+are medians across five samples; per-operation p95/p99 columns are medians of
+the five sample quantiles. Throughput coefficient of variation (CV) was
+0.56-1.97%.
+
+| Mode | Median ops/s | CV | Write p95/p99 ms | Event-read p95/p99 ms | Projection-read p95/p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python registry (`in_process`) | 37.09 | 1.12% | 29.33 / 34.42 | 35.41 / 41.64 | 30.12 / 35.50 |
+| Python Streamable HTTP (`http`) | 23.91 | 1.15% | 45.50 / 47.64 | 49.33 / 55.03 | 45.72 / 48.94 |
+| Rust authority, in-process (`rust_authority`) | 55.52 | 0.56% | 23.45 / 25.98 | 26.25 / 31.27 | 15.46 / 16.71 |
+| Python Streamable HTTP + Rust authority (`rust_authority_http`) | 16.03 | 1.35% | 61.46 / 66.44 | 57.24 / 59.87 | 92.85 / 100.18 |
+| Rust-native local HTTP (`rust_native`) | 62.90 | 1.97% | 30.76 / 33.53 | 28.33 / 30.19 | 30.18 / 33.16 |
+
+Artifacts are local and intentionally ignored by Git:
+`.tmp/fw20-02-100/report.v3.json` (four modes) and
+`.tmp/fw20-02-mixed-http-100-fixed/report.v3.json` (Rust-authority HTTP).
+Both reports use the exact same trace SHA and final digest. A first
+Rust-authority HTTP attempt exposed a false total-FFI equality check: the timed
+HTTP path closed per request, while the untimed diagnostic replay reused a
+single connection. The benchmark now validates each total against its own
+operation map, allows only `open_init`/`close` differences, and still fails on
+graph-call or transaction-count mismatches; regression tests cover both.
+
+Within this specific uncontained Windows/SQLite cell, five-sample variation is
+low enough for descriptive medians: Rust-native HTTP measured 2.63x Python
+HTTP throughput, while Python HTTP backed by Rust authority measured 0.67x.
+These are not resource-matched or cross-backend claims; SQLite-only, 100 items,
+one host, and unlike endpoint implementations limit inference. No PostgreSQL,
+Chroma, concurrent, or containerized performance conclusion follows.
 
 ### Batch-write regression budgets
 

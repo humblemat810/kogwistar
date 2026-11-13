@@ -186,8 +186,6 @@ def _bind_trace_identity(
             or native.get("state_digest_matches") is not True
         ):
             raise RuntimeError("Rust-authority trace replay is not tied to matching graph state")
-        if native.get("ffi_calls") != seam_metrics.get("ffi_calls"):
-            raise RuntimeError("Rust-authority FFI counters disagree with observed bridge trace")
         # Replay owns one isolated store session; open/close counts can differ
         # from the measured host lifecycle while graph/transaction calls must match.
         measured_operations = seam_metrics.get("ffi_by_operation")
@@ -196,6 +194,10 @@ def _bind_trace_identity(
             observed_operations, dict
         ):
             raise RuntimeError("Rust-authority trace lacks per-operation counters")
+        if seam_metrics.get("ffi_calls") != sum(measured_operations.values()):
+            raise RuntimeError("Rust-authority host FFI total disagrees with its operation counters")
+        if native.get("ffi_calls") != sum(observed_operations.values()):
+            raise RuntimeError("Rust-authority replay FFI total disagrees with its operation counters")
         ignored_lifecycle_calls = {"open_init", "close"}
         if {
             key: value
@@ -244,6 +246,7 @@ def _bind_trace_identity(
             trace_join["observed_transaction_commits"] = commit_count
         trace_join["observed_bridge_input_bytes"] = native["input_bytes"]
         trace_join["observed_bridge_output_bytes"] = native["output_bytes"]
+        trace_join["observed_bridge_replay_ffi_calls"] = native["ffi_calls"]
         trace_join["transaction_active_calls"] = native["transaction_active_calls"]
         trace_join["bridge_replay_state_matches"] = True
     bound["trace_join"] = trace_join
@@ -1951,13 +1954,10 @@ def _diagnose_rust_authority_trace(
         metrics = bridge_trace.snapshot()
     if digest != expected_state_digest:
         raise RuntimeError("bridge trace replay changed canonical graph results")
-    if metrics["ffi_calls"] != expected_ffi_calls:
-        raise RuntimeError(
-            "manual seam metrics disagree with observed Rust bridge calls: "
-            f"{expected_ffi_calls} != {metrics['ffi_calls']}; "
-            f"manual operations={expected_ffi_by_operation}; "
-            f"observed operations={metrics['calls_by_operation']}"
-        )
+    if expected_ffi_calls != sum(expected_ffi_by_operation.values()):
+        raise RuntimeError("manual Rust bridge total disagrees with its operation counters")
+    if metrics["ffi_calls"] != sum(metrics["calls_by_operation"].values()):
+        raise RuntimeError("observed Rust bridge total disagrees with its operation counters")
     batch_calls = metrics["calls_by_operation"].get("batch", 0)
     observed_transaction_boundaries = metrics["transaction_boundary_calls"]
     if batch_write_transactions:
@@ -1982,7 +1982,7 @@ def _diagnose_rust_authority_trace(
     }
     if observed_graph_calls != expected_graph_calls:
         raise RuntimeError(
-            "manual per-operation metrics disagree with observed Rust bridge calls: "
+            "manual graph-operation metrics disagree with observed Rust bridge calls: "
             f"manual={expected_graph_calls}; observed={observed_graph_calls}"
         )
     return {
