@@ -318,7 +318,7 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     fine_snapshot = re.search(
         r"\*\*Fine worklist:\*\* \*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*; "
         r"\*\*(\d+) IN PROGRESS\*\*, \*\*(\d+) NOT STARTED\*\*, "
-        r"\*\*(\d+) BLOCKED\*\*\.",
+        r"\*\*(\d+) FAIL\*\*, \*\*(\d+) BLOCKED\*\*\.",
         worklist,
     )
     assert coarse_snapshot is not None
@@ -343,6 +343,7 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     assert tuple(map(int, fine_snapshot.groups()[3:])) == (
         sum(status == "IN PROGRESS" for status in fine_statuses),
         sum(status == "NOT STARTED" for status in fine_statuses),
+        sum(status == "FAIL" for status in fine_statuses),
         sum(status == "BLOCKED" for status in fine_statuses),
     )
 
