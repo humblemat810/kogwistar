@@ -39,6 +39,13 @@ from tests._helpers.graph_builders import (
 
 pytestmark = [pytest.mark.ci_full, pytest.mark.core]
 
+NODE_DOC_INDEX_FIXTURE = (
+    Path(__file__).resolve().parents[2]
+    / "contracts"
+    / "golden"
+    / "node-doc-index-v1.json"
+)
+
 
 @pytest.fixture(autouse=True)
 def _explicit_postgres_authority_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -683,18 +690,10 @@ def test_rust_graph_mutation_materializes_python_readable_node_docs(
     backend.ensure_schema()
     store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
     store.ensure_initialized()
-    namespace = f"rust-node-docs-{uuid.uuid4().hex}"
-    node_id = f"rust-node-{uuid.uuid4().hex}"
-    document = json.dumps(
-        {
-            "id": node_id,
-            "mentions": [
-                {"spans": [{"doc_id": "source-b"}, {"doc_id": "source-a"}]},
-                {"spans": [{"doc_id": "source-b"}]},
-            ],
-        },
-        separators=(",", ":"),
-    )
+    contract = json.loads(NODE_DOC_INDEX_FIXTURE.read_text(encoding="utf-8"))
+    namespace = contract["namespace"]
+    node_id = contract["node_id"]
+    document = json.dumps(contract["document"], separators=(",", ":"))
     store.apply_graph_mutations_atomic(
         {
             "contract_version": 1,
@@ -723,23 +722,11 @@ def test_rust_graph_mutation_materializes_python_readable_node_docs(
     rows = backend.node_docs_get(
         where={"node_id": node_id}, include=["documents", "metadatas"]
     )
-    assert rows["ids"] == [f"{node_id}::source-a", f"{node_id}::source-b"]
-    assert rows["metadatas"] == [
-        {
-            "id": f"{node_id}::source-a",
-            "node_id": node_id,
-            "doc_id": "source-a",
-            "mention_count": 1,
-            "namespace": namespace,
-        },
-        {
-            "id": f"{node_id}::source-b",
-            "node_id": node_id,
-            "doc_id": "source-b",
-            "mention_count": 1,
-            "namespace": namespace,
-        },
+    assert rows["ids"] == [row["id"] for row in contract["rows"]]
+    assert [json.loads(value) for value in rows["documents"]] == [
+        row["document"] for row in contract["rows"]
     ]
+    assert rows["metadatas"] == [row["metadata"] for row in contract["rows"]]
     node = backend.node_get(ids=[node_id], include=["metadatas"])
     assert node["metadatas"][0]["doc_ids"] == '["source-a","source-b"]'
 
@@ -756,7 +743,8 @@ def test_python_node_docs_metadata_preserves_namespace(
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
-    namespace = f"python-node-docs-{uuid.uuid4().hex}"
+    contract = json.loads(NODE_DOC_INDEX_FIXTURE.read_text(encoding="utf-8"))
+    namespace = contract["namespace"]
     engine = GraphKnowledgeEngine(
         backend=backend,
         namespace=namespace,
@@ -764,9 +752,16 @@ def test_python_node_docs_metadata_preserves_namespace(
             [1.0, 0.0, 0.0] for _ in documents_or_texts
         ],
     )
+    mentions = [
+        Grounding(
+            spans=[mk_document_span(span["doc_id"]) for span in mention["spans"]]
+        )
+        for mention in contract["document"]["mentions"]
+    ]
     node = build_entity_node(
-        node_id=f"python-node-{uuid.uuid4().hex}",
-        doc_id="python-source",
+        node_id=contract["node_id"],
+        doc_id="source-a",
+        mentions=mentions,
         embedding=[1.0, 0.0, 0.0],
     )
     engine.write.add_node(node)
@@ -774,26 +769,11 @@ def test_python_node_docs_metadata_preserves_namespace(
     rows = backend.node_docs_get(
         where={"node_id": node.id}, include=["documents", "metadatas"]
     )
-    assert rows["ids"] == [f"{node.id}::python-source"]
-    assert rows["documents"] == [
-        json.dumps(
-            {
-                "id": f"{node.id}::python-source",
-                "node_id": node.id,
-                "doc_id": "python-source",
-                "mention_count": 1,
-            }
-        )
+    assert rows["ids"] == [row["id"] for row in contract["rows"]]
+    assert [json.loads(value) for value in rows["documents"]] == [
+        row["document"] for row in contract["rows"]
     ]
-    assert rows["metadatas"] == [
-        {
-            "id": f"{node.id}::python-source",
-            "node_id": node.id,
-            "doc_id": "python-source",
-            "mention_count": 1,
-            "namespace": namespace,
-        }
-    ]
+    assert rows["metadatas"] == [row["metadata"] for row in contract["rows"]]
 
 
 def test_rust_authority_reconciles_metadata_join_jobs_natively(

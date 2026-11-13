@@ -1,0 +1,55 @@
+{
+  "contract_version": 1,
+  "node_id": "node-雪",
+  "namespace": "tenant-alpha",
+  "document": {
+    "id": "node-雪",
+    "mentions": [
+      {
+        "spans": [
+          { "doc_id": "source-b" },
+          { "doc_id": "source-a" }
+        ]
+      },
+      {
+        "spans": [
+          { "doc_id": "source-b" }
+        ]
+      }
+    ]
+  },
+  "rows": [
+    {
+      "id": "node-雪::source-a",
+      "document": {
+        "id": "node-雪::source-a",
+        "node_id": "node-雪",
+        "doc_id": "source-a",
+        "mention_count": 1
+      },
+      "metadata": {
+        "id": "node-雪::source-a",
+        "node_id": "node-雪",
+        "doc_id": "source-a",
+        "mention_count": 1,
+        "namespace": "tenant-alpha"
+      }
+    },
+    {
+      "id": "node-雪::source-b",
+      "document": {
+        "id": "node-雪::source-b",
+        "node_id": "node-雪",
+        "doc_id": "source-b",
+        "mention_count": 1
+      },
+      "metadata": {
+        "id": "node-雪::source-b",
+        "node_id": "node-雪",
+        "doc_id": "source-b",
+        "mention_count": 1,
+        "namespace": "tenant-alpha"
+      }
+    }
+  ]
+}
