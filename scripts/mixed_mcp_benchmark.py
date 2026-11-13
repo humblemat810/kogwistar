@@ -553,6 +553,39 @@ def _percentile(values: list[float], percentile: float) -> float:
     return ordered[max(0, int(len(ordered) * percentile + 0.999999) - 1)]
 
 
+def _latency_summary_ms(values: list[float]) -> dict[str, float | int]:
+    if not values:
+        raise ValueError("latency samples must not be empty")
+    return {
+        "count": len(values),
+        "mean_ms": statistics.fmean(values),
+        "p50_ms": _percentile(values, 0.50),
+        "p95_ms": _percentile(values, 0.95),
+        "p99_ms": _percentile(values, 0.99),
+    }
+
+
+def _response_serialization_attribution(
+    metrics: dict[str, object], *, expected_operations: int
+) -> dict[str, int | float]:
+    elapsed_ns = metrics.get("response_serialization_ns")
+    count = metrics.get("response_serialization_count")
+    if (
+        not isinstance(elapsed_ns, int)
+        or isinstance(elapsed_ns, bool)
+        or elapsed_ns < 0
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count != expected_operations
+    ):
+        raise RuntimeError("Rust MCP response-serialization attribution is incomplete")
+    return {
+        "count": count,
+        "total_ms": elapsed_ns / 1_000_000,
+        "mean_ms": elapsed_ns / count / 1_000_000,
+    }
+
+
 def _operation_counts(outcomes: list[int | BaseException]) -> list[int]:
     counts: list[int] = []
     failures: list[BaseException] = []
@@ -1825,6 +1858,7 @@ async def _run_one(
     if mode == "rust_native":
         result["native_cpu_elapsed_ms"] = native_result["cpu_elapsed_ms"]
         result["native_peak_rss_bytes"] = native_result["peak_rss_bytes"]
+        result["transport_attribution"] = native_result["transport_attribution"]
     return result
 
 
@@ -2062,9 +2096,13 @@ def _run_native_server(
         timings: dict[str, list[float]] = {
             "write_record": [], "read_event": [], "read_projection": []
         }
+        request_serialization_ms: list[float] = []
+        http_round_trip_ms: list[float] = []
+        response_deserialization_ms: list[float] = []
         wall_started = time.perf_counter_ns()
         for step, arguments in zip(trace, trace_arguments, strict=True):
             operation = step["operation"]
+            request_serialization_started = time.perf_counter_ns()
             request = json.dumps({
                 "jsonrpc": "2.0",
                 "id": step["index"] + 1,
@@ -2074,15 +2112,22 @@ def _run_native_server(
                     "arguments": arguments,
                 },
             }).encode("utf-8")
+            request_serialization_ms.append(
+                (time.perf_counter_ns() - request_serialization_started) / 1_000_000
+            )
             call_started = time.perf_counter_ns()
             http_request = urllib.request.Request(
                 f"{url}/mcp", data=request, headers={"Content-Type": "application/json"}
             )
             try:
+                round_trip_started = time.perf_counter_ns()
                 with urllib.request.urlopen(
                     http_request, timeout=NATIVE_HTTP_TIMEOUT_SECONDS
                 ) as response:
-                    payload = json.loads(response.read())
+                    response_body = response.read()
+                http_round_trip_ms.append(
+                    (time.perf_counter_ns() - round_trip_started) / 1_000_000
+                )
             except urllib.error.HTTPError as exc:
                 detail = exc.read().decode("utf-8", errors="replace")[:500]
                 raise RuntimeError(
@@ -2097,11 +2142,17 @@ def _run_native_server(
                     f"timeout_seconds={NATIVE_HTTP_TIMEOUT_SECONDS} "
                     f"error={exc}"
                 ) from exc
+            response_deserialization_started = time.perf_counter_ns()
+            try:
+                payload = json.loads(response_body)
             except json.JSONDecodeError as exc:
                 raise RuntimeError(
                     "Rust MCP returned invalid JSON: "
                     f"operation={operation!r} index={step['index']}"
                 ) from exc
+            response_deserialization_ms.append(
+                (time.perf_counter_ns() - response_deserialization_started) / 1_000_000
+            )
             result = payload.get("result", {}).get("structuredContent", {})
             if payload.get("id") != step["index"] + 1 or result.get("entity_id") != step["expected_entity_id"]:
                 raise RuntimeError("Rust MCP returned an unexpected result or request id")
@@ -2120,6 +2171,19 @@ def _run_native_server(
             expected_operations=len(trace),
             label="Rust MCP",
         )
+        transport_attribution = {
+            "scope": "rust_native_mcp_benchmark",
+            "client_request_json_encode": _latency_summary_ms(request_serialization_ms),
+            "client_http_request_response_body_round_trip": _latency_summary_ms(
+                http_round_trip_ms
+            ),
+            "client_response_json_decode": _latency_summary_ms(
+                response_deserialization_ms
+            ),
+            "server_response_json_encode": _response_serialization_attribution(
+                native_seam_metrics, expected_operations=len(trace)
+            ),
+        }
     finally:
         process.terminate()
         try:
@@ -2135,6 +2199,7 @@ def _run_native_server(
         "peak_rss_bytes": peak_rss,
         "per_operation": timings,
         "seam_metrics": native_seam_metrics,
+        "transport_attribution": transport_attribution,
     }
 
 

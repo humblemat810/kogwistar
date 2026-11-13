@@ -413,6 +413,32 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
     assert native_trace["ffi_calls"] == rust_result["seam_metrics"]["ffi_calls"]
 
 
+@pytest.mark.ci_full
+def test_rust_native_http_transport_attribution_is_complete(tmp_path) -> None:
+    trace = build_read_after_write_trace(2)
+    result = asyncio.run(
+        mixed_mcp_benchmark._run_one(
+            tmp_path / "rust-native-attribution.sqlite3", trace, "rust_native"
+        )
+    )
+
+    attribution = result["transport_attribution"]
+    assert attribution["scope"] == "rust_native_mcp_benchmark"
+    for stage in (
+        "client_request_json_encode",
+        "client_http_request_response_body_round_trip",
+        "client_response_json_decode",
+    ):
+        assert attribution[stage]["count"] == len(trace)
+        assert attribution[stage]["mean_ms"] >= 0
+    server_stage = attribution["server_response_json_encode"]
+    assert server_stage["count"] == len(trace)
+    assert server_stage["total_ms"] >= 0
+    assert server_stage["mean_ms"] >= 0
+    assert result["seam_metrics"]["response_serialization_count"] == len(trace)
+    assert result["state_digest"]
+
+
 def test_rust_batched_write_seam_preserves_trace_and_commit_boundaries(
     tmp_path,
 ) -> None:
@@ -458,6 +484,35 @@ def test_native_seam_metrics_require_complete_zero_ffi_attestation() -> None:
     assert mixed_mcp_benchmark._validate_native_seam_metrics(
         metrics, expected_operations=3, label="test"
     ) == metrics
+
+
+def test_transport_attribution_summarizes_separate_client_and_server_stages() -> None:
+    assert mixed_mcp_benchmark._latency_summary_ms([1.0, 2.0, 3.0]) == {
+        "count": 3,
+        "mean_ms": 2.0,
+        "p50_ms": 2.0,
+        "p95_ms": 3.0,
+        "p99_ms": 3.0,
+    }
+    assert mixed_mcp_benchmark._response_serialization_attribution(
+        {"response_serialization_ns": 9000, "response_serialization_count": 3},
+        expected_operations=3,
+    ) == {"count": 3, "total_ms": 0.009, "mean_ms": 0.003}
+
+
+@pytest.mark.parametrize(
+    "metrics",
+    [
+        {"response_serialization_ns": 1, "response_serialization_count": 2},
+        {"response_serialization_ns": True, "response_serialization_count": 3},
+        {"response_serialization_ns": 0, "response_serialization_count": False},
+    ],
+)
+def test_response_serialization_attribution_rejects_incomplete_metrics(metrics) -> None:
+    with pytest.raises(RuntimeError, match="serialization attribution is incomplete"):
+        mixed_mcp_benchmark._response_serialization_attribution(
+            metrics, expected_operations=3
+        )
 
 
 @pytest.mark.parametrize(

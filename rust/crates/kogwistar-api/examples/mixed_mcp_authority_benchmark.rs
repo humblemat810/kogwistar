@@ -1,7 +1,8 @@
 use axum::{
     Json, Router,
+    body::Body,
     extract::State,
-    http::StatusCode,
+    http::{Response, StatusCode},
     routing::{get, post},
 };
 use kogwistar_store::NamedProjectionWrite;
@@ -16,6 +17,7 @@ use std::{
         Arc, Barrier, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Instant,
 };
 
 fn canonical_json(value: &Value) -> String {
@@ -64,6 +66,8 @@ struct NativeMetrics {
     serialized_bytes: AtomicU64,
     transaction_boundaries: AtomicU64,
     transport_requests: AtomicU64,
+    response_serialization_ns: AtomicU64,
+    response_serialization_count: AtomicU64,
 }
 
 impl NativeMetrics {
@@ -76,6 +80,8 @@ impl NativeMetrics {
             "serialized_bytes": self.serialized_bytes.load(Ordering::Relaxed),
             "transaction_boundaries": self.transaction_boundaries.load(Ordering::Relaxed),
             "transport_requests": self.transport_requests.load(Ordering::Relaxed),
+            "response_serialization_ns": self.response_serialization_ns.load(Ordering::Relaxed),
+            "response_serialization_count": self.response_serialization_count.load(Ordering::Relaxed),
         })
     }
 }
@@ -476,7 +482,7 @@ fn read_and_validate_head(database: &PathBuf, expected_revision: u64) -> Result<
 async fn mcp_call(
     State(state): State<AppState>,
     Json(request): Json<Value>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Response<Body>, (StatusCode, Json<Value>)> {
     state
         .metrics
         .transport_requests
@@ -536,11 +542,14 @@ async fn mcp_call(
                 .await
                 .map_err(|error| internal_error(format!("concurrent MCP task failed: {error}")))?
                 .map_err(internal_error)?;
-        return Ok(Json(json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "result": {"structuredContent": result, "content": [{"type": "text", "text": result.to_string()}]}
-        })));
+        return Ok(success_response(
+            json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {"structuredContent": result, "content": [{"type": "text", "text": result.to_string()}]}
+            }),
+            &state.metrics,
+        ));
     }
     let index = args
         .get("index")
@@ -719,11 +728,30 @@ async fn mcp_call(
         }
         _ => return Err(invalid("unknown benchmark tool")),
     };
-    Ok(Json(json!({
+    let response_value = json!({
         "jsonrpc": "2.0",
         "id": id,
         "result": {"structuredContent": result, "content": [{"type": "text", "text": result.to_string()}]}
-    })))
+    });
+    Ok(success_response(response_value, &state.metrics))
+}
+
+fn success_response(response_value: Value, metrics: &NativeMetrics) -> Response<Body> {
+    let serialization_started = Instant::now();
+    let response_body = serde_json::to_vec(&response_value)
+        .expect("benchmark MCP response JSON serialization is infallible");
+    metrics.response_serialization_ns.fetch_add(
+        serialization_started.elapsed().as_nanos() as u64,
+        Ordering::Relaxed,
+    );
+    metrics
+        .response_serialization_count
+        .fetch_add(1, Ordering::Relaxed);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/json")
+        .body(Body::from(response_body))
+        .expect("static benchmark MCP response headers are valid")
 }
 
 async fn health() -> Json<Value> {

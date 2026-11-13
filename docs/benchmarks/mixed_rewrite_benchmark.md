@@ -1369,3 +1369,40 @@ elapsed time above 120% of per-item is a regression. Otherwise the report marks
 latency `inconclusive_insufficient_samples` or `inconclusive_noisy_samples` and
 does not silently call it a pass. This guard separates deterministic seam
 budgets from host-noisy timing and preserves the existing opt-in batch mode.
+
+### Rust-native HTTP stage attribution
+
+The native MCP benchmark now reports separate client request-JSON encoding,
+HTTP request/response-body round-trip, client response-JSON decoding, and Rust
+server response-JSON encoding. Counts must equal completed operations. The HTTP
+round-trip intentionally includes server handling and framework overhead; it
+is not a direct network-only measurement.
+
+Windows CPython 3.13, SQLite, 100-item sequential read-after-write workload,
+one warm-up plus two measured samples per mode; Rust-native mode only. Each
+sample completed 300 operations, and both produced canonical state digest
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7` and trace
+SHA `179b8ea2fd925487dce6ea9088b879045a1ed2b97ae8d8a83efad2f65672b2d9`.
+Median throughput was **69.92 ops/s** (sample range 64.78-75.07; CV 10.41%),
+so treat latency as directional only.
+
+| Stage | Sample 1 mean | Sample 2 mean | Count/sample |
+| --- | ---: | ---: | ---: |
+| Client request JSON encode | 0.0734 ms | 0.0723 ms | 300 |
+| Client HTTP body round-trip | 13.0985 ms | 15.2178 ms | 300 |
+| Client response JSON decode | 0.0551 ms | 0.0535 ms | 300 |
+| Rust server response JSON encode | 0.00476 ms | 0.00466 ms | 300 |
+
+Operation latency p50/p95 by measured sample:
+
+| Operation | Sample 1 p50/p95 | Sample 2 p50/p95 |
+| --- | ---: | ---: |
+| `write_record` | 7.370 / 27.214 ms | 7.308 / 31.807 ms |
+| `read_event` | 15.940 / 26.749 ms | 15.750 / 29.642 ms |
+| `read_projection` | 8.234 / 25.162 ms | 8.670 / 32.461 ms |
+
+The server's JSON encoding accounts for about 1.4 ms total across 300 responses
+per sample; this trace's dominant measured component is the client-observed
+HTTP round-trip, but that residual must not be labeled network latency because
+it includes Rust routing, tool dispatch, storage, and response transfer. Local
+raw report is ignored at `.tmp/fw20-01-transport-20261113/report.v3.json`.
