@@ -10,6 +10,7 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PYPI_WORKFLOW = ROOT / ".github" / "workflows" / "pypi-release.yml"
 PYPI_REQUIREMENTS = ROOT / "requirements-pypy-3.11-experimental.txt"
 CONSTRAINTS = ROOT / "constraints-pypy-3.12.txt"
 ABI_AUDIT = ROOT / "scripts" / "pypy_ffi_symbol_audit.py"
@@ -275,6 +276,26 @@ def test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
     assert "uses: actions/setup-python@v7" in workflow
     assert "Install PyPy 3.11 Python-authority dependencies" in workflow
     assert "Run PyPy 3.11 CI tests" in workflow
+
+
+def test_pypi_release_builds_and_audits_pypy311_pure_wheel() -> None:
+    workflow = PYPI_WORKFLOW.read_text(encoding="utf-8")
+    smoke = (ROOT / "scripts" / "pypy311_pure_wheel_smoke.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pypy-wheel:" in workflow
+    assert "needs: verify-release" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "python setup.py bdist_wheel --dist-dir dist" in workflow
+    assert "kogwistar-*-py3-none-any.whl" in workflow
+    assert "name: wheel-pypy311-pure" in workflow
+    assert "needs: [wheels, sdist, pypy-wheel]" in workflow
+    assert "scripts/pypy311_pure_wheel_smoke.py" in workflow
+    assert "platform.python_implementation() != \"PyPy\"" in smoke
+    assert "sys.version_info[:2] != (3, 11)" in smoke
+    assert "importlib.metadata.version(\"kogwistar\")" in smoke
+    assert "site-packages" in smoke
 
 
 def test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips() -> None:
