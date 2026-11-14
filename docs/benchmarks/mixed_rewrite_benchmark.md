@@ -1889,6 +1889,21 @@ readiness retries before startup succeeded. Resource caps were not verified;
 this single sample is functional/timing evidence, not a stable performance
 estimate or Rust comparison.
 
+#### Resource-capped Python profile environment probe
+
+Prepared a disposable pgvector 16 service for the pending resource-matched
+Python request profile. Docker inspection verified PostgreSQL at 1 CPU / 2 GiB
+RAM (2 GiB swap cap); `pg_isready -U postgres -d kogwistar` reported accepting
+connections. A `python:3.13-slim-bookworm` client container, capped at 3 CPU /
+6 GiB RAM (6 GiB swap cap), connected to the published database through
+`host.docker.internal:55434`. Docker inspection reported `NanoCpus=3000000000`,
+`Memory=6442450944`, and `MemorySwap=6442450944`; probe output was
+`pg_tcp=connected`. This verifies the isolated capped-container/network setup
+only: no Kogwistar test code ran in the client probe, so it does not close the
+Python request measurement task. The PostgreSQL container
+`kogwistar-fw19-python-answer-pg` is intentionally left running for that next
+sample task; client probe container was removed.
+
 #### Rust-native 2,000-node PostgreSQL conversation-answer route
 
 The packaged Rust server now receives the same user-facing route as Python:
