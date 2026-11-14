@@ -117,6 +117,59 @@ def _edge(
     )
 
 
+def test_node_query_result_parses_when_embeddings_are_not_included(tmp_path):
+    engine = _engine(tmp_path)
+    node = _node(
+        node_id="query-without-embedding-node",
+        doc_id="query-without-embedding-doc",
+        label="Node without returned embedding",
+        summary="The backend omitted embeddings from this read.",
+        entity_type="knowledge_node",
+        embedding=[1.0, 0.0],
+        metadata={},
+    )
+    document, metadata = engine.write.node_doc_and_meta(node)
+
+    result = engine.read.nodes_from_query_result(
+        {
+            "ids": [[node.id]],
+            "documents": [[document]],
+            "metadatas": [[metadata]],
+        }
+    )
+
+    assert [[item.safe_get_id() for item in batch] for batch in result] == [[node.id]]
+    assert result[0][0].embedding is None
+
+
+def test_edge_query_result_parses_when_embeddings_are_not_included(tmp_path):
+    engine = _engine(tmp_path)
+    edge = _edge(
+        edge_id="query-without-embedding-edge",
+        src="query-source",
+        tgt="query-target",
+        doc_id="query-without-embedding-doc",
+        label="Edge without returned embedding",
+        summary="The backend omitted embeddings from this read.",
+        relation="references",
+        entity_type="knowledge_edge",
+        embedding=[1.0, 0.0],
+        metadata={},
+    )
+    document, metadata = engine.write.edge_doc_and_meta(edge)
+
+    result = engine.read.edges_from_query_result(
+        {
+            "ids": [[edge.id]],
+            "documents": [[document]],
+            "metadatas": [[metadata]],
+        }
+    )
+
+    assert [[item.safe_get_id() for item in batch] for batch in result] == [[edge.id]]
+    assert result[0][0].embedding is None
+
+
 def test_graph_reads_use_explicit_backend_model_mode(tmp_path, monkeypatch):
     engine = _engine(tmp_path)
     node = _node(

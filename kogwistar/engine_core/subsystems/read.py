@@ -1489,14 +1489,17 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         res: list[list[TNode]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
-        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
+        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [])
         metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
+            embeddings = embedding_rows[index] if index < len(embedding_rows) else []
+            if len(embeddings) < len(ids):
+                embeddings = [*embeddings, *([None] * (len(ids) - len(embeddings)))]
             got = {
                 "documents": document_rows[index] if index < len(document_rows) else [],
-                "embeddings": embedding_rows[index] if index < len(embedding_rows) else [],
+                "embeddings": embeddings,
                 "metadatas": metadata_rows[index] if index < len(metadata_rows) else [],
             }
             res.append(self.nodes_from_single_or_id_query_result(got, node_type=node_type))
@@ -1509,15 +1512,18 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         res: list[list[TEdge]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
-        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
+        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [])
         metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
+            embeddings = embedding_rows[index] if index < len(embedding_rows) else []
+            if len(embeddings) < len(ids):
+                embeddings = [*embeddings, *([None] * (len(ids) - len(embeddings)))]
             got = {
                 "ids": ids,
                 "documents": document_rows[index] if index < len(document_rows) else [],
-                "embeddings": embedding_rows[index] if index < len(embedding_rows) else [],
+                "embeddings": embeddings,
                 "metadatas": metadata_rows[index] if index < len(metadata_rows) else [],
             }
             res.append(self.edges_from_single_or_id_query_result(got, edge_type=edge_type))
