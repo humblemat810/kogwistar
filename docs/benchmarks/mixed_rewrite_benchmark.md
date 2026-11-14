@@ -1881,6 +1881,31 @@ session substantially reduces write-path boundary overhead here, but replay,
 listing, and mixed trace remain slower. This does not establish a Rust-native or
 end-to-end speedup. Raw sample and runtime metadata: `.tmp/fw19-05-sqlite-pycall-10k-v2/cached-report.v1.json`.
 
+### 2026-11-14 fixed-resource SQLite 10k Rust-native trace
+
+Built `sqlite_native_authority_benchmark` from the current checkout with Rust
+1.97.1, `--locked --release`, then ran it directly in the 3CPU/6GiB container.
+The measured Rust process called `SqliteStore` directly; Python only launched
+the process and verified reopened state after exit. One warm-up and two fresh
+DB samples matched the Python reference digest
+`67038b98c86ea135d8d8e7432cee6e4ea03d8ee3af8a5207344ff4ca2bae29dc` and trace
+`21bccbe7f90db2b8f5691f41bfc984a1e130d7f6c0e3374522486015a40577f1`.
+
+| Operation | Python 2-sample median ms | Rust-native 2-sample median ms | Rust/Python | Rust CV |
+| --- | ---: | ---: | ---: | ---: |
+| Event append (10k writes) | 119,402.901 | 6,606.059 | 0.055x | 0.48% |
+| Event replay (20 cycles) | 661.486 | 441.452 | 0.667x | 1.39% |
+| Projection replace (10k writes) | 112,767.752 | 5,473.259 | 0.049x | 0.37% |
+| Projection list (20 cycles) | 2,300.552 | 717.077 | 0.312x | 2.53% |
+| Interleaved trace | 194,250.121 | 18,423.485 | 0.095x | 0.43% |
+
+The seam-free native storage slice outperformed Python for all five operations
+in this controlled run (about 1.5x on replay, 3.2x–20.6x on other operations).
+This is evidence for the value of a native path, not proof of full Rust stack
+parity or end-to-end HTTP/MCP speedup. The SQLite contract and per-write commit
+boundaries remain identical in the tested trace. Raw samples and runtime/build
+metadata: `.tmp/fw19-05-sqlite-pycall-10k-v2/native-report.v1.json`.
+
 ### 2026-11-14 PostgreSQL semantic projection-worker attribution
 
 Ran `rust/crates/kogwistar-api/examples/projection_worker_attribution.rs` against PostgreSQL 16 with
