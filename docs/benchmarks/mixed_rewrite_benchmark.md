@@ -1815,6 +1815,28 @@ or cross-backend scaling. The deterministic generated workload, parity digest,
 limits, runtime versions, warm-up, and raw samples are recorded in the ignored
 `.tmp/fw19-01b-acl-2000/acl_projection_report.v1.json`.
 
+### 2026-11-14 fixed-resource 10,000-item ACL projection
+
+Used one deterministic 10,000-node/10,000-ACL-record workload for both
+implementations. Python `ACLGraph.decide` ran in the existing CPython 3.13.18
+client container; Rust `GraphAclProjection.filter_records` ran in a separate
+Rust 1.97.1 container. Each container was limited to 3 CPUs and 6 GiB RAM.
+Both paths used one warm-up and five measured samples, with 20 projections per
+sample. The shared workload JSON and raw reports are retained under the ignored
+`.tmp/fw19-05-acl-10000/` directory.
+
+| ACL projection kernel | Median ms/projection | Sample CV | Visible nodes | Canonical digest |
+| --- | ---: | ---: | ---: | --- |
+| Python `ACLGraph.decide` | 94.184 | 0.82% | 7,917 | `67d6e8985bf2b791c09c02ae3a4f934fffd5d0815ab67b13f725f37bf1f4f1ef` |
+| Rust `GraphAclProjection.filter_records` | 14.567 | 6.43% | 7,917 | `67d6e8985bf2b791c09c02ae3a4f934fffd5d0815ab67b13f725f37bf1f4f1ef` |
+
+All warm-up and measured rows produced the same visible IDs and digest. Rust's
+median was about 6.46x lower for this in-memory kernel. This is not a language-
+only comparison: Python makes one `ACLGraph.decide` call per target, while Rust
+filters records as a batch. No DB, HTTP/MCP, authentication, ACL loading, or
+edge endpoint filtering is included; do not interpret this as end-to-end ACL
+speedup.
+
 ### 2026-11-14 PostgreSQL semantic projection-worker attribution
 
 Ran `rust/crates/kogwistar-api/examples/projection_worker_attribution.rs` against PostgreSQL 16 with
