@@ -1609,6 +1609,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 ("mixed-live-workflow", "worker-replay-test"),
                 ("mixed-failure-workflow", "worker-replay-test"),
                 ("mixed-async-failure-workflow", "worker-replay-test"),
+                ("mixed-async-live-workflow", "worker-replay-test"),
             ],
         )
     if graph_enabled:
