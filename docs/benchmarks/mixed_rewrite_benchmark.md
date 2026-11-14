@@ -1694,6 +1694,26 @@ tasklet. The earlier interrupted multi-sample attempt was stopped because it
 would have performed three full 10k runs per authority; its disposable schema
 was explicitly dropped and is not part of the result above.
 
+### 2026-11-14 resource-capped PostgreSQL 10k grouped append
+
+Ran only `event_append_grouped_transaction`, using the same 3 CPU/6 GiB
+CPython 3.13.18 client and 1 CPU/2 GiB PostgreSQL 16.15 container limits as the
+individual-append cell. Each authority used one warm-up and two measured fresh
+schemas; each 10k-event append preserved the benchmark's single grouped
+transaction boundary. Canonical read-back produced digest
+`ff167dab83fd16616c698a204b988fd25612eb742c64ad6bd89907201c53f195` for both
+authorities in all three samples.
+
+| Authority | Warm-up ms | Measured median ms | Measured p95 ms | Median ops/s |
+| --- | ---: | ---: | ---: | ---: |
+| Python | 244,550.45 | 221,958.87 | 240,396.46 | 45.37 |
+| Rust | 227,616.12 | 230,579.27 | 233,370.25 | 43.38 |
+
+Rust/Python measured median latency ratio was 1.039x. With two measured
+samples, p95 is only the slower observation; treat this as a bounded datapoint,
+not a reliable tail or general performance claim. Individual append remains a
+separate commit-boundary workload above.
+
 ### 2026-11-14 fixed-resource 2,000-item ACL projection
 
 Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000
