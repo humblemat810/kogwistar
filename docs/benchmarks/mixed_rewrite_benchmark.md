@@ -1669,6 +1669,31 @@ The ignored raw report is `.tmp/fw19-postgres-warmup-1000/container-report.json`
 The previous 2,000-record run remains separately reported and is not merged
 with these measurements.
 
+### 2026-11-14 resource-capped PostgreSQL 10k individual append
+
+Ran only `event_append_individual` from `scripts/postgres_authority_benchmark.py`
+to bound this tasklet's runtime. The Python 3.13.18 client container was capped
+at 3 CPUs/6 GiB; PostgreSQL 16.15 was capped at 1 CPU/2 GiB. Each authority
+used a fresh disposable schema and appended 10,000 individually committed
+events. A canonical read-back verified sequence, entity kind/ID, operation and
+payload; Python and Rust produced identical SHA-256 digest
+`ff167dab83fd16616c698a204b988fd25612eb742c64ad6bd89907201c53f195`. No
+separate warm-up was run; database/OS cache state is unspecified. One sample
+per authority is a correctness datapoint, not a reliable distribution.
+
+| Authority | Elapsed ms | Throughput ops/s |
+| --- | ---: | ---: |
+| Python | 221,048.28 | 45.24 |
+| Rust | 325,831.01 | 30.69 |
+
+Rust latency was 1.474x Python latency in this individual-commit workload.
+This result does not generalize to grouped transactions, projections, other
+database limits, or the full Kogwistar request path. Harness now accepts
+`--workload` so each remaining PostgreSQL operation can run as its own bounded
+tasklet. The earlier interrupted multi-sample attempt was stopped because it
+would have performed three full 10k runs per authority; its disposable schema
+was explicitly dropped and is not part of the result above.
+
 ### 2026-11-14 fixed-resource 2,000-item ACL projection
 
 Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000

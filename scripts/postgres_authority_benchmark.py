@@ -8,13 +8,14 @@ measured separately from model inference.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import statistics
 import time
 import uuid
 from collections.abc import Callable
-from typing import TypeAlias
+from typing import Literal, TypeAlias
 
 import sqlalchemy as sa
 
@@ -22,6 +23,22 @@ from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
 from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
 
 MetadataStore: TypeAlias = EnginePostgresMetaStore | RustEnginePostgresMetaStore
+Workload: TypeAlias = Literal[
+    "event_append_individual",
+    "event_append_grouped_transaction",
+    "conversation_record_atomic_each",
+    "conversation_record_grouped_transaction",
+    "event_replay_batch",
+    "projection_list",
+]
+WORKLOADS: tuple[Workload, ...] = (
+    "event_append_individual",
+    "event_append_grouped_transaction",
+    "conversation_record_atomic_each",
+    "conversation_record_grouped_transaction",
+    "event_replay_batch",
+    "projection_list",
+)
 
 
 def _measure(operation: Callable[[], None], *, count: int) -> dict[str, float | int]:
@@ -118,6 +135,137 @@ def _read_projections(store: MetadataStore, *, namespace: str, count: int) -> No
         raise RuntimeError(f"expected {count} projections, read {len(rows)}")
 
 
+def _event_digest(store: MetadataStore, *, namespace: str, count: int) -> str:
+    actual = list(store.iter_entity_events(namespace=namespace, from_seq=1, batch_size=count + 1))
+    expected = [
+        (
+            index + 1,
+            "node",
+            f"node-{index:06d}",
+            "UPSERT",
+            json.dumps(
+                {"id": f"node-{index:06d}", "value": index},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        for index in range(count)
+    ]
+    if actual != expected:
+        raise RuntimeError(f"PostgreSQL event payload/ordering mismatch in {namespace}")
+    canonical = json.dumps(actual, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _projection_digest(
+    store: MetadataStore, *, namespace: str, prefix: str, count: int
+) -> str:
+    rows = store.list_named_projections(namespace)
+    expected = [
+        {
+            "key": f"{prefix}-{index:06d}",
+            "payload": {"id": f"node-{index:06d}", "value": index},
+            "last_authoritative_seq": index + 1,
+            "last_materialized_seq": index + 1,
+            "projection_schema_version": 1,
+            "materialization_status": "ready",
+        }
+        for index in range(count)
+    ]
+    actual = [
+        {
+            key: row[key]
+            for key in (
+                "key",
+                "payload",
+                "last_authoritative_seq",
+                "last_materialized_seq",
+                "projection_schema_version",
+                "materialization_status",
+            )
+        }
+        for row in rows
+    ]
+    if actual != expected:
+        raise RuntimeError(f"PostgreSQL projection payload/order mismatch in {namespace}")
+    canonical = json.dumps(actual, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _run_workload(
+    store: MetadataStore,
+    *,
+    workload: Workload,
+    suffix: str,
+    items: int,
+    canonical_prefix: str | None = None,
+) -> tuple[dict[str, float | int], str]:
+    namespace = f"{suffix}-{workload}"
+    projection_prefix = canonical_prefix or suffix
+    if workload == "event_append_individual":
+        metrics = _measure(
+            lambda: _append_many(
+                store, namespace=namespace, prefix=suffix, count=items, grouped=False
+            ),
+            count=items,
+        )
+        return metrics, _event_digest(store, namespace=namespace, count=items)
+
+    if workload == "event_append_grouped_transaction":
+        metrics = _measure(
+            lambda: _append_many(
+                store, namespace=namespace, prefix=suffix, count=items, grouped=True
+            ),
+            count=items,
+        )
+        return metrics, _event_digest(store, namespace=namespace, count=items)
+
+    if workload in {
+        "conversation_record_atomic_each",
+        "conversation_record_grouped_transaction",
+    }:
+        metrics = _measure(
+            lambda: _conversation_records(
+                store,
+                namespace=namespace,
+                prefix=projection_prefix,
+                count=items,
+                grouped=workload == "conversation_record_grouped_transaction",
+            ),
+            count=items,
+        )
+        event_digest = _event_digest(store, namespace=namespace, count=items)
+        projection_digest = _projection_digest(
+            store, namespace=namespace, prefix=projection_prefix, count=items
+        )
+        combined = hashlib.sha256(
+            f"{event_digest}:{projection_digest}".encode("ascii")
+        ).hexdigest()
+        return metrics, combined
+
+    if workload == "event_replay_batch":
+        _append_many(store, namespace=namespace, prefix=suffix, count=items, grouped=True)
+        metrics = _measure(
+            lambda: _read_events(store, namespace=namespace, count=items), count=items
+        )
+        return metrics, _event_digest(store, namespace=namespace, count=items)
+
+    if workload == "projection_list":
+        with store.transaction():
+            for index in range(items):
+                _projection(
+                    store, namespace=namespace, prefix=projection_prefix, index=index
+                )
+        metrics = _measure(
+            lambda: _read_projections(store, namespace=namespace, count=items), count=items
+        )
+        return metrics, _projection_digest(
+            store, namespace=namespace, prefix=projection_prefix, count=items
+        )
+
+    raise ValueError(f"unsupported PostgreSQL benchmark workload: {workload}")
+
+
 def _summarize(samples: list[dict[str, float | int]]) -> dict[str, float | int]:
     durations = [float(sample["elapsed_ms"]) for sample in samples]
     throughputs = [float(sample["ops_per_second"]) for sample in samples]
@@ -131,23 +279,25 @@ def _summarize(samples: list[dict[str, float | int]]) -> dict[str, float | int]:
 
 
 def run_benchmark(
-    *, dsn: str, items: int, samples: int, warmups: int = 1
+    *,
+    dsn: str,
+    items: int,
+    samples: int,
+    warmups: int = 1,
+    workload: Workload | None = None,
 ) -> dict[str, object]:
     parsed_url = sa.engine.make_url(dsn)
     rust_dsn = parsed_url.set(drivername="postgresql").render_as_string(
         hide_password=False
     )
+    selected_workloads = (workload,) if workload is not None else WORKLOADS
     results: dict[str, list[dict[str, float | int]]] = {
-        f"{mode}.{workload}": []
+        f"{mode}.{workload_name}": []
         for mode in ("python", "rust")
-        for workload in (
-            "event_append_individual",
-            "event_append_grouped_transaction",
-            "conversation_record_atomic_each",
-            "conversation_record_grouped_transaction",
-            "event_replay_batch",
-            "projection_list",
-        )
+        for workload_name in selected_workloads
+    }
+    parity_digests: dict[str, list[str]] = {
+        workload_name: [] for workload_name in selected_workloads
     }
 
     for sample_index in range(warmups + samples):
@@ -173,98 +323,30 @@ def run_benchmark(
             modes = (("python", python), ("rust", rust))
             if sample_index % 2:
                 modes = tuple(reversed(modes))
+            sample_digests: dict[str, dict[str, str]] = {
+                workload_name: {} for workload_name in selected_workloads
+            }
             for mode, store in modes:
                 suffix = f"s{sample_index}-{mode}"
-
-                workload = "event_append_individual"
-                namespace = f"{suffix}-append"
-                results[f"{mode}.{workload}"].append(
-                    _measure(
-                        lambda: _append_many(
-                            store,
-                            namespace=namespace,
-                            prefix=suffix,
-                            count=items,
-                            grouped=False,
-                        ),
-                        count=items,
+                for workload_name in selected_workloads:
+                    metrics, digest = _run_workload(
+                        store,
+                        workload=workload_name,
+                        suffix=suffix,
+                        items=items,
+                        canonical_prefix=f"s{sample_index}",
                     )
-                )
-
-                workload = "event_append_grouped_transaction"
-                namespace = f"{suffix}-append-grouped"
-                results[f"{mode}.{workload}"].append(
-                    _measure(
-                        lambda: _append_many(
-                            store,
-                            namespace=namespace,
-                            prefix=suffix,
-                            count=items,
-                            grouped=True,
-                        ),
-                        count=items,
+                    results[f"{mode}.{workload_name}"].append(metrics)
+                    sample_digests[workload_name][mode] = digest
+            for workload_name in selected_workloads:
+                python_digest = sample_digests[workload_name]["python"]
+                rust_digest = sample_digests[workload_name]["rust"]
+                if rust_digest != python_digest:
+                    raise RuntimeError(
+                        f"Python/Rust result digest mismatch for {workload_name} "
+                        f"sample {sample_index}"
                     )
-                )
-
-                workload = "conversation_record_atomic_each"
-                namespace = f"{suffix}-conversation"
-                results[f"{mode}.{workload}"].append(
-                    _measure(
-                        lambda: _conversation_records(
-                            store,
-                            namespace=namespace,
-                            prefix=suffix,
-                            count=items,
-                            grouped=False,
-                        ),
-                        count=items,
-                    )
-                )
-
-                workload = "conversation_record_grouped_transaction"
-                namespace = f"{suffix}-conversation-grouped"
-                results[f"{mode}.{workload}"].append(
-                    _measure(
-                        lambda: _conversation_records(
-                            store,
-                            namespace=namespace,
-                            prefix=suffix,
-                            count=items,
-                            grouped=True,
-                        ),
-                        count=items,
-                    )
-                )
-
-                workload = "event_replay_batch"
-                namespace = f"{suffix}-read-events"
-                _append_many(
-                    store,
-                    namespace=namespace,
-                    prefix=suffix,
-                    count=items,
-                    grouped=True,
-                )
-                results[f"{mode}.{workload}"].append(
-                    _measure(
-                        lambda: _read_events(store, namespace=namespace, count=items),
-                        count=items,
-                    )
-                )
-
-                workload = "projection_list"
-                namespace = f"{suffix}-read-projections"
-                with store.transaction():
-                    for index in range(items):
-                        _projection(store, namespace=namespace, prefix=suffix, index=index)
-                results[f"{mode}.{workload}"].append(
-                    _measure(
-                        lambda: _read_projections(
-                            store, namespace=namespace, count=items
-                        ),
-                        count=items,
-                    )
-                )
+                parity_digests[workload_name].append(python_digest)
         finally:
             python_engine.dispose()
             try:
@@ -283,10 +365,12 @@ def run_benchmark(
         key: _summarize(value[warmups:]) for key, value in results.items()
     }
     return {
-        "schema": "kogwistar-postgres-authority-benchmark/v2",
+        "schema": "kogwistar-postgres-authority-benchmark/v3",
         "items_per_sample": items,
         "samples": samples,
         "warmups": warmups,
+        "workloads": list(selected_workloads),
+        "python_rust_result_digests": parity_digests,
         "database_cache": "warm/unspecified; no server or OS cache flush was attempted",
         "embedding": "excluded; precomputed JSON payloads only",
         "warmup_results": warmup_results,
@@ -319,6 +403,12 @@ def main() -> int:
         "--warmups", type=int, default=1,
         help="Unreported warm-up samples, each using a fresh schema (default: 1).",
     )
+    parser.add_argument(
+        "--workload",
+        choices=("all", *WORKLOADS),
+        default="all",
+        help="Run one operation cell to bound runtime, or all cells (default).",
+    )
     args = parser.parse_args()
     if not args.dsn:
         parser.error("provide --dsn or set GKE_PG_DSN; no database was contacted")
@@ -331,6 +421,7 @@ def main() -> int:
                 items=args.items,
                 samples=args.samples,
                 warmups=args.warmups,
+                workload=None if args.workload == "all" else args.workload,
             ),
             indent=2,
         )
