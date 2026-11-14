@@ -218,14 +218,27 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             return {}
         if not isinstance(where, dict):
             return None
-        if any(
-            not isinstance(key, str)
-            or key.startswith("$")
-            or isinstance(value, dict)
-            for key, value in where.items()
-        ):
-            return None
-        return cast(dict[str, JsonValue], dict(where))
+        clauses = where.get("$and")
+        if "$and" in where:
+            if set(where) != {"$and"} or not isinstance(clauses, list):
+                return None
+        else:
+            clauses = [where]
+
+        equal: dict[str, JsonValue] = {}
+        for clause in clauses:
+            if not isinstance(clause, dict):
+                return None
+            for key, value in clause.items():
+                if (
+                    not isinstance(key, str)
+                    or key.startswith("$")
+                    or isinstance(value, dict)
+                    or key in equal
+                ):
+                    return None
+                equal[key] = cast(JsonValue, value)
+        return equal
 
     @staticmethod
     def _native_vector_filter(
