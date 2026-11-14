@@ -1837,6 +1837,30 @@ filters records as a batch. No DB, HTTP/MCP, authentication, ACL loading, or
 edge endpoint filtering is included; do not interpret this as end-to-end ACL
 speedup.
 
+### 2026-11-14 fixed-resource SQLite 10k Python/Rust per-call trace
+
+Ran the same versioned 10k read-after-write trace in the CPython 3.13.18
+container (3 CPUs/6 GiB), sequentially through Python authority and the
+`kogwistar._rust` PyO3 per-call authority. Each mode used one warm-up and two
+fresh SQLite databases. Both warm-up and measured databases reopened to the
+same canonical digest, `67038b98c86ea135d8d8e7432cee6e4ea03d8ee3af8a5207344ff4ca2bae29dc`;
+canonical trace digest was `21bccbe7f90db2b8f5691f41bfc984a1e130d7f6c0e3374522486015a40577f1`.
+
+| Persistent SQLite operation | Python median ms | Python CV | Rust per-call median ms | Rust CV | Rust/Python |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Event append (10k writes) | 119,402.901 | 1.68% | 134,872.501 | 0.97% | 1.13x |
+| Event replay (20 cycles) | 661.486 | 2.60% | 2,617.905 | 0.43% | 3.96x |
+| Projection replace (10k writes) | 112,767.752 | 0.38% | 134,539.564 | 2.76% | 1.19x |
+| Projection list (20 cycles) | 2,300.552 | 2.65% | 3,292.208 | 0.63% | 1.43x |
+| Interleaved trace | 194,250.121 | 0.68% | 214,609.497 | 0.17% | 1.10x |
+
+Canonical state and operation contracts matched. Rust per-call was slower in all
+five measured operations; especially event replay, where boundary overhead is
+material. This gives no support for the per-call path as a speed optimization.
+It does not test Rust-native SQLite, HTTP/MCP, or the full stack, and does not
+imply that seam-free Rust is slower. Raw samples, runtime metadata, limits, and
+source fingerprints: `.tmp/fw19-05-sqlite-pycall-10k-v2/per-call-report.v1.json`.
+
 ### 2026-11-14 PostgreSQL semantic projection-worker attribution
 
 Ran `rust/crates/kogwistar-api/examples/projection_worker_attribution.rs` against PostgreSQL 16 with
