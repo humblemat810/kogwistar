@@ -1710,3 +1710,27 @@ The test command was repeated four times (first warm-up):
 The ephemeral container was stopped after the run. These measurements prove
 the live Rust/SQLite-queue/Chroma path and readback, not Python parity,
 resource-matched worker performance, or production capacity.
+
+#### Live Chroma service large fixture
+
+Ran the same live backend path at **2,000 jobs**, sequentially in batches of
+100 to keep each durable SQLite claim within its 60-second lease. Chroma was
+`chromadb/chroma:1.5.9` in loopback-only Docker limited to 2 CPUs/2 GiB; the
+Rust worker ran natively on Windows without resource limits. Each fresh run
+used a separate SQLite database and unique Chroma collections. One warm-up and
+one measured run both completed with all 2,000 queue jobs acknowledged, all
+2,000 unique graph records read back, and every document/vector checked.
+
+| Metric | Measured value |
+| --- | ---: |
+| Worker elapsed | 175,005.4 ms |
+| SQLite worker-transfer stage | 38,037.6 ms |
+| Live Chroma projection stage | 121,665.0 ms |
+| Throughput | 11.43 jobs/s |
+
+Command:
+`$env:KOGWISTAR_TEST_CHROMA_ENDPOINT='http://127.0.0.1:8000'; cargo test --manifest-path rust/Cargo.toml -p kogwistar-engine --test projection_backend_composition sqlite_chroma_live_large_fixture_attributes_and_reads_back_projection -- --ignored --exact --nocapture`.
+The projection stage dominates this run, but it includes sequential HTTP
+upserts plus Chroma processing. One measured sample is insufficient for a
+variance estimate or backend sizing. This verifies one large Rust-to-Chroma
+path, not Python parity or resource-matched worker performance.

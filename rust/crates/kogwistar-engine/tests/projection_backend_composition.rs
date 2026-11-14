@@ -398,7 +398,16 @@ async fn sqlite_chroma_large_fixture_attributes_worker_transfer_separately() {
 #[tokio::test]
 #[ignore = "requires an isolated live Chroma service via KOGWISTAR_TEST_CHROMA_ENDPOINT"]
 async fn sqlite_chroma_live_small_fixture_attributes_and_reads_back_projection() {
-    const ITEMS: usize = 100;
+    run_sqlite_chroma_live_attribution_fixture(100, 100, "small").await;
+}
+
+#[tokio::test]
+#[ignore = "requires isolated live Chroma; 2,000-job benchmark, invoke explicitly"]
+async fn sqlite_chroma_live_large_fixture_attributes_and_reads_back_projection() {
+    run_sqlite_chroma_live_attribution_fixture(2_000, 100, "large").await;
+}
+
+async fn run_sqlite_chroma_live_attribution_fixture(items: usize, batch_size: usize, label: &str) {
     let endpoint = env::var("KOGWISTAR_TEST_CHROMA_ENDPOINT")
         .expect("set KOGWISTAR_TEST_CHROMA_ENDPOINT to an isolated Chroma service");
     let nonce = SystemTime::now()
@@ -413,13 +422,13 @@ async fn sqlite_chroma_live_small_fixture_attributes_and_reads_back_projection()
     let collection_prefix = format!("kgbench{}", nonce % 1_000_000_000_000_000);
     let node_collection = format!("{collection_prefix}n");
     let edge_collection = format!("{collection_prefix}e");
-    for index in 0..ITEMS {
+    for index in 0..items {
         queue
             .enqueue_index_job(NewIndexJob {
-                job_id: format!("live-chroma-{index:03}"),
+                job_id: format!("live-chroma-{index:06}"),
                 namespace: "benchmark".to_owned(),
                 entity_kind: "node".to_owned(),
-                entity_id: format!("live-node-{index:03}"),
+                entity_id: format!("live-node-{index:06}"),
                 index_kind: "node_embedding".to_owned(),
                 op: "UPSERT".to_owned(),
                 payload_json: None,
@@ -443,32 +452,55 @@ async fn sqlite_chroma_live_small_fixture_attributes_and_reads_back_projection()
     .expect("create isolated live Chroma collections");
 
     let started = std::time::Instant::now();
-    let (summary, attribution) =
-        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed(
-            &queue,
-            &graph,
-            ITEMS,
-            60,
-            Some("benchmark"),
-            |inputs| async move {
-                Ok(inputs
-                    .into_iter()
-                    .map(|input| {
-                        let mut record = GraphRecord::new(input.entity_id.clone());
-                        record.document = Some(format!("live Chroma fixture {}", input.entity_id));
-                        record.metadata.insert("kind".to_owned(), json!("node"));
-                        record.embedding = Some(vec![0.25, 0.75]);
-                        (input.job_id, Ok(record))
-                    })
-                    .collect())
-            },
-        )
-        .await
-        .expect("project into live Chroma");
+    let mut summary = kogwistar_engine::projection_worker::ProjectionWorkerSummary::default();
+    let mut attribution =
+        kogwistar_engine::projection_worker::ProjectionWorkerAttribution::default();
+    while summary.claimed < items {
+        let batch_limit = (items - summary.claimed).min(batch_size);
+        let (batch_summary, batch_attribution) =
+            kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed(
+                &queue,
+                &graph,
+                batch_limit,
+                60,
+                Some("benchmark"),
+                |inputs| async move {
+                    Ok(inputs
+                        .into_iter()
+                        .map(|input| {
+                            let mut record = GraphRecord::new(input.entity_id.clone());
+                            record.document = Some(format!("live Chroma fixture {}", input.entity_id));
+                            record.metadata.insert("kind".to_owned(), json!("node"));
+                            record.embedding = Some(vec![0.25, 0.75]);
+                            (input.job_id, Ok(record))
+                        })
+                        .collect())
+                },
+            )
+            .await
+            .expect("project into live Chroma");
+        summary.claimed += batch_summary.claimed;
+        summary.projected += batch_summary.projected;
+        summary.reused += batch_summary.reused;
+        summary.claim_lost += batch_summary.claim_lost;
+        summary.retried += batch_summary.retried;
+        summary.failed += batch_summary.failed;
+        attribution.worker_transfer_elapsed_ns += batch_attribution.worker_transfer_elapsed_ns;
+        attribution
+            .provider_and_projection
+            .completed_provider_elapsed_ns += batch_attribution
+            .provider_and_projection
+            .completed_provider_elapsed_ns;
+        attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns += batch_attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns;
+    }
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
 
-    assert_eq!(summary.claimed, ITEMS);
-    assert_eq!(summary.projected, ITEMS);
+    assert_eq!(summary.claimed, items);
+    assert_eq!(summary.projected, items);
     assert_eq!(summary.retried, 0);
     assert_eq!(summary.failed, 0);
     assert!(attribution.worker_transfer_elapsed_ns > 0);
@@ -478,29 +510,29 @@ async fn sqlite_chroma_live_small_fixture_attributes_and_reads_back_projection()
             .graph_projection_elapsed_ns
             > 0
     );
-    let ids = (0..ITEMS)
-        .map(|index| format!("live-node-{index:03}"))
+    let ids = (0..items)
+        .map(|index| format!("live-node-{index:06}"))
         .collect::<Vec<_>>();
     let records = graph
         .graph_records_by_ids_of_kind("benchmark", GraphEntityKind::Node, &ids)
         .await
         .expect("read projected records from Chroma");
-    assert_eq!(records.len(), ITEMS);
+    assert_eq!(records.len(), items);
     assert!(records.iter().all(|record| {
         record.document.as_deref() == Some(format!("live Chroma fixture {}", record.id).as_str())
             && record.embedding.as_deref() == Some([0.25_f32, 0.75_f32].as_slice())
     }));
     assert_eq!(
         queue
-            .index_jobs(Some("benchmark"), Some("DONE"), None, None, None, ITEMS + 1)
+            .index_jobs(Some("benchmark"), Some("DONE"), None, None, None, items + 1)
             .await
             .expect("read durable acknowledgements")
             .len(),
-        ITEMS
+        items
     );
 
     println!(
-        "sqlite_chroma_live_small items={ITEMS} elapsed_ms={elapsed_ms:.3} worker_transfer_ms={:.3} graph_projection_ms={:.3}",
+        "sqlite_chroma_live_{label} items={items} elapsed_ms={elapsed_ms:.3} worker_transfer_ms={:.3} graph_projection_ms={:.3}",
         attribution.worker_transfer_elapsed_ns as f64 / 1_000_000.0,
         attribution
             .provider_and_projection
