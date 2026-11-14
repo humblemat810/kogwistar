@@ -1144,6 +1144,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     );
 
     let transcript_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
@@ -1258,40 +1259,38 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             },
         )
         .unwrap();
-    let agentic_turn_id = runtime.state["turn_node_id"].as_str().unwrap();
-    let agentic_submit = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/workflow/runs".to_owned(),
-            body: serde_json::to_vec(&json!({
-                "run_id":"sqlite-chroma-agentic-provider-run",
-                "workflow_id":agentic_workflow_id,
-                "conversation_id":"conversation-create-contract",
-                "turn_node_id":agentic_turn_id,
-                "user_id":"conversation-owner",
-                "initial_state":{
-                    "conversation_id":"conversation-create-contract",
-                    "turn_node_id":agentic_turn_id,
-                    "user_id":"conversation-owner",
-                    "turn_index":0,
-                    "max_candidates":10,
-                    "max_used":4,
-                    "max_retrieval_level":3,
-                    "max_iter":1
-                }
-            }))
-            .unwrap(),
-            principal: principal.clone(),
-        })
-        .await;
-    assert_eq!(
-        agentic_submit.status,
-        StatusCode::ACCEPTED.as_u16(),
-        "{}",
-        String::from_utf8_lossy(&agentic_submit.body)
-    );
-    let agentic_run_id = "sqlite-chroma-agentic-provider-run";
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_conversation_admission.rs#sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic; python_test=tests/workflow/test_answer_workflow_v2.py#test_python_agent_postgres_2k_request_profile
+    let agentic_submit = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/conversations/conversation-create-contract/turns:answer")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "text":"Where is workflow runtime state persisted?",
+                        "workflow_id":agentic_workflow_id
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(agentic_submit.status(), StatusCode::ACCEPTED);
+    let agentic_submission: Value = serde_json::from_slice(
+        &to_bytes(agentic_submit.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(agentic_submission["workflow_id"], agentic_workflow_id);
+    assert_eq!(agentic_submission["status"], "queued");
+    let agentic_run_id = agentic_submission["run_id"].as_str().unwrap().to_owned();
+    let agentic_turn_id = agentic_submission["user_turn_node_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     for _ in 0..48 {
         let status = service
             .store
@@ -1318,7 +1317,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     let agentic_state = service
         .store
         .read_recorded_runtime_state(
-            agentic_run_id,
+            &agentic_run_id,
             agentic_workflow_id,
             "conversation-create-contract",
         )
@@ -1353,7 +1352,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             .unwrap()
             .contains_key(&agentic_assistant_id)
     );
-    let agentic_turn_id = agentic_state.state["turn_node_id"].as_str().unwrap();
+    assert_eq!(agentic_state.state["turn_node_id"], agentic_turn_id);
     assert!(
         service
             .store
@@ -1385,7 +1384,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     }), "Rust-native workflow must not fall back to a Python worker: {execution_lanes:#?}");
     let execution_traces = service
         .store
-        .list_server_run_events(agentic_run_id, 0, 10_000)
+        .list_server_run_events(&agentic_run_id, 0, 10_000)
         .unwrap()
         .into_iter()
         .filter(|event| event.event_type == "workflow.trace.v1")
@@ -1399,6 +1398,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     chat_server.await.unwrap();
     let _ = stop_tx.send(());
     assert!(fake_chroma.await.unwrap().is_empty());
+    drop(app);
     drop(service);
     remove_test_sqlite(&path);
     remove_test_sqlite(&auth_path);
