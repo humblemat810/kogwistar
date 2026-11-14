@@ -3,6 +3,7 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -199,12 +200,13 @@ def test_python_agent_postgres_2k_request_profile(
     conversation_engine,
     workflow_engine,
     sample_id: str,
-    tmp_path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Python full-workflow counterpart to the Rust-native 2k PG profile.
+    """Profile Python agent workflow in-process and through its HTTP route.
 
-    The timer intentionally covers the in-process Python workflow call, not HTTP;
-    the emitted digest covers language-neutral answer semantics only.
+    The ASGI test-client sample is not a TCP-transport match for Rust's native
+    HTTP profile; both samples assert the same language-neutral result digest.
     """
     from tests._helpers.graph_builders import build_entity_node
 
@@ -341,6 +343,96 @@ def test_python_agent_postgres_2k_request_profile(
     )
     digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
     assert digest == result_contract["canonical_json_sha256"]
+
+    # Compare the native endpoint's conversation-answer ingress at the same
+    # HTTP boundary. The test server's runner still uses Python's agent/runtime.
+    from fastapi.testclient import TestClient
+
+    from tests.server.test_chat_server_api import (
+        _configure_server,
+        _token_header,
+        server as chat_server,
+    )
+    from kogwistar.server.chat_service import AnswerRunRequest
+
+    http_conversation_id = f"answer-bench-http-{sample_id}"
+
+    def answer_runner(req: AnswerRunRequest) -> dict[str, Any]:
+        http_agent = AgenticAnsweringAgent(
+            conversation_engine=req.conversation_engine,
+            knowledge_engine=req.knowledge_engine,
+            llm_tasks=_fixed_llm_tasks(answer),
+            config=AgentConfig(max_iter=1, max_candidates=10, max_used=4),
+        )
+        return http_agent.answer_workflow_v2(
+            workflow_engine=req.workflow_engine,
+            conversation_id=req.conversation_id,
+            user_id=req.user_id,
+            prev_turn_meta_summary=req.prev_turn_meta_summary,
+            run_id=req.run_id,
+            trace=False,
+            cache_dir=str(tmp_path / "answer-bench-http-cache"),
+        )
+
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        answer_runner,
+    )
+    with TestClient(chat_server.app) as client:
+        headers = _token_header(
+            client, role="rw", ns="conversation", username=user_id
+        )
+        created = client.post(
+            "/api/conversations",
+            headers=headers,
+            json={"user_id": user_id, "conversation_id": http_conversation_id},
+        )
+        created.raise_for_status()
+        http_started = time.perf_counter()
+        submitted = client.post(
+            f"/api/conversations/{http_conversation_id}/turns:answer",
+            headers=headers,
+            json={
+                "text": question,
+                "workflow_id": "agentic_answering.v2",
+            },
+        )
+        submitted.raise_for_status()
+        http_run_id = submitted.json()["run_id"]
+        deadline = time.monotonic() + 300.0
+        while True:
+            run_response = client.get(
+                f"/api/runs/{http_run_id}", headers=headers
+            )
+            run_response.raise_for_status()
+            run_state = run_response.json()
+            if run_state.get("terminal"):
+                break
+            if time.monotonic() >= deadline:
+                raise AssertionError(
+                    f"Python HTTP answer run {http_run_id} did not terminate"
+                )
+            time.sleep(0.1)
+        http_request_ms = (time.perf_counter() - http_started) * 1_000
+        assert run_state["status"] == "succeeded", run_state
+        http_out = run_state["result"]
+        assert http_out["assistant_text"] == answer_text
+        assert http_out["used_node_ids"] == [target_id]
+        http_contract_state = {
+            "assistant_text": http_out["assistant_text"],
+            "used_node_ids": http_out["used_node_ids"],
+            "claims": http_out["claim_citations"]["claims"],
+        }
+        assert http_contract_state == result_contract["canonical_result"]
+        http_digest = hashlib.sha256(
+            json.dumps(
+                http_contract_state, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+        assert http_digest == digest
     print(
         "PYTHON_AGENT_BENCH_SAMPLE="
         + json.dumps(
@@ -350,6 +442,8 @@ def test_python_agent_postgres_2k_request_profile(
                 "request_boundary": "in_process_answer_workflow_v2",
                 "seed_ms": round(seed_ms, 3),
                 "request_ms": round(request_ms, 3),
+                "http_request_boundary": "asgi_conversation_answer_to_terminal_run",
+                "http_request_ms": round(http_request_ms, 3),
                 "canonical_state_sha256": digest,
             },
             sort_keys=True,

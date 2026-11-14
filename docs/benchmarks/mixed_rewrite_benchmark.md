@@ -1865,3 +1865,13 @@ passes the same fixture assertion at both 8 and 2,000 distractors; the 2,000
 case reports a 9,500.418 ms request and 79.14 s full test wall. These Rust
 measurements were not run under the resource caps stated in the earlier Rust
 profile, so they prove semantic digest parity, not comparable performance.
+
+The Python profile now also submits the same agentic workflow through
+`POST /api/conversations/{conversation_id}/turns:answer` and polls its terminal
+run result. A Windows PostgreSQL smoke with eight distractors passed through
+FastAPI `TestClient` and produced the shared digest. This is an ASGI in-process
+transport check, not TCP HTTP; the Rust 2,000-node timer still measures
+`POST /api/workflow/runs`, not this conversation-answer route. Thus the new
+smoke improves Python ingress coverage but does not establish a matched
+cross-language latency comparison. The full 2,000-node Python HTTP sample and
+an equivalent Rust conversation-answer endpoint sample remain unmeasured.
