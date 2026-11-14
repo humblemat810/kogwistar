@@ -308,6 +308,8 @@ jobs:
         run: cargo build -p kogwistar-api --bin kogwistar-server --locked
 
       - name: Test Rust workspace
+        env:
+          KOGWISTAR_TEST_CHROMA_ENDPOINT: http://127.0.0.1:8000
         run: >-
           cargo test --workspace --all-targets --locked --
           --include-ignored
