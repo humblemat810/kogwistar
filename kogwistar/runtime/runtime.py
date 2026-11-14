@@ -21,6 +21,7 @@ from kogwistar.implementation_selection import (
     ImplementationSelectionSnapshot,
     implementation_selection_bound,
     resolve_implementation_selection,
+    transaction_authority_for_selection,
 )
 from kogwistar.cdc.sqlite_sink import _get_shared_sqlite_sink
 from kogwistar.id_provider import stable_id
@@ -211,8 +212,11 @@ class WorkflowRuntime(
             )
         else:
             self.fast_trace_persistence = bool(fast_trace_persistence)
-        # Transaction policy: default to per-step transactions when conversation_engine is Postgres-backed.
+        # Resolver callbacks must not execute inside a Rust-owned store transaction.
         if transaction_mode is None:
+            transaction_authority = transaction_authority_for_selection(
+                self._implementation_selection_snapshot
+            )
             try:
                 from kogwistar.engine_core.postgres_backend import (
                     PgVectorBackend,
@@ -220,7 +224,8 @@ class WorkflowRuntime(
 
                 self.transaction_mode = (
                     "step"
-                    if isinstance(
+                    if transaction_authority == "python"
+                    and isinstance(
                         getattr(conversation_engine, "backend", None), PgVectorBackend
                     )
                     else "none"
@@ -229,6 +234,17 @@ class WorkflowRuntime(
                 self.transaction_mode = "none"
         else:
             self.transaction_mode = str(transaction_mode)
+            if (
+                self.transaction_mode == "step"
+                and transaction_authority_for_selection(
+                    self._implementation_selection_snapshot
+                )
+                == "rust"
+            ):
+                raise ValueError(
+                    "transaction_mode='step' is incompatible with Rust transaction "
+                    "authority; execute resolver callbacks outside store transactions"
+                )
         self.state_lock: dict[RunID, Lock] = {}  # look up of run specific state lock
         self._otel_sink: EventSink | None = None
 

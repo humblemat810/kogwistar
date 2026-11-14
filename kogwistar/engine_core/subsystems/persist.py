@@ -553,12 +553,19 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
 
     def exists_node(self, rid: str) -> bool:
-        g = _backend_mapping(run_awaitable_blocking(self._e.backend.node_get(ids=[rid])))
-        return (g.get("ids") or [None])[0] == rid
+        # Preserve backend selection; direct backend reads bypass Rust authority.
+        return bool(
+            self._e.read.get_nodes(
+                ids=[rid], limit=1, resolve_mode="include_tombstones"
+            )
+        )
 
     def exists_edge(self, rid: str) -> bool:
-        g = _backend_mapping(run_awaitable_blocking(self._e.backend.edge_get(ids=[rid])))
-        return (g.get("ids") or [None])[0] == rid
+        return bool(
+            self._e.read.get_edges(
+                ids=[rid], limit=1, resolve_mode="include_tombstones"
+            )
+        )
 
     def exists_any(self, rid: str) -> bool:
         return self.exists_node(rid) or self.exists_edge(rid)

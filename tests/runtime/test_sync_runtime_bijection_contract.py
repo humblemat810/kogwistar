@@ -993,6 +993,51 @@ def test_sync_runtime_auto_transaction_mode_uses_step_for_pg_backend(monkeypatch
     assert runtime.transaction_mode == "step"
 
 
+def test_sync_runtime_rust_postgres_authority_keeps_callbacks_outside_uow(
+    monkeypatch,
+):
+    class _PgVectorBackend:
+        pass
+
+    class _ConversationEngine:
+        backend = _PgVectorBackend()
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.PgVectorBackend",
+        _PgVectorBackend,
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_ConversationEngine(),
+        step_resolver=MappingStepResolver(),
+        predicate_registry={},
+        trace=False,
+    )
+
+    assert runtime.transaction_mode == "none"
+    assert runtime._should_step_uow("ordinary_step", {}) is False
+
+
+def test_sync_runtime_rejects_explicit_rust_step_uow(monkeypatch):
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    with pytest.raises(ValueError, match="incompatible with Rust transaction authority"):
+        WorkflowRuntime(
+            workflow_engine=object(),
+            conversation_engine=object(),
+            step_resolver=MappingStepResolver(),
+            predicate_registry={},
+            transaction_mode="step",
+            trace=False,
+        )
+
+
 def test_sync_runtime_missing_op_behavior():
     """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_missing_op_behavior`.
     New sync mirror for the missing-op resolver bijection pair.
