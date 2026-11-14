@@ -1684,3 +1684,29 @@ Explicit command:
 Two samples give only preliminary variation evidence. This remains a Rust
 worker/SQLite queue attribution fixture, not real Chroma service throughput,
 resource-matched Python/Rust comparison, or parity evidence.
+
+#### Live Chroma service small fixture
+
+Ran the ignored live-service integration test against `chromadb/chroma:1.5.9`
+in a loopback-only Docker container limited to 2 CPUs and 2 GiB RAM (`--rm`,
+no host data volume). The Rust worker ran natively on Windows without a CPU or
+memory cap. Each invocation used a fresh SQLite metadata/queue database and
+unique Chroma node/edge collections; collection creation and queue seeding
+were outside the worker timer. One warm-up and three measured invocations each
+completed 100 durable SQLite acknowledgements, projected 100 unique records,
+and read all 100 documents and 2D embeddings back from live Chroma.
+
+| Metric | Median | Measured samples |
+| --- | ---: | ---: |
+| Worker elapsed | 6,452.8 ms | 6,369.388 / 6,624.559 / 6,452.815 ms |
+| SQLite worker-transfer stage | 1,882.0 ms | 1,881.019 / 1,905.324 / 1,881.951 ms |
+| Live Chroma projection stage | 3,845.4 ms | 3,732.341 / 3,915.443 / 3,845.386 ms |
+| Throughput | 15.50 jobs/s | elapsed CV 1.64% |
+
+Docker invocation:
+`docker run -d --rm --name kgw-chroma-bench --cpus=2 --memory=2g --memory-swap=2g -p 127.0.0.1:8000:8000 chromadb/chroma:1.5.9`.
+The test command was repeated four times (first warm-up):
+`$env:KOGWISTAR_TEST_CHROMA_ENDPOINT='http://127.0.0.1:8000'; cargo test --manifest-path rust/Cargo.toml -p kogwistar-engine --test projection_backend_composition sqlite_chroma_live_small_fixture_attributes_and_reads_back_projection -- --ignored --exact --nocapture`.
+The ephemeral container was stopped after the run. These measurements prove
+the live Rust/SQLite-queue/Chroma path and readback, not Python parity,
+resource-matched worker performance, or production capacity.

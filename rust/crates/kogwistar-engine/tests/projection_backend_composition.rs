@@ -1,8 +1,8 @@
 //! Behavior and compile-time contracts for independently selected stores.
 
 use kogwistar_store::{
-    GraphRecord, GraphWriteStore, IndexJobClaimFilter, IndexJobReadStore, IndexJobWriteStore,
-    NewIndexJob,
+    GraphEntityKind, GraphReadStore, GraphRecord, GraphWriteStore, IndexJobClaimFilter,
+    IndexJobReadStore, IndexJobWriteStore, NewIndexJob,
 };
 use kogwistar_store_chroma::{ChromaGraphStore, ChromaStoreConfig};
 use kogwistar_store_memory::InMemoryStore;
@@ -393,6 +393,127 @@ async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
 #[ignore = "2,000-job attribution benchmark; invoke explicitly when measuring"]
 async fn sqlite_chroma_large_fixture_attributes_worker_transfer_separately() {
     run_sqlite_chroma_attribution_fixture(2_000, 100, "large").await;
+}
+
+#[tokio::test]
+#[ignore = "requires an isolated live Chroma service via KOGWISTAR_TEST_CHROMA_ENDPOINT"]
+async fn sqlite_chroma_live_small_fixture_attributes_and_reads_back_projection() {
+    const ITEMS: usize = 100;
+    let endpoint = env::var("KOGWISTAR_TEST_CHROMA_ENDPOINT")
+        .expect("set KOGWISTAR_TEST_CHROMA_ENDPOINT to an isolated Chroma service");
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_nanos();
+    let database = env::temp_dir().join(format!(
+        "kg-sqlite-live-chroma-{}-{nonce}.sqlite3",
+        std::process::id()
+    ));
+    let queue = SqliteStore::open(&database).expect("open SQLite metadata queue");
+    let collection_prefix = format!("kgbench{}", nonce % 1_000_000_000_000_000);
+    let node_collection = format!("{collection_prefix}n");
+    let edge_collection = format!("{collection_prefix}e");
+    for index in 0..ITEMS {
+        queue
+            .enqueue_index_job(NewIndexJob {
+                job_id: format!("live-chroma-{index:03}"),
+                namespace: "benchmark".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: format!("live-node-{index:03}"),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .expect("enqueue live-Chroma projection job");
+    }
+    let graph = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: node_collection,
+            ..Default::default()
+        },
+        ChromaStoreConfig {
+            endpoint,
+            collection: edge_collection,
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("create isolated live Chroma collections");
+
+    let started = std::time::Instant::now();
+    let (summary, attribution) =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed(
+            &queue,
+            &graph,
+            ITEMS,
+            60,
+            Some("benchmark"),
+            |inputs| async move {
+                Ok(inputs
+                    .into_iter()
+                    .map(|input| {
+                        let mut record = GraphRecord::new(input.entity_id.clone());
+                        record.document = Some(format!("live Chroma fixture {}", input.entity_id));
+                        record.metadata.insert("kind".to_owned(), json!("node"));
+                        record.embedding = Some(vec![0.25, 0.75]);
+                        (input.job_id, Ok(record))
+                    })
+                    .collect())
+            },
+        )
+        .await
+        .expect("project into live Chroma");
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+
+    assert_eq!(summary.claimed, ITEMS);
+    assert_eq!(summary.projected, ITEMS);
+    assert_eq!(summary.retried, 0);
+    assert_eq!(summary.failed, 0);
+    assert!(attribution.worker_transfer_elapsed_ns > 0);
+    assert!(
+        attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns
+            > 0
+    );
+    let ids = (0..ITEMS)
+        .map(|index| format!("live-node-{index:03}"))
+        .collect::<Vec<_>>();
+    let records = graph
+        .graph_records_by_ids_of_kind("benchmark", GraphEntityKind::Node, &ids)
+        .await
+        .expect("read projected records from Chroma");
+    assert_eq!(records.len(), ITEMS);
+    assert!(records.iter().all(|record| {
+        record.document.as_deref() == Some(format!("live Chroma fixture {}", record.id).as_str())
+            && record.embedding.as_deref() == Some([0.25_f32, 0.75_f32].as_slice())
+    }));
+    assert_eq!(
+        queue
+            .index_jobs(Some("benchmark"), Some("DONE"), None, None, None, ITEMS + 1)
+            .await
+            .expect("read durable acknowledgements")
+            .len(),
+        ITEMS
+    );
+
+    println!(
+        "sqlite_chroma_live_small items={ITEMS} elapsed_ms={elapsed_ms:.3} worker_transfer_ms={:.3} graph_projection_ms={:.3}",
+        attribution.worker_transfer_elapsed_ns as f64 / 1_000_000.0,
+        attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns as f64
+            / 1_000_000.0,
+    );
+
+    drop(graph);
+    drop(queue);
+    let _ = std::fs::remove_file(&database);
+    let _ = std::fs::remove_file(format!("{}.kogwistar-authority.lock", database.display()));
+    let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", database.display()));
 }
 
 async fn run_sqlite_chroma_attribution_fixture(items: usize, batch_size: usize, label: &str) {
