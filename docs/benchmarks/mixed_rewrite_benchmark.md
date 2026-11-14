@@ -1664,3 +1664,23 @@ Command, repeated four times (first run treated as warm-up):
 This validates SQLite queue attribution and Chroma request composition only;
 fixture HTTP latency is not representative of a real Chroma deployment, and
 this is not cross-language parity or production throughput evidence.
+
+The same harness ran the 2,000-job large fixture in 100-job batches so each
+claim stayed within the 60-second lease. The large case is marked ignored in
+the normal integration suite and must be invoked explicitly. Each sample used
+a fresh SQLite DB and fake Chroma endpoint; seeding and service startup are
+outside the worker elapsed interval. One warm-up and two measured runs passed,
+with all 2,000 unique IDs, documents, embeddings, and DONE queue rows verified.
+
+| Metric | Median | Measured samples |
+| --- | ---: | ---: |
+| Worker elapsed | 79,408.8 ms | 79,213.119 / 79,604.547 ms |
+| SQLite worker-transfer stage | 56,586.8 ms | 56,695.114 / 56,478.485 ms |
+| Graph projection stage (includes fixture HTTP) | 8,172.9 ms | 8,125.009 / 8,220.827 ms |
+| Throughput | 25.19 jobs/s | elapsed CV 0.25% |
+
+Explicit command:
+`cargo test --manifest-path rust/Cargo.toml -p kogwistar-engine --test projection_backend_composition sqlite_chroma_large_fixture_attributes_worker_transfer_separately -- --ignored --exact --nocapture`.
+Two samples give only preliminary variation evidence. This remains a Rust
+worker/SQLite queue attribution fixture, not real Chroma service throughput,
+resource-matched Python/Rust comparison, or parity evidence.

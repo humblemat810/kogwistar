@@ -386,23 +386,32 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
 
 #[tokio::test]
 async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
-    const ITEMS: usize = 100;
+    run_sqlite_chroma_attribution_fixture(100, 100, "small").await;
+}
+
+#[tokio::test]
+#[ignore = "2,000-job attribution benchmark; invoke explicitly when measuring"]
+async fn sqlite_chroma_large_fixture_attributes_worker_transfer_separately() {
+    run_sqlite_chroma_attribution_fixture(2_000, 100, "large").await;
+}
+
+async fn run_sqlite_chroma_attribution_fixture(items: usize, batch_size: usize, label: &str) {
     let nonce = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .expect("system clock after Unix epoch")
         .as_nanos();
     let database = env::temp_dir().join(format!(
-        "kg-sqlite-chroma-attribution-{}-{nonce}.sqlite3",
+        "kg-sqlite-chroma-{label}-attribution-{}-{nonce}.sqlite3",
         std::process::id()
     ));
     let queue = SqliteStore::open(&database).expect("open SQLite metadata queue");
-    for index in 0..ITEMS {
+    for index in 0..items {
         queue
             .enqueue_index_job(NewIndexJob {
-                job_id: format!("sqlite-chroma-{index:03}"),
+                job_id: format!("sqlite-chroma-{index:06}"),
                 namespace: "benchmark".to_owned(),
                 entity_kind: "node".to_owned(),
-                entity_id: format!("node-{index:03}"),
+                entity_id: format!("node-{index:06}"),
                 index_kind: "node_embedding".to_owned(),
                 op: "UPSERT".to_owned(),
                 payload_json: None,
@@ -411,7 +420,7 @@ async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
             .expect("enqueue SQLite metadata job");
     }
 
-    let (endpoint, server) = fake_chroma_with_upsert_statuses(vec![200; ITEMS]).await;
+    let (endpoint, server) = fake_chroma_with_upsert_statuses(vec![200; items]).await;
     let graph = ChromaGraphStore::connect_entity_collections(
         ChromaStoreConfig {
             endpoint: endpoint.clone(),
@@ -428,11 +437,16 @@ async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
     .expect("connect protocol-faithful Chroma fixture");
 
     let started = std::time::Instant::now();
-    let (summary, attribution) =
-        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed(
+    let mut summary = kogwistar_engine::projection_worker::ProjectionWorkerSummary::default();
+    let mut attribution =
+        kogwistar_engine::projection_worker::ProjectionWorkerAttribution::default();
+    while summary.claimed < items {
+        let batch_limit = (items - summary.claimed).min(batch_size);
+        let (batch_summary, batch_attribution) =
+            kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed(
             &queue,
             &graph,
-            ITEMS,
+            batch_limit,
             60,
             Some("benchmark"),
             |inputs| async move {
@@ -451,10 +465,28 @@ async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
         )
         .await
         .expect("run SQLite-to-Chroma projection");
+        summary.claimed += batch_summary.claimed;
+        summary.projected += batch_summary.projected;
+        summary.reused += batch_summary.reused;
+        summary.claim_lost += batch_summary.claim_lost;
+        summary.retried += batch_summary.retried;
+        summary.failed += batch_summary.failed;
+        attribution.worker_transfer_elapsed_ns += batch_attribution.worker_transfer_elapsed_ns;
+        attribution
+            .provider_and_projection
+            .completed_provider_elapsed_ns += batch_attribution
+            .provider_and_projection
+            .completed_provider_elapsed_ns;
+        attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns += batch_attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns;
+    }
     let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
 
-    assert_eq!(summary.claimed, ITEMS);
-    assert_eq!(summary.projected, ITEMS);
+    assert_eq!(summary.claimed, items);
+    assert_eq!(summary.projected, items);
     assert_eq!(summary.retried, 0);
     assert_eq!(summary.failed, 0);
     assert!(attribution.worker_transfer_elapsed_ns > 0);
@@ -466,25 +498,25 @@ async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
     );
     assert_eq!(
         queue
-            .index_jobs(Some("benchmark"), Some("DONE"), None, None, None, ITEMS + 1)
+            .index_jobs(Some("benchmark"), Some("DONE"), None, None, None, items + 1)
             .await
             .expect("read durable completed jobs")
             .len(),
-        ITEMS
+        items
     );
     let requests = server.await.expect("finish fake Chroma requests");
-    assert_eq!(requests.len(), ITEMS + 2);
+    assert_eq!(requests.len(), items + 2);
     let upserts = requests
         .iter()
         .filter(|(line, _)| line.contains("/upsert HTTP"))
         .collect::<Vec<_>>();
-    assert_eq!(upserts.len(), ITEMS);
+    assert_eq!(upserts.len(), items);
     let actual_ids = upserts
         .iter()
         .map(|(_, payload)| payload["ids"][0].as_str().unwrap().to_owned())
         .collect::<std::collections::BTreeSet<_>>();
-    let expected_ids = (0..ITEMS)
-        .map(|index| format!("node-{index:03}"))
+    let expected_ids = (0..items)
+        .map(|index| format!("node-{index:06}"))
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(actual_ids, expected_ids);
     for (_, payload) in upserts {
@@ -493,7 +525,7 @@ async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
     }
 
     println!(
-        "sqlite_chroma_small items={ITEMS} elapsed_ms={elapsed_ms:.3} worker_transfer_ms={:.3} graph_projection_ms={:.3}",
+        "sqlite_chroma_{label} items={items} elapsed_ms={elapsed_ms:.3} worker_transfer_ms={:.3} graph_projection_ms={:.3}",
         attribution.worker_transfer_elapsed_ns as f64 / 1_000_000.0,
         attribution
             .provider_and_projection
