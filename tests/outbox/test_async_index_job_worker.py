@@ -184,7 +184,7 @@ async def test_async_worker_promotes_in_memory_two_stage_job_without_sync_bridge
         embedding_function=build_test_embedding_function("constant", dim=2),
     )
     try:
-        engine.write.add_node(build_entity_node(node_id="async-n1", doc_id="d1"))
+        await engine.async_add_node(build_entity_node(node_id="async-n1", doc_id="d1"))
         worker = AsyncIndexJobWorker(
             engine=engine,
             batch_size=8,
@@ -237,8 +237,8 @@ async def test_async_worker_batches_compatible_embedding_jobs(tmp_path):
         embedding_function=provider,
     )
     try:
-        engine.write.add_node(build_entity_node(node_id="async-b1", doc_id="d1"))
-        engine.write.add_node(build_entity_node(node_id="async-b2", doc_id="d1"))
+        await engine.async_add_node(build_entity_node(node_id="async-b1", doc_id="d1"))
+        await engine.async_add_node(build_entity_node(node_id="async-b2", doc_id="d1"))
         calls.clear()
         metrics = await engine.indexing.make_async_index_job_worker(
             batch_size=8, max_jobs_per_tick=8
@@ -640,7 +640,7 @@ async def test_async_worker_rejects_stale_delete_and_repairs_missing_job(tmp_pat
         embedding_function=build_test_embedding_function("constant", dim=2),
     )
     try:
-        engine.write.add_node(build_entity_node(node_id="async-race", doc_id="d1"))
+        await engine.async_add_node(build_entity_node(node_id="async-race", doc_id="d1"))
         old_job = next(
             job
             for job in engine.meta_sqlite.list_index_jobs(namespace="default")
@@ -648,7 +648,7 @@ async def test_async_worker_rejects_stale_delete_and_repairs_missing_job(tmp_pat
         )
         replacement = build_entity_node(node_id="async-race", doc_id="d1")
         replacement.summary = "new revision"
-        engine.write.add_node(replacement)
+        await engine.async_add_node(replacement)
         await engine.async_two_stage_projection_adapter.apply_embedding_job(
             entity_kind=old_job.entity_kind,
             entity_id=old_job.entity_id,
@@ -657,7 +657,7 @@ async def test_async_worker_rejects_stale_delete_and_repairs_missing_job(tmp_pat
         )
         assert engine.backend.node_get(ids=["async-race"])["embeddings"] == [None]
 
-        engine.write.add_node(build_entity_node(node_id="async-delete", doc_id="d1"))
+        await engine.async_add_node(build_entity_node(node_id="async-delete", doc_id="d1"))
         delete_job = next(
             job
             for job in engine.meta_sqlite.list_index_jobs(namespace="default")
@@ -672,7 +672,7 @@ async def test_async_worker_rejects_stale_delete_and_repairs_missing_job(tmp_pat
         )
         assert engine.backend.node_get(ids=["async-delete"])["ids"] == []
 
-        engine.write.add_node(build_entity_node(node_id="async-repair", doc_id="d1"))
+        await engine.async_add_node(build_entity_node(node_id="async-repair", doc_id="d1"))
         await engine.indexing.make_async_index_job_worker(
             batch_size=8, max_jobs_per_tick=8
         ).tick()

@@ -50,6 +50,8 @@ def test_rust_postgres_tests_are_explicitly_gated_and_ci_runs_them() -> None:
                 stripped = line.strip()
                 if not stripped:
                     continue
+                if stripped.startswith("//"):
+                    continue
                 if stripped.startswith("#["):
                     attributes.append(stripped)
                     continue

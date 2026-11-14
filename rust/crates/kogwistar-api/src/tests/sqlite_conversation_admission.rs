@@ -1259,7 +1259,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
             },
         )
         .unwrap();
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_conversation_admission.rs#sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic; python_test=tests/workflow/test_answer_workflow_v2.py#test_python_agent_postgres_2k_request_profile
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_conversation_admission.rs#sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
     let agentic_submit = app
         .clone()
         .oneshot(

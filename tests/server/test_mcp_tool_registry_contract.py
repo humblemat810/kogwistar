@@ -207,7 +207,11 @@ def test_committed_mcp_tool_schema_matches_live_registry() -> None:
     async def surfaces() -> dict[str, list[dict]]:
         root = await contracts(mcp)
         claims_token = set_claims_ctx(
-            {"role": "rw", "ns": ["wisdom"], "capabilities": ["write_graph"]}
+            {
+                "role": "rw",
+                "ns": ["wisdom"],
+                "capabilities": ["read_graph", "write_graph"],
+            }
         )
         role_token = set_current_role("rw")
         try:

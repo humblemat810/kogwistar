@@ -996,6 +996,9 @@ def test_sync_runtime_auto_transaction_mode_uses_step_for_pg_backend(monkeypatch
 def test_sync_runtime_rust_postgres_authority_keeps_callbacks_outside_uow(
     monkeypatch,
 ):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_rust_postgres_authority_keeps_callbacks_outside_uow`.
+    New sync mirror for Rust Postgres transaction-authority parity.
+    """
     class _PgVectorBackend:
         pass
 
@@ -1023,6 +1026,9 @@ def test_sync_runtime_rust_postgres_authority_keeps_callbacks_outside_uow(
 
 
 def test_sync_runtime_rejects_explicit_rust_step_uow(monkeypatch):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_rejects_explicit_rust_step_uow`.
+    New sync mirror for Rust step-UOW rejection parity.
+    """
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
     monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")

@@ -1217,6 +1217,58 @@ def test_async_runtime_auto_transaction_mode_uses_step_for_pg_backend(monkeypatc
     assert rt.sync_runtime.transaction_mode == "step"
 
 
+def test_async_runtime_rust_postgres_authority_keeps_callbacks_outside_uow(monkeypatch):
+    """Async mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_rust_postgres_authority_keeps_callbacks_outside_uow`.
+    New async mirror for Rust Postgres transaction-authority parity.
+    """
+
+    class _PgVectorBackend:
+        pass
+
+    class _ConversationEngine:
+        backend = _PgVectorBackend()
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.PgVectorBackend",
+        _PgVectorBackend,
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_ConversationEngine(),
+        step_resolver=AsyncMappingStepResolver(),
+        predicate_registry={},
+        trace=False,
+        experimental_native_scheduler=True,
+    )
+
+    assert rt.sync_runtime.transaction_mode == "none"
+    assert rt.sync_runtime._should_step_uow("ordinary_step", {}) is False
+
+
+def test_async_runtime_rejects_explicit_rust_step_uow(monkeypatch):
+    """Async mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_rejects_explicit_rust_step_uow`.
+    New async mirror for Rust step-UOW rejection parity.
+    """
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    with pytest.raises(ValueError, match="incompatible with Rust transaction authority"):
+        AsyncWorkflowRuntime(
+            workflow_engine=object(),
+            conversation_engine=object(),
+            step_resolver=AsyncMappingStepResolver(),
+            predicate_registry={},
+            transaction_mode="step",
+            trace=False,
+            experimental_native_scheduler=True,
+        )
+
+
 def test_async_runtime_missing_op_behavior():
     """Sync mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_missing_op_behavior`.
     Moved from `tests/runtime/test_async_runtime_contract.py::test_missing_op_behavior_matches_sync_resolver`.
