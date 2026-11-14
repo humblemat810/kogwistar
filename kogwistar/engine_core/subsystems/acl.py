@@ -1036,13 +1036,24 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             target_item_id=target_item_id,
         )
         legacy_target_item_id = self._legacy_usage_id(target_item_id)
-        if record is None and legacy_target_item_id is not None:
-            record = self._latest_persisted_acl_record(
+        if legacy_target_item_id is not None:
+            legacy_record = self._latest_persisted_acl_record(
                 grain=grain,
                 truth_graph=truth_graph,
                 entity_id=entity_id,
                 target_item_id=legacy_target_item_id,
             )
+            if legacy_record is not None:
+                candidates = [item for item in (record, legacy_record) if item is not None]
+                rank = {"public": 0, "group": 1, "shared": 2, "scope": 3, "private": 4}
+                record = max(
+                    candidates,
+                    key=lambda item: (
+                        item.version,
+                        item.tombstoned,
+                        rank.get(item.mode, 99),
+                    ),
+                )
         if record is None:
             return self._e.acl_graph.decide(
                 grain=grain,  # type: ignore[arg-type]
