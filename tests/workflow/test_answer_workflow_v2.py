@@ -1,7 +1,11 @@
 import hashlib
 import json
 import os
+import socket
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +39,39 @@ from kogwistar.llm_tasks import (
 )
 
 pytestmark = pytest.mark.ci_full
+
+
+@contextmanager
+def _serve_over_tcp(app) -> Iterator[str]:
+    import uvicorn
+
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(128)
+    host, port = sock.getsockname()
+    server = uvicorn.Server(
+        uvicorn.Config(app, host=host, port=port, log_level="error")
+    )
+    thread = threading.Thread(
+        target=server.run, kwargs={"sockets": [sock]}, daemon=True
+    )
+    thread.start()
+    try:
+        deadline = time.monotonic() + 10.0
+        while not server.started:
+            if not thread.is_alive():
+                raise RuntimeError("Python benchmark HTTP server exited during startup")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Python benchmark HTTP server did not start")
+            time.sleep(0.01)
+        yield f"http://{host}:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10.0)
+        sock.close()
+        if thread.is_alive():
+            raise TimeoutError("Python benchmark HTTP server did not stop")
 
 
 @pytest.fixture(autouse=True)
@@ -344,15 +381,14 @@ def test_python_agent_postgres_2k_request_profile(
     digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
     assert digest == result_contract["canonical_json_sha256"]
 
-    # Compare the native endpoint's conversation-answer ingress at the same
-    # HTTP boundary. The test server's runner still uses Python's agent/runtime.
-    from fastapi.testclient import TestClient
+    # Match the native HTTP profile's TCP request boundary; runner remains Python.
+    import httpx
 
     from tests.server.test_chat_server_api import (
         _configure_server,
-        _token_header,
         server as chat_server,
     )
+    from tests._helpers.server_http_helpers import token_header_http
     from kogwistar.server.chat_service import AnswerRunRequest
 
     http_conversation_id = f"answer-bench-http-{sample_id}"
@@ -381,9 +417,12 @@ def test_python_agent_postgres_2k_request_profile(
         workflow_engine,
         answer_runner,
     )
-    with TestClient(chat_server.app) as client:
-        headers = _token_header(
-            client, role="rw", ns="conversation", username=user_id
+    monkeypatch.setattr(chat_server.app.state, "auth_mode", "dev", raising=False)
+    with _serve_over_tcp(chat_server.app) as base_url, httpx.Client(
+        base_url=base_url, timeout=30.0
+    ) as client:
+        headers = token_header_http(
+            client, base_url, role="rw", ns="conversation", username=user_id
         )
         created = client.post(
             "/api/conversations",
@@ -442,7 +481,7 @@ def test_python_agent_postgres_2k_request_profile(
                 "request_boundary": "in_process_answer_workflow_v2",
                 "seed_ms": round(seed_ms, 3),
                 "request_ms": round(request_ms, 3),
-                "http_request_boundary": "asgi_conversation_answer_to_terminal_run",
+                "http_request_boundary": "tcp_conversation_answer_to_terminal_run",
                 "http_request_ms": round(http_request_ms, 3),
                 "canonical_state_sha256": digest,
             },

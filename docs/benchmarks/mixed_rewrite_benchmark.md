@@ -1899,14 +1899,11 @@ profile, so they prove semantic digest parity, not comparable performance.
 
 The Python profile now also submits the same agentic workflow through
 `POST /api/conversations/{conversation_id}/turns:answer` and polls its terminal
-run result. A Windows PostgreSQL smoke with eight distractors passed through
-FastAPI `TestClient` and produced the shared digest. This is an ASGI in-process
-transport check, not TCP HTTP; the Rust 2,000-node timer still measures
-`POST /api/workflow/runs`, not this conversation-answer route. Thus the new
-smoke improves Python ingress coverage but does not establish a matched
-cross-language latency comparison. The full 2,000-node Python HTTP sample and
-an equivalent Rust conversation-answer endpoint sample are now measured below;
-resource-matched comparison remains open.
+run result. An earlier Windows PostgreSQL smoke with eight distractors passed
+through FastAPI `TestClient` and produced the shared digest. That ASGI
+in-process check was not a transport match; the later resource-capped Python
+ASGI profile below also remained incomparable to Rust TCP. The matched TCP
+recheck is recorded after those original measurements.
 
 The full 2,000-node Python sample has now completed through both the direct
 answer workflow and the ASGI conversation-answer route. Sample `sample-2` used
@@ -1935,7 +1932,7 @@ Python request measurement task. The PostgreSQL container
 `kogwistar-fw19-python-answer-pg` is intentionally left running for that next
 sample task; client probe container was removed.
 
-#### Fixed-resource Python agent request with 2,000-node PostgreSQL fixture
+#### Fixed-resource Python agent request with 2,000-node PostgreSQL fixture (ASGI)
 
 Ran `tests/workflow/test_answer_workflow_v2.py::test_python_agent_postgres_2k_request_profile`
 in CPython 3.13.18 with one warm-up and two fresh-schema samples. Client
@@ -1961,11 +1958,41 @@ container overlay; an initial Windows bind-mount attempt showed
 `p9_client_rpc` disk wait and was discarded. This avoids charging Windows
 bind-mount I/O to the application profile.
 
-The direct and ASGI request boundaries differ from the Rust-native HTTP
-measurement; ASGI uses `TestClient`, not TCP. These data close the fixed
-resource Python profile and prove shared result parity, not a fair
-Python-versus-Rust latency comparison. Compare only after matched transport,
-fixture, warm-up, and resource profile.
+The direct and ASGI request boundaries differ from Rust-native TCP. These data
+close the fixed-resource Python profile and prove shared result parity, not a
+fair Python-versus-Rust latency comparison. The later TCP profile supplies the
+matched request boundary.
+
+#### Resource-matched Python/Rust agent request over TCP
+
+Re-ran the Python 2,001-node profile through a real loopback TCP Uvicorn server
+inside the capped CPython 3.13.18 client container. The Rust endpoint profile
+used the same 3 CPU / 6 GiB client/server container cap and 1 CPU / 2 GiB
+PostgreSQL cap. Both used the conversation-answer ingress, deterministic
+provider/embedding fixtures, fresh PostgreSQL schemas, and identical golden
+result digest `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`.
+Python polled terminal run status every 100 ms; Rust polled every 200 ms, a
+small measurement difference retained as a caveat.
+
+| Runtime | Sample | Seed/setup ms | HTTP request to terminal ms | Digest |
+| --- | --- | ---: | ---: | --- |
+| Python | warm-up | 161,533.231 | 22,261.028 | shared |
+| Python | sample-1 | 190,491.493 | 20,926.857 | shared |
+| Python | sample-2 | 183,587.704 | 20,811.833 | shared |
+| Python | Measured median | 187,039.599 | 20,869.345 | shared |
+| Rust-native | warm-up | Not separately reported | 14,103.7 | shared |
+| Rust-native | sample-1 | Not separately reported | 13,621.347 | shared |
+| Rust-native | sample-2 | Not separately reported | 13,862.771 | shared |
+| Rust-native | Measured median | Not separately reported | 13,742.059 | shared |
+
+Across two measured samples, request CV was 0.39% for Python and 1.24% for
+Rust. Rust was 1.519x faster on this fixed profile (34.2% lower observed
+request latency). The two-sample CV and unequal polling intervals limit
+precision; this is evidence for this route/fixture/resource envelope only,
+not a whole-stack or general Python-versus-Rust claim. Python run: **3 passed**
+in 711.12 s; per-case wall 218.55 / 245.48 / 238.65 s. Rust run: **3 passed**
+in its existing fixed-resource profile. Python JUnit with captured sample
+records: `.tmp/fw19-replay-capped-container/python-tcp-junit.xml`.
 
 #### Rust-native 2,000-node PostgreSQL conversation-answer route
 
@@ -1982,4 +2009,4 @@ durable before provider completion, then checks the conversation/run outcome.
 | Agent request: conversation-answer HTTP submission through terminal answer | 10,302.767 ms median | 10,205.646 / 10,354.156 / 10,302.767 ms; CV 0.60% |
 | Warm-up | Not separately measured | The three runs are measured samples; do not infer warm-up from them |
 
-Evidence: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --lib postgres_agentic_answer_workflow_executes_durably_without_python_worker -- --ignored --nocapture` (**3 passed**, each with a fresh PostgreSQL schema). PostgreSQL container used 1 CPU/2 GiB; packaged Rust server ran on the Windows host without a verified CPU/RAM cap. The Python route sample also lacks verified resource caps and uses a separate fixture run. Therefore these results establish route correctness, shared result-digest parity, and preliminary latency only; they are not a fair speed comparison. The resource-matched Python/Rust profile remains open under FW-19-01B-AGENT-CROSS-PY-RESOURCE and FW-19-01B-AGENT-CROSS-COMPARE.
+Evidence: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --lib postgres_agentic_answer_workflow_executes_durably_without_python_worker -- --ignored --nocapture` (**3 passed**, each with a fresh PostgreSQL schema). PostgreSQL container used 1 CPU/2 GiB; packaged Rust server ran on the Windows host without a verified CPU/RAM cap. The Python route sample also lacks verified resource caps and uses a separate fixture run. These historical runs establish route correctness and digest parity, but not comparable performance. The later fixed-resource TCP profile below closes `FW-19-01B-AGENT-CROSS-PY-RESOURCE` and `FW-19-01B-AGENT-CROSS-COMPARE` for this route and fixture only; it does not establish whole-stack performance parity.
