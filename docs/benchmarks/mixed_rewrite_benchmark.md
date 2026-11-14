@@ -1496,6 +1496,43 @@ calls account for most of this narrow sequential endpoint workload. This is attr
 all workloads or backends are storage-bound. Raw artifacts are ignored under
 `.tmp/fw20-03-storage-current/endpoint/` (run `5edebe25c19e`; source manifest records the source snapshot).
 
+### 2026-11-14 persistent SQLite replay and owner-restart profile
+
+Ran `scripts/rust_port_persistent_benchmark.py --items 100 --read-cycles 5
+--samples 3` on Windows CPython 3.13. One warm-up and three fresh databases per
+mode were used for Python, Rust per-call authority, Rust cached-session, and
+Rust-native. All four modes produced final state digest
+`a98b533d6d17ba77f92fee660e07e4123b93b7e3263eb244dff557686c0bddd6`; the
+versioned read-after-write trace SHA-256 was
+`bdf223a12cb233db778d576d909993e4d486943d011698dc3976353d20490f27`. The
+separate SQLite owner UAT passed three fresh processes in order: Rust wrote
+`rust-first`, Python read it and wrote `python-second`, and Rust reopened and
+read `python-second`. No process kept SQLite open across an owner handoff.
+
+This was a native Windows host run with 16 logical CPUs and 63.7 GiB physical
+RAM, without a container/job CPU or memory cap. The benchmark records process
+RSS for Python, Rust per-call, and Rust cached modes; Rust-native child RSS is
+not reported. This host profile is not resource-normalized against Docker runs.
+
+| Operation | Python median / p95 ms | Rust median / p95 ms | Rust cached median / p95 ms | Rust-native median / p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Event append | 1,939.82 / 2,005.31 | 3,413.85 / 3,504.51 | 1,826.68 / 1,911.77 | 1,734.73 / 1,791.82 |
+| Event replay | 126.73 / 140.10 | 147.67 / 149.63 | 43.84 / 47.12 | 26.56 / 32.93 |
+| Mixed interleaved | 5,659.27 / 5,659.80 | 10,662.10 / 10,718.03 | 10,686.60 / 10,801.42 | 2,331.58 / 2,367.12 |
+| Projection list | 65.52 / 66.15 | 156.18 / 162.93 | 48.82 / 52.77 | 29.60 / 37.08 |
+| Projection replace | 1,826.15 / 1,898.66 | 3,399.43 / 3,406.60 | 1,822.40 / 1,870.86 | 1,685.75 / 1,739.34 |
+
+The benchmark's Python-vs-Rust-per-call gate **failed** its p95-latency and
+throughput checks; this remains a real negative result, not a parity failure.
+Rust-native was faster on these operations, especially replay and the mixed
+trace, while keeping the same commit boundaries and final digest. Three
+samples make p95/p99 the largest observation, not reliable tail quantiles.
+Elapsed CV ranged from 0.14% to 17.57%; high variation occurred on short
+read-heavy measurements. This is descriptive SQLite evidence only, not general
+backend or whole-stack performance proof. Raw artifacts:
+`.tmp/fw19-replay-recovery-100/report.v3.json` and
+`.tmp/fw19-owner-restart-smoke/report.json`.
+
 ### 2026-11-14 fixed-resource 2,000-item indexing backend comparison
 
 Ran `scripts/mixed_backend_benchmark.py` with a deterministic 2,000-item trace,
