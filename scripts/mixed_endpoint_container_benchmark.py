@@ -6,7 +6,9 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +37,14 @@ def _write_json(path: Path, value: object) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _copy_json_artifacts(source: Path, destination: Path) -> None:
+    """Copy inspectable reports/traces, never SQLite databases, to result mount."""
+    for artifact in source.rglob("*.json"):
+        target = destination / artifact.relative_to(source)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(artifact, target)
 
 
 def main() -> int:
@@ -67,13 +77,18 @@ def main() -> int:
     }
     reports: list[dict[str, Any]] = []
     for size in args.items:
-        report = run_benchmark(
-            args.output / str(size),
-            items=size,
-            samples=args.samples,
-            modes=modes,
-            include_concurrent=False,
-        )
+        with tempfile.TemporaryDirectory(prefix="kogwistar-endpoint-") as temp_dir:
+            scratch = Path(temp_dir) / str(size)
+            try:
+                report = run_benchmark(
+                    scratch,
+                    items=size,
+                    samples=args.samples,
+                    modes=modes,
+                    include_concurrent=False,
+                )
+            finally:
+                _copy_json_artifacts(scratch, args.output / str(size))
         reports.append(report)
 
     limits_verified = _verify_cgroup_limits(

@@ -1040,12 +1040,22 @@ def _reuse_rust_store_session(store: EngineSQLite | RustEngineSQLite):
     yield
 
 
-def _result_payload(result: object) -> dict[str, object]:
+def _result_payload(result: object, *, operation: str) -> dict[str, object]:
     structured = getattr(result, "structured_content", None)
     if structured is None:
         structured = getattr(result, "structuredContent", None)
     if not isinstance(structured, dict):
-        raise RuntimeError("MCP tool returned no structured result")
+        content = getattr(result, "content", ())
+        preview = [
+            text[:240]
+            for block in content
+            if isinstance((text := getattr(block, "text", None)), str)
+        ][:2]
+        is_error = getattr(result, "isError", getattr(result, "is_error", None))
+        raise RuntimeError(
+            f"MCP tool {operation!r} returned no structured result "
+            f"(is_error={is_error!r}, content_preview={preview!r})"
+        )
     return structured
 
 
@@ -1157,7 +1167,7 @@ async def _serve_http(
                         session.call_tool(operation, arguments=arguments),
                         operation,
                     )
-                    payload = _result_payload(result)
+                    payload = _result_payload(result, operation=operation)
                     if seam_metrics is not None:
                         seam_metrics.add_json(payload)
                     if payload.get("entity_id") != step["expected_entity_id"]:
@@ -1267,7 +1277,7 @@ async def _serve_http_concurrent(
             result = await _await_mcp_operation(
                 session.call_tool(name, arguments=arguments), name
             )
-            payload = _result_payload(result)
+            payload = _result_payload(result, operation=name)
             with timings_lock:
                 timings[name].append((time.perf_counter_ns() - call_started) / 1_000_000)
             return payload
@@ -1415,7 +1425,9 @@ async def _run_in_process_concurrent(
     async def call(name: str, arguments: dict[str, object]) -> dict[str, object]:
         try:
             call_started = time.perf_counter_ns()
-            payload = _result_payload(await registry.call_tool(name, arguments))
+            payload = _result_payload(
+                await registry.call_tool(name, arguments), operation=name
+            )
             with timings_lock:
                 timings[name].append((time.perf_counter_ns() - call_started) / 1_000_000)
             return payload

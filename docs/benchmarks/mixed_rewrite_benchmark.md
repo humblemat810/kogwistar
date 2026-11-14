@@ -1906,6 +1906,21 @@ parity or end-to-end HTTP/MCP speedup. The SQLite contract and per-write commit
 boundaries remain identical in the tested trace. Raw samples and runtime/build
 metadata: `.tmp/fw19-05-sqlite-pycall-10k-v2/native-report.v1.json`.
 
+### 2026-11-14 fixed-resource Python HTTP 2k MCP trace
+
+Ran the Python-authority MCP HTTP endpoint in CPython 3.15.1t with a verified
+4-CPU/8-GiB container limit. One warm-up and two fresh 2k-item samples each
+completed all 6,000 advertised operations. Every run produced state digest
+`c6c29eb0b47f4df32c4fd0ee91af0779053304e703e18cd8ad52488fd7db0979` and trace
+SHA-256 `0f6481ac87ca85df50fedf2ee1410e198a4b9c55bf4ec4a5e0c344c0c0bddc71`.
+Measured median was 111,513.250 ms (53.81 ops/s; two-sample CV 0.10%). Median
+per-call p50/p95/p99 ms: `write_record` 28.30/32.28/34.72,
+`read_event` 13.37/15.07/17.82, `read_projection` 12.93/14.95/17.38. This
+establishes Python HTTP workload correctness only; no Rust path comparison is
+claimed. SQLite databases ran under container-local `/tmp`; JSON traces and
+reports alone were copied to the host bind mount, which avoids Docker Desktop
+SQLite I/O failures. Raw evidence: `.tmp/fw19-05-mcp-2k-20261114/pyhttp-fixed/endpoint-report.v1.json`.
+
 ### 2026-11-14 PostgreSQL semantic projection-worker attribution
 
 Ran `rust/crates/kogwistar-api/examples/projection_worker_attribution.rs` against PostgreSQL 16 with

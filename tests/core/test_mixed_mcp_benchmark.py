@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,23 @@ from scripts.mixed_mcp_benchmark import (
     _run_one,
     _run_one_sync,
 )
+
+
+def test_missing_structured_mcp_result_reports_bounded_operation_error() -> None:
+    result = SimpleNamespace(
+        structuredContent=None,
+        isError=True,
+        content=[SimpleNamespace(text="database locked " * 100)],
+    )
+
+    with pytest.raises(RuntimeError) as error:
+        mixed_mcp_benchmark._result_payload(result, operation="write_record")
+
+    message = str(error.value)
+    assert "write_record" in message
+    assert "is_error=True" in message
+    assert "database locked" in message
+    assert len(message) < 400
 
 
 def test_sample_metrics_are_bound_to_trace_and_reject_duplicate_counts() -> None:
