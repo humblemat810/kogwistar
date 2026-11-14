@@ -1904,6 +1904,38 @@ Python request measurement task. The PostgreSQL container
 `kogwistar-fw19-python-answer-pg` is intentionally left running for that next
 sample task; client probe container was removed.
 
+#### Fixed-resource Python agent request with 2,000-node PostgreSQL fixture
+
+Ran `tests/workflow/test_answer_workflow_v2.py::test_python_agent_postgres_2k_request_profile`
+in CPython 3.13.18 with one warm-up and two fresh-schema samples. Client
+container limits were 3 CPU / 6 GiB RAM; PostgreSQL 16 limits were 1 CPU / 2
+GiB RAM. Docker inspection verified both limits. The run returned the shared
+canonical digest `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`
+for all three 2,001-node fixtures.
+
+| Sample | Seed/setup (ms) | Direct workflow request (ms) | ASGI conversation-answer to terminal (ms) | Digest |
+| --- | ---: | ---: | ---: | --- |
+| warm-up | 167,851.517 | 31,438.114 | 21,910.769 | `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741` |
+| sample-1 | 188,454.943 | 32,809.132 | 21,609.104 | same |
+| sample-2 | 192,562.490 | 32,787.280 | 20,366.900 | same |
+| Measured median | 190,508.717 | 32,798.206 | 20,988.002 | same |
+
+The median row excludes warm-up. Sample CV is 1.52% for setup, 0.05% for
+direct workflow request, and 4.19% for the ASGI request (two samples; tail
+statistics are not meaningful). Pytest result: **3 passed**, 14 warnings,
+726.13 s total; per-case wall times were 225.17 / 244.83 / 247.67 s. Raw log
+and JUnit: `.tmp/fw19-python-capped-overlay/pytest.log` and
+`.tmp/fw19-python-capped-overlay/junit.xml`. Source was copied into the
+container overlay; an initial Windows bind-mount attempt showed
+`p9_client_rpc` disk wait and was discarded. This avoids charging Windows
+bind-mount I/O to the application profile.
+
+The direct and ASGI request boundaries differ from the Rust-native HTTP
+measurement; ASGI uses `TestClient`, not TCP. These data close the fixed
+resource Python profile and prove shared result parity, not a fair
+Python-versus-Rust latency comparison. Compare only after matched transport,
+fixture, warm-up, and resource profile.
+
 #### Rust-native 2,000-node PostgreSQL conversation-answer route
 
 The packaged Rust server now receives the same user-facing route as Python:
