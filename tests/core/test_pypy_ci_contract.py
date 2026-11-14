@@ -48,7 +48,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
 
     assert "pypy-beta-best-effort:" in workflow
     assert "continue-on-error: true" in workflow
-    assert "pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz" in workflow
+    assert "pypy3.12-v8.0.1-linux64.tar.gz" in workflow
     assert 'sha256sum "$archive"' in workflow
     assert 'stat --format=' in workflow
     assert 'test -x "$pypy_home/bin/pypy3"' in workflow
@@ -84,7 +84,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "::error title=Kogwistar PyPy ABI::" in workflow
     assert "PYPY_SHA256" in workflow
     assert "actual_sha256" in workflow
-    assert "pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz" in workflow
+    assert "pypy3.12-v8.0.1-linux64.tar.gz" in workflow
     assert "--extension" in workflow
     assert "scripts/pypy_native_extension_dlopen.py" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow

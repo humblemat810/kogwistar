@@ -762,6 +762,7 @@ def test_cross_process_store_open_race_on_new_database_has_one_owner(
 import json
 import sys
 import time
+from contextlib import nullcontext
 from pathlib import Path
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
@@ -782,12 +783,22 @@ try:
     with independent_sqlite_execution_context(implementation):
         if implementation == "python":
             engine = EngineSQLite(database.parent)
-            engine.ensure_initialized()
-            connection = engine.connect()
+            ownership = nullcontext()
         else:
             engine = RustEngineSQLite(database.parent)
-            engine.ensure_initialized()
-    result = {"state": "acquired"}
+            ownership = engine.session()
+        with ownership:
+            if implementation == "python":
+                engine.ensure_initialized()
+                connection = engine.connect()
+            else:
+                engine.ensure_initialized()
+            result = {"state": "acquired"}
+            status.write_text(json.dumps(result), encoding="utf-8")
+            while not release.exists():
+                time.sleep(0.005)
+            if connection is not None:
+                connection.close()
 except Exception as error:
     result = {
         "state": "conflict",
@@ -796,14 +807,6 @@ except Exception as error:
         "message": str(error),
     }
 status.write_text(json.dumps(result), encoding="utf-8")
-if result["state"] == "acquired":
-    while not release.exists():
-        time.sleep(0.005)
-    if connection is not None:
-        connection.close()
-    if implementation == "rust":
-        with independent_sqlite_execution_context("rust"):
-            engine.close()
 """
     implementations = ("python", "rust")
     processes = {
