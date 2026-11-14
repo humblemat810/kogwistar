@@ -1845,3 +1845,17 @@ The source fixture switch and request timer are in
 `rust/crates/kogwistar-api/src/tests/postgres_agentic_answer.rs`. This closes
 the fixed-resource Rust-native agent-request profile only; broader agent
 parity, other backends, concurrency, and whole-stack conclusions remain open.
+
+#### Exploratory Python 2,000-node PostgreSQL agent request
+
+Ran `test_python_agent_postgres_2k_request_profile[sample-1-pg]` once after
+fixing typed query-result reconstruction when the backend omits embeddings.
+The Python full `AgenticAnsweringAgent.answer_workflow_v2` completed and selected
+the seeded target evidence from 2,000 distractors. Result digest:
+`b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`.
+Measured request was 39,249.206 ms; fixture seed was 356,930.602 ms. The seed
+time is setup and excluded from the request timer. This was one measured sample;
+the Python resource caps were not verified. The Python timer is in-process,
+whereas the Rust profile above measures HTTP submission through terminal status,
+so these numbers are not a valid speed comparison. Rust/Python digest equality
+has not yet been asserted by one shared canonical-result oracle.
