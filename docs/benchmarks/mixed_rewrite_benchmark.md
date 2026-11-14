@@ -1771,6 +1771,24 @@ Rust latency was 0.842x Python in this single sample. This result is specific
 to grouped transaction boundaries and does not establish end-to-end request
 speedup or replace per-record durability semantics.
 
+### 2026-11-14 resource-capped PostgreSQL 10k event replay
+
+Ran only `event_replay_batch` at 10,000 events, one measured sample, no
+separate warm-up. Same Python 3.13.18 client (3 CPU/6 GiB) and PostgreSQL
+16.15 (1 CPU/2 GiB) caps. Each authority seeded identical ordered events in a
+fresh schema before timing; timed interval read and validated all events.
+Both replay outputs matched canonical digest
+`ff167dab83fd16616c698a204b988fd25612eb742c64ad6bd89907201c53f195`.
+
+| Authority | Replay latency ms | Throughput events/s |
+| --- | ---: | ---: |
+| Python | 113.46 | 88,137.37 |
+| Rust | 315.76 | 31,669.81 |
+
+Rust latency was 2.783x Python in this single sample. Seed writes are not
+included; this measures the metadata-store replay API, not startup recovery or
+full graph reconstruction.
+
 ### 2026-11-14 fixed-resource 2,000-item ACL projection
 
 Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000
