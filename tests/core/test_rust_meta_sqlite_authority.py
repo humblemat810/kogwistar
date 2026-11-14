@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,6 +21,7 @@ from kogwistar.engine_core import rust_meta_sqlite
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 from kogwistar.engine_core.in_memory_backend import InMemoryBackend, _DummyLock
+from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
     RustSQLiteConnectionUnavailable,
@@ -572,6 +574,41 @@ def test_rust_authority_skill_projection_reconciles_after_partial_commit(
     ) is None
 
 
+def test_rust_sqlite_authority_reconciles_chroma_projection_jobs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    metadata = RustEngineSQLite(tmp_path, "chroma-index-reconcile.sqlite")
+    metadata.ensure_initialized()
+    job_id = metadata.enqueue_index_job(
+        job_id="node-ref-reconcile",
+        namespace="default",
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_refs",
+        op="UPSERT",
+        payload_json="{}",
+    )
+    engine = SimpleNamespace(
+        metadata=metadata,
+        namespace="default",
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=None,
+        backend=object(),
+    )
+    reconciler = IndexingSubsystem(engine)
+    applied: list[dict[str, object]] = []
+    reconciler.apply_index_job = lambda **kwargs: applied.append(kwargs)  # type: ignore[method-assign]
+
+    assert reconciler.reconcile_indexes(max_jobs=1) == 1
+    assert len(applied) == 1
+    assert applied[0]["job_id"] == job_id
+    assert metadata.list_index_jobs(status="DONE", namespace="default")[0].job_id == job_id
+
+
 def test_rust_authority_event_envelope_is_lossless_and_idempotent(tmp_path: Path) -> None:
     store = RustEngineSQLite(tmp_path, "envelope.sqlite")
     store.ensure_initialized()
@@ -696,18 +733,21 @@ def test_rust_index_worker_trace_joins_enqueue_claim_and_ack(
     )
     try:
         with capture_rust_bridge_calls() as trace:
-            engine.write.add_node(
-                build_entity_node(
-                    node_id="indexed-node", doc_id="indexed-doc", embedding=[0.0, 1.0]
+            with engine.write.defer_index_reconciliation(max_jobs=0):
+                engine.write.add_node(
+                    build_entity_node(
+                        node_id="indexed-node",
+                        doc_id="indexed-doc",
+                        embedding=[0.0, 1.0],
+                    )
                 )
-            )
-            worker = IndexJobWorker(
-                engine=engine,
-                batch_size=8,
-                max_inflight=1,
-                max_jobs_per_tick=8,
-            )
-            tick = worker.tick()
+                worker = IndexJobWorker(
+                    engine=engine,
+                    batch_size=8,
+                    max_inflight=1,
+                    max_jobs_per_tick=8,
+                )
+                tick = worker.tick()
 
         jobs = engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
         bridge = trace.snapshot()

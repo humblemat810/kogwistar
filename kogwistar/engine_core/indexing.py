@@ -612,7 +612,21 @@ class IndexingSubsystem:
         """
         if not getattr(self.engine, "_phase1_enable_index_jobs", False):
             return 0
-        if selected_transaction_authority() == "rust":
+        native_join_reconciliation_required = (
+            selected_transaction_authority() == "rust"
+        )
+        if native_join_reconciliation_required:
+            from .rust_meta_sqlite import RustEngineSQLite
+
+            if isinstance(self.metadata, RustEngineSQLite):
+                from .rust_postgres_session import RustEnginePostgresMetaStore
+
+                # SQLite queue stays Rust-owned; Chroma projection stays eventual.
+                # PostgreSQL alone needs native joined reconciliation for atomicity.
+                native_join_reconciliation_required = isinstance(
+                    self.metadata, RustEnginePostgresMetaStore
+                )
+        if native_join_reconciliation_required:
             reconcile_native = getattr(self.metadata, "reconcile_join_index_jobs", None)
             backend = getattr(self.engine, "backend", None)
             table_names = {
