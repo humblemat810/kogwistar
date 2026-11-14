@@ -1921,6 +1921,42 @@ claimed. SQLite databases ran under container-local `/tmp`; JSON traces and
 reports alone were copied to the host bind mount, which avoids Docker Desktop
 SQLite I/O failures. Raw evidence: `.tmp/fw19-05-mcp-2k-20261114/pyhttp-fixed/endpoint-report.v1.json`.
 
+### 2026-11-14 fixed-resource Rust-authority HTTP 2k MCP trace
+
+Repeated the same CPython 3.15.1t HTTP workload and resource limits with the
+Rust SQLite authority adapter. One warm-up and two fresh samples each completed
+all 6,000 advertised operations. All final state digests matched the Python
+HTTP run (`c6c29eb0b47f4df32c4fd0ee91af0779053304e703e18cd8ad52488fd7db0979`);
+trace SHA-256 also matched (`0f6481ac87ca85df50fedf2ee1410e198a4b9c55bf4ec4a5e0c344c0c0bddc71`).
+Median elapsed was 112,866.756 ms (53.16 ops/s; two-sample CV 0.81%). Per-call
+p50/p95/p99 ms: `write_record` 30.25/34.08/37.43, `read_event`
+11.64/13.59/16.63, and `read_projection` 13.50/16.07/18.84. Against Python
+HTTP's 53.81 ops/s, this mixed path measured 0.99x throughput; this run shows
+correctness parity, not a measurable speedup. The trace attributed 20,000
+Python/Rust bridge calls across 6,000 HTTP operations and preserved 2,000
+transaction begin/commit pairs. Resource cgroups were verified at 4 CPUs and
+8 GiB. SQLite databases stayed in container-local `/tmp`; only JSON evidence
+was copied to the host mount. Raw evidence:
+`.tmp/fw19-05-mcp-2k-20261114/rustauthhttp/endpoint-report.v1.json`.
+
+### 2026-11-14 fixed-resource Rust-native HTTP 2k MCP trace
+
+Ran the same trace through the seam-free Rust-native MCP HTTP server in the
+same CPython 3.15.1t benchmark container, with verified 4-CPU/8-GiB limits.
+One warm-up and two fresh samples each completed all 6,000 operations. Both
+final state digest (`c6c29eb0b47f4df32c4fd0ee91af0779053304e703e18cd8ad52488fd7db0979`)
+and trace SHA-256 (`0f6481ac87ca85df50fedf2ee1410e198a4b9c55bf4ec4a5e0c344c0c0bddc71`)
+match Python HTTP and Rust-authority HTTP. Median elapsed was 16,268.115 ms
+(368.83 ops/s; two-sample CV 0.63%), with 28.81 ms startup. Per-call median
+p50/p95/p99 ms across samples: `write_record` 2.87/3.57/21.72,
+`read_event` 2.07/2.43/2.76, `read_projection` 2.57/3.08/3.51. Throughput
+was 6.85x Python HTTP and 6.93x Python HTTP + Rust authority in this specific
+sequential SQLite trace. Rust-native reported zero FFI calls, 2,000 transaction
+boundaries, 11.99 MB SQLite footprint, and 7.36 MB native-process peak RSS.
+These are narrow two-sample results, not a general or concurrent performance
+claim. SQLite remained under container-local `/tmp`; host mount contains JSON
+only. Raw evidence: `.tmp/fw19-05-mcp-2k-20261114/nativehttp/endpoint-report.v1.json`.
+
 ### 2026-11-14 PostgreSQL semantic projection-worker attribution
 
 Ran `rust/crates/kogwistar-api/examples/projection_worker_attribution.rs` against PostgreSQL 16 with
