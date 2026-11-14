@@ -1714,6 +1714,24 @@ samples, p95 is only the slower observation; treat this as a bounded datapoint,
 not a reliable tail or general performance claim. Individual append remains a
 separate commit-boundary workload above.
 
+### 2026-11-14 resource-capped PostgreSQL 10k projection list
+
+Ran only `projection_list` at 10,000 records, one measured sample, no separate
+warm-up. Same Python 3.13.18 client (3 CPU/6 GiB) and PostgreSQL 16.15 (1
+CPU/2 GiB) caps. Each authority seeded 10,000 identical canonical projections
+before timing; timed interval measured list retrieval and count validation.
+Python/Rust returned the same canonical result digest:
+`adbcd4e7777a2207f7be2aabcd7ad9d9770e7a7eefdd0fb88cc382d18e6b7986`.
+
+| Authority | List latency ms | Throughput rows/s |
+| --- | ---: | ---: |
+| Python | 209.93 | 47,634.46 |
+| Rust | 252.54 | 39,597.01 |
+
+Rust latency was 1.203x Python in this single sample. Seeding is outside the
+timed interval, and this result says nothing about projection writes or full
+request paths.
+
 ### 2026-11-14 fixed-resource 2,000-item ACL projection
 
 Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000
