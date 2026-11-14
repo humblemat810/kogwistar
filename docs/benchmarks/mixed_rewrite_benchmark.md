@@ -1994,6 +1994,30 @@ in 711.12 s; per-case wall 218.55 / 245.48 / 238.65 s. Rust run: **3 passed**
 in its existing fixed-resource profile. Python JUnit with captured sample
 records: `.tmp/fw19-replay-capped-container/python-tcp-junit.xml`.
 
+#### PyPy 3.11 persistent-trace runtime parity
+
+Ran the current checkout's Python-authority SQLite trace under PyPy 3.11.17
+inside `kogwistar-pypy311-wheel-smoke:local`, with a verified 3 CPU / 6 GiB
+container cap, one warm-up, and two measured samples for each 100-item mix.
+Compared against CPython 3.13.3 running the same checkout and generated trace
+on the Windows host. Both `balanced` and `read_heavy` trace JSON structures and
+final state digests matched:
+
+| Mix | Shared digest | PyPy median ms / ops/s | CPython median ms / ops/s |
+| --- | --- | ---: | ---: |
+| Balanced | `f46f4317379bbca4d152e0ab61f518c3db5231ecc80eeb209cd83b80d580b5cf` | 5,314.133 / 94.25 | 10,822.985 / 46.20 |
+| Read-heavy | `8a9871e34731b0dd73833612b51729c13a528710ca5b5bfbbd5089a8d192a036` | 6,980.781 / 128.94 | 16,388.499 / 54.92 |
+
+PyPy runtime and cgroup limits were verified in
+`.tmp/fw19-05-pypy311-100/runtime-report.json`; CPython report is
+`.tmp/fw19-05-cpython313-100/report.v3.json`. PyPy imported
+`/workspace/kogwistar/__init__.py` from the mounted current checkout; image
+distribution metadata still reports installed `kogwistar==0.6.15`, so that
+metadata is not the tested source identity. CPython ran without imposed
+resource caps; timing is descriptive and not a fair speed comparison. This
+tasklet verifies Python-authority runtime parity only, not Rust authority or
+Rust-native parity on PyPy.
+
 #### Rust-native 2,000-node PostgreSQL conversation-answer route
 
 The packaged Rust server now receives the same user-facing route as Python:
