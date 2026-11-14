@@ -27,7 +27,7 @@ from ..types import (
     PersistedGraphResult,
     ToposortIngestResult,
 )
-from ...json_types import JsonObject
+from ...json_types import JsonObject, JsonValue
 from ...implementation_selection import (
     ImplementationSelectionSnapshot,
     implementation_selection_bound,
@@ -424,7 +424,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     workspace_id=None,
                     graph_space=None,
                     table=table,
-                    ids=sorted(entity_ids),
+                    ids=cast(JsonValue, sorted(entity_ids)),
                     metadata={},
                     limit=len(entity_ids),
                     for_update=metadata.transaction_active,

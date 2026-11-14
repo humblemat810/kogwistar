@@ -323,10 +323,7 @@ class ConversationEdge(Edge):
         if update is None:
             return copied
         for name, value in update.items():
-            if name in type(self).model_fields:
-                setattr(copied, name, value)
-            else:
-                copied.__dict__[name] = value
+            setattr(copied, name, value)
         return copied
 
     def identity_key(self) -> tuple[str, ...]:
@@ -388,10 +385,7 @@ class ConversationNode(ConversationRoleMixin, Node):
         if update is None:
             return copied
         for name, value in update.items():
-            if name in type(self).model_fields:
-                setattr(copied, name, value)
-            else:
-                copied.__dict__[name] = value
+            setattr(copied, name, value)
         return copied
 
     def identity_key(self) -> tuple[str, ...]:

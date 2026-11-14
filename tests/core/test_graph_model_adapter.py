@@ -1596,6 +1596,9 @@ def test_conversation_node_rejects_invalid_role_assignment() -> None:
         node.role = "not-a-conversation-role"
     with pytest.raises(ValidationError, match="role"):
         node.model_copy(update={"role": "not-a-conversation-role"})
+    copied = node.model_copy(update={"trace_marker": "turn-1"})
+    assert copied.trace_marker == "turn-1"
+    assert not hasattr(node, "trace_marker")
 
 
 def test_conversation_edge_rejects_invalid_endpoint_assignment() -> None:
@@ -1617,6 +1620,9 @@ def test_conversation_edge_rejects_invalid_endpoint_assignment() -> None:
         edge.source_ids = [""]
     with pytest.raises(ValidationError, match="endpoint IDs must not be empty"):
         edge.model_copy(update={"source_ids": [""]})
+    copied = edge.model_copy(update={"trace_marker": "edge-1"})
+    assert copied.trace_marker == "edge-1"
+    assert not hasattr(edge, "trace_marker")
 
 
 def test_workflow_runtime_subtypes_have_explicit_graph_wire_tags() -> None:

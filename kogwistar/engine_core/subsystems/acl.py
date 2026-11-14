@@ -638,11 +638,15 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if isinstance(metadata, RustEnginePostgresMetaStore):
             # Row-locking ACL writes stay inside the Rust-owned UoW. Ordinary
             # authorization reads must not request FOR UPDATE or open a UoW.
+            nodes_collection = getattr(self._e.backend, "nodes", None)
+            table_name = getattr(nodes_collection, "name", None)
+            if not isinstance(table_name, str):
+                raise TypeError("PostgreSQL backend does not expose its node table name")
             projection_rows = metadata.graph_projection_records(
                 namespace=str(getattr(self._e, "namespace", "default")),
                 workspace_id=None,
                 graph_space=None,
-                table=self._e.backend.nodes.name,
+                table=table_name,
                 ids=None,
                 metadata=metadata_filter,
                 limit=400,

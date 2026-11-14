@@ -424,12 +424,12 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
     def node_index_upsert(
         self, *, records: list[JsonObject], table: str = "gke_node_index"
     ) -> None:
-        self._call("node_index_upsert", table=table, records=records)
+        self._call("node_index_upsert", table=table, records=cast(JsonValue, records))
 
     def node_index_get(
         self, *, ids: list[str], table: str = "gke_node_index"
     ) -> list[JsonObject]:
-        result = self._call("node_index_get", table=table, ids=ids)
+        result = self._call("node_index_get", table=table, ids=cast(JsonValue, ids))
         if not isinstance(result, list) or not all(
             _valid_node_index_record(record) for record in result
         ):
@@ -448,7 +448,7 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
         result = self._call(
             "node_index_query",
             table=table,
-            embedding=embedding,
+            embedding=cast(JsonValue, embedding),
             limit=limit,
             metadata=metadata or {},
             metric=metric,

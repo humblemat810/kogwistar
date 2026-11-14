@@ -388,13 +388,11 @@ class GraphEntityRefBase(GraphEntityBase):
     def _require_non_empty_refs(
         cls, mentions: list[Grounding], info: ValidationInfo
     ) -> list[Grounding]:
-        try:
-            if not mentions:
-                raise ValueError("At least one mentions is required")
+        if not mentions:
+            raise ValueError("At least one mentions is required")
+        if not getattr(cls, "_flat_extraction_mentions", False):
             for g in mentions:
                 g.validate_from_source()
-        except Exception as _e:
-            raise
         return mentions
 
     @model_validator(mode="before")
@@ -812,15 +810,6 @@ class LLMNodeExtraction(LLMNode):
     def _coerce_mentions(cls, mentions: object) -> object:
         return mentions
 
-    @field_validator("mentions")
-    @classmethod
-    def _require_non_empty_refs(
-        cls, mentions: list[GroundginMandatoryExcerpt], info: ValidationInfo
-    ) -> list[GroundginMandatoryExcerpt]:
-        if not mentions:
-            raise ValueError("At least one mention is required")
-        return mentions
-
     @model_validator(mode="before")
     @classmethod
     def end_char_minus_1_to_ending_index(cls, data: object) -> object:
@@ -859,15 +848,6 @@ class LLMEdgeExtraction(LLMEdge):
     @field_validator("mentions", mode="before")
     @classmethod
     def _coerce_mentions(cls, mentions: object) -> object:
-        return mentions
-
-    @field_validator("mentions")
-    @classmethod
-    def _require_non_empty_refs(
-        cls, mentions: list[GroundginMandatoryExcerpt], info: ValidationInfo
-    ) -> list[GroundginMandatoryExcerpt]:
-        if not mentions:
-            raise ValueError("At least one mention is required")
         return mentions
 
     @model_validator(mode="before")
