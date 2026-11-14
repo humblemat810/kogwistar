@@ -2397,3 +2397,68 @@ backend ranking. Raw report and trace are retained locally (ignored by Git) at
 `.tmp/fw19-pgvector-10k-20261115/backend_trace.v1.json`; run ID `58e4012f863c`.
 Both backend cells now pass their digest/reopen oracle; broader DL-19 work
 remains open.
+
+#### Rust scheduler to Python worker seam
+
+`scripts/runtime_seam_benchmark.py` measures Rust-owned workflow scheduling
+with each step executed either by the Python worker over HTTP claim/result or
+by Rust inline. Both modes use the same linear graph and counter effect; final
+state digest must match before results are accepted. Startup is separate; each
+sample uses a fresh server/database and one warm-up is excluded.
+
+Run after building `kogwistar-server`:
+
+```powershell
+.venv\Scripts\python.exe scripts/runtime_seam_benchmark.py `
+  --nodes 100 --samples 3 --output .tmp/runtime-seam-report.json
+```
+
+Run the same test under verified 2 CPU / 2 GiB limits in Docker (builds a
+free-threaded CPython image and Rust server; no external network at runtime):
+
+```powershell
+./scripts/run_mixed_runtime_matrix.ps1 -RuntimeSeamOnly -CpuLimit 2 -MemoryLimit 2g -Samples 3 -OutputRoot .tmp/runtime-seam-limited
+```
+
+The benchmark fails closed unless the container's cgroup values match requested
+limits. Docker report is retained at `.tmp/runtime-seam-limited/runtime-seam/`.
+
+This is a seam microbenchmark, not a resource-matched full-stack comparison.
+Its trivial callback emphasizes scheduler/worker protocol overhead; real
+callback CPU, graph mutations, network latency, and parallel workloads may
+change the result. Do not compare it directly with MCP/endpoint figures.
+
+Initial Windows host run: Rust server used SQLite, no CPU/RAM limits; 100
+sequential counter steps per fresh server; one warm-up and two measured samples
+per mode. Both modes produced final-state digest
+`18a23ce2fb0de2f4b050f8759cda555c1973c5bd274085e71cd3cc6f62058879`.
+
+| Mode | Median elapsed | Median throughput | Median startup |
+| --- | ---: | ---: | ---: |
+| Rust scheduler → Python worker over HTTP | 21.884 s | 4.570 steps/s | 0.748 s |
+| Rust scheduler → Rust inline | 17.260 s | 5.794 steps/s | 0.764 s |
+
+For this 100-step trace, Rust inline was 1.27x higher throughput. Each mode
+had only two measured samples, so treat result as preliminary. Increasing graph
+length increased per-run time substantially; concurrency and callback-heavy
+profiles remain unmeasured. Raw JSON is local/ignored at
+`.tmp/runtime-seam-100.json`; smoke and 10-step report at
+`.tmp/runtime-seam-smoke.json` and `.tmp/runtime-seam-10.json`.
+
+#### Resource-limited Linux container run
+
+Ran the same 100-step workflow in CPython 3.15.1 free-threaded container;
+Docker cgroup verification passed at exactly 2 CPU / 2 GiB (`cpu.max`:
+`200000 100000`; `memory.max`: `2147483648`). One warm-up and two measured
+fresh-server samples per mode produced the same final-state digest as the
+Windows run.
+
+| Mode | Median elapsed | Median throughput | Median startup |
+| --- | ---: | ---: | ---: |
+| Rust scheduler → Python worker over HTTP | 5.757 s | 17.371 steps/s | 0.037 s |
+| Rust scheduler → Rust inline | 2.082 s | 48.037 steps/s | 0.037 s |
+
+Rust inline reached 2.76x throughput for this trivial callback and SQLite
+trace. This is the first resource-matched reverse-seam measurement; still only
+two samples, sequential workload, no graph mutation inside callbacks. Raw
+verified report: `.tmp/runtime-seam-limited/runtime-seam/runtime-seam-report.json`.

@@ -4,10 +4,14 @@ param(
     [string]$MemoryLimit = "8g",
     [int]$Samples = 5,
     [switch]$EndpointOnly,
+    [switch]$RuntimeSeamOnly,
     [int[]]$EndpointItems = @(1000, 2000)
 )
 
 $ErrorActionPreference = "Stop"
+if ($EndpointOnly -and $RuntimeSeamOnly) {
+    throw "Choose only one of EndpointOnly or RuntimeSeamOnly"
+}
 $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $dockerfile = Join-Path $PSScriptRoot "runtime_matrix/Dockerfile"
 $runtimeMatrixContext = Join-Path $PSScriptRoot "runtime_matrix"
@@ -34,7 +38,8 @@ foreach ($scriptName in @(
     "mixed_backend_benchmark.py",
     "mixed_runtime_container_benchmark.py",
     "mixed_mcp_benchmark.py",
-    "mixed_endpoint_container_benchmark.py"
+    "mixed_endpoint_container_benchmark.py",
+    "runtime_seam_benchmark.py"
 )) {
     Copy-Item (Join-Path $PSScriptRoot $scriptName) (Join-Path $sourceStage "scripts/$scriptName")
 }
@@ -110,6 +115,11 @@ if ($EndpointOnly) {
         @{ Name = "endpoint"; Target = "cpython315-nogil-rust-endpoint"; Items = $EndpointItems }
     )
 }
+if ($RuntimeSeamOnly) {
+    $matrix = @(
+        @{ Name = "runtime-seam"; Target = "cpython315-nogil-rust-seam"; Items = @(100) }
+    )
+}
 
 foreach ($entry in $matrix) {
     $tag = "kogwistar-mixed-runtime:$($entry.Name)"
@@ -134,7 +144,13 @@ foreach ($entry in $matrix) {
     $itemArgs = @()
     foreach ($size in $entry.Items) { $itemArgs += @("--items", "$size") }
     Write-Host "Running $($entry.Name) with --cpus=$CpuLimit --memory=$MemoryLimit --memory-swap=$MemoryLimit"
-    if ($EndpointOnly) {
+    if ($RuntimeSeamOnly) {
+        docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `
+            --mount "type=bind,source=$resolvedOutput,target=/results" `
+            $tag --server /usr/local/bin/kogwistar-server --nodes 100 --samples $Samples `
+            --output /results/runtime-seam-report.json --expected-cpus $CpuLimit `
+            --expected-memory-bytes $memoryBytes
+    } elseif ($EndpointOnly) {
         docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `
             --mount "type=bind,source=$resolvedOutput,target=/results" `
             $tag --output /results --samples $Samples `
@@ -147,10 +163,13 @@ foreach ($entry in $matrix) {
             --expected-cpus $CpuLimit --expected-memory-bytes $memoryBytes @itemArgs
     }
     if ($LASTEXITCODE -ne 0) { throw "Runtime verification/benchmark failed for $($entry.Name)" }
-    $reportName = if ($EndpointOnly) { "endpoint-report.v1.json" } else { "runtime-report.json" }
+    $reportName = if ($RuntimeSeamOnly) { "runtime-seam-report.json" } elseif ($EndpointOnly) { "endpoint-report.v1.json" } else { "runtime-report.json" }
     $runtimeResult = Get-Content -LiteralPath (Join-Path $runtimeOutput $reportName) -Raw | ConvertFrom-Json
     $runtimeRecord.status = $runtimeResult.status
-    if ($EndpointOnly) {
+    if ($RuntimeSeamOnly) {
+        $runtimeRecord.limits_verified = [bool]$runtimeResult.resource_limit_verification.verified
+        $runtimeRecord.state_digest = $runtimeResult.final_state_digest
+    } elseif ($EndpointOnly) {
         $runtimeRecord.state_digest_equal = [bool]$runtimeResult.state_digest_equal
         $runtimeRecord.limits_verified = [bool]$runtimeResult.runtime.limits_verified
         $runtimeRecord.packages = $runtimeResult.runtime.packages
@@ -163,7 +182,7 @@ foreach ($entry in $matrix) {
 }
 
 $verifier = Join-Path $PSScriptRoot "verify_mixed_runtime_matrix.py"
-if (-not $EndpointOnly) {
+if (-not $EndpointOnly -and -not $RuntimeSeamOnly) {
     python $verifier --root $output
     if ($LASTEXITCODE -ne 0) { throw "Runtime matrix parity verification failed; see runtime-matrix-verification.json" }
 }

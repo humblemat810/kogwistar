@@ -105,7 +105,10 @@ RUN python3.15t -m pip install --no-cache-dir maturin==1.15.0 \
     && python3.15t -m pip install --no-cache-dir --no-build-isolation --no-deps /build \
     && env -u PYTHONPATH python3.15t -c \
         'import importlib.util, shutil; from pathlib import Path; p = importlib.util.find_spec("kogwistar._rust"); assert p and p.origin; out = Path("/tmp/native-extension"); out.mkdir(); shutil.copy2(p.origin, out / Path(p.origin).name)'
-RUN cargo build --release --manifest-path /build/rust/Cargo.toml \
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/rust/target \
+    cargo build --release --manifest-path /build/rust/Cargo.toml \
         -p kogwistar-api --example mixed_mcp_authority_benchmark \
     && mkdir -p /tmp/native-endpoint \
     && cp /build/rust/target/release/examples/mixed_mcp_authority_benchmark \
@@ -124,6 +127,29 @@ COPY --from=cpython315-nogil-rust-build /tmp/native-endpoint/mixed_mcp_authority
     /usr/local/bin/mixed_mcp_authority_benchmark
 ENV KOGWISTAR_MIXED_NATIVE_BINARY=/usr/local/bin/mixed_mcp_authority_benchmark
 ENTRYPOINT ["python3.15t", "/src/scripts/mixed_endpoint_container_benchmark.py"]
+
+FROM debian:trixie-slim AS cpython315-nogil-rust-seam-build
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    build-essential ca-certificates curl libssl-dev pkg-config \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal
+ENV PATH="/root/.cargo/bin:$PATH"
+COPY rust /build/rust
+COPY contracts /build/contracts
+COPY kogwistar /build/kogwistar
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/rust/target \
+    cargo build --release --manifest-path /build/rust/Cargo.toml \
+        -p kogwistar-api --bin kogwistar-server \
+    && mkdir -p /tmp/runtime-seam \
+    && cp /build/rust/target/release/kogwistar-server /tmp/runtime-seam/
+
+FROM cpython315-nogil AS cpython315-nogil-rust-seam
+COPY --from=cpython315-nogil-rust-seam-build /tmp/runtime-seam/kogwistar-server \
+    /usr/local/bin/kogwistar-server
+ENTRYPOINT ["python3.15t", "/src/scripts/runtime_seam_benchmark.py"]
 
 FROM debian:trixie-slim AS cpython314-gil
 RUN apt-get update && apt-get install --no-install-recommends -y \
