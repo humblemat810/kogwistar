@@ -1861,6 +1861,26 @@ It does not test Rust-native SQLite, HTTP/MCP, or the full stack, and does not
 imply that seam-free Rust is slower. Raw samples, runtime metadata, limits, and
 source fingerprints: `.tmp/fw19-05-sqlite-pycall-10k-v2/per-call-report.v1.json`.
 
+### 2026-11-14 fixed-resource SQLite 10k Rust cached-session trace
+
+Compared Rust cached-session authority against the same Python 10k baseline and
+canonical trace as the preceding section. Rust ran one warm-up and one measured
+fresh DB in the same 3CPU/6GiB CPython 3.13.18 container; reopened state digest
+matched exactly (`67038b98c86ea135d8d8e7432cee6e4ea03d8ee3af8a5207344ff4ca2bae29dc`).
+
+| Operation | Python 2-sample median ms | Rust cached 1-sample ms | Rust/Python |
+| --- | ---: | ---: | ---: |
+| Event append (10k writes) | 119,402.901 | 11,334.172 | 0.095x |
+| Event replay (20 cycles) | 661.486 | 2,675.642 | 4.05x |
+| Projection replace (10k writes) | 112,767.752 | 9,876.903 | 0.088x |
+| Projection list (20 cycles) | 2,300.552 | 3,160.771 | 1.37x |
+| Interleaved trace | 194,250.121 | 214,413.633 | 1.10x |
+
+This is a single Rust measurement, not a stable throughput estimate. Cached
+session substantially reduces write-path boundary overhead here, but replay,
+listing, and mixed trace remain slower. This does not establish a Rust-native or
+end-to-end speedup. Raw sample and runtime metadata: `.tmp/fw19-05-sqlite-pycall-10k-v2/cached-report.v1.json`.
+
 ### 2026-11-14 PostgreSQL semantic projection-worker attribution
 
 Ran `rust/crates/kogwistar-api/examples/projection_worker_attribution.rs` against PostgreSQL 16 with
