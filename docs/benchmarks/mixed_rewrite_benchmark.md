@@ -1751,6 +1751,26 @@ Rust latency was 1.018x Python in this single sample. The cell validates
 record-level transaction parity, not cross-process crash atomicity or the full
 conversation request path. Grouped conversation remains a distinct workload.
 
+### 2026-11-14 resource-capped PostgreSQL 10k grouped conversation
+
+Ran only `conversation_record_grouped_transaction` at 10,000 logical records,
+one measured sample, no separate warm-up. Same Python 3.13.18 client (3
+CPU/6 GiB) and PostgreSQL 16.15 (1 CPU/2 GiB) caps. Each event+projection pair
+was written inside one encompassing transaction; this intentionally differs
+from the record-level atomic cell above. Canonical read-back verified 10,000
+events and projections with combined digest
+`03104ea7779fd7d4ef33f93ad1c60686b4a072c88ad7c4af844a328bd6d56bdc` for both
+authorities.
+
+| Authority | 10k grouped records latency ms | Throughput records/s |
+| --- | ---: | ---: |
+| Python | 343,494.76 | 29.11 |
+| Rust | 289,277.03 | 34.57 |
+
+Rust latency was 0.842x Python in this single sample. This result is specific
+to grouped transaction boundaries and does not establish end-to-end request
+speedup or replace per-record durability semantics.
+
 ### 2026-11-14 fixed-resource 2,000-item ACL projection
 
 Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000
