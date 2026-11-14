@@ -1,0 +1,22 @@
+{
+  "contract_version": 1,
+  "canonical_result": {
+    "assistant_text": "The workflow runtime state is stored in the graph.",
+    "used_node_ids": [
+      "answer-evidence-node"
+    ],
+    "claims": [
+      {
+        "claim": "Workflow runtime state is stored in the graph.",
+        "citations": [
+          {
+            "source_node_id": "answer-evidence-node",
+            "mention_index": 0,
+            "span_index": 0
+          }
+        ]
+      }
+    ]
+  },
+  "canonical_json_sha256": "b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741"
+}

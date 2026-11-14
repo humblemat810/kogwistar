@@ -1858,4 +1858,10 @@ time is setup and excluded from the request timer. This was one measured sample;
 the Python resource caps were not verified. The Python timer is in-process,
 whereas the Rust profile above measures HTTP submission through terminal status,
 so these numbers are not a valid speed comparison. Rust/Python digest equality
-has not yet been asserted by one shared canonical-result oracle.
+is now asserted through shared `contracts/golden/agentic-answer-result-v1.json`.
+The Python 8-distractor PG smoke passes the fixture assertion and reports the
+same digest. Rust's `postgres_agentic_answer_workflow_executes_durably_without_python_worker`
+passes the same fixture assertion at both 8 and 2,000 distractors; the 2,000
+case reports a 9,500.418 ms request and 79.14 s full test wall. These Rust
+measurements were not run under the resource caps stated in the earlier Rust
+profile, so they prove semantic digest parity, not comparable performance.

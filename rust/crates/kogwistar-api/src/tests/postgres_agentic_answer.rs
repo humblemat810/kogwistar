@@ -1655,6 +1655,23 @@
             runtime.state["answer"]["claims"][0]["citations"][0]["source_node_id"],
             "answer-evidence-node"
         );
+        let result_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/agentic-answer-result-v1.json"
+        ))
+        .unwrap();
+        let canonical_result = json!({
+            "assistant_text": runtime.state["answer"]["text"],
+            "used_node_ids": runtime.state["used_node_ids"],
+            "claims": runtime.state["answer"]["claims"],
+        });
+        assert_eq!(canonical_result, result_contract["canonical_result"]);
+        use sha2::Digest;
+        let canonical_json = kogwistar_contracts::canonical_json(&canonical_result, false);
+        let digest = sha2::Sha256::digest(canonical_json.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(digest, result_contract["canonical_json_sha256"]);
         assert_eq!(runtime.state["done"], true);
         let assistant_id = runtime.state["agentic_answering_result"]["assistant_turn_node_id"]
             .as_str()

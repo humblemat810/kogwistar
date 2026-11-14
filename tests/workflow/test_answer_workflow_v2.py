@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 
@@ -326,10 +327,20 @@ def test_python_agent_postgres_2k_request_profile(
         "used_node_ids": out["used_node_ids"],
         "claims": answer_payload["claims"],
     }
+    result_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "agentic-answer-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert canonical_state == result_contract["canonical_result"]
     canonical_json = json.dumps(
         canonical_state, sort_keys=True, separators=(",", ":")
     )
     digest = hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+    assert digest == result_contract["canonical_json_sha256"]
     print(
         "PYTHON_AGENT_BENCH_SAMPLE="
         + json.dumps(
