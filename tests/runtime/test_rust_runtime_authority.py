@@ -1570,10 +1570,11 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
     if backend != "pg":
         env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "mixed-language.sqlite3")
     worker_token = None
+    jwt_secret = f"test-{os.urandom(24).hex()}"
+    env["JWT_SECRET"] = jwt_secret
+    env["JWT_ALG"] = "HS256"
+    env["AUTH_MODE"] = "jwt"
     if graph_enabled:
-        jwt_secret = f"test-{os.urandom(24).hex()}"
-        env["JWT_SECRET"] = jwt_secret
-        env["JWT_ALG"] = "HS256"
         assert graph_namespace is not None
         if backend == "pg":
             assert pg_dsn is not None and pg_schema is not None
@@ -1581,27 +1582,31 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
         else:
             assert chroma_endpoint is not None
-            env["AUTH_MODE"] = "jwt"
             env["KOGWISTAR_CHROMA_ENDPOINT"] = chroma_endpoint
             env["KOGWISTAR_CHROMA_NODE_COLLECTION"] = "worker-nodes"
             env["KOGWISTAR_CHROMA_EDGE_COLLECTION"] = "worker-edges"
-        worker_token = _test_hs256_token(
-            jwt_secret,
-            {
-                "sub": "worker-replay-test",
-                "role": "rw",
-                "roles": ["reader", "rw"],
-                "ns": "workflow",
-                "storage_ns": graph_namespace,
-                "capabilities": ["write_graph"],
-                **(
-                    {"workspace": "worker-workspace", "graph_space": "knowledge"}
-                    if backend == "pg"
-                    else {}
-                ),
-                "exp": int(time.time()) + 3600,
-            },
-        )
+    worker_token = _test_hs256_token(
+        jwt_secret,
+        {
+            "sub": "worker-replay-test",
+            "role": "rw",
+            "roles": ["reader", "rw"],
+            "ns": "workflow",
+            "storage_ns": graph_namespace or "workflow",
+            "capabilities": [
+                "spawn_process",
+                "workflow.run.read",
+                "workflow.run.write",
+                "write_graph",
+            ],
+            **(
+                {"workspace": "worker-workspace", "graph_space": "knowledge"}
+                if backend == "pg"
+                else {}
+            ),
+            "exp": int(time.time()) + 3600,
+        },
+    )
     process = subprocess.Popen(
         [str(RUST_SERVER)],
         cwd=ROOT,
@@ -1646,11 +1651,7 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 state_update=[("u", {"python_after_seen": True})],
             )
 
-        headers = (
-            {"authorization": f"Bearer {worker_token}"}
-            if worker_token is not None
-            else {"x-kogwistar-roles": "reader"}
-        )
+        headers = {"authorization": f"Bearer {worker_token}"}
         submitted = httpx.post(
             f"{base_url}/api/workflow/runs",
             headers=headers,
@@ -1716,8 +1717,11 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             str(work_record),
         ]
         worker_env = os.environ.copy()
+        assert worker_token is not None
+        worker_probe.extend(["--auth-token", worker_token])
+        worker_env["JWT_SECRET"] = env["JWT_SECRET"]
+        worker_env["JWT_ALG"] = "HS256"
         if graph_enabled:
-            assert worker_token is not None
             assert graph_namespace is not None and graph_entity_id is not None
             worker_probe.extend(["--graph-namespace", graph_namespace])
             if backend == "sqlite-chroma":
@@ -1728,9 +1732,6 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                     worker_probe.extend(
                         ["--graph-default-acl-truth-graph", "knowledge"]
                     )
-            worker_probe.extend(["--auth-token", worker_token])
-            worker_env["JWT_SECRET"] = env["JWT_SECRET"]
-            worker_env["JWT_ALG"] = "HS256"
         if backend == "pg":
             import sqlite3
 
