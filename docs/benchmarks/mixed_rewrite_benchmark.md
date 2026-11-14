@@ -1732,6 +1732,25 @@ Rust latency was 1.203x Python in this single sample. Seeding is outside the
 timed interval, and this result says nothing about projection writes or full
 request paths.
 
+### 2026-11-14 resource-capped PostgreSQL 10k atomic conversation records
+
+Ran only `conversation_record_atomic_each` at 10,000 logical records, one
+measured sample, no separate warm-up. Same Python 3.13.18 client (3 CPU/6 GiB)
+and PostgreSQL 16.15 (1 CPU/2 GiB) caps. Each logical record wrote one
+authoritative event and one named projection inside its own transaction; event
+and projection setup remained inside the measured interval. Canonical
+read-back verified both record sets and yielded matching combined digest
+`03104ea7779fd7d4ef33f93ad1c60686b4a072c88ad7c4af844a328bd6d56bdc`.
+
+| Authority | 10k atomic records latency ms | Throughput records/s |
+| --- | ---: | ---: |
+| Python | 389,250.30 | 25.69 |
+| Rust | 396,186.35 | 25.24 |
+
+Rust latency was 1.018x Python in this single sample. The cell validates
+record-level transaction parity, not cross-process crash atomicity or the full
+conversation request path. Grouped conversation remains a distinct workload.
+
 ### 2026-11-14 fixed-resource 2,000-item ACL projection
 
 Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000
