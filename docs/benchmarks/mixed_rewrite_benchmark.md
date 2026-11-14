@@ -2330,3 +2330,37 @@ durable before provider completion, then checks the conversation/run outcome.
 | Warm-up | Not separately measured | The three runs are measured samples; do not infer warm-up from them |
 
 Evidence: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --lib postgres_agentic_answer_workflow_executes_durably_without_python_worker -- --ignored --nocapture` (**3 passed**, each with a fresh PostgreSQL schema). PostgreSQL container used 1 CPU/2 GiB; packaged Rust server ran on the Windows host without a verified CPU/RAM cap. The Python route sample also lacks verified resource caps and uses a separate fixture run. These historical runs establish route correctness and digest parity, but not comparable performance. The later fixed-resource TCP profile below closes `FW-19-01B-AGENT-CROSS-PY-RESOURCE` and `FW-19-01B-AGENT-CROSS-COMPARE` for this route and fixture only; it does not establish whole-stack performance parity.
+
+#### Fixed-resource Chroma 10,000-item mixed trace
+
+Ran the versioned `read_after_write` workload against Chroma `PersistentClient`
+with Chroma's SQLite metadata and Kogwistar's separate SQLite event/projection
+authority. The disposable Python 3.13.18 container was capped at 3 CPU / 6 GiB;
+vectors were deterministic, 384-dimensional, L2-normalized float32. One warm-up
+and two measured samples each used fresh Chroma and SQLite data. The run checked
+all 10,000 vector records, sampled 100 nearest-neighbor queries, verified the
+final nearest hit after reopening `PersistentClient`, and compared canonical
+graph and vector digests across samples.
+
+| Metric | Sample 0 | Sample 1 | Median / shared result |
+| --- | ---: | ---: | ---: |
+| Whole trace elapsed | 844,491.776 ms | 849,350.351 ms | 846,921.063 ms |
+| Whole trace CPU time | 655,856.793 ms | 652,196.215 ms | 654,026.504 ms |
+| Throughput | 35.524 ops/s | 35.321 ops/s | 35.423 ops/s |
+| Vector upsert p50 / p95 / p99 | 59.441 / 88.490 / 95.110 ms | 59.630 / 87.974 / 94.830 ms | per-sample values |
+| Event read p50 / p95 / p99 | 4.810 / 5.640 / 6.889 ms | 4.870 / 5.470 / 6.599 ms | per-sample values |
+| Projection read p50 / p95 / p99 | 3.820 / 4.526 / 5.944 ms | 3.859 / 4.425 / 5.610 ms | per-sample values |
+| Vector query p50 / p95 / p99 | 5.467 / 6.175 / 6.440 ms | 5.370 / 6.236 / 7.457 ms | per-sample values |
+| App SQLite / Chroma disk | 59,621,376 / 26,678,928 bytes | same | same |
+| Graph-state digest | `19bf57ac120cbaea7fbbbdd9d09d4fb4c43947571759170b6594f72145b6df8e` | same | equal |
+| Vector digest / reopen | `76f4d1b102b836254758d08e6638a538db5469eec705ccf6c2c5b435f18d68b5`; verified | same; verified | equal |
+
+Sample throughput CV was 0.406%. Warm-up and each measured trace took about
+14.1 minutes, including deterministic payload preparation in whole-trace time.
+This is the single-write path: each graph record and vector upsert keeps its own
+operation/commit boundary. It is not a batched bulk-ingest result. Raw report
+and workload trace are retained locally (ignored by Git) at
+`.tmp/fw19-chroma-10k-20261115/report.v3.json` and
+`.tmp/fw19-chroma-10k-20261115/backend_trace.v1.json`; run ID `1a2d51ad6089`.
+This closes Chroma indexing parity only; it does not compare Chroma against
+pgvector or close the broader DL-19 gate.
