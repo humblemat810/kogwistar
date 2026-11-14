@@ -1640,3 +1640,27 @@ tests).
 
 This confirms attribution at the 2,000-item queue scale, not a cross-language or worker-resource-matched
 comparison. Command: `cargo run -p kogwistar-api --example projection_worker_attribution -- 2000 2`.
+
+### 2026-11-14 SQLite queue + Chroma projection attribution
+
+Measured the small 100-job fixture with Rust `SqliteStore` as durable index-job
+metadata/queue and `ChromaGraphStore` as the graph/vector projection. SQLite is
+not treated as a vector graph backend. The worker used precomputed 2D vectors;
+the Chroma endpoint was a protocol-faithful local HTTP fixture, not a running
+Chroma service. One warm-up and three fresh measured runs each completed 100
+claims, 100 graph writes, and 100 durable acknowledgements; request assertions
+confirmed each Chroma upsert carried the expected record ID, document, and
+embedding. No LLM or embedding inference ran.
+
+| Metric | Median | Measured samples |
+| --- | ---: | ---: |
+| Worker elapsed | 3,759.1 ms | 3,749.964 / 3,759.087 / 3,815.388 ms |
+| SQLite worker-transfer stage | 2,650.2 ms | 2,650.187 / 2,540.203 / 2,727.140 ms |
+| Graph projection stage (includes fixture HTTP) | 387.0 ms | 387.044 / 385.404 / 388.935 ms |
+| Throughput | 26.60 jobs/s | elapsed CV 0.77% |
+
+Command, repeated four times (first run treated as warm-up):
+`cargo test --manifest-path rust/Cargo.toml -p kogwistar-engine --test projection_backend_composition sqlite_chroma_small_fixture_attributes_worker_transfer_separately -- --nocapture`.
+This validates SQLite queue attribution and Chroma request composition only;
+fixture HTTP latency is not representative of a real Chroma deployment, and
+this is not cross-language parity or production throughput evidence.

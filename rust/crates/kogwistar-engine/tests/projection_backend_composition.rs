@@ -385,6 +385,131 @@ async fn sqlite_metadata_queue_composes_with_chroma_graph_projection() {
 }
 
 #[tokio::test]
+async fn sqlite_chroma_small_fixture_attributes_worker_transfer_separately() {
+    const ITEMS: usize = 100;
+    let nonce = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .expect("system clock after Unix epoch")
+        .as_nanos();
+    let database = env::temp_dir().join(format!(
+        "kg-sqlite-chroma-attribution-{}-{nonce}.sqlite3",
+        std::process::id()
+    ));
+    let queue = SqliteStore::open(&database).expect("open SQLite metadata queue");
+    for index in 0..ITEMS {
+        queue
+            .enqueue_index_job(NewIndexJob {
+                job_id: format!("sqlite-chroma-{index:03}"),
+                namespace: "benchmark".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: format!("node-{index:03}"),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .expect("enqueue SQLite metadata job");
+    }
+
+    let (endpoint, server) = fake_chroma_with_upsert_statuses(vec![200; ITEMS]).await;
+    let graph = ChromaGraphStore::connect_entity_collections(
+        ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: "benchmark-nodes".to_owned(),
+            ..Default::default()
+        },
+        ChromaStoreConfig {
+            endpoint,
+            collection: "benchmark-edges".to_owned(),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect("connect protocol-faithful Chroma fixture");
+
+    let started = std::time::Instant::now();
+    let (summary, attribution) =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed(
+            &queue,
+            &graph,
+            ITEMS,
+            60,
+            Some("benchmark"),
+            |inputs| async move {
+                let outputs = inputs
+                    .into_iter()
+                    .map(|input| {
+                        let mut record = GraphRecord::new(input.entity_id);
+                        record.document = Some("precomputed vector fixture".to_owned());
+                        record.metadata.insert("kind".to_owned(), json!("node"));
+                        record.embedding = Some(vec![0.25, 0.75]);
+                        (input.job_id, Ok(record))
+                    })
+                    .collect();
+                Ok(outputs)
+            },
+        )
+        .await
+        .expect("run SQLite-to-Chroma projection");
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+
+    assert_eq!(summary.claimed, ITEMS);
+    assert_eq!(summary.projected, ITEMS);
+    assert_eq!(summary.retried, 0);
+    assert_eq!(summary.failed, 0);
+    assert!(attribution.worker_transfer_elapsed_ns > 0);
+    assert!(
+        attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns
+            > 0
+    );
+    assert_eq!(
+        queue
+            .index_jobs(Some("benchmark"), Some("DONE"), None, None, None, ITEMS + 1)
+            .await
+            .expect("read durable completed jobs")
+            .len(),
+        ITEMS
+    );
+    let requests = server.await.expect("finish fake Chroma requests");
+    assert_eq!(requests.len(), ITEMS + 2);
+    let upserts = requests
+        .iter()
+        .filter(|(line, _)| line.contains("/upsert HTTP"))
+        .collect::<Vec<_>>();
+    assert_eq!(upserts.len(), ITEMS);
+    let actual_ids = upserts
+        .iter()
+        .map(|(_, payload)| payload["ids"][0].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let expected_ids = (0..ITEMS)
+        .map(|index| format!("node-{index:03}"))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_ids, expected_ids);
+    for (_, payload) in upserts {
+        assert_eq!(payload["documents"][0], "precomputed vector fixture");
+        assert_eq!(payload["embeddings"][0], json!([0.25, 0.75]));
+    }
+
+    println!(
+        "sqlite_chroma_small items={ITEMS} elapsed_ms={elapsed_ms:.3} worker_transfer_ms={:.3} graph_projection_ms={:.3}",
+        attribution.worker_transfer_elapsed_ns as f64 / 1_000_000.0,
+        attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns as f64
+            / 1_000_000.0,
+    );
+
+    drop(graph);
+    drop(queue);
+    let _ = std::fs::remove_file(&database);
+    let _ = std::fs::remove_file(format!("{}.kogwistar-authority.lock", database.display()));
+    let _ = std::fs::remove_file(format!("{}-wal", database.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", database.display()));
+}
+
+#[tokio::test]
 async fn rust_projection_worker_applies_python_wire_action_from_sqlite_queue() {
     let nonce = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
