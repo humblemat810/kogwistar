@@ -1803,3 +1803,45 @@ The projection stage dominates this run, but it includes sequential HTTP
 upserts plus Chroma processing. One measured sample is insufficient for a
 variance estimate or backend sizing. This verifies one large Rust-to-Chroma
 path, not Python parity or resource-matched worker performance.
+
+#### Fixed-resource Rust-native agent request with 2,000-node graph fixture
+
+Ran `postgres_agentic_answer_workflow_executes_durably_without_python_worker`
+with `KOGWISTAR_AGENT_BENCH_FIXTURE_SIZE=2000`. The opt-in fixture adds 2,000
+deterministic unrelated knowledge nodes in one atomic seed batch; the setting
+defaults to zero, preserving existing test behavior. Each invocation creates
+fresh PostgreSQL schemas, starts the packaged Rust server, submits one
+`agentic_answering.v2` request over HTTP, and verifies successful completion,
+the fixed structured answer, persisted graph effects, and absence of Python
+worker handoff. The OpenAI-compatible streaming provider and embedding endpoint
+are deterministic local test fixtures; no live model inference is included.
+
+The Rust client/test container used `rust:1.91-slim-bookworm` with the
+repository-pinned Rust 1.97.1 toolchain, `--cpus=3 --memory=6g
+--memory-swap=6g`; cgroup v1 reported CPU quota `300000/100000` and memory
+limit `6442450944` bytes. PostgreSQL used `pgvector/pgvector:pg17`,
+`--cpus=1 --memory=2g`; Docker inspect confirmed 1 CPU and 2 GiB. Each sample
+used a unique schema; one warm-up preceded two measured samples.
+
+| Metric | Result | Samples |
+| --- | ---: | ---: |
+| Agent request: HTTP submission through terminal answer | 13,742.1 ms median | 13,621.347 / 13,862.771 ms; sample CV 1.24% |
+| Warm-up agent request | 14,103.7 ms | Excluded from measured median |
+| Full integration test wall | 121.985 s median | 120.93 / 123.04 s; includes fixture/setup and server startup |
+
+The request timer starts immediately before `POST /api/workflow/runs` and ends
+after terminal status is observed (200 ms polling interval). It measures one
+serial workflow request, not throughput, concurrent service capacity, or
+Python-vs-Rust parity. The full test duration must not be presented as request
+latency. Both measured runs and warm-up passed all durable-result assertions.
+
+Reproduction: start a disposable pgvector container with the stated limits,
+then run the ignored Rust integration test in a Rust 1.97.1 Linux container
+with the same client limits and
+`KOGWISTAR_AGENT_BENCH_FIXTURE_SIZE=2000`; invoke it three times with fresh
+schemas (first invocation warm-up, next two measured). Test command:
+`cargo test -p kogwistar-api --lib postgres_agentic_answer_workflow_executes_durably_without_python_worker -- --ignored --nocapture`.
+The source fixture switch and request timer are in
+`rust/crates/kogwistar-api/src/tests/postgres_agentic_answer.rs`. This closes
+the fixed-resource Rust-native agent-request profile only; broader agent
+parity, other backends, concurrency, and whole-stack conclusions remain open.

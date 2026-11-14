@@ -725,7 +725,7 @@
                 None,
             )
         };
-        for mutation in [
+        let seed_mutations = vec![
             put_node(
                 "answer-prior-turn",
                 "e2e-prior-turn",
@@ -966,7 +966,39 @@
                 "answer-evidence-node::mention::0::span::0",
                 "public",
             ),
-        ] {
+        ];
+        let benchmark_fixture_size = std::env::var("KOGWISTAR_AGENT_BENCH_FIXTURE_SIZE")
+            .ok()
+            .map(|value| value.parse::<usize>().expect("fixture size must be an integer"))
+            .unwrap_or(0);
+        assert!(
+            benchmark_fixture_size <= 10_000,
+            "benchmark fixture size exceeds safety limit"
+        );
+        if benchmark_fixture_size > 0 {
+            let benchmark_nodes = (0..benchmark_fixture_size)
+                .map(|index| {
+                    let id = format!("answer-benchmark-distractor-{index:05}");
+                    let text = format!("Unrelated benchmark knowledge record {index}.");
+                    put_node(
+                        &id,
+                        &format!("e2e-{id}"),
+                        serde_json::Map::from_iter([
+                            ("entity_type".to_owned(), json!("benchmark_knowledge")),
+                            ("lifecycle_status".to_owned(), json!("active")),
+                        ]),
+                        Some(text),
+                        Some(vec![-1.0_f32, 0.0, 0.0]),
+                    )
+                })
+                .collect::<Vec<_>>();
+            service
+                .store
+                .apply_graph_mutations_atomic(benchmark_nodes)
+                .await
+                .expect("seed benchmark knowledge fixture");
+        }
+        for mutation in seed_mutations {
             let graph_type = mutation
                 .record
                 .metadata
@@ -1490,6 +1522,7 @@
             StatusCode::FORBIDDEN.as_u16(),
             "user spoofing must fail through the same native syscall authority"
         );
+        let agent_request_started = std::time::Instant::now();
         let submit = client
             .post(format!("{base_url}/api/workflow/runs"))
             .bearer_auth(&token)
@@ -1532,6 +1565,10 @@
             }
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         }
+        eprintln!(
+            "AGENT_BENCH_REQUEST_MS={:.3}",
+            agent_request_started.elapsed().as_secs_f64() * 1_000.0
+        );
         let run = service
             .store
             .get_server_run("rust-only-answer-e2e")
