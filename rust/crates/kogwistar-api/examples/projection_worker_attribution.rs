@@ -3,7 +3,10 @@
 //! Run with `KOGWISTAR_TEST_POSTGRES_DSN` set. Each warmup/sample gets a fresh
 //! schema; provider vectors are precomputed so no embedding inference is timed.
 
-use kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_batch_provider_input_attributed;
+use kogwistar_engine::projection_worker::{
+    ProjectionWorkerAttribution, ProjectionWorkerSummary,
+    run_graph_projection_jobs_once_with_batch_provider_input_attributed,
+};
 use kogwistar_store::{
     GraphProjectionRead, GraphRecord, GraphScope, IndexJobReadStore, NewIndexJob,
 };
@@ -14,12 +17,15 @@ use std::{env, time::Instant};
 use tokio_postgres::NoTls;
 use uuid::Uuid;
 
+const WORKER_BATCH_SIZE: usize = 100;
+
 #[derive(Clone, Debug, Serialize)]
 struct Sample {
     elapsed_ms: f64,
     provider_ms: f64,
     graph_projection_ms: f64,
     worker_transfer_ms: f64,
+    worker_batch_size: usize,
     jobs: usize,
     records: usize,
 }
@@ -87,46 +93,83 @@ async fn run_sample(
         embedding
     };
     let started = Instant::now();
-    let (summary, attribution) =
-        run_graph_projection_jobs_once_with_batch_provider_input_attributed(
-            &store,
-            &store,
-            items,
-            60,
-            Some("benchmark"),
-            move |inputs| {
-                let embedding = precomputed_embedding.clone();
-                async move {
-                    Ok(inputs
-                        .into_iter()
-                        .map(|input| {
-                            let mut record = GraphRecord::new(input.entity_id.clone());
-                            record.document = Some(format!("benchmark node {}", input.entity_id));
-                            record
-                                .metadata
-                                .insert("entity_type".to_owned(), json!("node"));
-                            record.embedding = Some(embedding.clone());
-                            (input.job_id, Ok(record))
-                        })
-                        .collect())
-                }
-            },
-        )
-        .await?;
-    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
-
-    if attribution
-        .provider_and_projection
-        .completed_provider_elapsed_ns
-        == 0
-        || attribution
+    let mut summary = ProjectionWorkerSummary::default();
+    let mut attribution = ProjectionWorkerAttribution::default();
+    while summary.claimed < items {
+        let batch_limit = (items - summary.claimed).min(WORKER_BATCH_SIZE);
+        let batch_embedding = precomputed_embedding.clone();
+        let (batch_summary, batch_attribution) =
+            run_graph_projection_jobs_once_with_batch_provider_input_attributed(
+                &store,
+                &store,
+                batch_limit,
+                60,
+                Some("benchmark"),
+                move |inputs| {
+                    let embedding = batch_embedding.clone();
+                    async move {
+                        Ok(inputs
+                            .into_iter()
+                            .map(|input| {
+                                let mut record = GraphRecord::new(input.entity_id.clone());
+                                record.document =
+                                    Some(format!("benchmark node {}", input.entity_id));
+                                record
+                                    .metadata
+                                    .insert("entity_type".to_owned(), json!("node"));
+                                record.embedding = Some(embedding.clone());
+                                (input.job_id, Ok(record))
+                            })
+                            .collect())
+                    }
+                },
+            )
+            .await?;
+        if batch_summary.claimed != batch_limit
+            || batch_summary.projected + batch_summary.reused != batch_limit
+            || batch_summary.claim_lost != 0
+            || batch_summary.retried != 0
+            || batch_summary.failed != 0
+            || batch_attribution
+                .provider_and_projection
+                .completed_provider_elapsed_ns
+                == 0
+            || batch_attribution
+                .provider_and_projection
+                .graph_projection_elapsed_ns
+                == 0
+            || batch_attribution.worker_transfer_elapsed_ns == 0
+        {
+            return Err(format!(
+                "worker batch mismatch: requested={batch_limit}, claimed={}, projected={}, reused={}, claim_lost={}, retried={}, failed={}",
+                batch_summary.claimed,
+                batch_summary.projected,
+                batch_summary.reused,
+                batch_summary.claim_lost,
+                batch_summary.retried,
+                batch_summary.failed
+            )
+            .into());
+        }
+        summary.claimed += batch_summary.claimed;
+        summary.projected += batch_summary.projected;
+        summary.reused += batch_summary.reused;
+        summary.claim_lost += batch_summary.claim_lost;
+        summary.retried += batch_summary.retried;
+        summary.failed += batch_summary.failed;
+        attribution
             .provider_and_projection
-            .graph_projection_elapsed_ns
-            == 0
-        || attribution.worker_transfer_elapsed_ns == 0
-    {
-        return Err("one or more worker attribution stages reported zero elapsed time".into());
+            .completed_provider_elapsed_ns += batch_attribution
+            .provider_and_projection
+            .completed_provider_elapsed_ns;
+        attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns += batch_attribution
+            .provider_and_projection
+            .graph_projection_elapsed_ns;
+        attribution.worker_transfer_elapsed_ns += batch_attribution.worker_transfer_elapsed_ns;
     }
+    let elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
 
     if summary.claimed != items || summary.projected + summary.reused != items {
         let all_jobs = store
@@ -208,6 +251,7 @@ async fn run_sample(
             .graph_projection_elapsed_ns as f64
             / 1_000_000.0,
         worker_transfer_ms: attribution.worker_transfer_elapsed_ns as f64 / 1_000_000.0,
+        worker_batch_size: WORKER_BATCH_SIZE,
         jobs: jobs.len(),
         records: records.len(),
     })
@@ -216,7 +260,27 @@ async fn run_sample(
 fn median(values: &[f64]) -> f64 {
     let mut values = values.to_vec();
     values.sort_by(f64::total_cmp);
-    values[values.len() / 2]
+    let middle = values.len() / 2;
+    if values.len().is_multiple_of(2) {
+        (values[middle - 1] + values[middle]) / 2.0
+    } else {
+        values[middle]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::median;
+
+    #[test]
+    fn median_selects_middle_sample_for_odd_count() {
+        assert_eq!(median(&[9.0, 1.0, 5.0]), 5.0);
+    }
+
+    #[test]
+    fn median_averages_middle_samples_for_even_count() {
+        assert_eq!(median(&[10.0, 2.0]), 6.0);
+    }
 }
 
 #[tokio::main]

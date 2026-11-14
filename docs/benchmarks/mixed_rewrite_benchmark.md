@@ -1623,3 +1623,20 @@ handoff was **46.6%** of worker elapsed time, graph projection writes **34.0%**,
 callback under 1 ms. Samples were 6,067.1 / 6,008.8 / 5,930.8 ms overall (CV **1.14%**). The remaining
 elapsed time includes coordination and asynchronous lease renewal; the queue counter excludes background
 lease-renewal tasks to avoid overlap with provider/write timing.
+
+Large-fixture run used **2,000 jobs**, one warm-up and two fresh samples, processing the total queue in
+sequential batches of 100 to keep each claim within the 60-second lease. Each sample completed and read back
+all 2,000 projected vectors. The database remained limited to 2 CPUs/2 GiB; the Rust worker remained native
+and uncapped. Correct even-sample medians average the two central observations (covered by the example's unit
+tests).
+
+| Metric | Median | Samples |
+| --- | ---: | --- |
+| Worker elapsed | 119,200.7 ms | 117,621.4 / 120,779.9 ms |
+| Provider stage | 13.852 ms | 13.648 / 14.056 ms |
+| Graph projection writes | 40,861.9 ms | 40,243.0 / 41,480.7 ms |
+| Queue transfer | 56,380.4 ms | 55,709.6 / 57,051.2 ms |
+| Throughput | 16.78 jobs/s | elapsed-time CV 1.87% |
+
+This confirms attribution at the 2,000-item queue scale, not a cross-language or worker-resource-matched
+comparison. Command: `cargo run -p kogwistar-api --example projection_worker_attribution -- 2000 2`.
