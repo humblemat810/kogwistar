@@ -130,7 +130,9 @@ def _summarize(samples: list[dict[str, float | int]]) -> dict[str, float | int]:
     }
 
 
-def run_benchmark(*, dsn: str, items: int, samples: int) -> dict[str, object]:
+def run_benchmark(
+    *, dsn: str, items: int, samples: int, warmups: int = 1
+) -> dict[str, object]:
     parsed_url = sa.engine.make_url(dsn)
     rust_dsn = parsed_url.set(drivername="postgresql").render_as_string(
         hide_password=False
@@ -148,7 +150,7 @@ def run_benchmark(*, dsn: str, items: int, samples: int) -> dict[str, object]:
         )
     }
 
-    for sample_index in range(samples):
+    for sample_index in range(warmups + samples):
         schema = f"gke_perf_{uuid.uuid4().hex[:20]}"
         admin_engine = sa.create_engine(dsn, pool_size=1, max_overflow=0)
         python_engine = sa.create_engine(
@@ -272,20 +274,33 @@ def run_benchmark(*, dsn: str, items: int, samples: int) -> dict[str, object]:
                     connection.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
                 admin_engine.dispose()
 
-    summarized = {key: _summarize(value) for key, value in results.items()}
+    warmup_results = {
+        key: _summarize(value[:warmups])
+        for key, value in results.items()
+        if warmups
+    }
+    measured_results = {
+        key: _summarize(value[warmups:]) for key, value in results.items()
+    }
     return {
-        "schema": "kogwistar-postgres-authority-benchmark/v1",
+        "schema": "kogwistar-postgres-authority-benchmark/v2",
         "items_per_sample": items,
         "samples": samples,
+        "warmups": warmups,
         "database_cache": "warm/unspecified; no server or OS cache flush was attempted",
         "embedding": "excluded; precomputed JSON payloads only",
-        "results": summarized,
+        "warmup_results": warmup_results,
+        "results": measured_results,
         "comparison_rust_over_python_median_latency": {
             key.removeprefix("python."): (
-                float(summarized[key.replace("python.", "rust.")]["median_elapsed_ms"])
-                / float(summarized[key]["median_elapsed_ms"])
+                float(
+                    measured_results[key.replace("python.", "rust.")][
+                        "median_elapsed_ms"
+                    ]
+                )
+                / float(measured_results[key]["median_elapsed_ms"])
             )
-            for key in summarized
+            for key in measured_results
             if key.startswith("python.")
         },
     }
@@ -300,12 +315,26 @@ def main() -> int:
     )
     parser.add_argument("--items", type=int, default=100)
     parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument(
+        "--warmups", type=int, default=1,
+        help="Unreported warm-up samples, each using a fresh schema (default: 1).",
+    )
     args = parser.parse_args()
     if not args.dsn:
         parser.error("provide --dsn or set GKE_PG_DSN; no database was contacted")
-    if args.items < 1 or args.samples < 1:
-        parser.error("--items and --samples must be positive")
-    print(json.dumps(run_benchmark(dsn=args.dsn, items=args.items, samples=args.samples), indent=2))
+    if args.items < 1 or args.samples < 1 or args.warmups < 0:
+        parser.error("--items and --samples must be positive; --warmups cannot be negative")
+    print(
+        json.dumps(
+            run_benchmark(
+                dsn=args.dsn,
+                items=args.items,
+                samples=args.samples,
+                warmups=args.warmups,
+            ),
+            indent=2,
+        )
+    )
     return 0
 
 

@@ -1569,6 +1569,38 @@ paths. The raw report is ignored under
 `.tmp/fw19-01-fixed-pg-graph-2000/report.json`; container limits were verified
 with Docker inspect.
 
+### 2026-11-14 PostgreSQL profile with isolated warm-up
+
+Extended `scripts/postgres_authority_benchmark.py` with an explicit, unreported
+warm-up phase. Warm-up and each measured sample use a newly created schema;
+only measured samples contribute to `results`. The v2 report keeps warm-up
+summary separate from measured summaries. This prevents connection-pool and
+first-use costs from silently contaminating the measured sample set.
+
+Ran the current checkout's Linux `cp312-abi3` wheel in CPython 3.13. The
+benchmark client container was limited to 3 CPUs/6 GiB; disposable PostgreSQL
+17.11/pgvector was limited to 1 CPU/2 GiB. Workload: 1,000 records per sample,
+one independent warm-up, and two measured samples, each with a fresh schema.
+Precomputed JSON payloads were used; embedding inference was excluded. All six
+Python and Rust workloads completed and checked expected row counts.
+
+| Operation | Python median ms | Rust median ms | Rust/Python latency ratio | Rust p95 ms |
+| --- | ---: | ---: | ---: | ---: |
+| Individual event append | 20,532.37 | 29,978.72 | 1.460x | 30,252.75 |
+| Grouped event append | 14,421.50 | 20,318.31 | 1.409x | 20,600.70 |
+| Atomic conversation event + projection | 34,190.84 | 36,283.40 | 1.061x | 36,430.29 |
+| Grouped conversation transaction | 22,818.14 | 25,879.25 | 1.134x | 25,921.09 |
+| Event replay batch | 20.59 | 27.12 | 1.317x | 29.01 |
+| Projection list | 25.66 | 27.31 | 1.064x | 30.07 |
+
+Rust was slower in all six operations in this fixed-resource cell. The two
+measured samples make p95 the slower observation, not a stable tail estimate.
+The benchmark validates this PostgreSQL profile and warm-up separation only;
+it does not compare canonical state digests or establish whole-stack parity.
+The ignored raw report is `.tmp/fw19-postgres-warmup-1000/container-report.json`.
+The previous 2,000-record run remains separately reported and is not merged
+with these measurements.
+
 ### 2026-11-14 fixed-resource 2,000-item ACL projection
 
 Ran `scripts/acl_projection_benchmark.py` with 2,000 graph nodes and 2,000
