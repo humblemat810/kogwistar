@@ -1574,6 +1574,43 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
     env["JWT_SECRET"] = jwt_secret
     env["JWT_ALG"] = "HS256"
     env["AUTH_MODE"] = "jwt"
+    import sqlite3
+
+    auth_database_path = tmp_path / "mixed-worker-auth.sqlite3"
+    env["AUTH_DB_URL"] = f"sqlite:///{auth_database_path.as_posix()}"
+    with sqlite3.connect(auth_database_path) as auth_db:
+        auth_db.executescript(
+            """CREATE TABLE users (
+                user_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                display_name VARCHAR(255),
+                is_active BOOLEAN NOT NULL,
+                global_role VARCHAR(32),
+                global_ns VARCHAR(255),
+                created_at DATETIME NOT NULL,
+                last_login_at DATETIME
+            );
+            CREATE TABLE workflow_acl (
+                workflow_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
+                role VARCHAR(32) NOT NULL,
+                PRIMARY KEY (workflow_id, user_id),
+                FOREIGN KEY(user_id) REFERENCES users (user_id)
+            );"""
+        )
+        auth_db.execute(
+            "INSERT INTO users (user_id, email, is_active, created_at) "
+            "VALUES (?, ?, 1, CURRENT_TIMESTAMP)",
+            ("worker-replay-test", "worker-replay-test@example.test"),
+        )
+        auth_db.executemany(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?, ?, 'rw')",
+            [
+                ("mixed-live-workflow", "worker-replay-test"),
+                ("mixed-failure-workflow", "worker-replay-test"),
+                ("mixed-async-failure-workflow", "worker-replay-test"),
+            ],
+        )
     if graph_enabled:
         assert graph_namespace is not None
         if backend == "pg":
