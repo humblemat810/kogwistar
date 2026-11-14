@@ -2157,6 +2157,22 @@ container memory stayed below 0.6 GiB, and both tests completed. Raw evidence:
 `.tmp/fw19-agent10k-python/junit.xml` and `run.log`. This closes Python's
 10k-fixture correctness cell only; Rust parity awaits its separate child.
 
+#### Fixed-resource Rust agent route with 10,001-node PostgreSQL fixture
+
+Ran the ignored Rust PostgreSQL agent-answer test twice (warm-up + measured)
+with `KOGWISTAR_AGENT_BENCH_FIXTURE_SIZE=10000`, using Rust 1.97.1 in a
+3 CPU/6 GiB container against the existing PostgreSQL 16 container (1 CPU/2
+GiB). Both runs executed exactly one test and passed. The test's canonical
+answer/graph result matched the shared golden digest
+`b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`;
+the Rust test also verifies durable assistant-turn persistence and absence of
+a Python worker. Request timings were 4,663.671 ms warm-up and 4,568.752 ms
+measured; whole-case wall was 120.64 s and 116.96 s, including fixture and
+service setup. Raw output: `.tmp/fw19-agent10k-rust/run.log`. The timings are
+not directly comparable to Python's case wall because timer boundaries differ.
+This closes the Rust 10k agent correctness cell only; it does not establish
+cross-language performance parity or general Rust speedup.
+
 #### Exploratory Python 2,000-node PostgreSQL agent request
 
 Ran `test_python_agent_postgres_2k_request_profile[sample-1-pg]` once after
