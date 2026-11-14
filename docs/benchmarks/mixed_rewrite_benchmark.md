@@ -1875,3 +1875,15 @@ transport check, not TCP HTTP; the Rust 2,000-node timer still measures
 smoke improves Python ingress coverage but does not establish a matched
 cross-language latency comparison. The full 2,000-node Python HTTP sample and
 an equivalent Rust conversation-answer endpoint sample remain unmeasured.
+
+The full 2,000-node Python sample has now completed through both the direct
+answer workflow and the ASGI conversation-answer route. Sample `sample-2` used
+a fresh disposable PostgreSQL fixture; setup/seed took 330,894.231 ms and is
+excluded from request timing. Direct workflow request took 38,249.616 ms; ASGI
+submission through terminal run took 23,245.049 ms. Both returned shared result
+digest `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`.
+Evidence: `tests/workflow/test_answer_workflow_v2.py::test_python_agent_postgres_2k_request_profile[sample-2-pg]`
+(**1 passed**, 409.47 s wall). Testcontainers logged transient PostgreSQL
+readiness retries before startup succeeded. Resource caps were not verified;
+this single sample is functional/timing evidence, not a stable performance
+estimate or Rust comparison.
