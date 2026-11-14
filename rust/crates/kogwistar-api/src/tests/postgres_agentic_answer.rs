@@ -31,7 +31,7 @@
             display_name: None,
             new_user_id: "alice".to_owned(),
             default_role: "rw".to_owned(),
-            default_ns: "alpha".to_owned(),
+            default_ns: "conversation".to_owned(),
         })
         .await
         .unwrap();
@@ -112,7 +112,7 @@
             let snapshots = conversation_reader
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
-                        namespace: "alpha".to_owned(),
+                        namespace: "conversation".to_owned(),
                         workspace_id: None,
                         graph_space: None,
                     },
@@ -121,32 +121,30 @@
                     metadata: MetadataFilter {
                         equals: BTreeMap::from([
                             ("entity_type".to_owned(), json!("context_snapshot")),
-                            ("run_id".to_owned(), json!("rust-only-answer-e2e")),
                         ]),
                     },
-                    limit: 10,
+                    limit: 10_000,
                 })
                 .await
                 .unwrap();
+            let snapshot = snapshots.iter().find(|record| {
+                record.metadata.get("entity_type").and_then(Value::as_str)
+                    == Some("context_snapshot")
+                    && record.metadata.get("stage").and_then(Value::as_str)
+                        == Some("generate_answer_with_citations")
+            });
+            let snapshot = snapshot.expect(
+                "the model request must not start before its prompt snapshot is durable",
+            );
+            let provider_run_id = snapshot.metadata["run_id"].as_str().unwrap().to_owned();
             assert!(snapshots.iter().any(|record| {
                 record.metadata.get("entity_type").and_then(Value::as_str)
                     == Some("context_snapshot")
                     && record.metadata.get("stage").and_then(Value::as_str)
                         == Some("select_used_evidence")
                     && record.metadata.get("run_id").and_then(Value::as_str)
-                        == Some("rust-only-answer-e2e")
+                        == Some(provider_run_id.as_str())
             }), "default evidence selection snapshot must commit before provider invocation");
-            let snapshot = snapshots.iter().find(|record| {
-                record.metadata.get("entity_type").and_then(Value::as_str)
-                    == Some("context_snapshot")
-                    && record.metadata.get("stage").and_then(Value::as_str)
-                        == Some("generate_answer_with_citations")
-                    && record.metadata.get("run_id").and_then(Value::as_str)
-                        == Some("rust-only-answer-e2e")
-            });
-            let snapshot = snapshot.expect(
-                "the model request must not start before its prompt snapshot is durable",
-            );
             let snapshot_document: Value = serde_json::from_str(
                 snapshot.document.as_deref().expect("snapshot has document"),
             )
@@ -167,10 +165,14 @@
                     .expect("snapshot records authorized conversation context"),
             )
             .unwrap();
-            assert_eq!(conversation_context.as_array().unwrap().len(), 3);
+            assert_eq!(conversation_context.as_array().unwrap().len(), 4);
             assert_eq!(conversation_context[1]["content"], "Earlier user question");
             assert_eq!(conversation_context[1]["node_id"], "answer-prior-turn");
             assert_eq!(conversation_context[2]["node_id"], "answer-user-turn");
+            let provider_turn_node_id = conversation_context[3]["node_id"]
+                .as_str()
+                .expect("conversation-answer route appends current user turn");
+            assert_eq!(conversation_context[3]["content"], "Where is workflow runtime state stored?");
             assert!(conversation_context[0]["content"]
                 .as_str()
                 .unwrap()
@@ -190,7 +192,7 @@
             let dependency_edges = conversation_reader
                 .graph_projection_records(GraphProjectionRead {
                     scope: GraphScope {
-                        namespace: "alpha".to_owned(),
+                        namespace: "conversation".to_owned(),
                         workspace_id: None,
                         graph_space: None,
                     },
@@ -216,6 +218,7 @@
                 "answer-memory-summary",
                 "answer-prior-turn",
                 "answer-user-turn",
+                provider_turn_node_id,
                 "answer-memory-context",
                 "answer-knowledge-pointer",
             ] {
@@ -266,7 +269,7 @@
                     let persisted = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                         loop {
                             let events = snapshot_reader
-                                .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
+                                .list_server_run_events(&provider_run_id, 0, 10_000)
                                 .await
                                 .unwrap();
                             let trace_was_persisted = events.iter().any(|event| {
@@ -280,7 +283,7 @@
                             });
                             let lanes = snapshot_reader
                                 .list_projected_lane_messages(LaneMessageFilter {
-                                    namespace: Some("alpha".to_owned()),
+                                    namespace: Some("conversation".to_owned()),
                                     inbox_id: Some("agent-provider-events".to_owned()),
                                     conversation_id: Some("answer-e2e-conversation".to_owned()),
                                     msg_type: Some("agent.provider_event".to_owned()),
@@ -292,7 +295,7 @@
                             let event_nodes = conversation_reader
                                 .graph_projection_records(GraphProjectionRead {
                                     scope: GraphScope {
-                                        namespace: "alpha".to_owned(),
+                                        namespace: "conversation".to_owned(),
                                         workspace_id: None,
                                         graph_space: Some("conversation".to_owned()),
                                     },
@@ -322,7 +325,7 @@
                             let event_acl = conversation_reader
                                 .graph_acl_records_for_entities(
                                     &GraphScope {
-                                        namespace: "alpha".to_owned(),
+                                        namespace: "conversation".to_owned(),
                                         workspace_id: None,
                                         graph_space: Some("conversation".to_owned()),
                                     },
@@ -351,7 +354,7 @@
                     .await;
                     if persisted.is_err() {
                         let events = snapshot_reader
-                            .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
+                            .list_server_run_events(&provider_run_id, 0, 10_000)
                             .await
                             .unwrap();
                         let event_types = events
@@ -360,7 +363,7 @@
                             .collect::<Vec<_>>();
                         let lanes = snapshot_reader
                             .list_projected_lane_messages(LaneMessageFilter {
-                                namespace: Some("alpha".to_owned()),
+                                namespace: Some("conversation".to_owned()),
                                 inbox_id: Some("agent-provider-events".to_owned()),
                                 conversation_id: Some("answer-e2e-conversation".to_owned()),
                                 msg_type: Some("agent.provider_event".to_owned()),
@@ -372,7 +375,7 @@
                         let event_nodes = conversation_reader
                             .graph_projection_records(GraphProjectionRead {
                                 scope: GraphScope {
-                                    namespace: "alpha".to_owned(),
+                                    namespace: "conversation".to_owned(),
                                     workspace_id: None,
                                     graph_space: Some("conversation".to_owned()),
                                 },
@@ -395,7 +398,7 @@
                         let event_acl = conversation_reader
                             .graph_acl_records_for_entities(
                                 &GraphScope {
-                                    namespace: "alpha".to_owned(),
+                                    namespace: "conversation".to_owned(),
                                     workspace_id: None,
                                     graph_space: Some("conversation".to_owned()),
                                 },
@@ -413,7 +416,7 @@
                     let misplaced_event_nodes = snapshot_reader
                         .graph_projection_records(GraphProjectionRead {
                             scope: GraphScope {
-                                namespace: "alpha".to_owned(),
+                                    namespace: "conversation".to_owned(),
                                 workspace_id: None,
                                 graph_space: Some("conversation".to_owned()),
                             },
@@ -682,7 +685,7 @@
             });
             GraphMutation {
                 scope: GraphScope {
-                    namespace: "alpha".to_owned(),
+                    namespace: "conversation".to_owned(),
                     workspace_id: None,
                     graph_space: None,
                 },
@@ -980,7 +983,7 @@
                 .map(|index| {
                     let id = format!("answer-benchmark-distractor-{index:05}");
                     let text = format!("Unrelated benchmark knowledge record {index}.");
-                    put_node(
+                    let mut mutation = put_node(
                         &id,
                         &format!("e2e-{id}"),
                         serde_json::Map::from_iter([
@@ -989,7 +992,9 @@
                         ]),
                         Some(text),
                         Some(vec![-1.0_f32, 0.0, 0.0]),
-                    )
+                    );
+                    mutation.scope.namespace = "conversation".to_owned();
+                    mutation
                 })
                 .collect::<Vec<_>>();
             service
@@ -998,7 +1003,7 @@
                 .await
                 .expect("seed benchmark knowledge fixture");
         }
-        for mutation in seed_mutations {
+        for mut mutation in seed_mutations {
             let graph_type = mutation
                 .record
                 .metadata
@@ -1021,8 +1026,11 @@
                         .then_some("conversation")
                 })
                 .unwrap_or("knowledge");
+            mutation.scope.namespace = "conversation".to_owned();
             let store = match graph_type {
-                "conversation" => &service.conversation_store,
+                "conversation" => {
+                    &service.conversation_store
+                }
                 _ => &service.store,
             };
             store.apply_graph_mutation(mutation).await.unwrap();
@@ -1033,7 +1041,7 @@
             .graph_projection_vector_query_level_lte_excluding_metadata(
                 GraphProjectionVectorQuery {
                     scope: GraphScope {
-                        namespace: "alpha".to_owned(),
+                        namespace: "conversation".to_owned(),
                         workspace_id: None,
                         graph_space: None,
                     },
@@ -1178,8 +1186,8 @@
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
             &json!({
                 "sub":"alice","user_id":"alice","actor_id":"alice","role":"rw","roles":["rw"],
-                "ns":["alpha","workflow"],"storage_ns":"alpha",
-                "capabilities":["spawn_process","workflow.run.write","workflow.run.read","workflow.design.write","workflow.design.inspect","read_graph","write_graph"],
+                "ns":["conversation","workflow"],"storage_ns":"conversation","execution_ns":"conversation",
+                "capabilities":["spawn_process","send_message","workflow.run.write","workflow.run.read","workflow.design.write","workflow.design.inspect","read_graph","write_graph"],
                 "exp": now_seconds + 300
             }),
             &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
@@ -1522,15 +1530,33 @@
             StatusCode::FORBIDDEN.as_u16(),
             "user spoofing must fail through the same native syscall authority"
         );
-        let agent_request_started = std::time::Instant::now();
-        let submit = client
-            .post(format!("{base_url}/api/workflow/runs"))
+        let seeded_conversation = client
+            .post(format!("{base_url}/api/conversations"))
             .bearer_auth(&token)
             .json(&json!({
-                "run_id":"rust-only-answer-e2e","workflow_id":"agentic_answering.v2",
-                "conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
-                "initial_state":{"conversation_id":"answer-e2e-conversation","turn_node_id":"answer-user-turn","user_id":"alice",
-                    "turn_index":0,"max_candidates":10,"max_used":4,"max_retrieval_level":3,"max_iter":1}
+                "user_id":"alice",
+                "conversation_id":"answer-e2e-conversation",
+                "start_node_id":"answer-e2e-start"
+            }))
+            .send()
+            .await
+            .unwrap();
+        let seeded_conversation_status = seeded_conversation.status();
+        let seeded_conversation_body = seeded_conversation.text().await.unwrap();
+        assert_eq!(
+            seeded_conversation_status.as_u16(),
+            StatusCode::OK.as_u16(),
+            "benchmark answer must begin from a conversation admitted through HTTP: {seeded_conversation_body}"
+        );
+        let agent_request_started = std::time::Instant::now();
+        let submit = client
+            .post(format!(
+                "{base_url}/api/conversations/answer-e2e-conversation/turns:answer"
+            ))
+            .bearer_auth(&token)
+            .json(&json!({
+                "text":"Where is workflow runtime state stored?",
+                "workflow_id":"agentic_answering.v2"
             }))
             .send()
             .await
@@ -1543,11 +1569,16 @@
             "{}",
             submit_body
         );
+        let submission: Value = serde_json::from_str(&submit_body).unwrap();
+        assert_eq!(submission["workflow_id"], "agentic_answering.v2");
+        assert_eq!(submission["status"], "queued");
+        let agentic_run_id = submission["run_id"].as_str().unwrap().to_owned();
+        let agentic_turn_id = submission["user_turn_node_id"].as_str().unwrap().to_owned();
         let mut terminal_status = String::new();
         let mut run_response = Value::Null;
         for _ in 0..300 {
             let response = client
-                .get(format!("{base_url}/api/workflow/runs/rust-only-answer-e2e"))
+                .get(format!("{base_url}/api/workflow/runs/{agentic_run_id}"))
                 .bearer_auth(&token)
                 .send()
                 .await
@@ -1571,14 +1602,14 @@
         );
         let run = service
             .store
-            .get_server_run("rust-only-answer-e2e")
+            .get_server_run(&agentic_run_id)
             .await
             .unwrap();
         if terminal_status != "succeeded" {
             let state = service
                 .store
                 .read_recorded_runtime_state(
-                    "rust-only-answer-e2e",
+                    &agentic_run_id,
                     "agentic_answering.v2",
                     "answer-e2e-conversation",
                 )
@@ -1615,7 +1646,7 @@
         let runtime = service
             .store
             .read_recorded_runtime_state(
-                "rust-only-answer-e2e",
+                &agentic_run_id,
                 "agentic_answering.v2",
                 "answer-e2e-conversation",
             )
@@ -1681,7 +1712,7 @@
             .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
-                    namespace: "alpha".to_owned(),
+                    namespace: "conversation".to_owned(),
                     workspace_id: None,
                     graph_space: None,
                 },
@@ -1739,7 +1770,7 @@
             .conversation_store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
-                    namespace: "alpha".to_owned(),
+                    namespace: "conversation".to_owned(),
                     workspace_id: None,
                     graph_space: None,
                 },
@@ -1757,7 +1788,7 @@
                 .and_then(|document| serde_json::from_str::<Value>(document).ok())
                 .is_some_and(|document| {
                     document["relation"] == "next_turn"
-                        && document["source_ids"] == json!(["answer-user-turn"])
+                        && document["source_ids"] == json!([agentic_turn_id])
                         && document["target_ids"] == json!([assistant_id])
                 })),
             "assistant turn must be linked to the admitted user turn"
@@ -1813,7 +1844,7 @@
         let lanes = service
             .store
             .list_projected_lane_messages(LaneMessageFilter {
-                correlation_id: Some("rust-only-answer-e2e".to_owned()),
+                correlation_id: Some(agentic_run_id.clone()),
                 limit: 100,
                 ..LaneMessageFilter::default()
             })
@@ -1827,7 +1858,7 @@
         );
         let durable_events = service
             .store
-            .list_server_run_events("rust-only-answer-e2e", 0, 10_000)
+            .list_server_run_events(&agentic_run_id, 0, 10_000)
             .await
             .unwrap();
         let parse_mcp_sse = |body: &str| -> Value {
@@ -1841,7 +1872,7 @@
         };
         let public_events_response = client
             .get(format!(
-                "{base_url}/api/runs/rust-only-answer-e2e/events/poll?after_seq=0&limit=10000"
+                "{base_url}/api/runs/{agentic_run_id}/events/poll?after_seq=0&limit=10000"
             ))
             .bearer_auth(&token)
             .send()
@@ -1885,7 +1916,7 @@
                 "params":{
                     "name":"workflow.run_events",
                     "arguments":{
-                        "run_id":"rust-only-answer-e2e",
+                        "run_id":agentic_run_id,
                         "after_seq":0,
                         "limit":10_000
                     }
@@ -1946,7 +1977,7 @@
                 "method":"tools/call",
                 "params":{
                     "name":"workflow.process_timeline",
-                    "arguments":{"run_id":"rust-only-answer-e2e","after_seq":0}
+                    "arguments":{"run_id":agentic_run_id,"after_seq":0}
                 }
             }))
             .send()
@@ -1960,7 +1991,7 @@
         let mcp_timeline = parse_mcp_sse(&mcp_timeline_body);
         assert_eq!(
             mcp_timeline["result"]["structuredContent"]["run_id"],
-            "rust-only-answer-e2e",
+            agentic_run_id,
             "unexpected process-timeline MCP response: {mcp_timeline:#?}"
         );
         let timeline_provider_event = mcp_timeline["result"]["structuredContent"]["events"]
@@ -1990,7 +2021,7 @@
             &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
             &json!({
                 "sub":"alice","role":"rw","roles":["rw"],"ns":["workflow"],
-                "storage_ns":"alpha","execution_ns":"alpha",
+                "storage_ns":"conversation","execution_ns":"conversation",
                 "capabilities":["workflow.run.read"],"exp":now_seconds + 300
             }),
             &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
@@ -2049,7 +2080,7 @@
             .unwrap_or_else(|| panic!("unexpected process-table MCP response: {process_table:#?}"));
         let process = processes
             .iter()
-            .find(|process| process["process_id"] == "rust-only-answer-e2e")
+            .find(|process| process["process_id"] == agentic_run_id)
             .expect("process table should include the completed Rust-native run");
         assert_eq!(process["process_kind"], "workflow_run");
         assert_eq!(process["status"], "succeeded");
@@ -2104,14 +2135,14 @@
             streamed_text_field["span_id"],
             "public run-event polling preserves canonical trace identity"
         );
-        assert_eq!(streamed_text_field["run_id"], "rust-only-answer-e2e");
-        assert_eq!(streamed_text_field["trace_id"], "rust-only-answer-e2e");
+        assert_eq!(streamed_text_field["run_id"], agentic_run_id);
+        assert_eq!(streamed_text_field["trace_id"], agentic_run_id);
         assert_eq!(streamed_text_field["workflow_id"], "agentic_answering.v2");
         assert_eq!(
             streamed_text_field["conversation_id"],
             "answer-e2e-conversation"
         );
-        assert_eq!(streamed_text_field["turn_node_id"], "answer-user-turn");
+        assert_eq!(streamed_text_field["turn_node_id"], agentic_turn_id);
         assert_eq!(
             streamed_text_field["provider_id"],
             "openai_compatible_chat_completions"
@@ -2124,22 +2155,22 @@
         assert_eq!(
             streamed_text_field["span_id"],
             format!(
-                "stp:rust-only-answer-e2e:{event_token_id}:{event_step_seq}:{event_attempt}:{event_step_id}"
+                "stp:{agentic_run_id}:{event_token_id}:{event_step_seq}:{event_attempt}:{event_step_id}"
             )
         );
         assert_eq!(
             streamed_text_field["parent_span_id"],
-            format!("tok:rust-only-answer-e2e:{event_token_id}")
+            format!("tok:{agentic_run_id}:{event_token_id}")
         );
         let mut receive_request = kogwistar_runtime::RuntimeNativeStepRequest {
             executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
             operation: "agent.event.receive".to_owned(),
             op_version: "v1".to_owned(),
-            run_id: "rust-only-answer-e2e".to_owned(),
+            run_id: agentic_run_id.clone(),
             workflow_id: "agentic_answering.v2".to_owned(),
             node_id: "receive-provider-event".to_owned(),
             conversation_id: "answer-e2e-conversation".to_owned(),
-            turn_node_id: Some("answer-user-turn".to_owned()),
+            turn_node_id: Some(agentic_turn_id.clone()),
             token_id: "event-consumer-token".to_owned(),
             parent_token_id: None,
             step_seq: 99,
@@ -2156,7 +2187,7 @@
             .await
             .unwrap()
             .expect("a visible semantic event should be claimable");
-        assert_eq!(claimed_context["event"]["trace"]["run_id"], "rust-only-answer-e2e");
+        assert_eq!(claimed_context["event"]["trace"]["run_id"], agentic_run_id);
         assert_eq!(
             claimed_context["event"]["trace"]["attempt"],
             event_attempt,
@@ -2251,7 +2282,7 @@
             let step_seq = trace["step_seq"].as_i64().unwrap();
             let node_id = trace["node_id"].as_str().unwrap();
             let attempt = trace["attempt"].as_u64().unwrap();
-            assert_eq!(event["run_id"], "rust-only-answer-e2e");
+            assert_eq!(event["run_id"], agentic_run_id);
             assert_eq!(event["run_id"], durable_run.run_id);
             assert_eq!(trace["run_id"], event["run_id"]);
             assert_eq!(trace["trace_id"], event["run_id"]);
@@ -2259,11 +2290,11 @@
             assert_eq!(event["token_id"], token_id);
             assert_eq!(
                 trace["span_id"],
-                format!("stp:rust-only-answer-e2e:{token_id}:{step_seq}:{attempt}:{node_id}")
+                format!("stp:{agentic_run_id}:{token_id}:{step_seq}:{attempt}:{node_id}")
             );
             assert_eq!(
                 trace["parent_span_id"],
-                format!("tok:rust-only-answer-e2e:{token_id}")
+                format!("tok:{agentic_run_id}:{token_id}")
             );
         }
 

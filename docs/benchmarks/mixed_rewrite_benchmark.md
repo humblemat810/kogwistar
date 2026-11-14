@@ -1874,7 +1874,8 @@ transport check, not TCP HTTP; the Rust 2,000-node timer still measures
 `POST /api/workflow/runs`, not this conversation-answer route. Thus the new
 smoke improves Python ingress coverage but does not establish a matched
 cross-language latency comparison. The full 2,000-node Python HTTP sample and
-an equivalent Rust conversation-answer endpoint sample remain unmeasured.
+an equivalent Rust conversation-answer endpoint sample are now measured below;
+resource-matched comparison remains open.
 
 The full 2,000-node Python sample has now completed through both the direct
 answer workflow and the ASGI conversation-answer route. Sample `sample-2` used
@@ -1887,3 +1888,20 @@ Evidence: `tests/workflow/test_answer_workflow_v2.py::test_python_agent_postgres
 readiness retries before startup succeeded. Resource caps were not verified;
 this single sample is functional/timing evidence, not a stable performance
 estimate or Rust comparison.
+
+#### Rust-native 2,000-node PostgreSQL conversation-answer route
+
+The packaged Rust server now receives the same user-facing route as Python:
+`POST /api/conversations/{conversation_id}/turns:answer`, followed by run
+inspection until terminal state. Each fresh-schema run uses the shared
+`agentic-answer-result-v1.json` fixture and verifies the canonical answer
+digest `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`.
+The test also verifies that prompt snapshots and provider semantic events are
+durable before provider completion, then checks the conversation/run outcome.
+
+| Metric | Result | Samples |
+| --- | ---: | ---: |
+| Agent request: conversation-answer HTTP submission through terminal answer | 10,302.767 ms median | 10,205.646 / 10,354.156 / 10,302.767 ms; CV 0.60% |
+| Warm-up | Not separately measured | The three runs are measured samples; do not infer warm-up from them |
+
+Evidence: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --lib postgres_agentic_answer_workflow_executes_durably_without_python_worker -- --ignored --nocapture` (**3 passed**, each with a fresh PostgreSQL schema). PostgreSQL container used 1 CPU/2 GiB; packaged Rust server ran on the Windows host without a verified CPU/RAM cap. The Python route sample also lacks verified resource caps and uses a separate fixture run. Therefore these results establish route correctness, shared result-digest parity, and preliminary latency only; they are not a fair speed comparison. The resource-matched Python/Rust profile remains open under FW-19-01B-AGENT-CROSS-PY-RESOURCE and FW-19-01B-AGENT-CROSS-COMPARE.
