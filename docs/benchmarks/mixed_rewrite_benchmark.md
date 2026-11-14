@@ -2139,6 +2139,24 @@ The source fixture switch and request timer are in
 the fixed-resource Rust-native agent-request profile only; broader agent
 parity, other backends, concurrency, and whole-stack conclusions remain open.
 
+#### Fixed-resource Python agent route with 10,001-node PostgreSQL fixture
+
+Ran the existing manual Python benchmark test with
+`KOGWISTAR_AGENT_BENCH_FIXTURE_SIZE=10000`, one warm-up and one measured sample,
+in the capped CPython 3.13.18 overlay (3 CPU/6 GiB) against PostgreSQL 16
+(1 CPU/2 GiB). Both the direct `answer_workflow_v2` call and real loopback TCP
+conversation-answer route completed. Both asserted the shared canonical answer
+and graph-result digest
+`b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`.
+Pytest reported **2 passed**. Test-case wall was 926.470 s for warm-up and
+1,011.503 s for the measured case; these include fixture construction/seeding,
+direct workflow, and TCP workflow, and are not request-latency measurements.
+Total pytest time was 1,938.03 s (32:18). The long wall is real runtime cost,
+not a timeout or resource exhaustion: both cgroups were verified, sampled
+container memory stayed below 0.6 GiB, and both tests completed. Raw evidence:
+`.tmp/fw19-agent10k-python/junit.xml` and `run.log`. This closes Python's
+10k-fixture correctness cell only; Rust parity awaits its separate child.
+
 #### Exploratory Python 2,000-node PostgreSQL agent request
 
 Ran `test_python_agent_postgres_2k_request_profile[sample-1-pg]` once after
