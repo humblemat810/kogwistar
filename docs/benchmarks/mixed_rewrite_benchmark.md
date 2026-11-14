@@ -2364,3 +2364,36 @@ and workload trace are retained locally (ignored by Git) at
 `.tmp/fw19-chroma-10k-20261115/backend_trace.v1.json`; run ID `1a2d51ad6089`.
 This closes Chroma indexing parity only; it does not compare Chroma against
 pgvector or close the broader DL-19 gate.
+
+#### Fixed-resource pgvector 10,000-item mixed trace
+
+Ran the same `read_after_write` workload against `PgVectorBackend` on the
+existing PostgreSQL 16.15/pgvector service. The Python 3.13.18 benchmark client
+was capped at 3 CPU / 6 GiB; PostgreSQL remained capped at 1 CPU / 2 GiB. Each
+sample used a fresh random schema, deterministic 384-dimensional normalized
+vectors, and the same workload trace/digests as the Chroma run. One warm-up and
+two measured runs each indexed 10,000 vectors, sampled 100 nearest-neighbor
+queries, and verified the final vector query after backend reopen.
+
+| Metric | Sample 0 | Sample 1 | Median / shared result |
+| --- | ---: | ---: | ---: |
+| Whole trace elapsed | 414,161.734 ms | 415,713.845 ms | 414,937.790 ms |
+| Whole trace CPU time | 209,159.711 ms | 209,859.706 ms | 209,509.709 ms |
+| Throughput | 72.435 ops/s | 72.165 ops/s | 72.300 ops/s |
+| Vector upsert p50 / p95 / p99 | 15.494 / 18.573 / 20.522 ms | 15.636 / 18.826 / 20.692 ms | per-sample values |
+| Event read p50 / p95 / p99 | 4.705 / 5.525 / 6.710 ms | 4.716 / 5.507 / 6.634 ms | per-sample values |
+| Projection read p50 / p95 / p99 | 3.964 / 4.561 / 5.690 ms | 3.972 / 4.593 / 5.645 ms | per-sample values |
+| Vector query p50 / p95 | 12.490 / 18.823 ms | 12.532 / 18.823 ms | per-sample values |
+| App SQLite / pgvector disk | 59,621,376 / 41,795,584 bytes | same | same |
+| Graph-state digest | `19bf57ac120cbaea7fbbbdd9d09d4fb4c43947571759170b6594f72145b6df8e` | same | equal |
+| Vector digest / reopen | `76f4d1b102b836254758d08e6638a538db5469eec705ccf6c2c5b435f18d68b5`; verified | same; verified | equal |
+
+Sample throughput CV was 0.264%; warm-up took 409,766.856 ms. Relative to the
+same capped Chroma single-upsert run, this pgvector cell delivered 2.04x whole
+trace throughput and about 3.83x lower vector-upsert p50. This is a measured
+difference for these versions, caps, vectors, and workload—not a universal
+backend ranking. Raw report and trace are retained locally (ignored by Git) at
+`.tmp/fw19-pgvector-10k-20261115/report.v3.json` and
+`.tmp/fw19-pgvector-10k-20261115/backend_trace.v1.json`; run ID `58e4012f863c`.
+Both backend cells now pass their digest/reopen oracle; broader DL-19 work
+remains open.
