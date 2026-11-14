@@ -1533,6 +1533,37 @@ backend or whole-stack performance proof. Raw artifacts:
 `.tmp/fw19-replay-recovery-100/report.v3.json` and
 `.tmp/fw19-owner-restart-smoke/report.json`.
 
+### 2026-11-14 resource-capped SQLite replay recheck
+
+Re-ran the 100-item persistent SQLite profile under the Python profile
+container's verified 3 CPU / 6 GiB cap. CPython was 3.13.18; storage used
+container-local overlay, not a Windows bind mount. One warm-up and three fresh
+databases per mode used the same 5-cycle read-after-write trace. The Rust
+per-call and cached PyO3 extension plus Rust-native binary were built from the
+current checkout source (`92d13503`) with Rust 1.97.1; the Rust build container
+had the same CPU/RAM caps. Python engine source hashes matched the checkout.
+All four modes passed canonical state validation with digest
+`a98b533d6d17ba77f92fee660e07e4123b93b7e3263eb244dff557686c0bddd6`; trace
+SHA-256 remained
+`bdf223a12cb233db778d576d909993e4d486943d011698dc3976353d20490f27`.
+
+| Event replay mode | Median ms | p95 ms | Elapsed CV | Median ops/s | Warm-up ms | Peak RSS p95 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Python | 19.743 | 19.803 | 0.56% | 25,325 | 24.635 | 81.8 MiB |
+| Rust per-call PyO3 | 21.897 | 22.709 | 16.62% | 22,835 | 17.376 | 85.1 MiB |
+| Rust cached PyO3 | 10.324 | 10.353 | 4.19% | 48,430 | 9.645 | 85.6 MiB |
+| Rust-native | 3.531 | 3.788 | 6.03% | 141,614 | 3.699 | Not reported |
+
+These are three samples; reported p95 is the maximum sample, not a reliable
+tail quantile. Rust per-call missed the overall benchmark's latency,
+throughput, and RSS gates. Cached and seam-free Rust-native replay were faster
+on this isolated operation; this does not erase the overall gate failure or
+establish whole-stack performance. The benchmark runner's other four workload
+profiles also ran and all modes produced the same final digest. The current
+source-matched report and trace are retained in ignored artifacts
+`.tmp/fw19-replay-capped-container/report.v3.json` and
+`.tmp/fw19-replay-capped-container/read_after_write_trace.v1.json`.
+
 ### 2026-11-14 fixed-resource 2,000-item indexing backend comparison
 
 Ran `scripts/mixed_backend_benchmark.py` with a deterministic 2,000-item trace,
