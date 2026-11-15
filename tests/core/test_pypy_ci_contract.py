@@ -318,8 +318,12 @@ def test_pypi_release_builds_and_audits_pypy311_pure_wheel() -> None:
     assert "python-version: pypy-3.11-v7.3.20" in workflow
     assert "python setup.py bdist_wheel --dist-dir dist" in workflow
     assert "kogwistar-*-py3-none-any.whl" in workflow
+    assert "parse_wheel_filename(Path(wheel).name)" in workflow
     assert "name: wheel-pypy311-pure" in workflow
-    assert "needs: [wheels, sdist, pypy-wheel]" in workflow
+    assert "needs: [verify-release, wheels, sdist, pypy-wheel]" in workflow
+    assert "RELEASE_TAG=\"v$RELEASE_VERSION\"" in workflow
+    assert "git rev-parse \"$RELEASE_TAG^{commit}\"" in workflow
+    assert workflow.count("ref: ${{ needs.verify-release.outputs.source_ref }}") == 5
     assert workflow.count("scripts/audit_pypi_release_artifacts.py") == 2
     assert "scripts/pypy311_pure_wheel_smoke.py" in workflow
     assert "platform.python_implementation() != \"PyPy\"" in smoke
