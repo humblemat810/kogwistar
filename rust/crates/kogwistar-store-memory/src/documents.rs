@@ -905,6 +905,53 @@ mod tests {
     }
 
     #[test]
+    fn malformed_entity_aborts_rollback_without_partial_memory_state() {
+        let store = InMemoryStore::new();
+        let graph_scope = GraphScope {
+            namespace: "rollback-atomic".to_owned(),
+            workspace_id: Some("tenant-a".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let mut valid = parity_fixture("node");
+        valid["mentions"][0]["spans"][0]["doc_id"] = Value::String("doc-remove".to_owned());
+        let mut malformed = valid.clone();
+        malformed["id"] = Value::String("z-malformed".to_owned());
+        malformed["mentions"] = Value::String("not-an-array".to_owned());
+        for (id, payload) in [("a-valid", valid), ("z-malformed", malformed)] {
+            block_on(store.apply_graph_mutation(graph_mutation(&graph_scope, "node", id, payload)))
+                .expect("seed graph entity");
+        }
+        block_on(store.upsert_document_projection(write(
+            graph_scope.clone(),
+            "doc-remove",
+            "doc-remove",
+        )))
+        .expect("seed source projection");
+        let event_count_before = store.state.read().unwrap().namespaces["rollback-atomic"]
+            .events
+            .len();
+
+        let outcome = block_on(store.rollback_document(DocumentRollbackRequest {
+            scope: graph_scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-invalid".to_owned(),
+            deleted_at: "2026-11-16T00:00:00Z".to_owned(),
+            page_size: 1,
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(
+            store.state.read().unwrap().namespaces["rollback-atomic"]
+                .events
+                .len(),
+            event_count_before
+        );
+        let source_ids =
+            block_on(store.document_projection_ids(graph_scope, vec!["doc-remove".to_owned()]))
+                .expect("source projection remains after failed transaction");
+        assert_eq!(source_ids, ["doc-remove"]);
+    }
+
+    #[test]
     fn invalid_document_projection_does_not_create_scope_state() {
         let store = InMemoryStore::new();
         let mut invalid = write(scope("docs-invalid", None), "bad", "bad");
