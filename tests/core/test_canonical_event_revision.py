@@ -95,8 +95,12 @@ def test_canonical_revision_tombstone_is_deleted() -> None:
     assert revision.is_deleted
 
 
+@pytest.mark.parametrize("metadata_implementation", ["python", "rust"])
 @pytest.mark.parametrize("op", ["TOMBSTONE", "DELETE"])
-def test_replay_removes_tombstoned_source_document_projection(tmp_path, op) -> None:
+def test_replay_removes_tombstoned_source_document_projection(
+    tmp_path, monkeypatch, metadata_implementation, op
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", metadata_implementation)
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
         embedding_function=FakeEmbeddingFunction(dim=3),
