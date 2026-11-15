@@ -1,7 +1,10 @@
 use super::*;
 use kogwistar_contracts::stable_id;
-use kogwistar_engine::document_rollback::{NodeRollbackDecision, plan_node_rollback};
+use kogwistar_engine::document_rollback::{
+    EdgeRollbackDecision, NodeRollbackDecision, plan_edge_rollback, plan_node_rollback,
+};
 use serde_json::{Map, json};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Result of one canonical-node rollback page. `scanned_through` advances even
 /// when this graph scope has no affected nodes, so callers can safely continue.
@@ -10,6 +13,17 @@ pub struct AppliedDocumentNodeRollbackPage {
     pub scanned_through: Option<String>,
     pub has_more: bool,
     pub mutations: Vec<AppliedGraphMutation>,
+}
+
+/// Edge maps produced by one rollback page feed later passes until endpoint
+/// references converge across the edge graph.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AppliedDocumentEdgeRollbackPage {
+    pub scanned_through: Option<String>,
+    pub has_more: bool,
+    pub mutations: Vec<AppliedGraphMutation>,
+    pub edge_redirects: BTreeMap<String, String>,
+    pub removed_edge_ids: BTreeSet<String>,
 }
 
 impl SqliteUnitOfWork<'_> {
@@ -82,6 +96,7 @@ impl SqliteUnitOfWork<'_> {
                     });
                     graph_mutations.push(graph_mutation(
                         scope,
+                        "node",
                         entity_id.clone(),
                         event_id(operation_id, &entity_id, revision, "tombstone"),
                         "TOMBSTONE",
@@ -96,6 +111,7 @@ impl SqliteUnitOfWork<'_> {
                 }) => {
                     graph_mutations.push(graph_mutation(
                         scope,
+                        "node",
                         replacement_id.clone(),
                         event_id(operation_id, &replacement_id, revision, "replacement"),
                         "ADD",
@@ -111,6 +127,7 @@ impl SqliteUnitOfWork<'_> {
                     });
                     graph_mutations.push(graph_mutation(
                         scope,
+                        "node",
                         entity_id.clone(),
                         event_id(operation_id, &entity_id, revision, "redirect"),
                         "REPLACE",
@@ -134,9 +151,161 @@ impl SqliteUnitOfWork<'_> {
             mutations,
         })
     }
+
+    /// Apply one scoped edge rollback page using node outcomes and edge maps
+    /// already discovered by the caller. Repeat pages/passes until no new maps
+    /// emerge to resolve edge-to-edge dependencies.
+    #[allow(clippy::too_many_arguments)]
+    pub fn apply_document_edge_rollback_page(
+        &mut self,
+        scope: &GraphScope,
+        document_id: &str,
+        operation_id: &str,
+        deleted_at: &str,
+        after_entity_id: Option<&str>,
+        limit: usize,
+        node_redirects: &BTreeMap<String, String>,
+        removed_node_ids: &BTreeSet<String>,
+        edge_redirects: &BTreeMap<String, String>,
+        removed_edge_ids: &BTreeSet<String>,
+        canonical_entity_ids: &BTreeMap<String, String>,
+    ) -> SqliteStoreResult<AppliedDocumentEdgeRollbackPage> {
+        if scope.namespace.is_empty()
+            || document_id.is_empty()
+            || operation_id.is_empty()
+            || deleted_at.is_empty()
+        {
+            return Err(SqliteStoreError::TransactionAborted(
+                "document rollback scope, document, operation, and timestamp must be non-empty"
+                    .to_owned(),
+            ));
+        }
+
+        let snapshots =
+            self.canonical_graph_entities_page(&scope.namespace, "edge", after_entity_id, limit)?;
+        let scanned_through = snapshots.last().map(|snapshot| snapshot.entity_id.clone());
+        let has_more = snapshots.len() == limit;
+        let mut page_edge_redirects = BTreeMap::new();
+        let mut page_removed_edge_ids = BTreeSet::new();
+        let mut graph_mutations = Vec::new();
+
+        for snapshot in snapshots {
+            if snapshot.state != "active" {
+                continue;
+            }
+            let payload = snapshot.payload.as_ref().ok_or_else(|| {
+                SqliteStoreError::TransactionAborted(format!(
+                    "active canonical edge {} has no payload",
+                    snapshot.entity_id
+                ))
+            })?;
+            let metadata = payload
+                .get("metadata")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    SqliteStoreError::TransactionAborted(format!(
+                        "canonical edge {} has invalid metadata",
+                        snapshot.entity_id
+                    ))
+                })?;
+            if !metadata_matches_scope(metadata, scope) {
+                continue;
+            }
+
+            let mut current_redirects = edge_redirects.clone();
+            current_redirects.extend(page_edge_redirects.clone());
+            let current_removed = removed_edge_ids
+                .union(&page_removed_edge_ids)
+                .cloned()
+                .collect::<BTreeSet<_>>();
+            let decision = plan_edge_rollback(
+                &snapshot,
+                document_id,
+                node_redirects,
+                removed_node_ids,
+                &current_redirects,
+                &current_removed,
+                canonical_entity_ids,
+            )
+            .map_err(|error| SqliteStoreError::TransactionAborted(error.to_string()))?;
+
+            match decision {
+                None => {}
+                Some(EdgeRollbackDecision::Tombstone {
+                    entity_id,
+                    revision,
+                }) => {
+                    let mut tombstone_payload = payload.clone();
+                    tombstone_payload["lifecycle_patch"] = json!({
+                        "lifecycle_status": "tombstoned",
+                        "redirect_to_id": null,
+                        "deleted_at": deleted_at,
+                        "delete_reason": format!("rollback_document:{document_id}")
+                    });
+                    graph_mutations.push(graph_mutation(
+                        scope,
+                        "edge",
+                        entity_id.clone(),
+                        edge_event_id(operation_id, &entity_id, revision, "tombstone"),
+                        "TOMBSTONE",
+                        tombstone_payload,
+                    )?);
+                    page_removed_edge_ids.insert(entity_id);
+                }
+                Some(EdgeRollbackDecision::Replace {
+                    entity_id,
+                    revision,
+                    replacement_id,
+                    replacement_payload,
+                }) => {
+                    graph_mutations.push(graph_mutation(
+                        scope,
+                        "edge",
+                        replacement_id.clone(),
+                        edge_event_id(operation_id, &replacement_id, revision, "replacement"),
+                        "ADD",
+                        replacement_payload,
+                    )?);
+
+                    let mut redirect_payload = payload.clone();
+                    redirect_payload["lifecycle_patch"] = json!({
+                        "lifecycle_status": "tombstoned",
+                        "redirect_to_id": replacement_id,
+                        "deleted_at": deleted_at,
+                        "delete_reason": format!("rollback_document:{document_id}")
+                    });
+                    graph_mutations.push(graph_mutation(
+                        scope,
+                        "edge",
+                        entity_id.clone(),
+                        edge_event_id(operation_id, &entity_id, revision, "redirect"),
+                        "REPLACE",
+                        redirect_payload,
+                    )?);
+                    page_edge_redirects.insert(entity_id, replacement_id);
+                }
+            }
+        }
+
+        let mutations = if graph_mutations.is_empty() {
+            Vec::new()
+        } else {
+            self.apply_canonical_graph_mutation_batch(GraphMutationBatch {
+                mutations: graph_mutations,
+                index_jobs: Vec::new(),
+            })?
+        };
+        Ok(AppliedDocumentEdgeRollbackPage {
+            scanned_through,
+            has_more,
+            mutations,
+            edge_redirects: page_edge_redirects,
+            removed_edge_ids: page_removed_edge_ids,
+        })
+    }
 }
 
-fn metadata_matches_scope(metadata: &Map<String, Value>, scope: &GraphScope) -> bool {
+pub(super) fn metadata_matches_scope(metadata: &Map<String, Value>, scope: &GraphScope) -> bool {
     [
         ("workspace_id", scope.workspace_id.as_deref()),
         ("graph_space", scope.graph_space.as_deref()),
@@ -161,8 +330,22 @@ fn event_id(operation_id: &str, entity_id: &str, revision: i64, effect: &str) ->
     .to_string()
 }
 
+fn edge_event_id(operation_id: &str, entity_id: &str, revision: i64, effect: &str) -> String {
+    stable_id(
+        "rollback.edge.event",
+        &[
+            operation_id.to_owned(),
+            entity_id.to_owned(),
+            revision.to_string(),
+            effect.to_owned(),
+        ],
+    )
+    .to_string()
+}
+
 fn graph_mutation(
     scope: &GraphScope,
+    entity_kind: &str,
     entity_id: String,
     event_id: String,
     op: &str,
@@ -179,8 +362,17 @@ fn graph_mutation(
         })?;
     Ok(GraphMutation {
         scope: scope.clone(),
-        table: "gke_nodes".to_owned(),
-        entity_kind: "node".to_owned(),
+        table: match entity_kind {
+            "node" => "gke_nodes",
+            "edge" => "gke_edges",
+            _ => {
+                return Err(SqliteStoreError::TransactionAborted(format!(
+                    "unsupported rollback entity kind {entity_kind:?}"
+                )));
+            }
+        }
+        .to_owned(),
+        entity_kind: entity_kind.to_owned(),
         event_id,
         op: op.to_owned(),
         record: GraphRecord {

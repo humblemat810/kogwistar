@@ -391,6 +391,137 @@ fn document_node_rollback_page_is_atomic_scoped_and_retry_safe() {
 }
 
 #[test]
+fn document_edge_rollback_page_is_atomic_scoped_and_retry_safe() {
+    let (store, path) = store("document-edge-rollback-page");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    store
+        .immediate_transaction(|uow| {
+            for (seq, edge_id, workspace_id, remove_source_endpoint, remove_document_span) in [
+                (1, "a-replace", "workspace-a", false, true),
+                (2, "b-tombstone", "workspace-a", true, false),
+                (3, "c-other-workspace", "workspace-b", true, false),
+            ] {
+                let mut payload = fixture["cases"][1]["payload"].clone();
+                payload["id"] = serde_json::json!(edge_id);
+                payload["doc_id"] = serde_json::json!("doc-remove");
+                payload["source_ids"] = if remove_source_endpoint {
+                    serde_json::json!([])
+                } else {
+                    serde_json::json!(["node-old"])
+                };
+                payload["target_ids"] = serde_json::json!(["node-target"]);
+                payload["source_edge_ids"] = if remove_source_endpoint {
+                    serde_json::json!(["edge-removed"])
+                } else {
+                    serde_json::json!([])
+                };
+                payload["target_edge_ids"] = serde_json::json!([]);
+                if remove_document_span {
+                    let mut keep_span = payload["mentions"][0]["spans"][0].clone();
+                    payload["mentions"][0]["spans"][0]["doc_id"] = serde_json::json!("doc-remove");
+                    keep_span["doc_id"] = serde_json::json!("doc-keep");
+                    payload["mentions"][0]["spans"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(keep_span);
+                } else {
+                    payload["mentions"][0]["spans"][0]["doc_id"] = serde_json::json!("doc-keep");
+                }
+                payload["metadata"]["workspace_id"] = serde_json::json!(workspace_id);
+                payload["metadata"]["graph_space"] = serde_json::json!("knowledge");
+                payload["metadata"]["lifecycle_status"] = serde_json::json!("active");
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("seed-{edge_id}"),
+                        entity_kind: "edge".to_owned(),
+                        entity_id: edge_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let node_redirects =
+                std::collections::BTreeMap::from([("node-old".to_owned(), "node-new".to_owned())]);
+            let removed_edge_ids = std::collections::BTreeSet::from(["edge-removed".to_owned()]);
+            let first = uow.apply_document_edge_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-edge-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+                &node_redirects,
+                &std::collections::BTreeSet::new(),
+                &std::collections::BTreeMap::new(),
+                &removed_edge_ids,
+                &std::collections::BTreeMap::new(),
+            )?;
+            assert_eq!(first.scanned_through.as_deref(), Some("c-other-workspace"));
+            assert!(!first.has_more);
+            assert_eq!(first.mutations.len(), 3);
+            assert_eq!(
+                first.edge_redirects.get("a-replace").map(String::as_str),
+                first.mutations[0].event.payload["id"].as_str()
+            );
+            assert!(first.removed_edge_ids.contains("b-tombstone"));
+
+            let retry = uow.apply_document_edge_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-edge-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+                &node_redirects,
+                &std::collections::BTreeSet::new(),
+                &first.edge_redirects,
+                &first.removed_edge_ids,
+                &std::collections::BTreeMap::new(),
+            )?;
+            assert!(retry.mutations.is_empty());
+
+            let edges = uow.canonical_graph_entities_page("scope", "edge", None, 10)?;
+            let by_id = edges
+                .iter()
+                .map(|snapshot| (snapshot.entity_id.as_str(), snapshot))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(by_id["a-replace"].state, "deleted");
+            assert_eq!(by_id["b-tombstone"].state, "deleted");
+            assert_eq!(by_id["c-other-workspace"].state, "active");
+            let replacement = by_id[first.edge_redirects["a-replace"].as_str()];
+            assert_eq!(replacement.state, "active");
+            assert_eq!(
+                replacement.payload.as_ref().unwrap()["source_ids"],
+                serde_json::json!(["node-new"])
+            );
+            assert_eq!(
+                replacement.payload.as_ref().unwrap()["mentions"][0]["spans"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store
