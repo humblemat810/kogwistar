@@ -136,6 +136,75 @@ def _test_hs256_token(secret: str, claims: dict[str, object]) -> str:
     return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
+def _configure_rust_runtime_test_auth(
+    env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch | None = None,
+    *,
+    auth_db_path: Path | None = None,
+    workflow_ids: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """Give live Rust runtime tests an explicit least-privilege run principal."""
+    secret = env.setdefault("JWT_SECRET", f"runtime-test-{os.urandom(24).hex()}")
+    env["JWT_ALG"] = "HS256"
+    env["AUTH_MODE"] = "jwt"
+    token = _test_hs256_token(
+        secret,
+        {
+            "sub": "rust-runtime-test",
+            "user_id": "rust-runtime-test",
+            "role": "rw",
+            "roles": ["reader", "rw"],
+            "ns": ["workflow", "conversation", "docs", "wisdom"],
+            "capabilities": [
+                "spawn_process",
+                "workflow.run.read",
+                "workflow.run.write",
+                "read_graph",
+                "write_graph",
+            ],
+            "exp": int(time.time()) + 3600,
+        },
+    )
+    if auth_db_path is not None:
+        import sqlite3
+
+        env["AUTH_DB_URL"] = f"sqlite:///{auth_db_path.as_posix()}"
+        auth_db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(auth_db_path) as auth_db:
+            auth_db.executescript(
+                """CREATE TABLE users (
+                    user_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL UNIQUE,
+                    display_name VARCHAR(255),
+                    is_active BOOLEAN NOT NULL,
+                    global_role VARCHAR(32),
+                    global_ns VARCHAR(255),
+                    created_at DATETIME NOT NULL,
+                    last_login_at DATETIME
+                );
+                CREATE TABLE workflow_acl (
+                    workflow_id VARCHAR(255) NOT NULL,
+                    user_id VARCHAR(64) NOT NULL,
+                    role VARCHAR(32) NOT NULL,
+                    PRIMARY KEY (workflow_id, user_id),
+                    FOREIGN KEY(user_id) REFERENCES users (user_id)
+                );"""
+            )
+            auth_db.execute(
+                "INSERT INTO users (user_id, email, is_active, created_at) "
+                "VALUES (?, ?, 1, CURRENT_TIMESTAMP)",
+                ("rust-runtime-test", "rust-runtime-test@example.test"),
+            )
+            auth_db.executemany(
+                "INSERT INTO workflow_acl (workflow_id, user_id, role) "
+                "VALUES (?, ?, 'rw')",
+                [(workflow_id, "rust-runtime-test") for workflow_id in workflow_ids],
+            )
+    if monkeypatch is not None:
+        monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_TOKEN", token)
+    return {"authorization": f"Bearer {token}"}
+
+
 def _mcp_response_payload(response: httpx.Response) -> dict[str, Any]:
     content_type = response.headers.get("content-type", "")
     if content_type.startswith("application/json"):
@@ -948,6 +1017,12 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        env,
+        monkeypatch,
+        auth_db_path=tmp_path / "runtime-auth.sqlite3",
+        workflow_ids=("wf-sync-resume-live",),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -992,6 +1067,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         assert result.status == "suspended", result.errors
         checkpoint = httpx.get(
             f"{base_url}/api/workflow/runs/run-sync-resume-live/checkpoints",
+            headers=rust_headers,
             timeout=10,
         )
         checkpoint.raise_for_status()
@@ -1092,12 +1168,16 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         assert "_deps" not in resumed["final_state"]
         assert visited == ["start", "gate", "end"]
         status = httpx.get(
-            f"{base_url}/api/workflow/runs/run-sync-resume-live", timeout=10
+            f"{base_url}/api/workflow/runs/run-sync-resume-live",
+            headers=rust_headers,
+            timeout=10,
         )
         assert status.status_code == 200
         assert status.json()["status"] == "succeeded", status.text
         steps_response = httpx.get(
-            f"{base_url}/api/workflow/runs/run-sync-resume-live/steps", timeout=10
+            f"{base_url}/api/workflow/runs/run-sync-resume-live/steps",
+            headers=rust_headers,
+            timeout=10,
         )
         assert steps_response.status_code == 200, steps_response.text
         step_records = steps_response.json()["steps"]
@@ -1248,6 +1328,12 @@ def test_python_facade_leaves_all_native_work_to_inline_rust_server(
             "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        server_env,
+        monkeypatch,
+        auth_db_path=tmp_path / "facade-native-auth.sqlite3",
+        workflow_ids=("rust-native-facade-workflow",),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         server_env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -1281,7 +1367,7 @@ def test_python_facade_leaves_all_native_work_to_inline_rust_server(
         requests: list[tuple[str, str]] = []
         client = httpx.Client(
             base_url=base_url,
-            headers={"x-kogwistar-roles": "reader"},
+            headers=rust_headers,
             event_hooks={
                 "request": [lambda request: requests.append((request.method, request.url.path))]
             },
@@ -1417,6 +1503,12 @@ def test_async_python_facade_uses_server_inline_native_worker(
             "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        server_env,
+        monkeypatch,
+        auth_db_path=tmp_path / "async-facade-native-auth.sqlite3",
+        workflow_ids=("async-rust-native-facade-workflow",),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         server_env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -1455,6 +1547,7 @@ def test_async_python_facade_uses_server_inline_native_worker(
         async def invoke() -> RunResult:
             client = httpx.AsyncClient(
                 base_url=base_url,
+                headers=rust_headers,
                 event_hooks={"request": [record_request]},
                 timeout=10,
             )
@@ -2647,7 +2740,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             PgVectorBackend(
                 engine=graph_engine,
                 embedding_dim=3,
-                schema=pg_schema,
+                schema=f"{pg_schema}_conversation",
             ).ensure_schema()
         finally:
             graph_engine.dispose()
@@ -2721,6 +2814,19 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                 graph_namespace,
             ),
         )
+        auth_db.execute(
+            """CREATE TABLE workflow_acl (
+                workflow_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
+                role VARCHAR(32) NOT NULL,
+                PRIMARY KEY (workflow_id, user_id),
+                FOREIGN KEY(user_id) REFERENCES users (user_id)
+            )"""
+        )
+        auth_db.execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?, ?, 'rw')",
+            ("python-answer-workflow", "python-answer-owner"),
+        )
     token = _test_hs256_token(
         jwt_secret,
         {
@@ -2729,7 +2835,13 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             "roles": ["reader", "rw"],
             "ns": ["workflow", "conversation", graph_namespace],
             "storage_ns": graph_namespace,
-            "capabilities": ["read_graph", "write_graph"],
+            "capabilities": [
+                "spawn_process",
+                "workflow.run.read",
+                "workflow.run.write",
+                "read_graph",
+                "write_graph",
+            ],
             "exp": int(time.time()) + 3600,
         },
     )
@@ -3112,7 +3224,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             with sa.create_engine(pg_dsn, future=True).connect() as connection:
                 vector_row = connection.execute(
                     sa.text(
-                        f'SELECT embedding::text, metadata FROM "{pg_schema}".gke_nodes '
+                        f'SELECT embedding::text, metadata FROM "{pg_schema}_conversation".gke_nodes '
                         "WHERE id = :entity_id"
                     ),
                     {"entity_id": assistant_id},
@@ -3164,14 +3276,14 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             with sa.create_engine(pg_dsn, future=True).connect() as connection:
                 rows = connection.execute(
                     sa.text(
-                        f'SELECT entity_kind, entity_id, payload_json FROM "{pg_schema}".entity_events '
+                        f'SELECT entity_kind, entity_id, payload_json FROM "{pg_schema}_conversation".entity_events '
                         "WHERE namespace = :namespace"
                     ),
                     {"namespace": graph_namespace},
                 ).all()
                 jobs = connection.execute(
                     sa.text(
-                        f'SELECT entity_id, index_kind, status FROM "{pg_schema}".index_jobs '
+                        f'SELECT entity_id, index_kind, status FROM "{pg_schema}_conversation".index_jobs '
                         "WHERE namespace = :namespace"
                     ),
                     {"namespace": graph_namespace},
@@ -3238,7 +3350,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                 python_backend = PgVectorBackend(
                     engine=python_storage_engine,
                     embedding_dim=3,
-                    schema=pg_schema,
+                    schema=f"{pg_schema}_conversation",
                 )
                 python_graph = GraphKnowledgeEngine(
                     backend=python_backend,
@@ -3378,6 +3490,7 @@ def test_async_authority_runs_async_v2_through_real_rust_sqlite_server(
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(env, monkeypatch)
     process = subprocess.Popen(
         [str(RUST_SERVER)],
         cwd=ROOT,
@@ -3422,6 +3535,7 @@ def test_async_authority_runs_async_v2_through_real_rust_sqlite_server(
         assert result.final_state["async_answer"] == 42
         claimed = httpx.post(
             f"{base_url}/internal/runtime/claim",
+            headers=rust_headers,
             json={"claimed_by": "inspection", "limit": 1, "lease_seconds": 1},
             timeout=10,
         )
@@ -3554,6 +3668,12 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        env,
+        monkeypatch,
+        auth_db_path=tmp_path / "async-resume-auth.sqlite3",
+        workflow_ids=(workflow_id,),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -3607,6 +3727,7 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
             )
             checkpoint = httpx.get(
                 f"{base_url}/api/workflow/runs/run-async-resume-live/checkpoints",
+                headers=rust_headers,
                 timeout=10,
             )
             checkpoint.raise_for_status()
@@ -3638,12 +3759,16 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
         assert resumed.final_state["_deps"] is dependencies
         assert visited == ["start", "gate", "end"]
         status = httpx.get(
-            f"{base_url}/api/workflow/runs/run-async-resume-live", timeout=10
+            f"{base_url}/api/workflow/runs/run-async-resume-live",
+            headers=rust_headers,
+            timeout=10,
         )
         assert status.status_code == 200, status.text
         assert status.json()["status"] == ("failed" if end_failure else "succeeded")
         steps_response = httpx.get(
-            f"{base_url}/api/workflow/runs/run-async-resume-live/steps", timeout=10
+            f"{base_url}/api/workflow/runs/run-async-resume-live/steps",
+            headers=rust_headers,
+            timeout=10,
         )
         assert steps_response.status_code == 200, steps_response.text
         end_step_record = next(
@@ -4569,6 +4694,11 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             "KOGWISTAR_RUNTIME_NATIVE_INLINE": str(execution_mode == "inline-server").lower(),
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        env,
+        auth_db_path=tmp_path / "native-http-auth.sqlite3",
+        workflow_ids=(workflow_contract["workflow_id"],),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -4590,7 +4720,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         text=True,
     )
     base_url = f"http://127.0.0.1:{port}"
-    headers = {"x-kogwistar-roles": "reader"}
+    headers = rust_headers
     try:
         for _ in range(100):
             if process.poll() is not None:

@@ -482,14 +482,17 @@ not authorize a broad authority-flag promotion or replace production canaries.
   lane, and projection-contract tests pass; workspace Clippy remains warning-free.
   Serving projection namespace/cursor/schema metadata also comes from one shared
   store-contract helper, preventing backend-local projection field drift.
-- Current-source Phase 4 runtime evidence is green: sync/async bijection
-  68/68, bridge parity 17/17, non-slow suspend/terminal coverage 23/23, and
-  SQLite/PostgreSQL checkpoint, fault rollback, restart, claimed-worker, and
-  handoff coverage 37/37 (the PostgreSQL cases used a live pgvector container).
-  A current native extension was rebuilt before the latter gate; an initial
-  34-failure run was diagnosed as the stale ignored local `_rust.pyd` rejecting
-  the newer `transaction_id` ABI field, not a runtime semantic regression.
-  Rebuilt current Rust server then passed the real TCP SQLite authority E2E.
+- Current-source Phase 4 runtime gate passes all 296 tests with zero failures,
+  errors, or skips: durable worker 169, sync/async bijection 72, bridge parity
+  22, suspend/terminal 23, and live PostgreSQL 10. Source SHA-256 is
+  `bf30351d86c914b867b5a1c6ec77682cf2cd30a809b2aa56f65a28f22914903b`; the
+  current native extension SHA-256 is
+  `fd807a71068d563ac1715de5e55d88c2f5b2382cd9657870d675e3e10648860f`.
+  PostgreSQL tests use the live pgvector container. Runtime test clients now
+  authenticate with scoped workflow ACL fixtures, and graph assertions use the
+  Python-parity per-graph schema; server authorization and schema isolation
+  remain enforced. This is local Phase 4 evidence, not production canary or
+  `workflow-runtime` cutover readiness.
 - Host-native focused verification now has a persisted exact-ABI build and smoke
   path. It builds a wheel for the selected Python interpreter, atomically
   refreshes the ignored source-tree extension, records source/wheel/extension
