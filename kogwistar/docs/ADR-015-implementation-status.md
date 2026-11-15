@@ -7,21 +7,19 @@ its rollout evidence, not a deprecation decision. Transaction ownership and
 the optional native execution paths are specified in
 `ADR-022-dual-language-capability-paths.md`.
 
-Updated: 2026-09-28
+Updated: 2026-11-16
 
 ## Current Source and Release Boundary
 
-PR #42's SQLite Python/Rust interoperability fixes are merged in `main` at
-`50cd6c4`; release-version commit `6066d11` sets package version `0.6.1`.
-Tag `v0.6.1` points to that release commit. The tagged release workflow passed
-wheel/sdist build and artifact audit, but its PyPI publish job is waiting for
-the protected `pypi` environment approval. Therefore, the tag exists but PyPI
-publication is not yet verified.
+Current package metadata is `0.7.0`; local tag `v0.7.0` points to release
+commit `3bdfa92171a16998a6ea7d13efb1277df198f549`. The maintainer confirmed
+that `0.7.0` was published to PyPI. This environment did not independently
+recheck the remote PyPI record or GitHub release workflow.
 
-The detailed phase evidence and source digests below are historical snapshots
-from their named candidate commits. They do not prove the current `0.6.1`
-source or promote any Rust authority flag. Re-run the relevant current-source
-gates before making those claims. Release workflow state is tracked in
+The detailed phase evidence and source digests below are candidate-specific;
+older reports do not prove current source behavior or promote Rust authority.
+Re-run relevant gates against the current source before making those claims.
+Release workflow design is tracked in
 [`ADR-015-library-release.md`](ADR-015-library-release.md).
 
 ADR-015 is not complete as a production migration. Local implementation and
@@ -111,13 +109,14 @@ Only these local items remain in scope before production rollout:
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
   one broad store flag from a narrow test. Current-source local evidence is
-  now separately recorded by `scripts/durable_store_capability_gate.py` in
-  `.codex/adr015-phase3-capability-gate.json`: PostgreSQL sequence/event-log
-  4, projection/snapshot/run-registry 6, queue/lease/lane 3, and graph/pgvector
-  23 all passed with zero failures, errors, or skips for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`.
-  This proves each local slice; each `rust_cutover_ready` remains false until
-  its same-candidate production canary and rollback evidence exists.
+  recorded by `scripts/durable_store_capability_gate.py` in the local,
+  ignored `.codex/adr015-phase3-capability-gate-current.json`: PostgreSQL
+  sequence/event-log 4, projection/snapshot/run-registry 6, queue/lease/lane
+  3, and graph/pgvector 47 all passed with zero failures, errors, or skips for
+  source SHA-256
+  `bbca317a14b725247dee31234dfbaab93c0f8fd1947a445107f09e0a32d59235`.
+  This is current-source local evidence only; each `rust_cutover_ready` remains
+  false until its same-candidate production canary and rollback evidence exists.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
