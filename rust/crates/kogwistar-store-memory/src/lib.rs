@@ -22,6 +22,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+mod documents;
 mod recorded_runtime;
 pub use recorded_runtime::ProviderEventPublicationCommit;
 
