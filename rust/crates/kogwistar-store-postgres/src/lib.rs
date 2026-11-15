@@ -59,10 +59,10 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 mod types;
 pub use types::{
-    AppendedRawEvent, GraphDeleteMutation, GraphIndexTableNames, GraphMetadataPatchMutation,
-    GraphProjectionMetadataPatch, GraphProjectionUpsert, GraphTableNames, NamedProjectionCas,
-    NewRawEntityEvent, NodeDocumentIndexCandidate, PostgresStoreError, PostgresStoreResult,
-    RawEntityEvent, Stage1GraphProjection,
+    AppendedRawEvent, AppliedDocumentRollback, GraphDeleteMutation, GraphIndexTableNames,
+    GraphMetadataPatchMutation, GraphProjectionMetadataPatch, GraphProjectionUpsert,
+    GraphTableNames, NamedProjectionCas, NewRawEntityEvent, NodeDocumentIndexCandidate,
+    PostgresStoreError, PostgresStoreResult, RawEntityEvent, Stage1GraphProjection,
 };
 
 /// Cloneable async store backed by `deadpool-postgres` and `tokio-postgres`.

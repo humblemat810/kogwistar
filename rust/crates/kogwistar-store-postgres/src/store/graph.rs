@@ -1,6 +1,30 @@
 use super::super::*;
 
 impl PostgresStore {
+    /// Roll back graph contributions from a document in one SQL transaction.
+    pub async fn rollback_document(
+        &self,
+        scope: GraphScope,
+        document_id: String,
+        operation_id: String,
+        deleted_at: String,
+        page_size: usize,
+    ) -> PostgresStoreResult<AppliedDocumentRollback> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.apply_document_rollback(
+                    &scope,
+                    &document_id,
+                    &operation_id,
+                    &deleted_at,
+                    page_size,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     /// Read edges that reference one typed endpoint from canonical edge rows.
     pub async fn graph_incident_edges(
         &self,
