@@ -1,12 +1,425 @@
 //! Volatile source-document projection support. Python parity: in-memory graph backend document lookup/upsert/delete.
 use super::{InMemoryStore, namespace};
+use kogwistar_contracts::stable_id;
+use kogwistar_engine::{
+    canonical_revision::{CanonicalGraphEntitySnapshot, reconstruct_canonical_graph_entity},
+    document_rollback::{
+        EdgeRollbackDecision, NodeRollbackDecision, plan_edge_rollback, plan_node_rollback,
+    },
+};
 use kogwistar_store::{
-    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, GraphMutationStore,
-    GraphProjectionRead, GraphScope, MetadataFilter, StoreError, StoreResult,
+    AppliedDocumentRollback, DocumentAuthorityCapability, DocumentProjectionUpsert,
+    DocumentRollbackRequest, DocumentStore, GraphMutation, GraphMutationBatch, GraphMutationStore,
+    GraphProjectionRead, GraphRecord, GraphScope, MetadataFilter, StoreError, StoreResult,
 };
 use serde_json::Value;
+use std::collections::{BTreeMap, BTreeSet};
 
 const DOCUMENT_TABLE: &str = "gke_documents";
+const MAX_EDGE_ROLLBACK_PASSES: usize = 4096;
+
+fn rollback_mutation(
+    scope: &GraphScope,
+    kind: &str,
+    entity_id: String,
+    operation_id: &str,
+    revision: i64,
+    effect: &str,
+    op: &str,
+    payload: Value,
+) -> StoreResult<GraphMutation> {
+    let metadata = payload
+        .get("metadata")
+        .and_then(Value::as_object)
+        .cloned()
+        .ok_or_else(|| StoreError::Backend {
+            backend: "memory-document".to_owned(),
+            message: format!("rollback payload for {entity_id} has invalid metadata"),
+        })?;
+    let table = match kind {
+        "node" => "gke_nodes",
+        "edge" => "gke_edges",
+        _ => {
+            return Err(StoreError::Backend {
+                backend: "memory-document".to_owned(),
+                message: format!("unsupported rollback entity kind {kind:?}"),
+            });
+        }
+    };
+    let event_namespace = if kind == "node" {
+        "rollback.node.event"
+    } else {
+        "rollback.edge.event"
+    };
+    let event_id = stable_id(
+        event_namespace,
+        &[
+            operation_id.to_owned(),
+            entity_id.clone(),
+            revision.to_string(),
+            effect.to_owned(),
+        ],
+    )
+    .to_string();
+    let mut projection_metadata = metadata.clone();
+    if let Some(patch) = payload.get("lifecycle_patch").and_then(Value::as_object) {
+        projection_metadata.extend(patch.clone());
+    }
+    Ok(GraphMutation {
+        scope: scope.clone(),
+        table: table.to_owned(),
+        entity_kind: kind.to_owned(),
+        event_id,
+        op: op.to_owned(),
+        record: GraphRecord {
+            id: entity_id,
+            document: Some(payload.to_string()),
+            metadata: projection_metadata,
+            embedding: None,
+        },
+        payload,
+        embedding_dim: 0,
+    })
+}
+
+fn scoped_entity_ids(state: &super::State, scope: &GraphScope, table: &str) -> Vec<String> {
+    state
+        .graph_projections
+        .get(scope)
+        .into_iter()
+        .flat_map(|projection| projection.records.keys())
+        .filter(|(record_table, _)| record_table == table)
+        .map(|(_, id)| id.clone())
+        .collect()
+}
+
+fn graph_snapshots(
+    state: &super::State,
+    scope: &GraphScope,
+    kind: &str,
+) -> StoreResult<Vec<CanonicalGraphEntitySnapshot>> {
+    let Some(namespace) = state.namespaces.get(&scope.namespace) else {
+        return Ok(Vec::new());
+    };
+    let table = if kind == "node" {
+        "gke_nodes"
+    } else {
+        "gke_edges"
+    };
+    scoped_entity_ids(state, scope, table)
+        .into_iter()
+        .filter_map(|id| {
+            match reconstruct_canonical_graph_entity(&namespace.events, &scope.namespace, kind, &id)
+            {
+                Ok(snapshot) => snapshot,
+                Err(error) => return Some(Err(error)),
+            }
+            .map(Ok)
+        })
+        .collect()
+}
+
+fn metadata_matches_scope(metadata: &serde_json::Map<String, Value>, scope: &GraphScope) -> bool {
+    [
+        ("workspace_id", scope.workspace_id.as_deref()),
+        ("graph_space", scope.graph_space.as_deref()),
+    ]
+    .into_iter()
+    .all(|(key, expected)| match expected {
+        Some(expected) => metadata.get(key).and_then(Value::as_str) == Some(expected),
+        None => metadata.get(key).is_none_or(Value::is_null),
+    })
+}
+
+fn apply_document_rollback(
+    state: &mut super::State,
+    request: &DocumentRollbackRequest,
+) -> StoreResult<AppliedDocumentRollback> {
+    if request.scope.namespace.trim().is_empty()
+        || request.document_id.trim().is_empty()
+        || request.operation_id.trim().is_empty()
+        || request.deleted_at.trim().is_empty()
+        || request.page_size == 0
+    {
+        return Err(StoreError::Backend {
+            backend: "memory-document".to_owned(),
+            message: "rollback scope, document, operation, timestamp, and page size are required"
+                .to_owned(),
+        });
+    }
+    namespace(&request.scope.namespace)?;
+
+    // Work on a private state copy; publish once all planners and mutations succeed.
+    let mut next = state.clone();
+    let mut node_redirects = BTreeMap::new();
+    let mut removed_node_ids = BTreeSet::new();
+    let mut canonical_entity_ids = BTreeMap::new();
+    let node_snapshots = graph_snapshots(&next, &request.scope, "node")?;
+    for page in node_snapshots.chunks(request.page_size) {
+        let mut node_mutations = Vec::new();
+        for snapshot in page {
+            if snapshot.state != "active" {
+                continue;
+            }
+            let Some(payload) = snapshot.payload.as_ref() else {
+                continue;
+            };
+            if !payload
+                .get("metadata")
+                .and_then(Value::as_object)
+                .is_some_and(|metadata| metadata_matches_scope(metadata, &request.scope))
+            {
+                continue;
+            }
+            if let Some(canonical_id) = payload
+                .get("canonical_entity_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                canonical_entity_ids.insert(snapshot.entity_id.clone(), canonical_id.to_owned());
+            }
+            match plan_node_rollback(snapshot, &request.document_id).map_err(|error| {
+                StoreError::Backend {
+                    backend: "memory-document".to_owned(),
+                    message: error.to_string(),
+                }
+            })? {
+                None => {}
+                Some(NodeRollbackDecision::Tombstone {
+                    entity_id,
+                    revision,
+                }) => {
+                    removed_node_ids.insert(entity_id.clone());
+                    let mut tombstone = payload.clone();
+                    tombstone["lifecycle_patch"] = serde_json::json!({
+                        "lifecycle_status": "tombstoned",
+                        "redirect_to_id": null,
+                        "deleted_at": request.deleted_at,
+                        "delete_reason": format!("rollback_document:{}", request.document_id)
+                    });
+                    node_mutations.push(rollback_mutation(
+                        &request.scope,
+                        "node",
+                        entity_id,
+                        &request.operation_id,
+                        revision,
+                        "tombstone",
+                        "TOMBSTONE",
+                        tombstone,
+                    )?);
+                }
+                Some(NodeRollbackDecision::Replace {
+                    entity_id,
+                    revision,
+                    replacement_id,
+                    replacement_payload,
+                }) => {
+                    node_redirects.insert(entity_id.clone(), replacement_id.clone());
+                    if let Some(canonical_id) = replacement_payload
+                        .get("canonical_entity_id")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                    {
+                        canonical_entity_ids
+                            .insert(replacement_id.clone(), canonical_id.to_owned());
+                    }
+                    node_mutations.push(rollback_mutation(
+                        &request.scope,
+                        "node",
+                        replacement_id.clone(),
+                        &request.operation_id,
+                        revision,
+                        "replacement",
+                        "ADD",
+                        replacement_payload,
+                    )?);
+                    let mut redirect = payload.clone();
+                    redirect["lifecycle_patch"] = serde_json::json!({
+                        "lifecycle_status": "tombstoned",
+                        "redirect_to_id": replacement_id,
+                        "deleted_at": request.deleted_at,
+                        "delete_reason": format!("rollback_document:{}", request.document_id)
+                    });
+                    node_mutations.push(rollback_mutation(
+                        &request.scope,
+                        "node",
+                        entity_id,
+                        &request.operation_id,
+                        revision,
+                        "redirect",
+                        "REPLACE",
+                        redirect,
+                    )?);
+                }
+            }
+        }
+        if !node_mutations.is_empty() {
+            super::apply_graph_mutation_batch_to_state(
+                &mut next,
+                GraphMutationBatch {
+                    mutations: node_mutations,
+                    index_jobs: Vec::new(),
+                },
+            )?;
+        }
+    }
+
+    let mut edge_redirects = BTreeMap::new();
+    let mut removed_edge_ids = BTreeSet::new();
+    let mut edge_passes = 0;
+    loop {
+        if edge_passes == MAX_EDGE_ROLLBACK_PASSES {
+            return Err(StoreError::Backend {
+                backend: "memory-document".to_owned(),
+                message: format!("rollback exceeded {MAX_EDGE_ROLLBACK_PASSES} edge passes"),
+            });
+        }
+        edge_passes += 1;
+        let old_redirects = edge_redirects.clone();
+        let old_removed = removed_edge_ids.clone();
+        let edge_snapshots = graph_snapshots(&next, &request.scope, "edge")?;
+        for page in edge_snapshots.chunks(request.page_size) {
+            let mut mutations = Vec::new();
+            for snapshot in page {
+                if snapshot.state != "active" {
+                    continue;
+                }
+                let Some(payload) = snapshot.payload.as_ref() else {
+                    continue;
+                };
+                if !payload
+                    .get("metadata")
+                    .and_then(Value::as_object)
+                    .is_some_and(|metadata| metadata_matches_scope(metadata, &request.scope))
+                {
+                    continue;
+                }
+                match plan_edge_rollback(
+                    snapshot,
+                    &request.document_id,
+                    &node_redirects,
+                    &removed_node_ids,
+                    &edge_redirects,
+                    &removed_edge_ids,
+                    &canonical_entity_ids,
+                )
+                .map_err(|error| StoreError::Backend {
+                    backend: "memory-document".to_owned(),
+                    message: error.to_string(),
+                })? {
+                    None => {}
+                    Some(EdgeRollbackDecision::Tombstone {
+                        entity_id,
+                        revision,
+                    }) => {
+                        removed_edge_ids.insert(entity_id.clone());
+                        let mut tombstone = payload.clone();
+                        tombstone["lifecycle_patch"] = serde_json::json!({
+                            "lifecycle_status": "tombstoned",
+                            "redirect_to_id": null,
+                            "deleted_at": request.deleted_at,
+                            "delete_reason": format!("rollback_document:{}", request.document_id)
+                        });
+                        mutations.push(rollback_mutation(
+                            &request.scope,
+                            "edge",
+                            entity_id,
+                            &request.operation_id,
+                            revision,
+                            "tombstone",
+                            "TOMBSTONE",
+                            tombstone,
+                        )?);
+                    }
+                    Some(EdgeRollbackDecision::Replace {
+                        entity_id,
+                        revision,
+                        replacement_id,
+                        replacement_payload,
+                    }) => {
+                        edge_redirects.insert(entity_id.clone(), replacement_id.clone());
+                        mutations.push(rollback_mutation(
+                            &request.scope,
+                            "edge",
+                            replacement_id.clone(),
+                            &request.operation_id,
+                            revision,
+                            "replacement",
+                            "ADD",
+                            replacement_payload,
+                        )?);
+                        let mut redirect = payload.clone();
+                        redirect["lifecycle_patch"] = serde_json::json!({
+                            "lifecycle_status": "tombstoned",
+                            "redirect_to_id": replacement_id,
+                            "deleted_at": request.deleted_at,
+                            "delete_reason": format!("rollback_document:{}", request.document_id)
+                        });
+                        mutations.push(rollback_mutation(
+                            &request.scope,
+                            "edge",
+                            entity_id,
+                            &request.operation_id,
+                            revision,
+                            "redirect",
+                            "REPLACE",
+                            redirect,
+                        )?);
+                    }
+                }
+            }
+            if !mutations.is_empty() {
+                super::apply_graph_mutation_batch_to_state(
+                    &mut next,
+                    GraphMutationBatch {
+                        mutations,
+                        index_jobs: Vec::new(),
+                    },
+                )?;
+            }
+        }
+        if edge_redirects == old_redirects && removed_edge_ids == old_removed {
+            break;
+        }
+    }
+
+    let deleted_document_projection = next
+        .graph_projections
+        .get_mut(&request.scope)
+        .map(|projection| {
+            let ids = projection
+                .records
+                .iter()
+                .filter(|((table, id), record)| {
+                    table == DOCUMENT_TABLE
+                        && (id == &request.document_id
+                            || record.metadata.get("doc_id").and_then(Value::as_str)
+                                == Some(request.document_id.as_str()))
+                })
+                .map(|((_, id), _)| id.clone())
+                .collect::<Vec<_>>();
+            for id in &ids {
+                projection
+                    .records
+                    .remove(&(DOCUMENT_TABLE.to_owned(), id.clone()));
+            }
+            projection
+                .record_order
+                .retain(|(table, id)| table != DOCUMENT_TABLE || !ids.contains(id));
+            !ids.is_empty()
+        })
+        .unwrap_or(false);
+
+    *state = next;
+    Ok(AppliedDocumentRollback {
+        node_redirects,
+        removed_node_ids,
+        edge_redirects,
+        removed_edge_ids,
+        deleted_document_projection,
+        edge_passes,
+    })
+}
 
 impl DocumentStore for InMemoryStore {
     fn supports_document_projection_lookup(&self) -> bool {
@@ -14,6 +427,10 @@ impl DocumentStore for InMemoryStore {
     }
 
     fn supports_document_projection_delete(&self) -> bool {
+        true
+    }
+
+    fn supports_document_rollback(&self) -> bool {
         true
     }
 
@@ -36,6 +453,16 @@ impl DocumentStore for InMemoryStore {
                 })
                 .await?;
             Ok(rows.into_iter().map(|row| row.id).collect())
+        }
+    }
+
+    fn rollback_document(
+        &self,
+        request: DocumentRollbackRequest,
+    ) -> impl std::future::Future<Output = StoreResult<AppliedDocumentRollback>> + Send {
+        async move {
+            let mut state = self.state.write().expect("in-memory store lock poisoned");
+            apply_document_rollback(&mut state, &request)
         }
     }
 
@@ -183,6 +610,55 @@ mod tests {
         }
     }
 
+    fn graph_mutation(
+        scope: &GraphScope,
+        kind: &str,
+        id: &str,
+        mut payload: Value,
+    ) -> GraphMutation {
+        payload["id"] = Value::String(id.to_owned());
+        payload["metadata"]["workspace_id"] = Value::String("tenant-a".to_owned());
+        payload["metadata"]["graph_space"] = Value::String("knowledge".to_owned());
+        let metadata = payload["metadata"]
+            .as_object()
+            .expect("fixture metadata")
+            .clone();
+        GraphMutation {
+            scope: scope.clone(),
+            table: if kind == "node" {
+                "gke_nodes"
+            } else {
+                "gke_edges"
+            }
+            .to_owned(),
+            entity_kind: kind.to_owned(),
+            event_id: format!("seed-{kind}-{id}"),
+            op: "ADD".to_owned(),
+            record: GraphRecord {
+                id: id.to_owned(),
+                document: Some(payload.to_string()),
+                metadata,
+                embedding: None,
+            },
+            payload,
+            embedding_dim: 0,
+        }
+    }
+
+    fn parity_fixture(kind: &str) -> Value {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .expect("Python graph-model fixture parses");
+        fixture["cases"]
+            .as_array()
+            .expect("fixture cases")
+            .iter()
+            .find(|case| case["kind"] == kind)
+            .expect("fixture kind")["payload"]
+            .clone()
+    }
+
     #[test]
     fn document_projection_is_upserted_looked_up_and_deleted_with_exact_scope() {
         let store = InMemoryStore::new();
@@ -193,7 +669,7 @@ mod tests {
             DocumentAuthorityCapability::ProjectionUpsert
         );
         assert!(DocumentStore::supports_document_projection_delete(&store));
-        assert!(!DocumentStore::supports_document_rollback(&store));
+        assert!(DocumentStore::supports_document_rollback(&store));
         block_on(store.upsert_document_projection(write(tenant.clone(), "chunk-1", "source-1")))
             .expect("upsert source projection");
         block_on(store.upsert_document_projection(write(
@@ -263,6 +739,169 @@ mod tests {
             .expect("other scope is untouched"),
             ["foreign-chunk"]
         );
+    }
+
+    #[test]
+    fn rollback_rewrites_surviving_node_and_edge_and_deletes_source_projection() {
+        let store = InMemoryStore::new();
+        let graph_scope = GraphScope {
+            namespace: "rollback-memory".to_owned(),
+            workspace_id: Some("tenant-a".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let mut node = parity_fixture("node");
+        node["mentions"][0]["spans"][0]["doc_id"] = Value::String("doc-remove".to_owned());
+        let mut kept_node_span = node["mentions"][0]["spans"][0].clone();
+        kept_node_span["doc_id"] = Value::String("doc-keep".to_owned());
+        node["mentions"][0]["spans"]
+            .as_array_mut()
+            .unwrap()
+            .push(kept_node_span);
+        let mut edge = parity_fixture("edge");
+        edge["id"] = Value::String("edge-old".to_owned());
+        edge["source_ids"] = serde_json::json!(["node-old"]);
+        edge["mentions"][0]["spans"][0]["doc_id"] = Value::String("doc-remove".to_owned());
+        let mut kept_edge_span = edge["mentions"][0]["spans"][0].clone();
+        kept_edge_span["doc_id"] = Value::String("doc-keep".to_owned());
+        edge["mentions"][0]["spans"]
+            .as_array_mut()
+            .unwrap()
+            .push(kept_edge_span);
+
+        block_on(store.apply_graph_mutation(graph_mutation(
+            &graph_scope,
+            "node",
+            "node-old",
+            node,
+        )))
+        .expect("seed node contribution");
+        block_on(store.apply_graph_mutation(graph_mutation(
+            &graph_scope,
+            "edge",
+            "edge-old",
+            edge,
+        )))
+        .expect("seed edge contribution");
+        block_on(store.upsert_document_projection(write(
+            graph_scope.clone(),
+            "doc-remove",
+            "doc-remove",
+        )))
+        .expect("seed source projection");
+
+        let result = block_on(store.rollback_document(DocumentRollbackRequest {
+            scope: graph_scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-1".to_owned(),
+            deleted_at: "2026-11-16T00:00:00Z".to_owned(),
+            page_size: 1,
+        }))
+        .expect("rollback succeeds");
+        assert!(result.node_redirects.contains_key("node-old"));
+        assert!(result.edge_redirects.contains_key("edge-old"));
+        assert!(result.deleted_document_projection);
+
+        let nodes = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope: graph_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 100,
+        }))
+        .expect("read nodes");
+        let old_node = nodes.iter().find(|record| record.id == "node-old").unwrap();
+        assert_eq!(old_node.metadata["lifecycle_status"], "tombstoned");
+        let edges = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope: graph_scope.clone(),
+            table: "gke_edges".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 100,
+        }))
+        .expect("read edges");
+        let old_edge = edges.iter().find(|record| record.id == "edge-old").unwrap();
+        assert_eq!(old_edge.metadata["lifecycle_status"], "tombstoned");
+        let replacement_edge_id = &result.edge_redirects["edge-old"];
+        let replacement_edge = edges
+            .iter()
+            .find(|record| &record.id == replacement_edge_id)
+            .expect("replacement edge is projected");
+        let replacement_edge_payload: Value =
+            serde_json::from_str(replacement_edge.document.as_deref().unwrap())
+                .expect("replacement edge payload parses");
+        assert_eq!(
+            replacement_edge_payload["source_ids"][0],
+            result.node_redirects["node-old"]
+        );
+        assert_eq!(
+            block_on(store.document_projection_ids(graph_scope.clone(), vec!["doc-remove".into()]))
+                .expect("read documents"),
+            Vec::<String>::new()
+        );
+
+        let events_before_retry = store.state.read().unwrap().namespaces["rollback-memory"]
+            .events
+            .len();
+        let retry = block_on(store.rollback_document(DocumentRollbackRequest {
+            scope: graph_scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-1".to_owned(),
+            deleted_at: "2026-11-16T00:00:00Z".to_owned(),
+            page_size: 1,
+        }))
+        .expect("retry is safe");
+        assert!(retry.node_redirects.is_empty());
+        assert!(retry.edge_redirects.is_empty());
+        assert_eq!(
+            store.state.read().unwrap().namespaces["rollback-memory"]
+                .events
+                .len(),
+            events_before_retry
+        );
+    }
+
+    #[test]
+    fn rollback_requires_exact_scope_metadata_and_keeps_foreign_entity_active() {
+        let store = InMemoryStore::new();
+        let graph_scope = GraphScope {
+            namespace: "rollback-scope".to_owned(),
+            workspace_id: Some("tenant-a".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let mut payload = parity_fixture("node");
+        payload["doc_id"] = Value::String("doc-remove".to_owned());
+        payload["mentions"][0]["spans"][0]["doc_id"] = Value::String("doc-remove".to_owned());
+        payload["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("workspace_id");
+        let mut foreign = graph_mutation(&graph_scope, "node", "foreign-node", payload);
+        foreign.payload["metadata"]
+            .as_object_mut()
+            .unwrap()
+            .remove("workspace_id");
+        foreign.record.metadata.remove("workspace_id");
+        block_on(store.apply_graph_mutation(foreign)).expect("seed foreign-scope entity");
+
+        let result = block_on(store.rollback_document(DocumentRollbackRequest {
+            scope: graph_scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-scope-1".to_owned(),
+            deleted_at: "2026-11-16T00:00:00Z".to_owned(),
+            page_size: 1,
+        }))
+        .expect("scoped rollback succeeds without touching foreign metadata");
+        assert!(result.removed_node_ids.is_empty());
+        let nodes = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope: graph_scope,
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["foreign-node".to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 10,
+        }))
+        .expect("read foreign node");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].metadata["lifecycle_status"], "active");
     }
 
     #[test]
