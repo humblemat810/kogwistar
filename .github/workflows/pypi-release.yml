@@ -28,6 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.version.outputs.version }}
+      source_ref: ${{ steps.version.outputs.source_ref }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -40,12 +41,17 @@ jobs:
         run: |
           if [ "$GITHUB_EVENT_NAME" = "push" ]; then
             RELEASE_VERSION="${GITHUB_REF_NAME#v}"
+            test "$GITHUB_REF_TYPE" = tag
+            test "$GITHUB_REF_NAME" = "v$RELEASE_VERSION"
+            SOURCE_REF="$GITHUB_SHA"
           else
             RELEASE_VERSION="$INPUT_VERSION"
+            RELEASE_TAG="v$RELEASE_VERSION"
+            git fetch origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            SOURCE_REF="$(git rev-parse "$RELEASE_TAG^{commit}")"
+            git checkout --detach "$SOURCE_REF"
           fi
           export RELEASE_VERSION
-          test "$GITHUB_REF_TYPE" = tag
-          test "$GITHUB_REF_NAME" = "v$RELEASE_VERSION"
           python - <<'PY'
           import json
           import os
@@ -70,6 +76,7 @@ jobs:
           print(f"version={version}")
           PY
           echo "version=$RELEASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "source_ref=$SOURCE_REF" >> "$GITHUB_OUTPUT"
 
   wheels:
     needs: verify-release
@@ -88,6 +95,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify-release.outputs.source_ref }}
 
       - uses: actions/setup-python@v7
         with:
@@ -117,6 +126,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify-release.outputs.source_ref }}
 
       - uses: actions/setup-python@v7
         with:
@@ -173,6 +184,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify-release.outputs.source_ref }}
 
       - uses: actions/setup-python@v7
         with:
@@ -231,9 +244,13 @@ jobs:
           if-no-files-found: error
 
   audit-artifacts:
-    needs: [wheels, sdist, pypy-wheel]
+    needs: [verify-release, wheels, sdist, pypy-wheel]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify-release.outputs.source_ref }}
+
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -268,6 +285,10 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.verify-release.outputs.source_ref }}
 
       - name: Download all tested artifacts
         uses: actions/download-artifact@v7
