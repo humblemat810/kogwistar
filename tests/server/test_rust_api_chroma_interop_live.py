@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import sysconfig
 import threading
@@ -761,7 +762,28 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
             "nodes": {source_id, target_id},
             "edges": {edge_id},
         }
+        expected_entity_ids = {source_id, target_id, edge_id}
         projected: dict[str, dict[str, object]] = {}
+
+        def all_projection_jobs_done() -> bool:
+            database_uri = (data_path / "meta.sqlite").resolve().as_uri() + "?mode=ro"
+            try:
+                with sqlite3.connect(database_uri, uri=True, timeout=0.2) as connection:
+                    rows = connection.execute(
+                        "SELECT entity_id, status FROM index_jobs "
+                        "WHERE namespace = ? AND entity_id IN (?, ?, ?)",
+                        (namespace, source_id, target_id, edge_id),
+                    ).fetchall()
+            except sqlite3.OperationalError:
+                return False
+            statuses_by_entity: dict[str, list[str]] = {}
+            for entity_id, status in rows:
+                statuses_by_entity.setdefault(entity_id, []).append(status)
+            return expected_entity_ids <= statuses_by_entity.keys() and all(
+                all(status == "DONE" for status in statuses_by_entity[entity_id])
+                for entity_id in expected_entity_ids
+            )
+
         while time.monotonic() < deadline:
             for collection_name, entity_ids in expected_projection.items():
                 result = client.get_collection(collection_name).get(
@@ -769,7 +791,7 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
                 )
                 if set(result["ids"]) == entity_ids:
                     projected[collection_name] = result
-            if set(projected) == set(expected_projection):
+            if set(projected) == set(expected_projection) and all_projection_jobs_done():
                 break
             if rust_process.poll() is not None:
                 raise AssertionError(
@@ -782,6 +804,10 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
             raise AssertionError(
                 "Rust inline worker did not promote Python Stage-1 nodes and edge; "
                 f"embedding_requests={embedding_requests!r}; server_log_tail={details!r}"
+            )
+        if not all_projection_jobs_done():
+            raise AssertionError(
+                "Rust worker projected records but did not durably acknowledge every job"
             )
         for collection_name in ("nodes", "edges"):
             for metadata, embedding in zip(
