@@ -313,6 +313,9 @@ def test_pypi_release_builds_and_audits_pypy311_pure_wheel() -> None:
         encoding="utf-8"
     )
 
+    assert 'tags:\n      - "v*.*.*"' in workflow
+    assert "workflow_dispatch:" not in workflow
+    assert "inputs.publish" not in workflow
     assert "pypy-wheel:" in workflow
     assert "needs: verify-release" in workflow
     assert "python-version: pypy-3.11-v7.3.20" in workflow
@@ -321,8 +324,9 @@ def test_pypi_release_builds_and_audits_pypy311_pure_wheel() -> None:
     assert "parse_wheel_filename(Path(wheel).name)" in workflow
     assert "name: wheel-pypy311-pure" in workflow
     assert "needs: [verify-release, wheels, sdist, pypy-wheel]" in workflow
-    assert "RELEASE_TAG=\"v$RELEASE_VERSION\"" in workflow
-    assert "git rev-parse \"$RELEASE_TAG^{commit}\"" in workflow
+    assert 'RELEASE_VERSION="${GITHUB_REF_NAME#v}"' in workflow
+    assert 'test "$GITHUB_REF_TYPE" = tag' in workflow
+    assert 'SOURCE_REF="$GITHUB_SHA"' in workflow
     assert workflow.count("ref: ${{ needs.verify-release.outputs.source_ref }}") == 5
     assert workflow.count("scripts/audit_pypi_release_artifacts.py") == 2
     assert "scripts/pypy311_pure_wheel_smoke.py" in workflow
