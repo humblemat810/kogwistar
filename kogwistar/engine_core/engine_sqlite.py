@@ -39,11 +39,14 @@ def _stage1_equality_filter(
         clause = pending.pop()
         for key, value in clause.items():
             if key == "$and":
-                if not isinstance(value, list) or not all(
-                    isinstance(item, dict) for item in value
-                ):
+                if not isinstance(value, list):
                     raise ValueError("Stage-1 metadata query supports equality and $and only")
-                pending.extend(value)
+                for item in value:
+                    if not isinstance(item, dict):
+                        raise ValueError(
+                            "Stage-1 metadata query supports equality and $and only"
+                        )
+                    pending.append(item)
             elif key.startswith("$") or isinstance(value, dict):
                 raise ValueError("Stage-1 metadata query supports equality and $and only")
             elif key in flattened and flattened[key] != value:
