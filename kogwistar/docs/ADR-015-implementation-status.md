@@ -1,5 +1,12 @@
 # ADR-015 implementation status
 
+**Architecture amendment (2026-10-24):** ADR-022 retains both Python and Rust
+as supported capability implementations. The ADR-015 default-Rust and Python
+rollback/removal entries below describe the historical migration target and
+its rollout evidence, not a deprecation decision. Transaction ownership and
+the optional native execution paths are specified in
+`ADR-022-dual-language-capability-paths.md`.
+
 Updated: 2026-09-28
 
 ## Current Source and Release Boundary
@@ -136,12 +143,56 @@ Only these local items remain in scope before production rollout:
   same protocol. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 16 currently frozen Python-owned
+- [x] Phase 5: explicitly version/defer the 1 currently frozen Python-owned
   server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
   records grouped Python rollback ownership, prerequisite Rust authorities, and
   exit evidence; its exact operation set is bidirectionally checked against the
   Rust fail-closed inventory.
-- [x] Phase 5: explicitly version/defer the five conversation/tool syscall
+- [x] The PostgreSQL Rust service now serves
+  `GET /api/conversations/{conversation_id}/snapshots/latest` through its
+  existing ACL-filtered snapshot projection, with Python-compatible namespace,
+  capability, query, and response-shape checks. Focused Rust route tests and
+  the route-manifest suite pass; SQLite remains explicitly unsupported.
+- [x] The PostgreSQL Rust service also serves
+  `GET /api/conversations/{conversation_id}` through the shared summary
+  projection and ACL filter, preserving the six-field Python response and
+  stripping Rust seam metadata. Path, namespace/capability, SQLite fail-closed,
+  and route-accounting tests pass. Both conversation summary and latest-snapshot
+  routes passed their gated integration tests against the existing local
+  pgvector container on 2026-10-25 (1 passed each, 0 failed); neither route
+  promotes the aggregate conversation capability or support matrix.
+- [x] The PostgreSQL Rust service now serves
+  `GET /api/conversations/{conversation_id}/turns` by adapting the existing
+  ACL-filtered internal transcript operation to the legacy public response
+  shape. The combined summary/transcript test passed live against local
+  pgvector on 2026-10-25; SQLite remains explicitly unsupported.
+- [x] The PostgreSQL Rust service now serves `GET /api/conversations` using
+  the same ACL-filtered conversation projection, an exact authenticated-user
+  filter, and the Python-compatible list item shape. SQLite does not advertise
+  the graph-dependent route. Projection, authorization, route-accounting, and
+  live PostgreSQL tests pass; the live fixture includes another user's public
+  conversation and verifies it is excluded. This route inherits the shared
+  10,000-visible-record read cap; large-graph pagination/volume parity remains
+  open and is not implied by the route-level conformance result.
+- [x] The PostgreSQL Rust service now serves `POST /api/conversations` by
+  adapting the public request to the existing native `create_conversation`
+  syscall, preserving authenticated-owner, `spawn_process`, role, and
+  conversation-namespace checks and the syscall's atomic start-node/ACL/index
+  transaction. The packaged-server live PostgreSQL test verifies the public
+  response and durable start-node projection, and rejects owner spoofing;
+  SQLite remains explicitly unsupported.
+- [x] The PostgreSQL Rust service now serves
+  `POST /api/conversations/{conversation_id}/turns:answer` by adapting the
+  public request to the existing atomic `send_message` syscall. It preserves
+  the Python queued `202` response envelope and default `debug.rag.v1`
+  workflow, while retaining owner, capability, scope, and queue-admission
+  checks. The packaged-server live PostgreSQL test verifies the queued
+  response and durable turn/run/lane admission; SQLite remains unsupported.
+- [x] Conversation summary, transcript, and latest-snapshot reads share one
+  storage-scope/ACL-principal derivation and one ACL-filtered record-read
+  helper. The scope/principal invariant test and both live summary/transcript
+  and latest-snapshot PostgreSQL integrations passed after refactoring.
+- [x] Phase 5: explicitly version/defer the four remaining conversation/tool syscall
   sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
   manifest entry records Python rollback ownership, the required worker/runtime
   protocol authority, and required exit evidence.
@@ -197,10 +248,10 @@ These cannot be satisfied by more local unit-test implementation:
   fail a release promotion.
 - [ ] Make the ready Rust capabilities default only after production evidence.
 - [ ] Complete one full compatibility release with Python rollback retained.
-- [ ] Then satisfy Phase 6: default graph/storage/runtime/server behavior in
-  Rust, Python API tests against Rust, no default legacy-core request path,
-  upgrade/rollback survival, all consumer/E2E gates, and classification of all
-  retained Python as SDK, bridge, integration, or worker code.
+- [ ] Then satisfy the historical Phase 6 Rust-default deployment checks:
+  graph/storage/runtime/server behavior, Python API tests against Rust,
+  upgrade/rollback survival, and all consumer/E2E gates. Under ADR-022 these
+  checks do not retire the independently selectable Python implementation.
 
 Current objective facts: 2 of 8 Rust-target capability flags are ready; 6 are
 not ready; completed production capability canaries are 0 of 8 (0 of 40
@@ -508,13 +559,14 @@ deployment canary evidence required to make Rust its live default writer.
   executable evidence; implementation and fresh four-layer proof remain pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
-- The 16 frozen server routes and five frozen conversation/tool syscalls are
-  now versioned Python-roll-back deferrals in `server_operation_deferrals` in
+- The currently deferred Rust server routes and four remaining frozen
+  conversation/tool syscalls are classified in `server_operation_deferrals` in
   `contracts/rust-port-v1.json`. Each records a prerequisite authority and
   capability-specific exit evidence; a contract test requires an exact,
-  duplicate-free match with Rust's direct fail-closed inventories. This closes
-  their classification task only, not their Rust authority or Phase 5
-  conformance gates.
+  duplicate-free match with Rust's direct fail-closed inventories. Implemented
+  routes leave this inventory only after their native authority path and
+  capability-specific evidence are verified. This closes classification only,
+  not the remaining Rust authority or Phase 5 conformance gates.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
 - No downstream adopter production internal/test, 1%, 10%, 50%, and 100% canary
@@ -542,8 +594,9 @@ explicit maintainer action.
 
 1. An adopter may run capability canaries through internal/test, 1%, 10%, 50%,
    and 100% with observation windows and zero unexplained correctness mismatches.
-2. An adopter may choose a Rust default switch and retain Python rollback for one
-   compatibility release before any removal decision.
+2. An adopter may choose a Rust default switch while retaining the supported
+   Python implementation. A separate architecture and compatibility decision
+   is required before any removal.
 3. HA, hyperscale, and real customer traffic evaluation remain deployment-specific
    work and are not inferred from this library evidence.
 

@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
+from kogwistar.acl.context import current_acl_context
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
     claims_ctx,
     describe_storage_security_mapping,
+    get_current_acl_principal_id,
     get_current_capabilities,
+    get_current_principal_groups,
     get_execution_namespace,
     get_security_scope,
     get_security_scope_parts,
@@ -73,6 +79,68 @@ def test_capability_helpers_use_claim_capabilities():
         claims_ctx.reset(token)
 
 
+def test_principal_group_helper_matches_rust_claim_projection():
+    token = claims_ctx.set(
+        {
+            "groups": " Reviewers, Ops ",
+            "principal_groups": ["reviewers", "Auditors", 42],
+            "roles": ["admin"],
+        }
+    )
+    try:
+        assert get_current_principal_groups() == ("auditors", "ops", "reviewers")
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_shared_acl_context_uses_same_group_projection_and_ignores_roles():
+    token = claims_ctx.set(
+        {
+            "agent_id": "Agent-A",
+            "groups": " Reviewers, Ops ",
+            "principal_groups": ["reviewers", "Auditors"],
+            "roles": ["admin"],
+        }
+    )
+    try:
+        context = current_acl_context(acl_enabled=True, purpose="test")
+        assert context.principal_id == "agent-a"
+        assert context.principal_groups == ("auditors", "ops", "reviewers")
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_acl_principal_identity_matches_shared_rust_contract():
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "graph-acl-principal-identity-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
+    for case in fixture["cases"]:
+        token = claims_ctx.set(case["claims"])
+        try:
+            assert get_current_acl_principal_id() == case["expected_principal_id"], case["name"]
+            assert (
+                current_acl_context(acl_enabled=True, purpose="parity").principal_id
+                == case["expected_principal_id"]
+            ), case["name"]
+        finally:
+            claims_ctx.reset(token)
+    for case in fixture.get("group_cases", []):
+        token = claims_ctx.set(case["claims"])
+        try:
+            assert get_current_principal_groups() == tuple(case["expected_groups"]), case["name"]
+            assert (
+                current_acl_context(acl_enabled=True, purpose="group-parity").principal_groups
+                == tuple(case["expected_groups"])
+            ), case["name"]
+        finally:
+            claims_ctx.reset(token)
+
+
 def test_security_scope_access_requires_match_or_explicit_share():
     token = claims_ctx.set({"ns": "conversation", "security_scope": "tenant-a"})
     try:
@@ -120,3 +188,22 @@ def test_security_scope_parts_support_tenant_workspace_project():
         assert mapping["project"] == "project-a"
     finally:
         claims_ctx.reset(token)
+
+
+def test_security_scope_projection_matches_shared_rust_contract():
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "auth-scope-projection-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
+    for case in fixture["cases"]:
+        token = claims_ctx.set(case["claims"])
+        try:
+            mapping = describe_storage_security_mapping()
+            for key, expected in case["expected"].items():
+                assert mapping[key] == expected, case["name"]
+        finally:
+            claims_ctx.reset(token)

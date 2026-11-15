@@ -1,4 +1,6 @@
+import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -62,6 +64,28 @@ def test_auth_me_authorized(client):
     assert data["email"] == "test@example.com"
     assert data["role"] == "ro"
     assert data["ns"] == "docs"
+
+
+def test_auth_me_reports_current_persisted_activity(client):
+    auth_service = app.state.auth_service
+    user_id = auth_service.resolve_user_from_external(
+        "iss", "inactive-sub", "inactive@example.com"
+    )
+    user = auth_service.repo.get_user(user_id)
+    assert user is not None
+    user.is_active = False
+    auth_service.repo.session.commit()
+    try:
+        token = auth_service.mint_token(user_id)
+        response = client.get(
+            "/api/auth/me", headers={"Authorization": f"Bearer {token}"}
+        )
+
+        assert response.status_code == 200
+        assert response.json()["is_active"] is False
+    finally:
+        user.is_active = True
+        auth_service.repo.session.commit()
 
 
 def test_login_dev_mode_redirects_with_token_and_requested_redirect(
@@ -136,24 +160,26 @@ def test_login_rejects_unallowlisted_return_to_in_oidc(client, monkeypatch):
     assert response.json()["detail"] == "return_to target is not allowed"
 
 
-def test_dev_token_accepts_comma_separated_namespaces(client):
-    response = client.post(
-        "/auth/dev-token",
-        json={
-            "username": "dev-user",
-            "role": "rw",
-            "ns": "docs,conversation,workflow,wisdom",
-        },
+def test_dev_token_accepts_comma_separated_namespaces(client, monkeypatch):
+    monkeypatch.setattr(app.state, "auth_mode", "dev", raising=False)
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/auth-dev-token-v1.json"
+        ).read_text(encoding="utf-8")
     )
-
-    assert response.status_code == 200
+    response = client.post("/auth/dev-token", json=contract["request"])
+    assert response.status_code == contract["success_status"]
+    assert sorted(response.json()) == contract["response_fields"]
     token = response.json()["token"]
     claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
-    assert isinstance(claims["ns"], list)
-    assert set(claims["ns"]) == {"docs", "conversation", "workflow", "wisdom"}
+    for field, expected in contract["stable_claims"].items():
+        assert claims[field] == expected
+    assert claims["exp"] - claims["iat"] == contract["token_lifetime_seconds"]
 
 
-def test_dev_token_accepts_namespace_list(client):
+def test_dev_token_accepts_namespace_list(client, monkeypatch):
+    monkeypatch.setattr(app.state, "auth_mode", "dev", raising=False)
     response = client.post(
         "/auth/dev-token",
         json={
@@ -168,6 +194,16 @@ def test_dev_token_accepts_namespace_list(client):
     claims = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALG])
     assert isinstance(claims["ns"], list)
     assert set(claims["ns"]) == {"docs", "conversation", "workflow", "wisdom"}
+
+
+def test_dev_token_is_disabled_outside_dev_mode(client, monkeypatch):
+    monkeypatch.setattr(app.state, "auth_mode", "oidc", raising=False)
+    response = client.post(
+        "/auth/dev-token",
+        json={"username": "attacker", "role": "rw", "ns": "docs,workflow"},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Dev token endpoint is disabled"
 
 
 def test_login_redirect(client):
@@ -188,9 +224,17 @@ def test_login_redirect(client):
 
 
 def test_logout(client):
-    response = client.post("/api/auth/logout")
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "auth-logout-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    response = client.request(contract["method"], contract["path"])
+    assert response.status_code == contract["expected_status"]
+    assert response.json() == contract["expected_json"]
 
 
 def test_callback_success_redirects_with_token(client, monkeypatch):

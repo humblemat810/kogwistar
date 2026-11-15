@@ -1,0 +1,11 @@
+{
+  "snapshot_node_id": "snapshot-1",
+  "conversation_id": "conversation-1",
+  "metadata": {
+    "source": "integration"
+  },
+  "properties": {
+    "snapshot_seq": 7,
+    "summary": "latest snapshot"
+  }
+}

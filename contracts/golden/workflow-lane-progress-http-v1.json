@@ -1,0 +1,26 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "run_id": "run-1",
+  "event_type": "run.started",
+  "payload": {
+    "source": "test"
+  },
+  "expected_total": 1,
+  "expected_item_count": 1,
+  "expected_item_keys": [
+    "seq",
+    "run_id",
+    "event_type",
+    "payload",
+    "created_at_ms"
+  ],
+  "expected_item_fields": {
+    "seq": 1,
+    "run_id": "run-1",
+    "event_type": "run.started",
+    "payload": {
+      "source": "test"
+    }
+  }
+}

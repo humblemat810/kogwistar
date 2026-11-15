@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "mcp_operation": "workflow.operator_dashboard",
+  "mcp_arguments": {
+    "limit": 10
+  },
+  "required_capabilities": [
+    "project_view",
+    "workflow.run.read",
+    "read_security_scope"
+  ],
+  "dashboard_fields": [
+    "process_table",
+    "operator_inbox",
+    "blocked_runs",
+    "blocked_flow_graph",
+    "message_queue",
+    "dead_letters",
+    "capabilities",
+    "resources"
+  ],
+  "blocked_statuses": [
+    "blocked",
+    "waiting",
+    "suspended",
+    "cancelling"
+  ],
+  "blocked_flow_node_fields": [
+    "id",
+    "kind",
+    "status",
+    "workflow_id",
+    "conversation_id"
+  ]
+}

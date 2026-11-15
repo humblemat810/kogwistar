@@ -40,10 +40,10 @@ MAPPINGS = [
         "test_async_runtime_native_scheduler_persists_rt_join_frontier_shape",
     ),
     (
-        "tests.runtime.test_checkpoint_resume_contract",
-        "test_replay_to_is_read_only_and_does_not_append_new_history",
+        "tests.runtime.test_workflow_terminal_status",
+        "test_runtime_resume_from_latest_checkpoint_reuses_state_and_sequence",
         "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_resume_run_is_not_supported",
+        "test_async_runtime_checkpoint_resume_runs_pending_frontier",
     ),
     (
         "tests.runtime.test_workflow_suspend_resume",
@@ -61,13 +61,13 @@ MAPPINGS = [
         "tests.runtime.test_workflow_suspend_resume",
         "test_resume_run_failure_can_route_to_recovery_branch",
         "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_parent_cancellation_propagates_to_child",
+        "test_async_runtime_suspend_and_resume_roundtrip",
     ),
     (
         "tests.runtime.test_workflow_suspend_resume",
         "test_resume_run_can_resuspend_same_token_with_updated_payload",
         "tests.runtime.test_async_runtime_contract",
-        "test_async_runtime_run_with_resume_markers_is_not_supported",
+        "test_async_runtime_resume_run_resuspends_same_token_then_continues",
     ),
     (
         "tests.runtime.test_workflow_suspend_resume",
@@ -121,9 +121,7 @@ def test_sync_async_mapping_docstrings_have_first_line_pairs(
     async_file = async_mod.replace(".", "/") + ".py"
     allowed_sync_files = {sync_file}
     if async_mod.endswith("test_async_runtime_bijection_contract"):
-        allowed_sync_files.add(
-            "tests/runtime/test_sync_runtime_bijection_contract.py"
-        )
+        allowed_sync_files.add("tests/runtime/test_sync_runtime_bijection_contract.py")
 
     assert sync_first.startswith("Async mirror:"), sync_first
     assert async_first.startswith("Sync mirror:"), async_first

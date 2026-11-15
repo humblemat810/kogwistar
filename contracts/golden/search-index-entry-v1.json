@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "request": {
+    "index": [
+      {
+        "node_id": "node-42",
+        "canonical_title": "Permit Review",
+        "keywords": ["permit", "review"],
+        "aliases": ["approval", "authorization"],
+        "provision": "Review the permit before work begins.",
+        "doc_id": "safety-manual"
+      },
+      {
+        "node_id": "node-legacy",
+        "canonical_title": "Fallback title",
+        "provision": "Legacy entry without optional fields."
+      },
+      {
+        "node_id": "node-empty-doc",
+        "canonical_title": "Empty document id",
+        "keywords": [],
+        "aliases": [],
+        "provision": "An empty document ID is omitted from embedding text.",
+        "doc_id": ""
+      }
+    ]
+  },
+  "expected": [
+    {
+      "index_key": "node-42|Permit Review|Review the permit before work begins.",
+      "embedding_text": "ENTITY SEARCH INDEX ENTRY\nCANONICAL TITLE: Permit Review\nPROVISION/DESCRIPTION: Review the permit before work begins.\nKEYWORDS: permit, review\nALIASES/KNOWN AS: approval, authorization\nSOURCE DOCUMENT: safety-manual\nTARGET NODE ID: node-42"
+    },
+    {
+      "index_key": "node-legacy|Fallback title|Legacy entry without optional fields.",
+      "embedding_text": "ENTITY SEARCH INDEX ENTRY\nCANONICAL TITLE: Fallback title\nPROVISION/DESCRIPTION: Legacy entry without optional fields.\nTARGET NODE ID: node-legacy"
+    },
+    {
+      "index_key": "node-empty-doc|Empty document id|An empty document ID is omitted from embedding text.",
+      "embedding_text": "ENTITY SEARCH INDEX ENTRY\nCANONICAL TITLE: Empty document id\nPROVISION/DESCRIPTION: An empty document ID is omitted from embedding text.\nTARGET NODE ID: node-empty-doc"
+    }
+  ]
+}

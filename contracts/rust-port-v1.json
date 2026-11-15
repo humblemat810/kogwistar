@@ -7,6 +7,57 @@
     "shadow",
     "rust"
   ],
+  "implementation_selectors": [
+    {
+      "name": "KOGWISTAR_IMPL_MODE",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": null,
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_CONTRACTS",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_META_STORE",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_GRAPH_STORE",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_RUNTIME",
+      "accepted_modes": ["python", "shadow", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_SERVER",
+      "accepted_modes": ["python", "rust"],
+      "default": "python",
+      "fallback_selector": "KOGWISTAR_IMPL_MODE",
+      "owner": "kogwistar.implementation_selection"
+    },
+    {
+      "name": "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+      "accepted_modes": ["python", "rust"],
+      "default": "python",
+      "fallback_selector": null,
+      "owner": "kogwistar.implementation_selection"
+    }
+  ],
   "phase_0_evidence": {
     "consumer_import_inventory": "contracts/inventory/consumer-imports-v1.json",
     "benchmark_baseline": "contracts/benchmarks/python-memory-windows.json",
@@ -472,113 +523,6 @@
           {
             "method": "DELETE",
             "path": "/admin/doc/{doc_id}"
-          },
-          {
-            "method": "POST",
-            "path": "/api/document"
-          },
-          {
-            "method": "POST",
-            "path": "/api/document.upsert_tree"
-          },
-          {
-            "method": "POST",
-            "path": "/api/graph/upsert"
-          }
-        ]
-      },
-      {
-        "name": "conversation-serving-and-turns",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "workflow-runtime",
-          "graph-pgvector"
-        ],
-        "exit_evidence": "conversation graph projection/read parity, security-scope checks, turn idempotency, snapshot replay, and REST/MCP conformance",
-        "operations": [
-          {
-            "method": "GET",
-            "path": "/api/conversations"
-          },
-          {
-            "method": "GET",
-            "path": "/api/conversations/{conversation_id}"
-          },
-          {
-            "method": "GET",
-            "path": "/api/conversations/{conversation_id}/snapshots/latest"
-          },
-          {
-            "method": "GET",
-            "path": "/api/conversations/{conversation_id}/turns"
-          },
-          {
-            "method": "POST",
-            "path": "/api/conversations"
-          },
-          {
-            "method": "POST",
-            "path": "/api/conversations/{conversation_id}/turns:answer"
-          }
-        ]
-      },
-      {
-        "name": "graph-query-and-visualization-data",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "graph-pgvector"
-        ],
-        "exit_evidence": "graph ordering/filter/query parity, scope authorization, data-bearing visualization parity, and frozen OpenAPI/MCP conformance",
-        "operations": [
-          {
-            "method": "GET",
-            "path": "/api/search_index_hybrid"
-          },
-          {
-            "method": "GET",
-            "path": "/api/viz/cytoscape.json"
-          },
-          {
-            "method": "GET",
-            "path": "/api/viz/d3.json"
-          },
-          {
-            "method": "GET",
-            "path": "/viz/d3.bundle"
-          }
-        ]
-      },
-      {
-        "name": "tool-audit-read",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "workflow-runtime",
-          "graph-pgvector"
-        ],
-        "exit_evidence": "conversation tool-call/result read parity, security-scope enforcement, audit ordering, and REST/MCP conformance",
-        "operations": [
-          {
-            "method": "GET",
-            "path": "/api/workflow/tools/audit"
-          }
-        ]
-      },
-      {
-        "name": "derived-index-admission",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "graph-pgvector",
-          "queues-leases-lanes"
-        ],
-        "exit_evidence": "derived-index fingerprint/reconcile parity, lease/retry/replay, rollback, and public route conformance",
-        "operations": [
-          {
-            "method": "POST",
-            "path": "/api/add_index_entries"
           }
         ]
       }
@@ -595,7 +539,6 @@
         "send_message",
         "receive_message",
         "mount_memory",
-        "project_view",
         "invoke_tool"
       ]
     }

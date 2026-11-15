@@ -1,15 +1,25 @@
 from __future__ import annotations
 
-import pytest
-from fastapi.testclient import TestClient
+import json
+import time
+from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+from fastapi import FastAPI, HTTPException
+from fastapi.testclient import TestClient
+from jose import jwt
+
+from kogwistar.conversation.models import ConversationNode
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.server.auth_middleware import claims_ctx
+from tests.server.auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 from tests.server.test_chat_server_api import (
     _configure_server,
     _runtime_success_runner,
     _token_header,
 )
+from kogwistar.server.syscall_api import _invoke_builtin_tool, create_syscall_router
 from tests.server.test_chat_server_api import (
     # Imported for pytest fixture discovery in this module.
     engine_triplet as engine_triplet,  # noqa: F401
@@ -51,13 +61,170 @@ def test_syscall_surface_lists_versioned_ops(monkeypatch, engine_triplet):
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "syscall-catalog-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     with TestClient(server.app) as client:
-        resp = client.get("/api/syscall/v1")
-        resp.raise_for_status()
-        payload = resp.json()
-        assert payload["version"] == "v1"
-        assert "spawn_process" in payload["ops"]
-        assert "resume" in payload["ops"]
+        resp = client.get(
+            "/api/syscall/v1",
+            headers=_token_header(client, role="ro", ns="workflow"),
+        )
+        assert resp.status_code == contract["success_status"], resp.text
+        assert resp.json() == contract["response_body"]
+
+
+def test_syscall_create_conversation_uses_authenticated_owner(
+    monkeypatch, engine_triplet
+):
+    _engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, _engine, conversation_engine, workflow_engine, _runtime_success_runner
+    )
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "owner-create",
+            "user_id": "owner-create",
+            "role": "rw",
+            "ns": ["conversation"],
+            "capabilities": ["spawn_process"],
+            "iat": now,
+            "exp": now + 3600,
+            "iss": "local",
+        },
+        TEST_JWT_SECRET,
+        algorithm=TEST_JWT_ALG,
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    with TestClient(server.app) as client:
+        request = {
+            "version": "v1",
+            "op": "create_conversation",
+            "args": {
+                "user_id": "spoofed-owner",
+                "conversation_id": "syscall-owner-check",
+                "start_node_id": "syscall-owner-check-start",
+            },
+        }
+        denied = client.post(
+            "/api/syscall/v1/create_conversation", json=request, headers=headers
+        )
+        assert denied.status_code == 403
+        assert not conversation_engine.read.get_nodes(
+            where={"conversation_id": "syscall-owner-check"},
+            node_type=ConversationNode,
+            limit=10,
+        )
+
+        request["args"]["user_id"] = "owner-create"
+        created = client.post(
+            "/api/syscall/v1/create_conversation", json=request, headers=headers
+        )
+
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["version"] == "v1"
+    assert payload["op"] == "create_conversation"
+    assert payload["status"] == "ok"
+    expected_result = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-create-syscall-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected_result.update(
+        conversation_id="syscall-owner-check",
+        user_id="owner-create",
+        start_node_id="syscall-owner-check-start",
+        tail_node_id="syscall-owner-check-start",
+    )
+    assert payload["result"] == expected_result
+    starts = conversation_engine.read.get_nodes(
+        where={"conversation_id": "syscall-owner-check"},
+        node_type=ConversationNode,
+        limit=10,
+    )
+    assert len(starts) == 1
+    assert starts[0].id == "syscall-owner-check-start"
+    assert starts[0].user_id == "owner-create"
+
+
+def test_syscall_create_conversation_router_rejects_owner_spoof_without_backend():
+    calls = []
+
+    def create_conversation(**kwargs):
+        calls.append(kwargs)
+        return {
+            "conversation_id": kwargs["conversation_id"],
+            "user_id": kwargs["user_id"],
+            "status": "active",
+            "start_node_id": kwargs["start_node_id"],
+            "tail_node_id": kwargs["start_node_id"],
+            "turn_count": 0,
+        }
+
+    service = SimpleNamespace(create_conversation=create_conversation)
+    conversation_namespace = object()
+
+    def require_role(role):
+        if role != "rw":
+            raise HTTPException(status_code=403)
+
+    def require_namespace(namespace):
+        if namespace is not conversation_namespace:
+            raise HTTPException(status_code=403)
+
+    app = FastAPI()
+    app.include_router(
+        create_syscall_router(
+            get_service=lambda: service,
+            require_role=require_role,
+            require_namespace=require_namespace,
+            conversation_namespace=conversation_namespace,
+            workflow_namespaces=object(),
+            get_user_id=lambda: "authenticated-owner",
+        )
+    )
+
+    with TestClient(app) as client:
+        denied = client.post(
+            "/api/syscall/v1/create_conversation",
+            json={
+                "version": "v1",
+                "op": "create_conversation",
+                "args": {"user_id": "spoofed-owner"},
+            },
+        )
+        assert denied.status_code == 403
+        assert calls == []
+
+        created = client.post(
+            "/api/syscall/v1/create_conversation",
+            json={
+                "version": "v1",
+                "op": "create_conversation",
+                "args": {
+                    "user_id": "authenticated-owner",
+                    "conversation_id": "router-owner-check",
+                    "start_node_id": "router-owner-start",
+                },
+            },
+        )
+
+    assert created.status_code == 200
+    assert created.json()["result"]["user_id"] == "authenticated-owner"
+    assert calls == [
+        {
+            "user_id": "authenticated-owner",
+            "conversation_id": "router-owner-check",
+            "start_node_id": "router-owner-start",
+        }
+    ]
 
 
 def test_syscall_spawn_process_returns_ok_contract(monkeypatch, engine_triplet):
@@ -117,6 +284,11 @@ def test_syscall_spawn_process_returns_ok_contract(monkeypatch, engine_triplet):
 
 def test_syscall_request_approval_is_blocked_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/syscall-request-approval-result-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
     )
@@ -124,13 +296,11 @@ def test_syscall_request_approval_is_blocked_contract(monkeypatch, engine_triple
         headers = _token_header(client, role="rw", ns="workflow", capabilities="approve_action,project_view,read_security_scope")
         resp = client.post(
             "/api/syscall/v1/request_approval",
-            json={"version": "v1", "op": "request_approval", "args": {"action": "deny", "reason": "need approval"}},
+            json=contract["request"],
             headers=headers,
         )
-        resp.raise_for_status()
-        payload = resp.json()
-        assert payload["status"] == "blocked"
-        assert payload["error"]["reason"]
+        assert resp.status_code == contract["http_status"]
+        assert resp.json() == contract["response"]
 
 
 def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engine_triplet):
@@ -183,6 +353,207 @@ def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engin
         assert payload["status"] == "ok"
         assert payload["result"]["tool_name"] == "list_transcript"
         assert payload["result"]["messages"] == []
+
+
+def test_syscall_receive_message_matches_shared_wire_fixture():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/receive-message-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service = SimpleNamespace(
+        list_transcript=lambda conversation_id: fixture["messages"]
+        if conversation_id == fixture["conversation_id"]
+        else pytest.fail("unexpected conversation ID")
+    )
+    authorized: list[tuple[str, object]] = []
+    router = create_syscall_router(
+        get_service=lambda: service,
+        require_role=lambda role: authorized.append(("role", role)),
+        require_namespace=lambda namespace: authorized.append(("namespace", namespace)),
+        conversation_namespace="conversation",
+        workflow_namespaces={"workflow"},
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={
+                "version": "v1",
+                "op": "receive_message",
+                "args": {"conversation_id": fixture["conversation_id"], "limit": 0},
+            },
+        )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["version"] == "v1"
+    assert payload["op"] == "receive_message"
+    assert payload["status"] == "ok"
+    assert payload["result"] == fixture
+    assert authorized == [("role", "ro"), ("namespace", "conversation")]
+
+
+def test_syscall_receive_message_missing_id_matches_shared_error_fixture():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/syscall-receive-message-missing-id-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service = SimpleNamespace(
+        list_transcript=lambda _conversation_id: pytest.fail(
+            "invalid receive_message input must not read the transcript"
+        )
+    )
+    router = create_syscall_router(
+        get_service=lambda: service,
+        require_role=lambda _role: None,
+        require_namespace=lambda _namespace: None,
+        conversation_namespace="conversation",
+        workflow_namespaces={"workflow"},
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={"version": "v1", "op": "receive_message", "args": {}},
+        )
+
+    assert response.status_code == fixture["http_status"]
+    assert response.json() == fixture["body"]
+
+
+@pytest.mark.parametrize(
+    ("role_allowed", "namespace_allowed", "checks"),
+    [
+        (False, True, [("role", "ro")]),
+        (True, False, [("role", "ro"), ("namespace", "conversation")]),
+    ],
+)
+def test_syscall_receive_message_denies_before_service_read(
+    role_allowed: bool,
+    namespace_allowed: bool,
+    checks: list[tuple[str, str]],
+) -> None:
+    service = SimpleNamespace(
+        list_transcript=lambda _conversation_id: pytest.fail(
+            "authorization denial must precede transcript access"
+        )
+    )
+    observed: list[tuple[str, str]] = []
+
+    def require_role(role: str) -> None:
+        observed.append(("role", role))
+        if not role_allowed:
+            raise HTTPException(status_code=403, detail="role denied")
+
+    def require_namespace(namespace: str) -> None:
+        observed.append(("namespace", namespace))
+        if not namespace_allowed:
+            raise HTTPException(status_code=403, detail="namespace denied")
+
+    router = create_syscall_router(
+        get_service=lambda: service,
+        require_role=require_role,
+        require_namespace=require_namespace,
+        conversation_namespace="conversation",
+        workflow_namespaces={"workflow"},
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={"version": "v1", "op": "receive_message", "args": {"conversation_id": "c1"}},
+        )
+
+    assert response.status_code == 403
+    assert observed == checks
+
+
+def test_invoke_builtin_tool_results_match_shared_contract_fixture():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/invoke-tool-results-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["version"] == "v1"
+    assert fixture["op"] == "invoke_tool"
+    results = fixture["results"]
+    service = SimpleNamespace(
+        list_transcript=lambda conversation_id: [
+            {"node_id": "turn-1", "role": "user", "content": "hello"}
+        ],
+        latest_snapshot=lambda conversation_id, *, run_id=None, stage=None: {
+            "snapshot_node_id": "snapshot-1",
+            "conversation_id": conversation_id,
+            "metadata": {"source": "test"},
+            "properties": {"snapshot_seq": 1},
+        },
+        capability_snapshot=lambda: {
+            "specs": [],
+            "approvals": [],
+            "revoked": [],
+            "audit_log": [],
+            "current_subject": "alice",
+            "effective_capabilities": ["project_view"],
+        },
+        resource_snapshot=lambda: {
+            "scheduler": {},
+            "runs": {},
+            "services": {},
+            "storage_usage_bytes": 0,
+            "cost_ledger": {},
+            "budget_model": {},
+            "policy_infra": {},
+        },
+    )
+    inputs = {
+        "list_transcript": {"tool_name": "list_transcript", "conversation_id": "conversation-1"},
+        "latest_snapshot": {
+            "tool_name": "latest_snapshot",
+            "conversation_id": "conversation-1",
+            "run_id": "run-1",
+            "stage": "answer",
+        },
+        "capability_snapshot": {"tool_name": "capability_snapshot"},
+        "resource_snapshot": {"tool_name": "resource_snapshot"},
+    }
+    expected = {
+        "list_transcript": {
+            "tool_name": "list_transcript",
+            "conversation_id": "conversation-1",
+            "messages": [{"node_id": "turn-1", "role": "user", "content": "hello"}],
+        },
+        "latest_snapshot": {
+            "tool_name": "latest_snapshot",
+            "conversation_id": "conversation-1",
+            "snapshot": {
+                "snapshot_node_id": "snapshot-1",
+                "conversation_id": "conversation-1",
+                "metadata": {"source": "test"},
+                "properties": {"snapshot_seq": 1},
+            },
+        },
+        "capability_snapshot": {
+            "tool_name": "capability_snapshot",
+            "snapshot": service.capability_snapshot(),
+        },
+        "resource_snapshot": {
+            "tool_name": "resource_snapshot",
+            "snapshot": service.resource_snapshot(),
+        },
+    }
+    for tool_name, args in inputs.items():
+        result = _invoke_builtin_tool(service, args)
+        assert result == expected[tool_name]
+        assert set(result) == set(results[tool_name]["root_fields"])
+        if "snapshot_fields" in results[tool_name]:
+            assert set(result["snapshot"]) == set(results[tool_name]["snapshot_fields"])
 
 
 def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
@@ -254,6 +625,14 @@ def test_syscall_audit_endpoint_records_dispatches(monkeypatch, engine_triplet):
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "syscall-audit-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     with TestClient(server.app) as client:
         headers = _token_header(
             client,
@@ -261,9 +640,29 @@ def test_syscall_audit_endpoint_records_dispatches(monkeypatch, engine_triplet):
             ns="workflow",
             capabilities="approve_action,project_view,read_security_scope",
         )
-        client.get("/api/syscall/v1", headers=headers).raise_for_status()
-        audit = client.get("/api/syscall/v1/audit", headers=headers)
-        audit.raise_for_status()
+        dispatched = client.post(
+            "/api/syscall/v1/request_approval",
+            json={
+                "version": "v1",
+                "op": "request_approval",
+                "args": {"action": "deny", "reason": "manual deny"},
+            },
+            headers=headers,
+        )
+        assert dispatched.status_code == 200
+        assert dispatched.json()["status"] == "blocked"
+
+        audit = client.get(
+            f"/api/syscall/v1/audit?limit={contract['limit']}", headers=headers
+        )
+        assert audit.status_code == contract["success_status"], audit.text
         payload = audit.json()
+        for field in contract["required_fields"]:
+            assert field in payload
         assert payload["version"] == "v1"
-        assert payload["events"]
+        assert len(payload["events"]) == 1
+        event = payload["events"][0]
+        for field in contract["required_event_fields"]:
+            assert field in event
+        for field, expected in contract["expected_event"].items():
+            assert event[field] == expected

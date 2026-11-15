@@ -1,0 +1,22 @@
+{
+  "contract_version": 1,
+  "status": "success",
+  "state_update": [
+    [
+      "u",
+      {
+        "counter": 2
+      }
+    ]
+  ],
+  "update": null,
+  "state_schema": {},
+  "successors": [],
+  "route_next": [],
+  "result": {
+    "workflow_status": "succeeded",
+    "final_state": {
+      "counter": 2
+    }
+  }
+}

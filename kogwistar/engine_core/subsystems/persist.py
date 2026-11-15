@@ -27,7 +27,11 @@ from ..types import (
     PersistedGraphResult,
     ToposortIngestResult,
 )
-from ...json_types import JsonObject
+from ...json_types import JsonObject, JsonValue
+from ...implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from ..utils.aliasing import AliasBook, _is_alias, _is_new_edge, _is_new_node, _is_uuid
 from .base import NamespaceProxy
 from .read import stage1_row_is_current
@@ -46,6 +50,10 @@ def _backend_mapping(value: object) -> dict[str, Any]:
 class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
+
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        return getattr(self._e, "_implementation_selection_snapshot", None)
 
     @staticmethod
     def _merge_groundings(
@@ -363,7 +371,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 entity_id=entity_id,
             )
         if row is None:
-            meta = getattr(self._e, "meta_sqlite", None)
+            meta = getattr(self._e, "metadata", None)
             getter = getattr(meta, "get_stage1_node_projection", None)
             if callable(getter):
                 row = getter(
@@ -399,16 +407,44 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         edge-before-node ingest ordering, so callers that receive out-of-order
         events must retry or stage those edges outside this write path.
         """
-        need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
-        if need_nodes:
-            got = set(
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        metadata = getattr(self._e, "metadata", None)
+
+        def existing_endpoint_ids(
+            *, entity_kind: str, entity_ids: set[str]
+        ) -> set[str]:
+            if not entity_ids:
+                return set()
+            if isinstance(metadata, RustEnginePostgresMetaStore):
+                table_attr = "nodes" if entity_kind == "node" else "edges"
+                table = getattr(self._e.backend, table_attr).name
+                records = metadata.graph_projection_records(
+                    namespace=str(getattr(self._e, "namespace", "default")),
+                    workspace_id=None,
+                    graph_space=None,
+                    table=table,
+                    ids=cast(JsonValue, sorted(entity_ids)),
+                    metadata={},
+                    limit=len(entity_ids),
+                    for_update=metadata.transaction_active,
+                )
+                return {str(record["id"]) for record in records}
+            getter = (
+                self._e.backend.node_get
+                if entity_kind == "node"
+                else self._e.backend.edge_get
+            )
+            return set(
                 _backend_mapping(
-                    run_awaitable_blocking(
-                        self._e.backend.node_get(ids=list(need_nodes))
-                    )
+                    run_awaitable_blocking(getter(ids=sorted(entity_ids)))
                 ).get("ids")
                 or []
             )
+
+        need_nodes = set((edge.source_ids or []) + (edge.target_ids or []))
+        if need_nodes:
+            got = existing_endpoint_ids(entity_kind="node", entity_ids=need_nodes)
             if got != need_nodes:
                 got.update(
                     node_id for node_id in need_nodes - got
@@ -418,22 +454,17 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 raise ValueError(f"Missing node endpoints: {sorted(need_nodes - got)}")
 
         for attr in ("source_edge_ids", "target_edge_ids"):
-            ids = getattr(edge, attr, None) or []
+            ids = set(getattr(edge, attr, None) or [])
             if ids:
-                got = set(
-                    _backend_mapping(
-                        run_awaitable_blocking(self._e.backend.edge_get(ids=ids))
-                    ).get("ids")
-                    or []
-                )
-                if got != set(ids):
+                got = existing_endpoint_ids(entity_kind="edge", entity_ids=ids)
+                if got != ids:
                     got.update(
-                        edge_id for edge_id in set(ids) - got
+                        edge_id for edge_id in ids - got
                         if self._stage1_endpoint_exists("edge", edge_id)
                     )
-                if got != set(ids):
+                if got != ids:
                     raise ValueError(
-                        f"Missing edge endpoints in {attr}: {sorted(set(ids) - got)}"
+                        f"Missing edge endpoints in {attr}: {sorted(ids - got)}"
                     )
 
     async def assert_endpoints_exist_async(
@@ -522,12 +553,19 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
 
     def exists_node(self, rid: str) -> bool:
-        g = _backend_mapping(run_awaitable_blocking(self._e.backend.node_get(ids=[rid])))
-        return (g.get("ids") or [None])[0] == rid
+        # Preserve backend selection; direct backend reads bypass Rust authority.
+        return bool(
+            self._e.read.get_nodes(
+                ids=[rid], limit=1, resolve_mode="include_tombstones"
+            )
+        )
 
     def exists_edge(self, rid: str) -> bool:
-        g = _backend_mapping(run_awaitable_blocking(self._e.backend.edge_get(ids=[rid])))
-        return (g.get("ids") or [None])[0] == rid
+        return bool(
+            self._e.read.get_edges(
+                ids=[rid], limit=1, resolve_mode="include_tombstones"
+            )
+        )
 
     def exists_any(self, rid: str) -> bool:
         return self.exists_node(rid) or self.exists_edge(rid)
@@ -574,6 +612,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return node_items, edge_items
 
+    @implementation_selection_bound
     def persist_graph(
         self,
         *,
@@ -650,6 +689,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids),
         }
 
+    @implementation_selection_bound
     def persist_graph_extraction(
         self,
         *,
@@ -754,6 +794,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids),
         }
 
+    @implementation_selection_bound
     def persist_document_graph_extraction(
         self,
         *,
@@ -839,6 +880,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids),
         }
 
+    @implementation_selection_bound
     def ingest_with_toposort(
         self,
         parsed: LLMGraphExtraction | PureGraph | GraphExtractionWithIDs,
@@ -959,6 +1001,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "edges_added": len(edge_ids_added),
         }
 
+    @implementation_selection_bound
     def replay_namespace(
         self,
         *,
@@ -975,7 +1018,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         enabled, a reconcile pass runs after replay; repair_backend additionally
         deletes current backend rows before reapplying ADD/REPLACE events.
         """
-        iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
+        iter_events = getattr(self._e.metadata, "iter_entity_events", None)
         if iter_events is None:
             return 0
 
@@ -1068,6 +1111,7 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return last_seq
 
+    @implementation_selection_bound
     def replay_repair_namespace(
         self,
         *,

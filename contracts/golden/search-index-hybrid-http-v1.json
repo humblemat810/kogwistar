@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "query": "permit",
+  "required_response_fields": ["query", "results"],
+  "required_hit_fields": [
+    "index_key",
+    "node_id",
+    "canonical_title",
+    "provision",
+    "document_id",
+    "fts_score",
+    "vec_score",
+    "hybrid_score"
+  ],
+  "resolved_hit_fields": ["documents", "metadatas"]
+}

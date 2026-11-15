@@ -1,0 +1,38 @@
+{
+  "contract_version": 1,
+  "cases": [
+    {
+      "namespace": "tenant-a",
+      "entity_kind": "node",
+      "entity_id": "n1",
+      "events": [
+        {"namespace": "tenant-a", "seq": 1, "event_id": "n1-add", "entity_kind": "node", "entity_id": "n1", "op": "ADD", "payload": {"id": "n1", "label": "old"}},
+        {"namespace": "tenant-a", "seq": 2, "event_id": "n1-tombstone", "entity_kind": "node", "entity_id": "n1", "op": "REPLACE", "payload": {"lifecycle_patch": {"lifecycle_status": "tombstoned"}}},
+        {"namespace": "tenant-a", "seq": 3, "event_id": "n1-reactivate", "entity_kind": "node", "entity_id": "n1", "op": "ADD", "payload": {"id": "n1", "label": "caf\u00e9", "lifecycle_patch": null}},
+        {"namespace": "tenant-a", "seq": 4, "event_id": "other-node", "entity_kind": "node", "entity_id": "other", "op": "ADD", "payload": {"id": "other"}},
+        {"namespace": "other-tenant", "seq": 5, "event_id": "other-scope", "entity_kind": "node", "entity_id": "n1", "op": "DELETE", "payload": {"id": "n1"}}
+      ],
+      "expected": {
+        "revision": 3,
+        "state": "active",
+        "payload": {"id": "n1", "label": "caf\u00e9", "lifecycle_patch": null},
+        "job_payload": "{\"canonical_revision\":3,\"source_fingerprint\":\"701c525c9bed003f203e4dda2077f594\",\"source_state\":\"active\"}"
+      }
+    },
+    {
+      "namespace": "tenant-a",
+      "entity_kind": "edge",
+      "entity_id": "e1",
+      "events": [
+        {"namespace": "tenant-a", "seq": 7, "event_id": "e1-add", "entity_kind": "edge", "entity_id": "e1", "op": "ADD", "payload": {"id": "e1"}},
+        {"namespace": "tenant-a", "seq": 8, "event_id": "e1-delete", "entity_kind": "edge", "entity_id": "e1", "op": "TOMBSTONE", "payload": {"entity_id": "e1", "lifecycle_status": "tombstoned"}}
+      ],
+      "expected": {
+        "revision": 8,
+        "state": "deleted",
+        "payload": {"entity_id": "e1", "lifecycle_status": "tombstoned"},
+        "job_payload": "{\"canonical_revision\":8,\"source_fingerprint\":\"5f44b3e8fa057cd236fd48196e4151f8\",\"source_state\":\"deleted\"}"
+      }
+    }
+  ]
+}

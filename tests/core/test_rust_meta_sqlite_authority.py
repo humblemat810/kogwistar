@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
 
 import pytest
 
-from kogwistar._rust_bridge import RustParityError
+from kogwistar._rust_bridge import RustParityError, capture_rust_bridge_calls
 from kogwistar.agent import (
     DurableCatalogStore,
     DurableSkillCatalogMaterializer,
@@ -15,11 +21,14 @@ from kogwistar.engine_core import rust_meta_sqlite
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 from kogwistar.engine_core.in_memory_backend import InMemoryBackend, _DummyLock
+from kogwistar.engine_core.indexing import IndexingSubsystem
 from kogwistar.engine_core.rust_meta_sqlite import (
     RustEngineSQLite,
     RustSQLiteConnectionUnavailable,
+    _RustTransactionToken,
     build_sqlite_meta_store,
 )
+from kogwistar.workers.index_job_worker import IndexJobWorker
 from tests._helpers.graph_builders import build_entity_node
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
@@ -39,6 +48,85 @@ def test_public_selector_keeps_python_rollback_and_routes_rust_owner(
     assert type(build_sqlite_meta_store(tmp_path)).__name__ == "EngineSQLite"
     monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
     assert isinstance(build_sqlite_meta_store(tmp_path), RustEngineSQLite)
+
+
+def test_manifest_advertised_sqlite_meta_run_round_trip_and_python_rollback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest_path = Path(__file__).resolve().parents[2] / "contracts" / "rust-port-v1.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    capability = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "sqlite-meta"
+    )
+    assert capability["configuration"] == "KOGWISTAR_IMPL_META_STORE"
+    assert capability["target_authoritative_writer"] == "rust"
+    assert capability["rust_cutover_ready"] is True
+
+    monkeypatch.setenv(capability["configuration"], "rust")
+    rust_store = build_sqlite_meta_store(tmp_path, "selector-round-trip.sqlite")
+    assert isinstance(rust_store, RustEngineSQLite)
+    rust_store.ensure_initialized()
+    rust_store.create_server_run(
+        run_id="selector-run",
+        conversation_id="conversation",
+        workflow_id="workflow",
+        user_id="user",
+        user_turn_node_id="turn",
+    )
+    rust_result = rust_store.get_server_run("selector-run")
+    assert rust_result is not None
+    assert rust_result["status"] == "queued"
+
+    monkeypatch.setenv(capability["configuration"], "python")
+    python_store = build_sqlite_meta_store(tmp_path, "selector-round-trip.sqlite")
+    python_store.ensure_initialized()
+    assert python_store.get_server_run("selector-run") == rust_result
+
+
+def test_manifest_sqlite_meta_selector_closes_python_raw_connection_in_rust_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads(
+        (root / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    capability = next(
+        item
+        for item in manifest["capability_ownership"]
+        if item["capability"] == "sqlite-meta"
+    )
+    matrix = json.loads(
+        (root / "contracts" / "dual-language-support-matrix-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    support = next(
+        item for item in matrix["capabilities"] if item["id"] == "sqlite-meta"
+    )
+    selector_name = capability["configuration"]
+    assert selector_name == "KOGWISTAR_IMPL_META_STORE"
+    assert support["python"]["status"] == "enabled"
+    assert support["rust"]["status"] == "opt-in"
+    assert support["mixed"]["status"] == "opt-in"
+
+    monkeypatch.setenv(selector_name, "python")
+    python_store = build_sqlite_meta_store(tmp_path, "unsupported-cell.sqlite")
+    assert type(python_store).__name__ == "EngineSQLite"
+    python_store.ensure_initialized()
+    with closing(python_store.connect()) as connection:
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+
+    monkeypatch.setenv(selector_name, "rust")
+    rust_store = build_sqlite_meta_store(tmp_path, "unsupported-cell.sqlite")
+    assert isinstance(rust_store, RustEngineSQLite)
+    rust_store.ensure_initialized()
+    with pytest.raises(
+        RustSQLiteConnectionUnavailable,
+        match="would create a second writer",
+    ):
+        rust_store.connect()
 
 
 def test_rust_authority_marks_calls_as_sole_writer_sessions(
@@ -98,6 +186,255 @@ def test_rust_authority_uow_is_atomic_and_raw_python_writer_is_closed(
             raise RuntimeError("rollback")
     assert store.current_global_seq() == 1
     assert [row[0] for row in store.iter_entity_events(namespace="authority")] == [1]
+
+
+def test_rust_sqlite_identity_lock_requires_native_transaction(tmp_path: Path) -> None:
+    store = RustEngineSQLite(tmp_path, "identity-lock.sqlite")
+    store.ensure_initialized()
+
+    with pytest.raises(
+        RustSQLiteConnectionUnavailable, match="active Rust SQLite transaction"
+    ):
+        store.lock_entity_identity(
+            namespace="ns", entity_kind="node", entity_id="node-1"
+        )
+
+    with store.transaction():
+        store.lock_entity_identity(
+            namespace="ns", entity_kind="node", entity_id="node-1"
+        )
+
+
+def test_sqlite_transaction_token_cannot_cross_facade_owner(
+    tmp_path: Path,
+) -> None:
+    first = RustEngineSQLite(tmp_path, "owner.sqlite")
+    second = RustEngineSQLite(tmp_path, "owner.sqlite")
+    token = _RustTransactionToken("same-transaction", first._authority_id)
+    active = second._transaction_id.set(token.value)
+    try:
+        with pytest.raises(RustSQLiteConnectionUnavailable, match="stale"):
+            second._require_token(token)
+    finally:
+        second._transaction_id.reset(active)
+
+
+def test_rust_open_during_active_write_reads_previous_committed_projection(
+    tmp_path: Path,
+) -> None:
+    store = RustEngineSQLite(tmp_path, "concurrent-read.sqlite")
+    store.ensure_initialized()
+    store.replace_named_projection(
+        "concurrent",
+        "head",
+        {"revision": 0},
+        last_authoritative_seq=0,
+        last_materialized_seq=0,
+        projection_schema_version=1,
+        materialization_status="ready",
+    )
+    transaction_open = Event()
+    reader_done = Event()
+
+    def write_uncommitted() -> None:
+        with store.transaction():
+            seq = store.append_entity_event(
+                namespace="concurrent",
+                event_id="uncommitted",
+                entity_kind="node",
+                entity_id="n1",
+                op="UPSERT",
+                payload_json="{}",
+            )
+            store.replace_named_projection(
+                "concurrent",
+                "head",
+                {"revision": 1},
+                last_authoritative_seq=seq,
+                last_materialized_seq=seq,
+                projection_schema_version=1,
+                materialization_status="ready",
+            )
+            transaction_open.set()
+            if not reader_done.wait(timeout=5):
+                raise AssertionError("reader could not finish before writer commit")
+
+    def read_committed() -> dict[str, object] | None:
+        if not transaction_open.wait(timeout=5):
+            raise AssertionError("writer did not open its transaction")
+        try:
+            return store.get_named_projection("concurrent", "head")
+        finally:
+            reader_done.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        writer = executor.submit(write_uncommitted)
+        reader = executor.submit(read_committed)
+        projection = reader.result(timeout=7)
+        writer.result(timeout=7)
+
+    assert projection is not None
+    assert projection["payload"] == {"revision": 0}
+    assert store.get_named_projection("concurrent", "head")["payload"] == {
+        "revision": 1
+    }
+
+
+def test_rust_session_reuses_connection_across_reads_and_transaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_store_sqlite(**kwargs: object) -> object:
+        calls.append(kwargs)
+        operation = kwargs["operation"]
+        assert isinstance(operation, dict)
+        if operation["kind"] == "next_global_seq":
+            return 1
+        return None
+
+    monkeypatch.setattr(rust_meta_sqlite, "store_sqlite", fake_store_sqlite)
+    store = RustEngineSQLite(tmp_path, "session.sqlite")
+
+    with store.session():
+        assert store.next_global_seq() == 1
+        with store.transaction():
+            assert store.next_global_seq() == 1
+        assert store.next_global_seq() == 1
+        assert calls[-1]["operation"] == {"kind": "next_global_seq"}
+
+    assert [call["operation"] for call in calls] == [
+        {"kind": "open_init"},
+        {"kind": "next_global_seq"},
+        {"kind": "begin_transaction"},
+        {"kind": "next_global_seq"},
+        {"kind": "commit_transaction"},
+        {"kind": "next_global_seq"},
+        {"kind": "close"},
+    ]
+    assert all(call["reuse_session"] is True for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_rust_async_transaction_cancelled_waiter_does_not_leak_lock(
+    tmp_path: Path,
+) -> None:
+    store = RustEngineSQLite(tmp_path, "async-transaction-lock.sqlite")
+    store.ensure_initialized()
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+
+    async def hold_transaction() -> None:
+        async with store.async_transaction():
+            holder_entered.set()
+            await release_holder.wait()
+
+    async def wait_for_transaction() -> None:
+        async with store.async_transaction():
+            raise AssertionError("cancelled waiter must not enter the transaction")
+
+    holder = asyncio.create_task(hold_transaction())
+    await holder_entered.wait()
+    waiter = asyncio.create_task(wait_for_transaction())
+    await asyncio.sleep(0.02)
+    waiter.cancel()
+    release_holder.set()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    await holder
+
+    async with store.async_transaction():
+        assert store.transaction_active
+    assert not store.transaction_active
+    store.close()
+
+
+def test_rust_batch_facade_uses_one_native_call(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_store_sqlite(**kwargs: object) -> list[object]:
+        calls.append(kwargs)
+        return [1, None]
+
+    monkeypatch.setattr(rust_meta_sqlite, "store_sqlite", fake_store_sqlite)
+    store = RustEngineSQLite(tmp_path, "batch.sqlite")
+    operations = [{"kind": "next_global_seq"}, {"kind": "current_global_seq"}]
+
+    assert store.execute_batch(operations) == [1, None]
+    assert calls == [
+        {
+            "path": tmp_path / "batch.sqlite",
+            "operation": {
+                "kind": "batch",
+                "operations": operations,
+                "abort": False,
+            },
+            "transaction_id": None,
+            "reuse_session": False,
+        }
+    ]
+
+
+def test_rust_batch_facade_empty_input_does_not_cross_native_seam(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def fail_store_sqlite(**kwargs: object) -> object:
+        raise AssertionError(f"empty batch unexpectedly called Rust: {kwargs}")
+
+    monkeypatch.setattr(rust_meta_sqlite, "store_sqlite", fail_store_sqlite)
+    assert RustEngineSQLite(tmp_path).execute_batch([]) == []
+
+
+def test_rust_batch_facade_rejects_nested_transaction(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    store = RustEngineSQLite(tmp_path, "nested-batch.sqlite")
+    token = store._transaction_id.set("active")
+    try:
+        with pytest.raises(RuntimeError, match="cannot be nested"):
+            store.execute_batch([{"kind": "next_global_seq"}])
+    finally:
+        store._transaction_id.reset(token)
+
+
+def test_rust_batch_facade_preserves_atomic_rollback(tmp_path: Path) -> None:
+    store = RustEngineSQLite(tmp_path, "batch-atomic.sqlite")
+    store.ensure_initialized()
+    operations = [
+        {
+            "kind": "raw_append",
+            "namespace": "batch",
+            "event_id": "committed",
+            "entity_kind": "node",
+            "entity_id": "n1",
+            "op": "UPSERT",
+            "payload_json": "{}",
+        },
+        {
+            "kind": "replace_named_projection",
+            "namespace": "batch",
+            "key": "head",
+            "payload": {"revision": 1},
+            "last_authoritative_seq": 1,
+            "last_materialized_seq": 1,
+            "projection_schema_version": 1,
+            "materialization_status": "ready",
+        },
+    ]
+
+    result = store.execute_batch(operations)
+    assert isinstance(result, list)
+    assert store.get_latest_entity_event_seq(namespace="batch") == 1
+    assert store.get_named_projection("batch", "head")["payload"] == {"revision": 1}
+
+    aborted = [dict(operations[0], event_id="rolled-back"), dict(operations[1], key="rollback")]
+    with pytest.raises(RustParityError) as exc:
+        store.execute_batch(aborted, abort=True)
+    assert exc.value.code == "KOGWISTAR_STORE_TRANSACTION_ABORTED"
+    assert store.get_latest_entity_event_seq(namespace="batch") == 1
+    assert store.get_named_projection("batch", "rollback") is None
 
 
 def test_rust_authority_database_is_readable_after_python_rollback(
@@ -237,6 +574,41 @@ def test_rust_authority_skill_projection_reconciles_after_partial_commit(
     ) is None
 
 
+def test_rust_sqlite_authority_reconciles_chroma_projection_jobs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+    metadata = RustEngineSQLite(tmp_path, "chroma-index-reconcile.sqlite")
+    metadata.ensure_initialized()
+    job_id = metadata.enqueue_index_job(
+        job_id="node-ref-reconcile",
+        namespace="default",
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_refs",
+        op="UPSERT",
+        payload_json="{}",
+    )
+    engine = SimpleNamespace(
+        metadata=metadata,
+        namespace="default",
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=None,
+        backend=object(),
+    )
+    reconciler = IndexingSubsystem(engine)
+    applied: list[dict[str, object]] = []
+    reconciler.apply_index_job = lambda **kwargs: applied.append(kwargs)  # type: ignore[method-assign]
+
+    assert reconciler.reconcile_indexes(max_jobs=1) == 1
+    assert len(applied) == 1
+    assert applied[0]["job_id"] == job_id
+    assert metadata.list_index_jobs(status="DONE", namespace="default")[0].job_id == job_id
+
+
 def test_rust_authority_event_envelope_is_lossless_and_idempotent(tmp_path: Path) -> None:
     store = RustEngineSQLite(tmp_path, "envelope.sqlite")
     store.ensure_initialized()
@@ -328,3 +700,67 @@ def test_public_graph_engine_uses_rust_meta_owner(
         row[2] == "product-node"
         for row in engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
     )
+
+
+def test_rust_index_worker_trace_joins_enqueue_claim_and_ack(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def backend_factory(engine):
+        backend = InMemoryBackend(engine)
+        engine.backend_kind = backend.backend_kind = "memory"
+        names = (
+            "node_index",
+            "node",
+            "edge",
+            "edge_endpoints",
+            "document",
+            "domain",
+            "node_docs",
+            "node_refs",
+            "edge_refs",
+        )
+        engine.collection_lock = {name: _DummyLock() for name in names}
+        for name in names:
+            setattr(engine, f"{name}_collection", getattr(backend, name))
+        return backend
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        kg_graph_type="knowledge",
+        embedding_function=lambda texts: [[0.0, 1.0] for _ in texts],
+        backend_factory=backend_factory,
+    )
+    try:
+        with capture_rust_bridge_calls() as trace:
+            with engine.write.defer_index_reconciliation(max_jobs=0):
+                engine.write.add_node(
+                    build_entity_node(
+                        node_id="indexed-node",
+                        doc_id="indexed-doc",
+                        embedding=[0.0, 1.0],
+                    )
+                )
+                worker = IndexJobWorker(
+                    engine=engine,
+                    batch_size=8,
+                    max_inflight=1,
+                    max_jobs_per_tick=8,
+                )
+                tick = worker.tick()
+
+        jobs = engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
+        bridge = trace.snapshot()
+        assert tick.claimed == tick.done == len(jobs) == 2
+        assert all(job.status == "DONE" for job in jobs)
+        assert bridge["ffi_calls"] > 0
+        assert bridge["input_bytes"] > 0
+        assert bridge["output_bytes"] > 0
+        assert bridge["transaction_active_calls"] > 0
+        assert bridge["transaction_boundary_calls"] >= 2
+        assert bridge["calls_by_method"] == {"store_sqlite_json": bridge["ffi_calls"]}
+        assert bridge["calls_by_operation"]["enqueue_index_job"] == 2
+        assert bridge["calls_by_operation"]["claim_index_jobs"] >= 1
+        assert bridge["calls_by_operation"]["mark_index_job_done"] == 2
+    finally:
+        engine.close()

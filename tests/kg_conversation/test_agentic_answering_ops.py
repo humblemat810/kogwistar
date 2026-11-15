@@ -38,6 +38,7 @@ class _FakeStepContext:
     """
 
     state: dict[str, Any]
+    idempotency_key: str | None = None
 
     @property
     def state_view(self) -> dict[str, Any]:
@@ -185,8 +186,85 @@ class _StubAgent:
         Path(self.cache_dir).mkdir(parents=True, exist_ok=True)
         self._project_calls: list[str] = []
 
+    def _prepare_run_anchor(self, *, conversation_id: str, run_id: str):
+        from kogwistar.conversation.models import ConversationNode
+        from kogwistar.engine_core.models import Grounding
+
+        node_id = f"run:{conversation_id}:{run_id}"
+        return node_id, ConversationNode(
+            id=node_id,
+            label=f"Agent Run {run_id}",
+            type="entity",
+            summary=f"Agent run anchor {run_id}",
+            conversation_id=conversation_id,
+            role="system",
+            mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+            properties={"run_id": run_id, "entity_type": "agent_run"},
+            metadata={
+                "entity_type": "agent_run",
+                "level_from_root": 0,
+                "in_conversation_chain": False,
+            },
+        )
+
     def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
         return f"run:{conversation_id}:{run_id}"
+
+    def _prepare_kg_node_projection(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        kg_node_id: str,
+        provenance_span: Span,
+        prev_turn_meta_summary: Any,
+    ):
+        from kogwistar.conversation.models import ConversationEdge, ConversationNode
+        from kogwistar.engine_core.models import Grounding
+
+        pointer_node_id = f"pointer:{conversation_id}:{kg_node_id}"
+        pointer_node = ConversationNode(
+            id=pointer_node_id,
+            label=f"Ref {kg_node_id}",
+            type="entity",
+            summary="source summary",
+            conversation_id=conversation_id,
+            role="system",
+            mentions=[Grounding(spans=[provenance_span])],
+            properties={"entity_type": "knowledge_reference"},
+            metadata={
+                "entity_type": "knowledge_reference",
+                "level_from_root": 0,
+            },
+        )
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
+            pointer_node.summary
+        )
+        usage_edge = ConversationEdge(
+            id=f"used:{run_node_id}:{pointer_node_id}",
+            source_ids=[run_node_id],
+            target_ids=[pointer_node_id],
+            relation="used_evidence",
+            label="used_evidence",
+            type="relationship",
+            summary="Agent used this evidence",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[Grounding(spans=[provenance_span])],
+            properties={"entity_type": "conversation_edge"},
+            metadata={
+                "char_distance_from_last_summary": (
+                    prev_turn_meta_summary.prev_node_char_distance_from_last_summary
+                ),
+                "turn_distance_from_last_summary": (
+                    prev_turn_meta_summary.prev_node_distance_from_last_summary
+                ),
+                "tail_turn_index": prev_turn_meta_summary.tail_turn_index,
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
+        )
+        return pointer_node_id, pointer_node, usage_edge
 
     def _get_last_user_text(self, messages: Any) -> str:
         for m in reversed(messages or []):
@@ -285,19 +363,103 @@ class _StubAgent:
         self,
         *,
         conversation_id: str,
+        run_node_id: str,
         content: str,
         provenance_span: Span,
         turn_index: int,
         prev_turn_meta_summary,
     ):
+        from kogwistar.conversation.agentic_answering import pointer_id
+
+        assistant_id = pointer_id(
+            scope=f"conv:{conversation_id}",
+            pointer_kind="turn",
+            target_kind="assistant",
+            target_id=run_node_id,
+        )
         return (
-            f"turn:{conversation_id}:{turn_index}",
+            assistant_id,
             SimpleNamespace(
                 model_dump=lambda: {
-                    "id": f"turn:{conversation_id}:{turn_index}",
+                    "id": assistant_id,
                     "content": content,
                 }
             ),
+        )
+
+    def _prepare_assistant_turn(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        content: str,
+        provenance_span: Span,
+        turn_index: int,
+    ):
+        from kogwistar.conversation.models import ConversationNode
+        from kogwistar.conversation.agentic_answering import pointer_id
+        from kogwistar.engine_core.models import Grounding
+
+        assistant_id = pointer_id(
+            scope=f"conv:{conversation_id}",
+            pointer_kind="turn",
+            target_kind="assistant",
+            target_id=run_node_id,
+        )
+        return assistant_id, ConversationNode(
+            id=assistant_id,
+            label="Assistant turn",
+            type="entity",
+            summary=content,
+            conversation_id=conversation_id,
+            role="assistant",
+            turn_index=turn_index,
+            properties={"content": content, "entity_type": "assistant_turn"},
+            mentions=[Grounding(spans=[provenance_span])],
+            metadata={
+                "level_from_root": 0,
+                "entity_type": "assistant_turn",
+                "in_conversation_chain": True,
+                "in_ui_chain": True,
+            },
+        )
+
+    def _prepare_run_to_response_edge(self, **kwargs):
+        from kogwistar.conversation.models import ConversationEdge
+        from kogwistar.engine_core.models import Grounding
+
+        span = kwargs["provenance_span"]
+        if isinstance(span, list):
+            spans = span
+        else:
+            spans = [span]
+        conversation_id = kwargs["conversation_id"]
+        run_node_id = kwargs["run_node_id"]
+        response_node_id = kwargs["response_node_id"]
+        return ConversationEdge(
+            id=f"generated:{run_node_id}:{response_node_id}",
+            source_ids=[run_node_id],
+            target_ids=[response_node_id],
+            relation="generated",
+            label="generated",
+            type="relationship",
+            summary="Agent run generated assistant response",
+            doc_id=f"conv:{conversation_id}",
+            mentions=[Grounding(spans=spans)],
+            properties={
+                "entity_type": "conversation_edge",
+                "used_node_ids": kwargs["used_node_ids"],
+            },
+            metadata={
+                "char_distance_from_last_summary": kwargs[
+                    "prev_turn_meta_summary"
+                ].prev_node_char_distance_from_last_summary,
+                "turn_distance_from_last_summary": kwargs[
+                    "prev_turn_meta_summary"
+                ].prev_node_distance_from_last_summary,
+            },
+            source_edge_ids=[],
+            target_edge_ids=[],
         )
 
     def _link_run_to_response(self, **kwargs):
@@ -325,8 +487,8 @@ def _mk_state(
     }
 
 
-def _run_op(op: str, state: dict[str, Any]):
-    ctx = _FakeStepContext(state)
+def _run_op(op: str, state: dict[str, Any], *, idempotency_key: str | None = None):
+    ctx = _FakeStepContext(state, idempotency_key=idempotency_key)
     fn = default_resolver.resolve(op)
     res = fn(ctx)
     assert isinstance(res, (RunSuccess, RunFailure))
@@ -349,6 +511,25 @@ def _run_op(op: str, state: dict[str, Any]):
     return res
 
 
+def test_start_preserves_admitted_turn_index_and_defaults_when_missing() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-start-turn-index-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
+    assert fixture["operation"] == "start/v1"
+    for case in fixture["cases"]:
+        state = dict(case["initial_state"])
+        _run_op("start", state)
+        assert {
+            "started": state["started"],
+            "turn_index": state["turn_index"],
+        } == case["expected"], case["name"]
+
+
 def test_aa_prepare_sets_run_identity():
     agent = _StubAgent()
     ce = _StubConversationEngine(last_user_text="Q")
@@ -359,18 +540,319 @@ def test_aa_prepare_sets_run_identity():
     assert state.get("run_node_id")
 
 
-def test_aa_get_view_and_question_populates_question_and_system_prompt():
+def test_debug_rag_steps_match_shared_rust_contract_fixture():
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "debug-rag-state-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    state = dict(fixture["state"])
     agent = _StubAgent()
-    ce = _StubConversationEngine(last_user_text="What is X?")
+    agent.config.max_used = state["max_used"]
+    state["_deps"] = {"agent": agent}
+
+    select_result = _run_op("aa_debug_select_top_candidates", state)
+    assert isinstance(select_result, RunSuccess)
+    expected = fixture["expected"]
+    assert state["selection"] == expected["selection"]
+    assert state["used_node_ids"] == expected["used_node_ids"]
+    assert state["selected_candidates"] == expected["selected_candidates"]
+    assert state["op_log"] == expected["selected_op_log"]
+
+    answer_result = _run_op("aa_debug_answer_from_nodes", state)
+    assert isinstance(answer_result, RunSuccess)
+    assert state["answer"] == expected["answer"]
+    assert state["evaluation"] == expected["evaluation"]
+    assert state["op_log"] == expected["final_op_log"]
+
+
+@pytest.mark.parametrize(
+    ("backend_collection_name", "backend_embedding_dim", "expected_dim"),
+    [("gke_nodes", 3, 3), ("nodes", None, 3), ("gke_nodes", 2, None)],
+    ids=["postgres-shaped", "chroma-shaped", "dimension-mismatch"],
+)
+def test_aa_prepare_returns_run_anchor_effect_for_rust_worker_without_python_write(
+    backend_collection_name, backend_embedding_dim, expected_dim
+):
+    from kogwistar.conversation.models import MetaFromLastSummary
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.nodes = SimpleNamespace(name=backend_collection_name)
+    if backend_embedding_dim is not None:
+        ce.backend.embedding_dim = backend_embedding_dim
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {"entity_type": "agent_run", "namespace": "conversation"},
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker callback must return graph effects instead of writing directly"
+        ),
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = [
+        lambda node: node.properties.update({"hook_prepared": True})
+    ]
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state["_deps"]["_rust_worker_effects"] = True
+    state["_deps"]["prev_turn_meta_summary"] = MetaFromLastSummary(4, 2, 1)
+
+    if expected_dim is None:
+        failure = _run_op(
+            "aa_prepare", state, idempotency_key="stable-worker-message-id"
+        )
+        assert isinstance(failure, RunFailure)
+        assert any("embedding dimension" in error for error in failure.errors)
+        return
+    result = _run_op("aa_prepare", state, idempotency_key="stable-worker-message-id")
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert len(batch.mutations) == 1
+    assert batch.mutations[0].record.id == state["run_node_id"]
+    assert batch.mutations[0].op == "ADD"
+    assert batch.mutations[0].table == "gke_nodes"
+    assert batch.mutations[0].embedding_dim == 3
+    assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
+    assert len(batch.index_jobs) == 2
+    assert {job.index_kind for job in batch.index_jobs} == {"node_docs", "node_refs"}
+    update = next(item[1] for item in result.state_update if item[0] == "u")
+    assert update["prev_turn_meta_summary"] == {
+        "prev_node_char_distance_from_last_summary": 4,
+        "prev_node_distance_from_last_summary": 2,
+        "tail_turn_index": 1,
+    }
+
+
+def test_aa_project_pointers_batches_pointer_and_usage_edge_once_for_rust_worker():
+    from kogwistar.conversation.models import MetaFromLastSummary
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.nodes = SimpleNamespace(name="gke_nodes")
+    ce.backend.edges = SimpleNamespace(name="gke_edges")
+    ce.backend.embedding_dim = 3
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {"entity_type": "knowledge_reference", "namespace": "conversation"},
+        ),
+        edge_doc_and_meta=lambda edge: (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {
+                **edge.metadata,
+                "entity_type": "conversation_edge",
+                "namespace": "conversation",
+            },
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker pointer projection must return graph effects"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker pointer projection must return graph effects"
+        ),
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = [
+        lambda node: node.properties.update({"hook_prepared": True})
+    ]
+    ce.pre_add_edge_hooks = []
+    meta_summary = MetaFromLastSummary(0, 0)
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state.update(
+        {
+            "conversation_id": "conversation-1",
+            "run_node_id": "run-1",
+            "used_node_ids": ["kg-1", "kg-1"],
+            "prev_turn_meta_summary": {
+                "prev_node_char_distance_from_last_summary": 0,
+                "prev_node_distance_from_last_summary": 0,
+                "tail_turn_index": 0,
+            },
+        }
+    )
+    state["_deps"]["_rust_worker_effects"] = True
+    state["_deps"]["prev_turn_meta_summary"] = meta_summary
+
+    result = _run_op(
+        "aa_project_pointers", state, idempotency_key="stable-worker-message-id"
+    )
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert len(batch.index_jobs) == 4
+    assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
+    edge_meta = batch.mutations[1].record.metadata
+    assert edge_meta["char_distance_from_last_summary"] == len("source summary")
+    summary_updates = [
+        update[1]
+        for update in result.state_update or []
+        if update[0] == "u" and "prev_turn_meta_summary" in update[1]
+    ]
+    assert (
+        summary_updates[-1]["prev_turn_meta_summary"][
+            "prev_node_distance_from_last_summary"
+        ]
+        == 1
+    )
+    ce.pre_add_edge_hooks = [lambda _edge: False]
+    unsupported = _run_op(
+        "aa_project_pointers", state, idempotency_key="stable-worker-message-id"
+    )
+    assert isinstance(unsupported, RunFailure)
+    assert any("cannot preserve edge hooks" in error for error in unsupported.errors)
+
+
+def test_aa_persist_response_batches_stable_turn_and_generated_edge_for_rust_worker():
+    from kogwistar.conversation.models import MetaFromLastSummary
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.nodes = SimpleNamespace(name="gke_nodes")
+    ce.backend.edges = SimpleNamespace(name="gke_edges")
+    ce.backend.embedding_dim = 3
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+
+    def _node_projection(node):
+        return (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {"entity_type": "assistant_turn", "namespace": "conversation"},
+        )
+
+    def _edge_projection(edge):
+        return (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {
+                **edge.metadata,
+                "entity_type": "conversation_edge",
+                "namespace": "conversation",
+            },
+        )
+
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=_node_projection,
+        edge_doc_and_meta=_edge_projection,
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker response persistence must return graph effects"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker response persistence must return graph effects"
+        ),
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = [
+        lambda node: node.properties.update({"hook_prepared": True})
+    ]
+    ce.pre_add_edge_hooks = []
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state.update(
+        {
+            "conversation_id": "conversation-1",
+            "run_node_id": "run-1",
+            "answer": {"text": "answer"},
+            "evaluation": {"is_sufficient": True},
+            "used_node_ids": ["kg-1"],
+            "projected_pointer_ids": ["pointer-1"],
+            "prev_turn_meta_summary": {
+                "prev_node_char_distance_from_last_summary": 0,
+                "prev_node_distance_from_last_summary": 0,
+                "tail_turn_index": 0,
+            },
+        }
+    )
+    state["_deps"]["_rust_worker_effects"] = True
+    state["_deps"]["prev_turn_meta_summary"] = MetaFromLastSummary(0, 0)
+
+    result = _run_op(
+        "aa_persist_response", state, idempotency_key="stable-worker-message-id"
+    )
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert batch.mutations[0].record.id == result.conversation_node_id
+    from kogwistar.conversation.agentic_answering import pointer_id
+
+    assert result.conversation_node_id == pointer_id(
+        scope="conv:conversation-1",
+        pointer_kind="turn",
+        target_kind="assistant",
+        target_id="run-1",
+    )
+    assert batch.mutations[0].payload["properties"]["hook_prepared"] is True
+    assert batch.mutations[1].payload["relation"] == "generated"
+    assert [job.index_kind for job in batch.index_jobs] == [
+        "node_docs",
+        "node_refs",
+        "edge_refs",
+        "edge_endpoints",
+    ]
+    assert state["agentic_answering_result"]["assistant_turn_node_id"] == (
+        result.conversation_node_id
+    )
+
+    ce.pre_add_edge_hooks = [lambda _edge: False]
+    state["prev_turn_meta_summary"] = {
+        "prev_node_char_distance_from_last_summary": 0,
+        "prev_node_distance_from_last_summary": 0,
+        "tail_turn_index": 0,
+    }
+    unsupported = _run_op(
+        "aa_persist_response", state, idempotency_key="stable-worker-message-id"
+    )
+    assert isinstance(unsupported, RunFailure)
+    assert any("cannot preserve edge hooks" in error for error in unsupported.errors)
+
+
+def test_aa_get_view_and_question_populates_question_and_system_prompt():
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-view-operation-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    agent = _StubAgent()
+    ce = _StubConversationEngine(last_user_text=fixture["input"]["summary"])
     state = _mk_state(agent=agent, conv_engine=ce)
     _run_op("aa_prepare", state)
     res = _run_op("aa_get_view_and_question", state)
     assert isinstance(res, RunSuccess)
-    assert (
-        state["system_prompt"]
-        == "You are a helpful assistant. Answer the user using the conversation and any provided evidence."
-    )
-    assert state["question"] == "What is X?"
+    assert state["system_prompt"] == fixture["expected"]["system_prompt"]
+    assert state["question"] == fixture["expected"]["question"]
 
 
 def test_aa_retrieve_candidates_populates_candidates_list():
@@ -393,6 +875,151 @@ def test_aa_select_used_evidence_writes_used_node_ids_subset():
     res = _run_op("aa_select_used_evidence", state)
     assert isinstance(res, RunSuccess)
     assert state.get("used_node_ids") == ["n1", "n2"]
+
+
+def test_aa_select_used_evidence_returns_snapshot_effect_for_rust_worker(monkeypatch):
+    import kogwistar.conversation.resolvers as resolvers
+    from kogwistar.conversation.conversation_context import (
+        ContextItem,
+        ContextMessage,
+        PromptContext,
+    )
+    from kogwistar.conversation.service import ConversationService
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    agent.config.evidence_selector = "llm"
+    agent._persist_context_snapshot = lambda **_kwargs: pytest.fail(
+        "Rust worker must not persist snapshots through Python"
+    )
+    agent.select_used_evidence_cached = lambda **_kwargs: SimpleNamespace(
+        model_dump=lambda: {"used_node_ids": ["n1"], "used_edge_ids": []}
+    )
+    ce = _StubConversationEngine(last_user_text="Q")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.embedding_dim = 3
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**node.metadata, "namespace": "conversation"},
+        ),
+        edge_doc_and_meta=lambda edge: (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**edge.metadata, "namespace": "conversation"},
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return snapshot effects instead of writing directly"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return snapshot effects instead of writing directly"
+        ),
+    )
+    ce.embed = SimpleNamespace(iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0])
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    hook_calls = []
+    ce.pre_add_node_hooks.append(
+        lambda node: (hook_calls.append("node"), node.metadata.update({"prepared": True}))
+    )
+    ce.pre_add_edge_hooks.append(lambda _edge: False)
+    service = ConversationService.__new__(ConversationService)
+    service.conversation_engine = ce
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state["run_id"] = "run-1"
+    state["question"] = "Q"
+    state["candidates"] = [{"id": "n1"}]
+    state["_rt"] = {
+        "view": PromptContext(
+            conversation_id="c1",
+            purpose="answer",
+            token_budget=10,
+            tokens_used=2,
+            items=(
+                ContextItem(
+                    kind="tail_turn",
+                    role="user",
+                    text="Q",
+                    source="conversation",
+                    node_id="turn-1",
+                    token_cost=2,
+                ),
+            ),
+            messages=(ContextMessage(role="user", content="Q", source="conversation"),),
+        )
+    }
+    state["_deps"]["_rust_worker_effects"] = True
+
+    monkeypatch.setattr(resolvers, "_chat_service", lambda _deps: service)
+
+    res = _run_op("aa_select_used_evidence", state, idempotency_key="msg-1")
+
+    assert isinstance(res, RunSuccess)
+    batch = validate_graph_mutation_batch(res.graph_mutation_batch)
+    assert len(batch.mutations) == 2
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert batch.mutations[0].record.id == batch.mutations[0].payload["id"]
+    assert batch.mutations[0].payload["metadata"]["prepared"] is True
+    assert batch.mutations[1].payload["source_ids"] == [batch.mutations[0].record.id]
+    assert batch.mutations[1].payload["target_ids"] == ["turn-1"]
+    assert len(batch.index_jobs) == 4
+    assert state["used_node_ids"] == ["n1"]
+    assert hook_calls == ["node"]
+
+
+def test_bm25_selector_matches_shared_rust_contract_fixture():
+    from kogwistar.conversation.agentic_answering import (
+        AgentConfig,
+        AgenticAnsweringAgent,
+    )
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-bm25-selection-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    state = fixture["state"]
+    agent = AgenticAnsweringAgent.__new__(AgenticAnsweringAgent)
+    agent.config = AgentConfig(max_used=state["max_used"])
+
+    selection = agent._select_used_evidence_bm25(
+        question=state["question"], candidates=state["candidates"]
+    )
+
+    assert selection.model_dump() == fixture["expected"]["selection"]
+
+
+def test_legacy_default_selector_wrapper_matches_shared_bm25_contract():
+    from kogwistar.conversation.agentic_answering import (
+        AgentConfig,
+        AgenticAnsweringAgent,
+    )
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-bm25-selection-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    state = fixture["state"]
+    agent = AgenticAnsweringAgent.__new__(AgenticAnsweringAgent)
+    agent.config = AgentConfig(max_used=state["max_used"])
+
+    selection = agent._select_used_evidence(
+        system_prompt="",
+        question=state["question"],
+        candidates=state["candidates"],
+    )
+
+    assert selection == fixture["expected"]["selection"]
 
 
 def test_aa_materialize_evidence_pack_writes_digest_and_runtime_pack():
@@ -429,6 +1056,236 @@ def test_aa_generate_answer_with_citations_writes_answer():
     assert state.get("answer", {}).get("text") == "ok"
 
 
+def test_aa_generate_answer_returns_snapshot_effect_for_rust_worker(
+    monkeypatch, tmp_path: Path
+):
+    import kogwistar.conversation.resolvers as resolvers
+    from kogwistar.conversation.conversation_context import (
+        ContextItem,
+        ContextMessage,
+        PromptContext,
+    )
+    from kogwistar.conversation.service import ConversationService
+    from kogwistar.engine_core.graph_mutation_contract import (
+        validate_graph_mutation_batch,
+    )
+
+    agent = _StubAgent()
+    agent.cache_dir = str(tmp_path)
+    agent._persist_context_snapshot = lambda **_kwargs: pytest.fail(
+        "Rust worker must not persist answer snapshots through Python"
+    )
+    provider_calls: list[dict[str, Any]] = []
+
+    def generate_answer(agent, **kwargs):
+        assert agent is agent_ref
+        provider_calls.append(kwargs)
+        return {"text": "provider answer", "reasoning": "", "claims": []}
+
+    agent_ref = agent
+    agent._generate_answer_with_citations = generate_answer
+
+    ce = _StubConversationEngine(last_user_text="Question")
+    ce.namespace = "conversation"
+    ce.persistence_mode = "single_stage"
+    ce._phase1_enable_index_jobs = True
+    ce._disable_event_log = False
+    ce.backend.embedding_dim = 3
+    ce.write = SimpleNamespace(
+        node_doc_and_meta=lambda node: (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**node.metadata, "namespace": "conversation"},
+        ),
+        edge_doc_and_meta=lambda edge: (
+            edge.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {**edge.metadata, "namespace": "conversation"},
+        ),
+        add_node=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return answer snapshot effects instead of writing"
+        ),
+        add_edge=lambda *_args, **_kwargs: pytest.fail(
+            "Rust worker must return answer snapshot effects instead of writing"
+        ),
+    )
+    ce.embed = SimpleNamespace(
+        iterative_defensive_emb=lambda _text: [1.0, 0.0, 0.0]
+    )
+    ce.indexing = SimpleNamespace(
+        canonical_source_payload_for_projection=lambda **_kwargs: "{}"
+    )
+    ce.pre_add_node_hooks = []
+    ce.pre_add_edge_hooks = []
+    service = ConversationService.__new__(ConversationService)
+    service.conversation_engine = ce
+
+    state = _mk_state(agent=agent, conv_engine=ce)
+    state.update(
+        {
+            "conversation_id": "c1",
+            "run_id": "run-1",
+            "run_step_seq": 4,
+            "attempt_seq": 0,
+            "question": "Question",
+            "system_prompt": "Use grounded sources.",
+            "used_node_ids": ["n1"],
+            "evidence_pack_digest": {"evidence_pack_hash": "digest-1"},
+            "_rt": {
+                "view": PromptContext(
+                    conversation_id="c1",
+                    purpose="answer",
+                    token_budget=32,
+                    tokens_used=2,
+                    items=(
+                        ContextItem(
+                            kind="tail_turn",
+                            role="user",
+                            text="Question",
+                            source="conversation",
+                            node_id="turn-1",
+                            token_cost=2,
+                        ),
+                    ),
+                    messages=(
+                        ContextMessage(
+                            role="user", content="Question", source="conversation"
+                        ),
+                    ),
+                ),
+                "evidence_pack": {"nodes": [{"node_id": "n1"}], "edges": []},
+            },
+        }
+    )
+    state["_deps"]["_rust_worker_effects"] = True
+    monkeypatch.setattr(resolvers, "_chat_service", lambda _deps: service)
+
+    result = _run_op(
+        "aa_generate_answer_with_citations",
+        state,
+        idempotency_key="stable-answer-worker-message",
+    )
+
+    assert isinstance(result, RunSuccess)
+    batch = validate_graph_mutation_batch(result.graph_mutation_batch)
+    assert [mutation.entity_kind for mutation in batch.mutations] == ["node", "edge"]
+    assert all(
+        mutation.payload["metadata"]["entity_type"] == expected
+        for mutation, expected in zip(
+            batch.mutations, ("context_snapshot", "conversation_edge"), strict=True
+        )
+    )
+    assert {job.index_kind for job in batch.index_jobs} == {
+        "node_docs",
+        "node_refs",
+        "edge_refs",
+        "edge_endpoints",
+    }
+    assert state["answer"]["text"] == "provider answer"
+    assert provider_calls and provider_calls[0]["question"] == "Question"
+    assert provider_calls[0]["evidence_pack"] == {
+        "nodes": [{"node_id": "n1"}],
+        "edges": [],
+    }
+
+
+def test_citation_repair_retries_invalid_span_and_restores_valid_node_alias():
+    from kogwistar.conversation.agentic_answering import (
+        AgenticAnsweringAgent,
+        AnswerWithCitations,
+    )
+
+    responses = iter(
+        [
+            {
+                "text": "Answer",
+                "reasoning": "",
+                "claims": [
+                    {
+                        "claim": "Fact",
+                        "citations": [
+                            {
+                                "source_node_id": "N1",
+                                "mention_index": 3,
+                                "span_index": 0,
+                            }
+                        ],
+                    }
+                ],
+            },
+            {
+                "text": "Answer",
+                "reasoning": "",
+                "claims": [
+                    {
+                        "claim": "Fact",
+                        "citations": [
+                            {
+                                "source_node_id": "N1",
+                                "mention_index": 0,
+                                "span_index": 0,
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+    )
+    calls = 0
+
+    def repair_citations(_request):
+        nonlocal calls
+        calls += 1
+        return RepairCitationsTaskResult(
+            answer_payload=next(responses), raw=None, parsing_error=None
+        )
+
+    agent = AgenticAnsweringAgent.__new__(AgenticAnsweringAgent)
+    agent.max_retry = 2
+    agent.llm_tasks = SimpleNamespace(repair_citations=repair_citations)
+    evidence_pack = {
+        "nodes": [
+            {
+                "node_id": "node-1",
+                "mentions": [{"spans": [{"excerpt": "grounded excerpt"}]}],
+            }
+        ],
+        "edges": [],
+    }
+
+    result = AgenticAnsweringAgent._validate_or_repair_citations(
+        agent,
+        system_prompt="system",
+        question="question",
+        evidence_pack=evidence_pack,
+        used_node_ids=["node-1"],
+        answer={
+            "text": "Answer",
+            "reasoning": "",
+            "claims": [
+                {
+                    "claim": "Fact",
+                    "citations": [
+                        {
+                            "source_node_id": "node-1",
+                            "mention_index": 7,
+                            "span_index": 0,
+                        }
+                    ],
+                }
+            ],
+        },
+        answer_in_model=AnswerWithCitations,
+    )
+
+    assert calls == 2
+    assert result["claims"][0]["citations"] == [
+        {
+            "source_node_id": "node-1",
+            "mention_index": 0,
+            "span_index": 0,
+        }
+    ]
+
+
 def test_aa_evaluate_answer_writes_evaluation():
     agent = _StubAgent()
     ce = _StubConversationEngine(last_user_text="Q")
@@ -446,6 +1303,53 @@ def test_aa_evaluate_answer_writes_evaluation():
     res = _run_op("aa_evaluate_answer", state)
     assert isinstance(res, RunSuccess)
     assert state.get("evaluation", {}).get("is_sufficient") is True
+
+
+def test_answer_evaluation_matches_shared_rust_contract_fixture():
+    from kogwistar.conversation.agentic_answering import (
+        AgenticAnsweringAgent,
+        AnswerEvaluation,
+    )
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-evaluation-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["operation"] == "aa_evaluate_answer/v1"
+    agent = AgenticAnsweringAgent.__new__(AgenticAnsweringAgent)
+
+    for case in fixture["cases"]:
+        state = case["state"]
+        evidence_pack = state.get("_rt", {}).get("evidence_pack", {})
+        answer_text = state.get("answer", {}).get("text", "")
+        used_node_ids = state.get("used_node_ids", [])
+        evaluation = AgenticAnsweringAgent._evaluate_answer(
+            agent,
+            system_prompt="",
+            question="",
+            answer_text=answer_text,
+            used_node_ids=used_node_ids,
+            evidence_pack=evidence_pack,
+            out_model_schema=AnswerEvaluation.model_json_schema(),
+            out_model=AnswerEvaluation,
+        )
+        assert evaluation.model_dump(mode="python") == case["expected"]["evaluation"]
+
+        base_candidates = int(state.get("max_candidates") or 20)
+        base_depth = str(state.get("materialize_depth") or "shallow")
+        insufficient = evaluation.needs_more_info and not evaluation.is_sufficient
+        assert (
+            case["expected"]["run_step_seq"] == int(state.get("run_step_seq") or 0) + 1
+        )
+        assert case["expected"]["max_candidates"] == (
+            min(base_candidates * 2, 200) if insufficient else base_candidates
+        )
+        assert case["expected"]["materialize_depth"] == (
+            "deep" if insufficient else base_depth
+        )
 
 
 def test_aa_project_pointers_calls_agent_projection_for_each_used_node():

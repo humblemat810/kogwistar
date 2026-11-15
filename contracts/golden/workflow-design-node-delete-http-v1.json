@@ -1,0 +1,19 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-node-delete-contract",
+  "designer_id": "alice",
+  "node_id": "node-delete-contract",
+  "fixed_response_fields": {
+    "workflow_id": "wf-node-delete-contract",
+    "namespace": "wf_design:wf-node-delete-contract",
+    "node_id": "node-delete-contract",
+    "designer_id": "alice",
+    "deleted": true,
+    "version": 2,
+    "can_undo": true,
+    "can_redo": false
+  },
+  "integer_response_fields": ["seq"],
+  "absent_response_fields": []
+}

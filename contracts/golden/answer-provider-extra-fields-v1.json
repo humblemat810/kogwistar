@@ -1,0 +1,38 @@
+{
+  "contract_version": 1,
+  "input": {
+    "text": "Answer",
+    "reasoning": "Supported by evidence.",
+    "provider_extra": "ignored",
+    "claims": [
+      {
+        "claim": "A supported fact.",
+        "claim_extra": "ignored",
+        "citations": [
+          {
+            "source_node_id": "node-1",
+            "mention_index": 0,
+            "span_index": 1,
+            "citation_extra": "ignored"
+          }
+        ]
+      }
+    ]
+  },
+  "expected": {
+    "text": "Answer",
+    "reasoning": "Supported by evidence.",
+    "claims": [
+      {
+        "claim": "A supported fact.",
+        "citations": [
+          {
+            "source_node_id": "node-1",
+            "mention_index": 0,
+            "span_index": 1
+          }
+        ]
+      }
+    ]
+  }
+}

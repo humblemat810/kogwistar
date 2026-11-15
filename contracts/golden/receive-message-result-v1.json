@@ -1,0 +1,19 @@
+{
+  "conversation_id": "c1",
+  "messages": [
+    {
+      "node_id": "turn-1",
+      "turn_index": 1,
+      "role": "user",
+      "content": "first",
+      "entity_type": "conversation_turn"
+    },
+    {
+      "node_id": "turn-2",
+      "turn_index": 2,
+      "role": "assistant",
+      "content": "second",
+      "entity_type": "conversation_turn"
+    }
+  ]
+}

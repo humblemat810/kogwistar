@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "operation": "aa_get_view_and_question/v1",
+  "input": {
+    "conversation_id": "conv-1",
+    "turn_node_id": "turn-1",
+    "role": "user",
+    "summary": "What is the Rust-native path?",
+    "prior_op_log": ["aa_prepare"]
+  },
+  "expected": {
+    "system_prompt": "You are a helpful assistant. Answer the user using the conversation and any provided evidence.",
+    "question": "What is the Rust-native path?",
+    "op_log": ["aa_prepare", "aa_get_view_and_question"]
+  }
+}

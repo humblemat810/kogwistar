@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.tool_audit",
+  "arguments": {
+    "conversation_id": "conversation:demo",
+    "limit": 10
+  },
+  "python_service_arguments": {
+    "conversation_id": "conversation:demo",
+    "limit": 10
+  },
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/tools/audit?limit=10&conversation_id=conversation%3Ademo",
+    "body": ""
+  },
+  "result": {
+    "conversation_id": "conversation:demo",
+    "items": [
+      {
+        "node_id": "tool-call:1",
+        "entity_type": "tool_call",
+        "tool_name": "kg_neighbors",
+        "conversation_id": "conversation:demo",
+        "turn_index": 2,
+        "summary": "Read adjacent graph nodes",
+        "properties": {
+          "status": "requested"
+        }
+      }
+    ]
+  }
+}

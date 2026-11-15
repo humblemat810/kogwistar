@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "model_class": "llm_node",
+  "payload": {
+    "label": "LLM node parity",
+    "type": "entity",
+    "summary": "Cross-language LLM node contract fixture",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": {"vendor_extension": {"version": 1}},
+    "mentions": [
+      {
+        "spans": [
+          {
+            "collection_page_url": "https://example.test/collection",
+            "document_page_url": "https://example.test/document#node",
+            "doc_id": "doc:rust-python-parity",
+            "page_number": 1,
+            "start_char": 0,
+            "end_char": 4,
+            "excerpt": "node",
+            "context_before": "",
+            "context_after": "",
+            "chunk_id": null,
+            "source_cluster_id": null
+          }
+        ]
+      }
+    ],
+    "id": "nn:llm-node",
+    "local_id": "nn:llm-node"
+  }
+}

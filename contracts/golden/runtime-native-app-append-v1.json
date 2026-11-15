@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "operation": "app/append-item",
+  "operation_version": "v1",
+  "initial_state": {
+    "items": ["seed"]
+  },
+  "effect": {
+    "status": "success",
+    "state_update": [
+      ["a", {"items": "appended"}]
+    ],
+    "state_schema": {},
+    "successors": [],
+    "route_next": [],
+    "result": {
+      "workflow_status": "succeeded",
+      "final_state": {
+        "items": ["seed", "appended"]
+      }
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "route": "GET /api/runs/{run_id}",
+  "success_status": 200,
+  "required_fields": [
+    "run_id",
+    "conversation_id",
+    "workflow_id",
+    "user_id",
+    "user_turn_node_id",
+    "assistant_turn_node_id",
+    "status",
+    "cancel_requested",
+    "result",
+    "error",
+    "created_at_ms",
+    "updated_at_ms",
+    "started_at_ms",
+    "finished_at_ms",
+    "terminal"
+  ],
+  "terminal_statuses": ["succeeded", "failed", "cancelled"]
+}

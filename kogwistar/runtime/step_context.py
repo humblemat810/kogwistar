@@ -84,6 +84,8 @@ class StepContext:
     attempt: int
     step_seq: int
     cache_dir: str | PathLike | None
+    op_version: str = "v1"
+    op_environment_id: str | None = None
     conversation_id: str | None = None
     turn_node_id: str | None = None
     trace_context: TraceContext | None = field(default=None, repr=False)
@@ -97,6 +99,7 @@ class StepContext:
     )
     events: EventEmitter | None = field(repr=False, default=None)
     state: InitVar[WorkflowState] = None  # type: ignore[assignment]
+    idempotency_key: str | None = None
     _state: WorkflowState = field(init=False, repr=False)
     _state_lock: threading.RLock = field(
         default_factory=threading.RLock, init=False, repr=False

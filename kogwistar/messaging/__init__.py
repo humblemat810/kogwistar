@@ -11,17 +11,20 @@ if TYPE_CHECKING:
         ProjectedLaneMessageRow,
     )
     from kogwistar.messaging.service import LaneMessagingService
+    from kogwistar.messaging.service import new_claim_attempt_owner
 
 __all__ = [
     "LaneMessageLookup",
     "LaneMessageProjectionRepairResult",
     "LaneMessageSendResult",
     "LaneMessagingService",
+    "new_claim_attempt_owner",
     "ProjectedLaneMessageRow",
 ]
 
 _EXPORTS = {
     "LaneMessagingService": "kogwistar.messaging.service",
+    "new_claim_attempt_owner": "kogwistar.messaging.service",
     "LaneMessageLookup": "kogwistar.messaging.models",
     "LaneMessageProjectionRepairResult": "kogwistar.messaging.models",
     "LaneMessageSendResult": "kogwistar.messaging.models",

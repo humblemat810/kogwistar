@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "operation": "app/legacy-label",
+  "initial_state": {
+    "label": "seed"
+  },
+  "effect": {
+    "status": "success",
+    "state_update": [
+      [
+        "u",
+        {
+          "implementation": "legacy-v1"
+        }
+      ]
+    ],
+    "state_schema": {},
+    "successors": [],
+    "route_next": [],
+    "result": {
+      "workflow_status": "succeeded",
+      "final_state": {
+        "label": "seed",
+        "implementation": "legacy-v1"
+      }
+    }
+  }
+}

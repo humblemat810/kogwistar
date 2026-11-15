@@ -1,0 +1,25 @@
+{
+  "http_status": 202,
+  "request": {
+    "capability": "spawn_process",
+    "subject": "admin-1"
+  },
+  "required_body_fields": [
+    "specs",
+    "approvals",
+    "revoked",
+    "audit_log",
+    "current_subject",
+    "effective_capabilities"
+  ],
+  "expected_subject": "admin-1",
+  "expected_revocation": {
+    "subject": "admin-1",
+    "capabilities": [
+      "spawn_process"
+    ]
+  },
+  "effective_capabilities_exclude": [
+    "spawn_process"
+  ]
+}

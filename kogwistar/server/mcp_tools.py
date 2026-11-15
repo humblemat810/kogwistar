@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 import os
 from collections.abc import Awaitable, Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from typing import (
     Any,
     ClassVar,
@@ -34,10 +35,12 @@ from kogwistar.server.auth_middleware import (
     _normalize_namespaces,
     current_role,
     get_app_jwt_settings,
+    get_current_capabilities,
     get_current_namespaces,
     get_current_role,
     get_current_subject,
     get_current_user_id,
+    has_explicit_capabilities_claim,
     require_role,
     require_workflow_access,
     reset_current_role,
@@ -62,6 +65,22 @@ from .. import shortids
 
 TOOL_ROLES: dict[str, set[str]] = {}
 TOOL_NAMESPACE: dict[str, set[str]] = {}
+TOOL_CAPABILITIES: dict[str, str] = {
+    "conversation.get_transcript": "read_graph",
+    "document_id_from_file_name": "read_graph",
+    "kg_find_edges": "read_graph",
+    "kg_load_persisted": "read_graph",
+    "kg_propose_bruteforce": "read_graph",
+    "kg_k_hop": "read_graph",
+    "kg_neighbors": "read_graph",
+    "kg_shortest_path": "read_graph",
+    "kg_semantic_seed_then_expand_text": "read_graph",
+    "kg_viz_cytoscape_json": "read_graph",
+    "kg_viz_d3_json": "read_graph",
+    "propose_vector": "read_graph",
+    "wisdom.semantic_seed_then_expand": "read_graph",
+    "wisdom.kg_upsert_graph": "write_graph",
+}
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -146,14 +165,7 @@ def _filter_tool_list(lst: list[dict]) -> list[dict]:
             else ""
         )
         if name:
-            tool_roles_value = {Role.RO.value}
-            tool_namespace = {NameSpace.DOCS.value}
-            for candidate in _tool_name_candidates(str(name)):
-                tool_roles_value = TOOL_ROLES.get(candidate, tool_roles_value)
-                tool_namespace = TOOL_NAMESPACE.get(candidate, tool_namespace)
-            if role in tool_roles_value and (
-                "*" in nss or not tool_namespace.isdisjoint(nss)
-            ):
+            if _tool_allowed(str(name), role=role, namespaces=nss):
                 out.append(item)
     return out
 
@@ -166,9 +178,18 @@ def _tool_allowed(tool_name: str, *, role: str, namespaces: set[str]) -> bool:
         allowed_namespaces = TOOL_NAMESPACE.get(candidate, allowed_namespaces)
     if role not in allowed_roles:
         return False
-    if "*" in namespaces:
-        return True
-    return not allowed_namespaces.isdisjoint(namespaces)
+    if "*" not in namespaces and allowed_namespaces.isdisjoint(namespaces):
+        return False
+    required_capability = None
+    for candidate in _tool_name_candidates(str(tool_name)):
+        required_capability = TOOL_CAPABILITIES.get(candidate, required_capability)
+    if (
+        required_capability is not None
+        and has_explicit_capabilities_claim()
+        and required_capability not in get_current_capabilities()
+    ):
+        return False
+    return True
 
 
 def require_ns(
@@ -200,6 +221,24 @@ def require_ns(
 
 
 mcp = McpRegistry("KnowledgeEngine + MCP + Admin", filter_tools=True)
+
+
+def _knowledge_sync_invocation_context(tool_name: str) -> AbstractContextManager[object]:
+    """Reuse the exact Rust SQLite handle for one synchronous MCP tool call."""
+
+    from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+
+    # Unknown tools must not inherit knowledge-store authority by default.
+    tool_namespaces = TOOL_NAMESPACE.get(tool_name, set())
+    if NameSpace.DOCS.value not in tool_namespaces:
+        return nullcontext()
+    metadata = engine.get().metadata
+    if type(metadata) is RustEngineSQLite:
+        return metadata.session()
+    return nullcontext()
+
+
+mcp.set_sync_invocation_context(_knowledge_sync_invocation_context)
 
 
 def _server_chat_service() -> ChatRunService:
@@ -288,7 +327,7 @@ def kg_semantic_seed_then_expand_text(
     if doc_ids:
         doc_ids_coerced = (
             shortids.s2l_id(doc_ids)
-            if type(doc_ids is str)
+            if isinstance(doc_ids, str)
             else [shortids.s2l_id(i) for i in doc_ids]
         )
     out = cast(
@@ -892,8 +931,49 @@ def propose_vector(inp: ProposeVectorIn) -> ProposeOut:
         include_edges=inp.include_edges,
         where=inp.where if isinstance(inp.where, dict) else None,
     )
+    node_ids = {
+        str(getattr(item, "id", ""))
+        for pair in pairs.values()
+        for item in pair[:2]
+        if not isinstance(item, Edge) and getattr(item, "id", None)
+    }
+    edge_ids = {
+        str(getattr(item, "id", ""))
+        for pair in pairs.values()
+        for item in pair[:2]
+        if isinstance(item, Edge) and getattr(item, "id", None)
+    }
+    visible_node_ids = (
+        {
+            str(item.safe_get_id())
+            for item in eng.read.get_nodes(ids=sorted(node_ids), limit=len(node_ids))
+        }
+        if node_ids
+        else set()
+    )
+    visible_edge_ids = (
+        {
+            str(item.safe_get_id())
+            for item in eng.read.get_edges(ids=sorted(edge_ids), limit=len(edge_ids))
+        }
+        if edge_ids
+        else set()
+    )
+
     out = []
     for left_item, right_item, _score in pairs.values():
+        left_visible = (
+            str(left_item.safe_get_id()) in visible_edge_ids
+            if isinstance(left_item, Edge)
+            else str(left_item.safe_get_id()) in visible_node_ids
+        )
+        right_visible = (
+            str(right_item.safe_get_id()) in visible_edge_ids
+            if isinstance(right_item, Edge)
+            else str(right_item.safe_get_id()) in visible_node_ids
+        )
+        if not (left_visible and right_visible):
+            continue
         out.append(
             ProposePair(
                 left_id=getattr(left_item, "id", ""),

@@ -4,7 +4,9 @@ import hashlib
 import inspect
 import json
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
@@ -19,7 +21,7 @@ from typing_extensions import TypedDict
 from pydantic import TypeAdapter
 
 from ...cdc.change_event import EntityRefModel
-from ...json_types import JsonObject
+from ...json_types import JsonObject, decode_json_object
 from ...typing_interfaces import EmbeddingFunctionLike, ProjectionBackendLike
 from ...utils.embedding_vectors import normalize_embedding_vector
 from ..async_compat import run_awaitable_blocking
@@ -34,6 +36,7 @@ from ..models import (
     Span,
 )
 from ..storage_backend import AsyncTwoStageProjectionAdapter, StorageBackend
+from ...implementation_selection import implementation_selection_bound
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import (
     edge_doc_and_meta as edge_doc_and_meta_util,
@@ -52,6 +55,9 @@ if TYPE_CHECKING:
 
 
 _T = TypeVar("_T")
+_DEFERRED_INDEX_RECONCILIATION: ContextVar[frozenset[int]] = ContextVar(
+    "kogwistar_deferred_index_reconciliation", default=frozenset()
+)
 _ProjectionEntityKind: TypeAlias = Literal["node", "edge"]
 _GraphEntityKind: TypeAlias = Literal["node", "edge", "document", "domain"]
 _AsyncBackendCollectionKey: TypeAlias = Literal[
@@ -68,6 +74,34 @@ _AsyncBackendMethod: TypeAlias = Literal["add", "delete", "get", "update", "upse
 _BackendOperation: TypeAlias = Callable[..., object]
 _ReferenceOwnerField: TypeAlias = Literal["node_id", "edge_id"]
 _EndpointRole: TypeAlias = Literal["src", "tgt"]
+
+
+def _engine_identity(engine: object) -> int:
+    return id(getattr(engine, "_real", engine))
+
+
+def _validate_graph_model_contract(
+    entity: Node | Edge | PureChromaNode | PureChromaEdge,
+    *,
+    exclude: set[str] | list[str] | None = None,
+    dump_format: Literal["python", "json"] = "json",
+) -> JsonObject | None:
+    """Run optional Rust model validation before any write-side effect."""
+
+    from ..._rust_bridge import contract_implementation_mode, validate_graph_model_family
+
+    if contract_implementation_mode() == "python":
+        return None
+    from ..graph_contracts import build_graph_model_envelope
+
+    envelope = build_graph_model_envelope(
+        entity,
+        exclude=exclude,
+        dump_format=dump_format,
+    )
+    payload = decode_json_object(envelope, label="graph model envelope")
+    validate_graph_model_family(payload)
+    return payload
 
 
 @runtime_checkable
@@ -320,15 +354,54 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
+    @contextmanager
+    def defer_index_reconciliation(self, *, max_jobs: int = 50) -> Iterator[None]:
+        """Defer queued index projection work until a related write batch ends.
+
+        Canonical graph writes remain durable as they happen. Only the
+        best-effort/queued derived-index drain is coalesced at the outermost
+        context for this engine.
+        """
+        if max_jobs < 0:
+            raise ValueError("max_jobs must be non-negative")
+        engine_key = _engine_identity(self._e)
+        previous = _DEFERRED_INDEX_RECONCILIATION.get()
+        token = _DEFERRED_INDEX_RECONCILIATION.set(previous | {engine_key})
+        try:
+            yield
+        finally:
+            _DEFERRED_INDEX_RECONCILIATION.reset(token)
+        if (
+            engine_key not in previous
+            and self._e._phase1_enable_index_jobs
+            and max_jobs > 0
+        ):
+            self._e.reconcile_indexes(max_jobs=max_jobs)
+
+    def _index_reconciliation_is_deferred(self) -> bool:
+        return _engine_identity(self._e) in _DEFERRED_INDEX_RECONCILIATION.get()
+
     def _projection_backend(self) -> ProjectionBackendLike:
         """Narrow optional native projection attributes at their boundary."""
 
         return cast(ProjectionBackendLike, self._e.backend)
 
+    def _attach_graph_namespace(self, metadata: JsonObject) -> JsonObject:
+        """Persist the engine's authoritative graph namespace on projections."""
+        declared_namespace = metadata.get("namespace")
+        if declared_namespace is not None and declared_namespace != self._e.namespace:
+            raise ValueError(
+                "graph metadata namespace conflicts with the engine namespace"
+            )
+        metadata["namespace"] = self._e.namespace
+        return metadata
+
     # Canonical write API
+    @implementation_selection_bound
     def add_node(self, node: Node, doc_id: str | None = None) -> None:
         self._add_node_impl(node, doc_id=doc_id)
 
+    @implementation_selection_bound
     def create_node_if_absent(
         self, node: Node, doc_id: str | None = None
     ) -> CreateNodeResult:
@@ -405,9 +478,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 revision=revision.revision if revision is not None else None,
             )
 
+    @implementation_selection_bound
     def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         self._add_edge_impl(edge, doc_id=doc_id)
 
+    @implementation_selection_bound
     async def add_node_async(self, node: Node, doc_id: str | None = None) -> None:
         """Admit a node through the configured async persistence mode."""
         import asyncio
@@ -419,17 +494,20 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if doc_id is not None:
                 node.doc_id = doc_id
             await asyncio.to_thread(self._run_pre_add_node_hooks, node)
+            await asyncio.to_thread(_validate_graph_model_contract, node)
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
-            await asyncio.to_thread(
-                self._e._append_event_for_entity,
-                namespace=self._e.namespace,
-                entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
-                payload=payload if isinstance(payload, dict) else {}, required=True,
-            )
-            return await adapter.add_node(node, doc_id=doc_id)
+            async with self._e.async_uow():
+                await self._e._append_event_for_entity_async(
+                    namespace=self._e.namespace,
+                    entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
+                    payload=payload if isinstance(payload, dict) else {}, required=True,
+                )
+                result = await adapter.add_node(node, doc_id=doc_id)
+            return result
 
         return await self._add_node_async_single_stage(node, doc_id=doc_id)
 
+    @implementation_selection_bound
     async def add_edge_async(self, edge: Edge, doc_id: str | None = None) -> None:
         """Admit an edge through the configured async persistence mode."""
         adapter = self._e.async_two_stage_projection_adapter
@@ -461,14 +539,16 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         await self._e.persist.assert_endpoints_exist_async(edge)
         if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
             return
+        await asyncio.to_thread(_validate_graph_model_contract, edge)
         payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
-        await asyncio.to_thread(
-            self._e._append_event_for_entity,
-            namespace=self._e.namespace,
-            entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
-            payload=payload if isinstance(payload, dict) else {}, required=True,
-        )
-        return await adapter.add_edge(edge, doc_id=doc_id)
+        async with self._e.async_uow():
+            await self._e._append_event_for_entity_async(
+                namespace=self._e.namespace,
+                entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
+                payload=payload if isinstance(payload, dict) else {}, required=True,
+            )
+            result = await adapter.add_edge(edge, doc_id=doc_id)
+        return result
 
     async def _embedding_async(self, document: str) -> list[float]:
         """Await async providers; isolate legacy sync providers from the loop."""
@@ -572,7 +652,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> None:
         import asyncio
 
-        if self._rust_postgres_meta() is not None:
+        if self._rust_postgres_meta_or_python_fallback(
+            operation="async projection metadata patch"
+        ) is not None:
             await asyncio.to_thread(
                 self.patch_base_projection_metadata,
                 entity_kind=entity_kind,
@@ -792,24 +874,29 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return rows
 
     async def _async_post_write(
-        self, *, entity_kind: _ProjectionEntityKind, entity: Node | Edge
+        self,
+        *,
+        entity_kind: _ProjectionEntityKind,
+        entity: Node | Edge,
+        enqueue_index_jobs: bool = True,
     ) -> None:
         """Keep existing derived-index behavior off the event loop."""
         import asyncio
 
         if self._e._phase1_enable_index_jobs:
-            if entity_kind == "node":
-                await asyncio.to_thread(
-                    self._e.enqueue_index_jobs_for_node,
-                    entity.safe_get_id(),
-                    op="UPSERT",
-                )
-            else:
-                await asyncio.to_thread(
-                    self._e.enqueue_index_jobs_for_edge,
-                    entity.safe_get_id(),
-                    op="UPSERT",
-                )
+            if enqueue_index_jobs:
+                if entity_kind == "node":
+                    await asyncio.to_thread(
+                        self._e.enqueue_index_jobs_for_node,
+                        entity.safe_get_id(),
+                        op="UPSERT",
+                    )
+                else:
+                    await asyncio.to_thread(
+                        self._e.enqueue_index_jobs_for_edge,
+                        entity.safe_get_id(),
+                        op="UPSERT",
+                    )
             await asyncio.to_thread(self._e.reconcile_indexes, max_jobs=50)
             return
         if entity_kind == "node":
@@ -831,14 +918,26 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 }
                 await self._async_backend_call("edge_endpoints", "upsert", **kwargs)
 
+    def _require_supported_async_rust_post_write(self) -> None:
+        if (
+            not self._e._phase1_enable_index_jobs
+            and self.uses_rust_postgres_authority()
+        ):
+            raise RuntimeError(
+                "Rust PostgreSQL authority requires durable index jobs for async "
+                "graph writes; inline Python derived-index writes are not allowed"
+            )
+
     async def _add_node_async_single_stage(
         self, node: Node, *, doc_id: str | None
     ) -> None:
         import asyncio
 
+        self._require_supported_async_rust_post_write()
         if doc_id is not None:
             node.doc_id = doc_id
         await asyncio.to_thread(self._run_pre_add_node_hooks, node)
+        model_envelope = await asyncio.to_thread(_validate_graph_model_contract, node)
         document, metadata = await asyncio.to_thread(self.node_doc_and_meta, node)
         if node.embedding is None:
             node.embedding = await self._embedding_async(document)
@@ -847,19 +946,74 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
             node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
         metadata["_class_name"] = type(node).__name__
-        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
-        await asyncio.to_thread(
-            self._e._append_event_for_entity,
-            namespace=self._e.namespace,
-            entity_kind="node", entity_id=node.safe_get_id(), op="ADD",
-            payload=payload if isinstance(payload, dict) else {}, required=True,
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else node.model_dump(field_mode="backend", exclude=["embedding"])
         )
-        await self._async_semantic_upsert(
-            entity_kind="node", entity_id=node.safe_get_id(),
-            document=document, metadata=metadata,
-            embedding=_required_embedding(node.embedding),
+        native_added = False
+        if self._rust_postgres_meta_or_python_fallback(
+            operation="async node add"
+        ) is not None:
+            native_added = await asyncio.to_thread(
+                self._rust_postgres_projection_upsert,
+                entity_kind="node",
+                entity_id=node.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(node.embedding),
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
+            ) or await asyncio.to_thread(
+                self._rust_postgres_add,
+                entity_kind="node",
+                entity_id=node.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(node.embedding),
+                payload=payload if isinstance(payload, dict) else {},
+                model_envelope=model_envelope,
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
+            )
+        index_jobs_enqueued = False
+        if not native_added:
+            async with self._e.async_uow():
+                await self._e._append_event_for_entity_async(
+                    namespace=self._e.namespace,
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                await self._async_semantic_upsert(
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    document=document,
+                    metadata=metadata,
+                    embedding=_required_embedding(node.embedding),
+                )
+                if (
+                    self._e._phase1_enable_index_jobs
+                    and self._e._async_backend_uow is not None
+                ):
+                    source_payload = self._e.indexing.canonical_source_payload_for_projection(
+                        entity_kind="node",
+                        entity_id=node.safe_get_id(),
+                        document=document,
+                        metadata=metadata,
+                    )
+                    await asyncio.to_thread(
+                        self._e.indexing.enqueue_index_jobs_for_node,
+                        node.safe_get_id(),
+                        op="UPSERT",
+                        source_payload_json=source_payload,
+                    )
+                    index_jobs_enqueued = True
+        await self._async_post_write(
+            entity_kind="node",
+            entity=node,
+            enqueue_index_jobs=not native_added and not index_jobs_enqueued,
         )
-        await self._async_post_write(entity_kind="node", entity=node)
         await asyncio.to_thread(
             self._e._emit_change,
             op="node.upsert", entity=EntityRefModel(
@@ -874,6 +1028,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> None:
         import asyncio
 
+        self._require_supported_async_rust_post_write()
         if doc_id is not None:
             edge.doc_id = doc_id
         s_nodes, s_edges, t_nodes, t_edges = await asyncio.to_thread(
@@ -886,6 +1041,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         await asyncio.to_thread(self._e.persist.assert_endpoints_exist, edge)
         if await asyncio.to_thread(self._run_pre_add_edge_hooks, edge, pure=False):
             return None
+        model_envelope = await asyncio.to_thread(_validate_graph_model_contract, edge)
         document = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         if edge.embedding is None:
             edge.embedding = await self._embedding_async(document)
@@ -894,19 +1050,74 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
             edge.embedding = normalize_embedding_vector(edge.embedding, allow_none=False)
         metadata = await asyncio.to_thread(self.enrich_edge_meta, edge)
-        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
-        await asyncio.to_thread(
-            self._e._append_event_for_entity,
-            namespace=self._e.namespace,
-            entity_kind="edge", entity_id=edge.safe_get_id(), op="ADD",
-            payload=payload if isinstance(payload, dict) else {}, required=True,
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else edge.model_dump(field_mode="backend", exclude=["embedding"])
         )
-        await self._async_semantic_upsert(
-            entity_kind="edge", entity_id=edge.safe_get_id(),
-            document=document, metadata=metadata,
-            embedding=_required_embedding(edge.embedding),
+        native_added = False
+        if self._rust_postgres_meta_or_python_fallback(
+            operation="async edge add"
+        ) is not None:
+            native_added = await asyncio.to_thread(
+                self._rust_postgres_projection_upsert,
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(edge.embedding),
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
+            ) or await asyncio.to_thread(
+                self._rust_postgres_add,
+                entity_kind="edge",
+                entity_id=edge.safe_get_id(),
+                document=document,
+                metadata=metadata,
+                embedding=_required_embedding(edge.embedding),
+                payload=payload if isinstance(payload, dict) else {},
+                model_envelope=model_envelope,
+                enqueue_index_jobs=self._e._phase1_enable_index_jobs,
+            )
+        index_jobs_enqueued = False
+        if not native_added:
+            async with self._e.async_uow():
+                await self._e._append_event_for_entity_async(
+                    namespace=self._e.namespace,
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                await self._async_semantic_upsert(
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    document=document,
+                    metadata=metadata,
+                    embedding=_required_embedding(edge.embedding),
+                )
+                if (
+                    self._e._phase1_enable_index_jobs
+                    and self._e._async_backend_uow is not None
+                ):
+                    source_payload = self._e.indexing.canonical_source_payload_for_projection(
+                        entity_kind="edge",
+                        entity_id=edge.safe_get_id(),
+                        document=document,
+                        metadata=metadata,
+                    )
+                    await asyncio.to_thread(
+                        self._e.indexing.enqueue_index_jobs_for_edge,
+                        edge.safe_get_id(),
+                        op="UPSERT",
+                        source_payload_json=source_payload,
+                    )
+                    index_jobs_enqueued = True
+        await self._async_post_write(
+            entity_kind="edge",
+            entity=edge,
+            enqueue_index_jobs=not native_added and not index_jobs_enqueued,
         )
-        await self._async_post_write(entity_kind="edge", entity=edge)
         await asyncio.to_thread(
             self._e._emit_change,
             op="edge.upsert", entity=EntityRefModel(
@@ -931,7 +1142,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 return True
         return False
 
-    def _allow_missing_doc_id(self, edge: Edge) -> bool:
+    def _allow_missing_doc_id(self, edge: Edge | PureChromaEdge) -> bool:
+        if isinstance(edge, PureChromaEdge):
+            return True
         for hook in self._e.allow_missing_doc_id_on_endpoint_rows_hooks:
             if bool(hook(edge)):
                 return True
@@ -940,20 +1153,57 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def _rust_postgres_meta(self) -> RustEnginePostgresMetaStore | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = self._e.meta_sqlite
+        meta = self._e.metadata
         return (
             cast(RustEnginePostgresMetaStore, meta)
             if isinstance(meta, RustEnginePostgresMetaStore)
             else None
         )
 
-    def uses_rust_postgres_authority(self) -> bool:
-        return self._rust_postgres_meta() is not None
+    def _rust_postgres_meta_or_python_fallback(
+        self, *, operation: str
+    ) -> RustEnginePostgresMetaStore | None:
+        from ..._rust_bridge import meta_store_implementation_mode
+        from ..._rust_bridge import postgres_authority_implementation_mode
 
+        selected_mode = meta_store_implementation_mode()
+        authority_mode = postgres_authority_implementation_mode()
+        meta = self._rust_postgres_meta()
+        if selected_mode != "rust":
+            if authority_mode == "rust":
+                raise RuntimeError(
+                    "Rust PostgreSQL authority is selected without the Rust "
+                    f"metadata selector for {operation}; refusing split authority"
+                )
+            if meta is not None:
+                return None
+            return None
+        if meta is None:
+            if authority_mode == "rust":
+                raise RuntimeError(
+                    "Rust PostgreSQL authority is selected but the Rust PostgreSQL "
+                    f"meta-store is unavailable for {operation}; refusing Python "
+                    "persistence fallback"
+                )
+            return None
+        return meta
+
+    @implementation_selection_bound
+    def uses_rust_postgres_authority(self) -> bool:
+        return (
+            self._rust_postgres_meta_or_python_fallback(
+                operation="authority capability check"
+            )
+            is not None
+        )
+
+    @implementation_selection_bound
     def patch_base_projection_metadata(
         self, *, entity_kind: _ProjectionEntityKind, entity_id: str, metadata_patch: JsonObject
     ) -> None:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation="projection metadata patch"
+        )
         if meta is not None:
             table = (
                 self._projection_backend().nodes.name
@@ -989,9 +1239,10 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         metadata: JsonObject,
         embedding: Sequence[float],
         payload: JsonObject,
+        model_envelope: JsonObject | None = None,
         enqueue_index_jobs: bool = True,
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(operation="graph add")
         if meta is None:
             return False
         table = (
@@ -1004,23 +1255,26 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             else self._projection_backend().domains.name
         )
         with meta.transaction():
-            meta.apply_graph_mutation(
-                namespace=self._e.namespace,
-                workspace_id=metadata.get("workspace_id"),
-                graph_space=metadata.get("graph_space"),
-                table=table,
-                entity_kind=entity_kind,
-                event_id=str(uuid.uuid4()),
-                op="ADD",
-                record={
+            mutation_values: JsonObject = {
+                "namespace": self._e.namespace,
+                "workspace_id": metadata.get("workspace_id"),
+                "graph_space": metadata.get("graph_space"),
+                "table": table,
+                "entity_kind": entity_kind,
+                "event_id": str(uuid.uuid4()),
+                "op": "ADD",
+                "record": {
                     "id": entity_id,
                     "document": document,
                     "metadata": metadata,
                     "embedding": list(embedding),
                 },
-                payload=payload,
-                embedding_dim=self._projection_backend().embedding_dim,
-            )
+                "payload": payload,
+                "embedding_dim": self._projection_backend().embedding_dim,
+            }
+            if model_envelope is not None:
+                mutation_values["model_envelope"] = model_envelope
+            meta.apply_graph_mutation(**mutation_values)
             if enqueue_index_jobs and entity_kind == "node":
                 self._e.enqueue_index_jobs_for_node(entity_id, op="UPSERT")
             elif enqueue_index_jobs and entity_kind == "edge":
@@ -1037,7 +1291,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         embedding: Sequence[float],
         enqueue_index_jobs: bool = True,
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation="projection-only graph upsert"
+        )
         if meta is None or not self._e._disable_event_log:
             return False
         table = (
@@ -1066,10 +1322,46 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     self._e.enqueue_index_jobs_for_edge(entity_id, op="UPSERT")
         return True
 
+    def _ensure_rust_postgres_canonical_tombstone(
+        self, *, entity_kind: Literal["node", "edge"], entity_id: str
+    ) -> bool:
+        """Make physical native purge safe after canonical lifecycle admission."""
+        getter = (
+            self._e.backend.node_get
+            if entity_kind == "node"
+            else self._e.backend.edge_get
+        )
+        current = _backend_object(
+            run_awaitable_blocking(getter(ids=[entity_id], include=["metadatas"]))
+        )
+        if not current.get("ids"):
+            return False
+        metadata_rows = current.get("metadatas") or []
+        metadata = metadata_rows[0] if metadata_rows else None
+        if isinstance(metadata, Mapping) and str(
+            metadata.get("lifecycle_status") or "active"
+        ) in {"tombstoned", "deleted"}:
+            return True
+        tombstoned = (
+            self._e.lifecycle.tombstone_node(entity_id, reason="native_graph_purge")
+            if entity_kind == "node"
+            else self._e.lifecycle.tombstone_edge(entity_id, reason="native_graph_purge")
+        )
+        if not tombstoned:
+            raise RuntimeError(
+                f"cannot physically purge active {entity_kind} {entity_id!r}"
+                " without a canonical tombstone"
+            )
+        return True
+
     def _rust_postgres_delete_edges(self, edge_ids: list[str]) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(operation="edge delete")
         if meta is None:
             return False
+        for edge_id in edge_ids:
+            self._ensure_rust_postgres_canonical_tombstone(
+                entity_kind="edge", entity_id=edge_id
+            )
         with meta.transaction():
             for edge_id in edge_ids:
                 result = meta.apply_graph_delete_mutation(
@@ -1090,10 +1382,13 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             pass
         return True
 
+    @implementation_selection_bound
     def rust_postgres_delete_existing(
         self, *, entity_kind: _GraphEntityKind, entity_ids: list[str]
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation=f"{entity_kind} rollback delete"
+        )
         if meta is None:
             return False
         table = {
@@ -1102,6 +1397,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "document": self._projection_backend().documents.name,
             "domain": self._projection_backend().domains.name,
         }[entity_kind]
+        if entity_kind == "node" or entity_kind == "edge":
+            for entity_id in entity_ids:
+                self._ensure_rust_postgres_canonical_tombstone(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
         with meta.transaction():
             for entity_id in entity_ids:
                 result = meta.apply_graph_delete_mutation(
@@ -1127,6 +1427,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 pass
         return True
 
+    @implementation_selection_bound
     def rust_postgres_replace_existing(
         self,
         *,
@@ -1136,7 +1437,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         metadata_patch: JsonObject,
         payload: JsonObject,
     ) -> bool:
-        meta = self._rust_postgres_meta()
+        meta = self._rust_postgres_meta_or_python_fallback(
+            operation=f"{entity_kind} replacement"
+        )
         if meta is None:
             return False
         table = (
@@ -1197,7 +1500,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     "references": json_or_none(
                         [
                             r.model_dump(field_mode="backend")
-                            for r in (edge.mentions or [])
+                            for r in (getattr(edge, "mentions", None) or [])
                         ]
                     ),
                     "node_endpoint_count": node_endpoint_count,
@@ -1227,7 +1530,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     }
                 )
             )
-        return base_metadata
+        return self._attach_graph_namespace(base_metadata)
 
     def _add_node_impl(self, node: Node, doc_id: str | None = None) -> None:
         """Commit canonical node event, then converge projections around it.
@@ -1244,6 +1547,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if doc_id is not None:
                 node.doc_id = doc_id
             self._run_pre_add_node_hooks(node)
+            _validate_graph_model_contract(node)
             doc, meta = self.node_doc_and_meta(node)
             meta["_class_name"] = type(node).__name__
             payload = node.model_dump(field_mode="backend", exclude=["embedding"])
@@ -1257,13 +1561,14 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     required=True,
                 )
                 result = adapter.add_node(node, doc_id=doc_id)
-            _enqueue_embedding_job_if_supported(
-                adapter, entity_kind="node", entity_id=node.safe_get_id()
-            )
+                _enqueue_embedding_job_if_supported(
+                    adapter, entity_kind="node", entity_id=node.safe_get_id()
+                )
             return result
         if doc_id is not None:
             node.doc_id = doc_id
         self._run_pre_add_node_hooks(node)
+        model_envelope = _validate_graph_model_contract(node)
 
         doc, meta = self.node_doc_and_meta(node)
         if node.embedding is None:
@@ -1271,7 +1576,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         node.embedding = normalize_embedding_vector(node.embedding, allow_none=False)
         meta["_class_name"] = type(node).__name__
 
-        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else node.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="node",
             entity_id=node.safe_get_id(),
@@ -1285,30 +1594,33 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=meta,
             embedding=_required_embedding(node.embedding),
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
         )
 
         if not native_added:
-            self._e._append_event_for_entity(
-                namespace=self._e.namespace,
-                entity_kind="node",
-                entity_id=node.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-                required=True,
-            )
-            run_awaitable_blocking(self._e.backend.node_add(
-                ids=[node.safe_get_id()],
-                documents=[doc],
-                embeddings=[_required_embedding(node.embedding)]
-                if node.embedding is not None
-                else [self._e.embed.iterative_defensive_emb(str(doc))],
-                metadatas=[meta],
-            ))
+            with self._e.uow():
+                self._e._append_event_for_entity(
+                    namespace=self._e.namespace,
+                    entity_kind="node",
+                    entity_id=node.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                run_awaitable_blocking(self._e.backend.node_add(
+                    ids=[node.safe_get_id()],
+                    documents=[doc],
+                    embeddings=[_required_embedding(node.embedding)]
+                    if node.embedding is not None
+                    else [self._e.embed.iterative_defensive_emb(str(doc))],
+                    metadatas=[meta],
+                ))
 
         if self._e._phase1_enable_index_jobs:
             if not native_added:
                 self._e.enqueue_index_jobs_for_node(node.safe_get_id(), op="UPSERT")
-            self._e.reconcile_indexes(max_jobs=50)
+            if not self._index_reconciliation_is_deferred():
+                self._e.reconcile_indexes(max_jobs=50)
         else:
             self.index_node_docs(node)
             self.maybe_reindex_node_refs(node)
@@ -1348,6 +1660,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             self._e.persist.assert_endpoints_exist(edge)
             if self._run_pre_add_edge_hooks(edge, pure=False):
                 return
+            _validate_graph_model_contract(edge)
             payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
             with self._e.uow():
                 self._e._append_event_for_entity(
@@ -1359,9 +1672,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     required=True,
                 )
                 result = adapter.add_edge(edge, doc_id=doc_id)
-            _enqueue_embedding_job_if_supported(
-                adapter, entity_kind="edge", entity_id=edge.safe_get_id()
-            )
+                _enqueue_embedding_job_if_supported(
+                    adapter, entity_kind="edge", entity_id=edge.safe_get_id()
+                )
             return result
         if doc_id is not None:
             edge.doc_id = doc_id
@@ -1375,15 +1688,19 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         self._e.persist.assert_endpoints_exist(edge)
         if self._run_pre_add_edge_hooks(edge, pure=False):
             return
+        model_envelope = _validate_graph_model_contract(edge)
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         if edge.embedding is None:
             edge.embedding = self._e.embed.iterative_defensive_emb(str(doc))
         edge.embedding = normalize_embedding_vector(edge.embedding, allow_none=False)
 
-        doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         base_metadata = [self.enrich_edge_meta(edge)]
-        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else edge.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="edge",
             entity_id=edge.safe_get_id(),
@@ -1397,30 +1714,36 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=base_metadata[0],
             embedding=_required_embedding(edge.embedding),
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
         )
         if not native_added:
-            self._e._append_event_for_entity(
-                namespace=self._e.namespace,
-                entity_kind="edge",
-                entity_id=edge.safe_get_id(),
-                op="ADD",
-                payload=payload if isinstance(payload, dict) else {},
-                required=True,
-            )
-            run_awaitable_blocking(self._e.backend.edge_add(
-                ids=[edge.safe_get_id()],
-                documents=[str(doc)],
-                embeddings=[_required_embedding(edge.embedding)]
-                if edge.embedding is not None
-                else [self._e.embed.iterative_defensive_emb(str(doc))],
-                metadatas=base_metadata,
-            ))
+            with self._e.uow():
+                self._e._append_event_for_entity(
+                    namespace=self._e.namespace,
+                    entity_kind="edge",
+                    entity_id=edge.safe_get_id(),
+                    op="ADD",
+                    payload=payload if isinstance(payload, dict) else {},
+                    required=True,
+                )
+                run_awaitable_blocking(self._e.backend.edge_add(
+                    ids=[edge.safe_get_id()],
+                    documents=[str(doc)],
+                    embeddings=[_required_embedding(edge.embedding)]
+                    if edge.embedding is not None
+                    else [self._e.embed.iterative_defensive_emb(str(doc))],
+                    metadatas=base_metadata,
+                ))
 
         if self._e._phase1_enable_index_jobs:
             if not native_added:
                 self._e.enqueue_index_jobs_for_edge(edge.safe_get_id(), op="UPSERT")
-            self._e.reconcile_indexes(max_jobs=50)
-        else:
+            if not self._index_reconciliation_is_deferred():
+                self._e.reconcile_indexes(max_jobs=50)
+        elif not native_added:
+            # The native graph mutation transaction writes endpoint/reference
+            # projections from the canonical edge payload. Do not re-enter the
+            # Python backend after Rust has owned the transaction.
             self.maybe_reindex_edge_refs(edge)
             rows = self.fanout_endpoints_rows(edge, doc_id)
             if rows:
@@ -1447,12 +1770,20 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             payload=_entity_payload(edge),
         )
 
+    @implementation_selection_bound
     def add_pure_node(self, node: PureChromaNode) -> None:
         if node.id is None:
             raise ValueError("pure node id must not be None")
         doc, meta = node_doc_and_meta_util(node)
+        meta = self._attach_graph_namespace(meta)
+        meta["_class_name"] = type(node).__name__
         if meta.get("doc_id"):
             meta.pop("doc_id")
+        model_envelope = _validate_graph_model_contract(
+            node,
+            exclude=["embedding"],
+            dump_format="python",
+        )
         embedding = normalize_embedding_vector(
             node.embedding
             if node.embedding is not None
@@ -1460,7 +1791,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             allow_none=False,
         )
         assert embedding is not None
-        payload = node.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else node.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="node",
             entity_id=cast(str, node.id),
@@ -1475,6 +1810,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=meta,
             embedding=embedding,
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
             enqueue_index_jobs=False,
         )
         if not native_added:
@@ -1487,8 +1823,9 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 )
             )
 
+    @implementation_selection_bound
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
-        """Low-level edge add without endpoint fanout or duplicate checks."""
+        """Persist a pure edge and its rebuildable endpoint projection."""
         if edge.id is None:
             raise ValueError("pure edge id must not be None")
         s_nodes, s_edges, t_nodes, t_edges = self._e.adjudicate.split_endpoints(
@@ -1505,6 +1842,12 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         metadata = self.enrich_edge_meta(cast(Edge, edge))
+        metadata["_class_name"] = type(edge).__name__
+        model_envelope = _validate_graph_model_contract(
+            edge,
+            exclude=["embedding"],
+            dump_format="python",
+        )
         embedding = normalize_embedding_vector(
             edge.embedding
             if edge.embedding is not None
@@ -1512,7 +1855,11 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             allow_none=False,
         )
         assert embedding is not None
-        payload = edge.model_dump(field_mode="backend", exclude=["embedding"])
+        payload = (
+            model_envelope["payload"]
+            if model_envelope is not None
+            else edge.model_dump(field_mode="backend", exclude=["embedding"])
+        )
         native_added = self._rust_postgres_projection_upsert(
             entity_kind="edge",
             entity_id=cast(str, edge.id),
@@ -1527,6 +1874,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             metadata=metadata,
             embedding=embedding,
             payload=payload if isinstance(payload, dict) else {},
+            model_envelope=model_envelope,
             enqueue_index_jobs=False,
         )
         if not native_added:
@@ -1538,7 +1886,24 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     metadatas=[metadata],
                 )
             )
+        endpoint_rows = (
+            self.fanout_endpoints_rows(edge, None) if not native_added else []
+        )
+        if endpoint_rows:
+            endpoint_documents = [json.dumps(row) for row in endpoint_rows]
+            run_awaitable_blocking(
+                self._e.backend.edge_endpoints_add(
+                    ids=[str(row["id"]) for row in endpoint_rows],
+                    documents=endpoint_documents,
+                    metadatas=endpoint_rows,
+                    embeddings=[
+                        self._e.embed.iterative_defensive_emb(document)
+                        for document in endpoint_documents
+                    ],
+                )
+            )
 
+    @implementation_selection_bound
     def add_document(self, document: Document) -> None:
         if document.embeddings is None:
             document.embeddings = self._e.embed.iterative_defensive_emb(
@@ -1592,6 +1957,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             payload=_entity_payload(document),
         )
 
+    @implementation_selection_bound
     def add_domain(self, domain: Domain) -> None:
         if domain.id is None:
             raise ValueError("domain id is required for persistence")
@@ -1620,6 +1986,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
 
     # Index/metadata helpers
+    @implementation_selection_bound
     def index_node_docs(self, node: Node) -> list[str]:
         doc_ids = extract_doc_ids_from_refs(node.mentions)
 
@@ -1633,7 +2000,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 row = {"id": rid, "node_id": node.id, "doc_id": did, "mention_count": 1}
                 ids.append(rid)
                 docs.append(json.dumps(row))
-                metas.append(row)
+                metas.append({**row, "namespace": self._e.namespace})
             run_awaitable_blocking(self._e.backend.node_docs_add(
                 ids=ids,
                 documents=docs,
@@ -1653,6 +2020,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return doc_ids
 
+    @implementation_selection_bound
     def index_node_refs(
         self, node: Node | None = None, **kwargs: object
     ) -> list[str]:
@@ -1695,6 +2063,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
         return ids
 
+    @implementation_selection_bound
     def index_edge_refs(
         self, edge: Edge | None = None, **kwargs: object
     ) -> list[str]:
@@ -1738,7 +2107,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return ids
 
     def fanout_endpoints_rows(
-        self, edge: Edge, doc_id: str | None
+        self, edge: Edge | PureChromaEdge, doc_id: str | None
     ) -> list[dict[str, object]]:
         """Build derived edge_endpoints rows from the current edge payload.
 
@@ -1814,10 +2183,12 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return [{k: v for k, v in r.items() if v is not None} for r in rows]
 
     def node_doc_and_meta(self, node: Node) -> tuple[str, JsonObject]:
-        return cast(tuple[str, JsonObject], node_doc_and_meta_util(node))
+        document, metadata = node_doc_and_meta_util(node)
+        return document, self._attach_graph_namespace(metadata)
 
     def edge_doc_and_meta(self, edge: Edge) -> tuple[str, JsonObject]:
-        return cast(tuple[str, JsonObject], edge_doc_and_meta_util(edge))
+        document, metadata = edge_doc_and_meta_util(edge)
+        return document, self._attach_graph_namespace(metadata)
 
     def strip_none(self, d: Mapping[str, _T]) -> dict[str, _T]:
         return strip_none(d)
@@ -1825,6 +2196,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def json_or_none(self, value: object) -> str | None:
         return json_or_none(value)
 
+    @implementation_selection_bound
     def delete_edge_ref_rows(
         self, edge_id: str | None = None, **kwargs: object
     ) -> None:
@@ -1839,6 +2211,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             run_awaitable_blocking(self._e.backend.edge_refs_delete(ids=ids))
         return None
 
+    @implementation_selection_bound
     def delete_node_ref_rows(
         self, node_id: str | None = None, **kwargs: object
     ) -> None:
@@ -1853,6 +2226,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             run_awaitable_blocking(self._e.backend.node_refs_delete(ids=ids))
         return None
 
+    @implementation_selection_bound
     def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
         """Repair edge_refs when mention fingerprints or observed rows drift.
 
@@ -1886,6 +2260,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             self.index_edge_refs(edge)
 
+    @implementation_selection_bound
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
         """Repair node_refs when mention fingerprints or observed rows drift.
 
@@ -1918,6 +2293,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             self.index_node_refs(node)
 
+    @implementation_selection_bound
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         """Remove references to doc_id from node; delete node_docs link; refresh denormalized meta."""
         got = run_awaitable_blocking(self._e.backend.node_get(
@@ -1955,16 +2331,23 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 metadata_patch=metadata,
                 payload=payload if isinstance(payload, dict) else {},
             )
-            if not native_replaced:
-                run_awaitable_blocking(
-                    self._e.backend.node_update(ids=[node_id], documents=[document])
+            if native_replaced:
+                # The Rust replacement commits a durable node_docs UPSERT job
+                # with the canonical node update. Do not open a second Python
+                # transaction for this derived index while Rust owns the run.
+                return changed
+            run_awaitable_blocking(
+                self._e.backend.node_update(ids=[node_id], documents=[document])
+            )
+            run_awaitable_blocking(
+                self._e.backend.node_docs_delete(
+                    where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]}
                 )
-            run_awaitable_blocking(self._e.backend.node_docs_delete(
-                where={"$and": [{"node_id": node_id}, {"doc_id": doc_id}]}
-            ))
+            )
             self.index_node_docs(node)
         return changed
 
+    @implementation_selection_bound
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
         eps = run_awaitable_blocking(self._e.backend.edge_endpoints_get(
             where={"doc_id": doc_id}, include=["documents"]
@@ -1982,6 +2365,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             cnt += 1
         return cnt
 
+    @implementation_selection_bound
     def rebuild_all_edge_refs(self) -> int:
         got = run_awaitable_blocking(self._e.backend.edge_get())
         total = 0
@@ -1993,6 +2377,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 total += 1
         return total
 
+    @implementation_selection_bound
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
         node_ids = []
         if hasattr(self._e, "node_docs_collection"):
@@ -2019,6 +2404,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             cnt += 1
         return cnt
 
+    @implementation_selection_bound
     def rebuild_all_node_refs(self) -> int:
         got = run_awaitable_blocking(self._e.backend.node_get())
         total = 0
@@ -2030,6 +2416,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 total += 1
         return total
 
+    @implementation_selection_bound
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         if not edge_ids:
             return

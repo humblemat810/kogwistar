@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from typing_extensions import TypedDict
 
 from ..async_compat import run_awaitable_blocking
-from ...json_types import JsonObject
+from ...implementation_selection import implementation_selection_bound
+from ...id_provider import stable_id
+from ...json_types import JsonObject, JsonValue
+from ...runtime.serialize import stable_json_dumps
 from ..models import Edge, Grounding, Node
 from ..utils.metadata import json_or_none, strip_none
 from ..utils.refs import extract_doc_ids_from_refs
@@ -144,7 +147,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         run_awaitable_blocking(self._e.backend.edge_refs_delete(where={"edge_id": edge_id}))
 
     def _replacement_node(
-        self, node: Node, mentions: list[Grounding] | None
+        self, node: Node, mentions: list[Grounding] | None, document_id: str
     ) -> Node:
         payload = node.model_dump(field_mode="backend", exclude={"id", "embedding"})
         payload["mentions"] = list(mentions or [])
@@ -152,6 +155,17 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         payload["metadata"] = self._clean_metadata_for_replacement(node.metadata)
         replacement = Node.model_validate(payload)
         replacement.embedding = None
+        stable_payload = replacement.model_dump(
+            field_mode="backend", dump_format="json", exclude={"id", "embedding"}
+        )
+        replacement.id = str(
+            stable_id(
+                "rollback.node",
+                node.safe_get_id(),
+                document_id,
+                stable_json_dumps(cast(JsonValue, stable_payload)),
+            )
+        )
         return replacement
 
     def _replacement_edge(
@@ -163,6 +177,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         target_ids: list[str],
         source_edge_ids: list[str],
         target_edge_ids: list[str],
+        document_id: str,
     ) -> Edge:
         payload = edge.model_dump(field_mode="backend", exclude={"id", "embedding"})
         payload["mentions"] = list(mentions or [])
@@ -174,6 +189,17 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         payload["metadata"] = self._clean_metadata_for_replacement(edge.metadata)
         replacement = Edge.model_validate(payload)
         replacement.embedding = None
+        stable_payload = replacement.model_dump(
+            field_mode="backend", dump_format="json", exclude={"id", "embedding"}
+        )
+        replacement.id = str(
+            stable_id(
+                "rollback.edge",
+                edge.safe_get_id(),
+                document_id,
+                stable_json_dumps(cast(JsonValue, stable_payload)),
+            )
+        )
         return replacement
 
     def _load_nodes(self, node_ids: list[str]) -> list[Node]:
@@ -225,6 +251,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edge_ids.add(str(metadata_object["edge_id"]))
         return edge_ids
 
+    @implementation_selection_bound
     def rollback_document(self, document_id: str) -> RollbackDocumentResult:
         """Remove one document's contribution while preserving surviving evidence.
 
@@ -262,7 +289,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if not changed:
                 continue
             if surviving_mentions:
-                replacement = self._replacement_node(node, surviving_mentions)
+                replacement = self._replacement_node(node, surviving_mentions, document_id)
                 self._e.write.add_node(replacement)
                 self._e.redirect_node(
                     node.safe_get_id(),
@@ -380,6 +407,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 target_ids=mapped_target_ids,
                 source_edge_ids=mapped_source_edge_ids,
                 target_edge_ids=mapped_target_edge_ids,
+                document_id=document_id,
             )
             self._e.write.add_edge(replacement_edge)
             self._e.redirect_edge(
@@ -439,6 +467,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "updated_edges": len(updated_edge_ids),
         }
 
+    @implementation_selection_bound
     def rollback_document_extraction(
         self,
         doc_id: str,
@@ -714,6 +743,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
         return summary
 
+    @implementation_selection_bound
     def prune_node_from_edges(self, node_id: str) -> PrunedNodeEdgesResult:
         eps = _backend_object(
             run_awaitable_blocking(
@@ -746,13 +776,17 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         removed_edge_ids: set[str] = set()
         updated_edge_ids: set[str] = set()
 
-        def _delete_base_edge(edge_id: str) -> None:
-            if not self._e.write.rust_postgres_delete_existing(
+        def _delete_base_edge(edge_id: str) -> bool:
+            if self._e.write.rust_postgres_delete_existing(
                 entity_kind="edge", entity_ids=[edge_id]
             ):
-                run_awaitable_blocking(self._e.backend.edge_delete(ids=[edge_id]))
+                return True
+            run_awaitable_blocking(self._e.backend.edge_delete(ids=[edge_id]))
+            return False
 
-        def _replace_base_edge(edge: Edge, metadata: dict[str, Any] | None) -> None:
+        def _replace_base_edge(
+            edge: Edge, metadata: dict[str, Any] | None
+        ) -> bool:
             replacement_metadata = strip_none(
                 {
                     "doc_id": (metadata or {}).get("doc_id"),
@@ -773,19 +807,21 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 }
             )
             document = edge.model_dump_json(field_mode="backend")
-            if not self._e.write.rust_postgres_replace_existing(
+            if self._e.write.rust_postgres_replace_existing(
                 entity_kind="edge",
                 entity_id=edge.safe_get_id(),
                 document=document,
                 metadata_patch=replacement_metadata,
                 payload=edge.model_dump(field_mode="backend", exclude=["embedding"]),
             ):
-                run_awaitable_blocking(self._e.backend.edge_update(
-                    ids=[edge.safe_get_id()],
-                    documents=[document],
-                    metadatas=[replacement_metadata],
-                ))
-                self._e.write.index_edge_refs(edge)
+                return True
+            run_awaitable_blocking(self._e.backend.edge_update(
+                ids=[edge.safe_get_id()],
+                documents=[document],
+                metadatas=[replacement_metadata],
+            ))
+            self._e.write.index_edge_refs(edge)
+            return False
 
         for eid, edoc, meta in zip(
             _backend_strings(edges.get("ids")),
@@ -802,70 +838,74 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     removed_node_id=node_id,
                 )
                 if edge_deleted or (new_edge is None):
-                    _delete_base_edge(eid)
-                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
+                    native_deleted = _delete_base_edge(eid)
+                    if not native_deleted:
+                        run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                     removed_edge_ids.add(eid)
                 else:
-                    _replace_base_edge(new_edge, metadata)
-                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
-                    ep_ids, ep_docs, ep_metas = [], [], []
-                    for role, node_ids in (
-                        ("src", new_edge.source_ids or []),
-                        ("tgt", new_edge.target_ids or []),
-                    ):
-                        for nid in node_ids:
-                            ep_id = f"{eid}::{role}::{nid}"
-                            node_doc = _backend_object(
-                                run_awaitable_blocking(
-                                    self._e.backend.node_get(
-                                        ids=[nid], include=["documents"]
+                    native_replaced = _replace_base_edge(new_edge, metadata)
+                    if not native_replaced:
+                        run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
+                        ep_ids, ep_docs, ep_metas = [], [], []
+                        for role, node_ids in (
+                            ("src", new_edge.source_ids or []),
+                            ("tgt", new_edge.target_ids or []),
+                        ):
+                            for nid in node_ids:
+                                ep_id = f"{eid}::{role}::{nid}"
+                                node_doc = _backend_object(
+                                    run_awaitable_blocking(
+                                        self._e.backend.node_get(
+                                            ids=[nid], include=["documents"]
+                                        )
                                     )
                                 )
-                            )
-                            per_doc_id = None
-                            if node_doc_doc := _backend_strings(node_doc.get("documents")):
-                                try:
-                                    n = Node.model_validate_json(node_doc_doc[0])
-                                    per_doc_id = getattr(n, "doc_id", None)
-                                except Exception:
-                                    per_doc_id = None
-                            meta_ep = strip_none(
-                                {
-                                    "id": ep_id,
-                                    "edge_id": eid,
-                                    "node_id": nid,
-                                    "role": role,
-                                    "relation": new_edge.relation,
-                                    "doc_id": per_doc_id,
-                                }
-                            )
-                            ep_ids.append(ep_id)
-                            ep_docs.append(json.dumps(meta_ep))
-                            ep_metas.append(meta_ep)
-                    if ep_ids:
-                        run_awaitable_blocking(self._e.backend.edge_endpoints_add(
-                            ids=ep_ids,
-                            documents=ep_docs,
-                            metadatas=ep_metas,
-                            embeddings=[
-                                self._e._iterative_defensive_emb(d) for d in ep_docs
-                            ],
-                        ))
+                                per_doc_id = None
+                                if node_doc_doc := _backend_strings(node_doc.get("documents")):
+                                    try:
+                                        n = Node.model_validate_json(node_doc_doc[0])
+                                        per_doc_id = getattr(n, "doc_id", None)
+                                    except Exception:
+                                        per_doc_id = None
+                                meta_ep = strip_none(
+                                    {
+                                        "id": ep_id,
+                                        "edge_id": eid,
+                                        "node_id": nid,
+                                        "role": role,
+                                        "relation": new_edge.relation,
+                                        "doc_id": per_doc_id,
+                                    }
+                                )
+                                ep_ids.append(ep_id)
+                                ep_docs.append(json.dumps(meta_ep))
+                                ep_metas.append(meta_ep)
+                        if ep_ids:
+                            run_awaitable_blocking(self._e.backend.edge_endpoints_add(
+                                ids=ep_ids,
+                                documents=ep_docs,
+                                metadatas=ep_metas,
+                                embeddings=[
+                                    self._e._iterative_defensive_emb(d) for d in ep_docs
+                                ],
+                            ))
                     updated_edge_ids.add(eid)
                 continue
 
             new_src = [x for x in (e.source_ids or []) if x != node_id]
             new_tgt = [x for x in (e.target_ids or []) if x != node_id]
             if not new_src or not new_tgt:
-                _delete_base_edge(eid)
-                run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
+                native_deleted = _delete_base_edge(eid)
+                if not native_deleted:
+                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(where={"edge_id": eid}))
                 removed_edge_ids.add(eid)
             else:
                 e.source_ids, e.target_ids = new_src, new_tgt
-                _replace_base_edge(e, metadata)
-                run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
-                    where={"$and": [{"edge_id": eid}, {"node_id": node_id}]}
-                ))
+                native_replaced = _replace_base_edge(e, metadata)
+                if not native_replaced:
+                    run_awaitable_blocking(self._e.backend.edge_endpoints_delete(
+                        where={"$and": [{"edge_id": eid}, {"node_id": node_id}]}
+                    ))
                 updated_edge_ids.add(eid)
 
         return {
@@ -873,6 +913,7 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "updated_edges": updated_edge_ids - removed_edge_ids,
         }
 
+    @implementation_selection_bound
     def rollback_many_documents(
         self, document_ids: list[str]
     ) -> RollbackManyDocumentsResult:
@@ -890,8 +931,10 @@ class RollbackSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             totals["updated_edges"] += res["updated_edges"]
         return totals
 
+    @implementation_selection_bound
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         self._e.write.delete_edges_by_ids(edge_ids)
 
+    @implementation_selection_bound
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         return self._e.write.prune_node_refs_for_doc(node_id, doc_id)

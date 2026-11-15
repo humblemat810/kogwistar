@@ -1,13 +1,20 @@
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import pathlib
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from collections.abc import Awaitable
+from contextlib import (
+    AbstractContextManager,
+    AbstractAsyncContextManager,
+    asynccontextmanager,
+    contextmanager,
+)
 from types import TracebackType
-from typing import Protocol
+from typing import Protocol, cast
 
 from ..acl.graph import (
     ACLDecision,
@@ -19,6 +26,12 @@ from ..acl.graph import (
 from ..acl.graph import ACLGraph
 from ..graph_kinds import normalize_graph_kind
 from ..json_types import JsonObject
+from ..implementation_selection import (
+    capture_implementation_selection,
+    implementation_selection_scope,
+    transaction_authority_for_selection,
+    transaction_authority_scope,
+)
 from ..utils.log import bind_log_context
 from ..workers.index_job_worker import IndexJobWorker
 from .acl_protocol import require_acl_protocols
@@ -45,6 +58,7 @@ from .rust_meta_sqlite import build_sqlite_meta_store
 from .search_index.service import SearchIndexService
 from .service_health import ServiceHealthRegistry
 from .storage_backend import (
+    AsyncUnitOfWork,
     AtomicMutationCapability,
     NoopUnitOfWork,
     StorageBackend,
@@ -108,6 +122,33 @@ class CollectionLock(Protocol):
         traceback: TracebackType | None,
         /,
     ) -> object: ...
+
+
+class AsyncEntityEventAppender(Protocol):
+    """Optional metadata capability for appending events on an async UoW."""
+
+    def append_entity_event_async(
+        self,
+        *,
+        namespace: str,
+        event_id: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str,
+    ) -> Awaitable[int]: ...
+
+
+class AsyncTransactionOwner(Protocol):
+    """Optional metadata capability for serialized async transactions."""
+
+    def async_transaction(self) -> AbstractAsyncContextManager[object]: ...
+
+
+class SyncTransactionOwner(Protocol):
+    """Metadata transaction capability used by Rust-authority sync UoWs."""
+
+    def transaction(self) -> AbstractContextManager[object]: ...
 from .utils import AliasBook
 from .utils.aliasing import AliasBookStore
 from .vector_search import VectorSearchHit
@@ -164,7 +205,7 @@ import json
 import math
 import os
 import warnings
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Sequence
 from datetime import datetime
 from functools import wraps
 from typing import (
@@ -321,7 +362,14 @@ class _BackendTarget(Protocol):
 def _is_async_postgres_backend(
     backend: StorageBackend,
 ) -> TypeGuard[_AsyncPostgresBackend]:
-    return isinstance(backend, _AsyncPostgresBackend) and backend._is_async_engine
+    # Do not use the full runtime Protocol check here.  PgVectorBackend is a
+    # deliberately broad adapter and does not need to implement every
+    # StorageBackend method just to identify its SQLAlchemy engine mode.  The
+    # explicit marker plus the two fields consumed by the async UoW are the
+    # stable authority contract.
+    return bool(getattr(backend, "_is_async_engine", False)) and all(
+        hasattr(backend, name) for name in ("engine", "schema")
+    )
 
 
 def _is_async_storage_backend(backend: StorageBackend) -> bool:
@@ -437,8 +485,13 @@ def engine_context(
             "conversation_id": kwargs.get("conv_id"),
         }
 
-        with bind_log_context(**ctx_kwargs):
-            return fn(self, *args, **kwargs)
+        # Graph boundary methods must use the engine's construction-time
+        # authority snapshot, not selectors that may have changed in the
+        # surrounding process after construction.
+        snapshot = getattr(self, "_implementation_selection_snapshot", None)
+        with implementation_selection_scope(snapshot):
+            with bind_log_context(**ctx_kwargs):
+                return fn(self, *args, **kwargs)
 
     return wrapper
 
@@ -495,18 +548,20 @@ _SUBSYSTEMS_WITH_E = (
 def scoped_namespace(engine: GraphKnowledgeEngine, namespace: str) -> Iterator[None]:
     """Temporarily scope a graph engine to a namespace without mutating it."""
     proxy = _NamespacedEngineProxy(engine, namespace)
-    rebindings: list[tuple[object, str, object]] = []
-    for sub_name in _SUBSYSTEMS_WITH_E:
-        sub = getattr(engine, sub_name, None)
-        if sub is not None and hasattr(sub, "_e"):
-            rebindings.append((sub, "_e", sub._e))
-
-    indexing = getattr(engine, "indexing", None)
-    if indexing is not None and hasattr(indexing, "engine"):
-        rebindings.append((indexing, "engine", indexing.engine))
-
     lock = _get_engine_ns_lock(engine)
     with lock:
+        # Capture bindings only after acquiring the lock so a waiting scope
+        # cannot save and later restore another scope's temporary proxy.
+        rebindings: list[tuple[object, str, object]] = []
+        for sub_name in _SUBSYSTEMS_WITH_E:
+            sub = getattr(engine, sub_name, None)
+            if sub is not None and hasattr(sub, "_e"):
+                rebindings.append((sub, "_e", sub._e))
+
+        indexing = getattr(engine, "indexing", None)
+        if indexing is not None and hasattr(indexing, "engine"):
+            rebindings.append((indexing, "engine", indexing.engine))
+
         for obj, attr, _ in rebindings:
             setattr(obj, attr, proxy)
         try:
@@ -652,6 +707,7 @@ class GraphKnowledgeEngine:
             prefer_label_fallback=prefer_label_fallback,
         )
 
+    @engine_context
     def replay_namespace(
         self,
         *,
@@ -669,6 +725,7 @@ class GraphKnowledgeEngine:
             repair_backend=repair_backend,
         )
 
+    @engine_context
     def replay_repair_namespace(
         self,
         *,
@@ -685,6 +742,7 @@ class GraphKnowledgeEngine:
         )
 
     ## get
+    @engine_context
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
@@ -705,6 +763,7 @@ class GraphKnowledgeEngine:
             resolve_mode=resolve_mode,
         ))
 
+    @engine_context
     def query_nodes(
         self,
         *args: object,
@@ -729,6 +788,7 @@ class GraphKnowledgeEngine:
             ),
         )
 
+    @engine_context
     def search_nodes_as_of(
         self,
         *,
@@ -758,6 +818,7 @@ class GraphKnowledgeEngine:
             **kwargs,
         ))
 
+    @engine_context
     def search_nodes_as_of_scored(
         self,
         *,
@@ -787,6 +848,7 @@ class GraphKnowledgeEngine:
             **kwargs,
         )
 
+    @engine_context
     def query_edges(
         self,
         *args: object,
@@ -940,19 +1002,60 @@ class GraphKnowledgeEngine:
             payload_json=payload_json,
         )
 
+    async def _append_event_for_entity_async(
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload: dict,
+        required: bool = False,
+    ) -> None:
+        """Append a canonical event through an async-capable metadata store."""
+        import asyncio
+        import json
+        import uuid
+
+        if self._disable_event_log:
+            return
+        append_async = getattr(self.metadata, "append_entity_event_async", None)
+        if not callable(append_async):
+            await asyncio.to_thread(
+                self._append_event_for_entity,
+                namespace=namespace,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                op=op,
+                payload=payload,
+                required=required,
+            )
+            return
+        await cast(AsyncEntityEventAppender, self.metadata).append_entity_event_async(
+            namespace=namespace,
+            event_id=str(uuid.uuid4()),
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            op=op,
+            payload_json=json.dumps(payload, sort_keys=True, separators=(",", ":")),
+        )
+
     def enqueue_index_job(self, *args: object, **kwargs: object) -> str:
         return self.indexing.enqueue_index_job(*args, **kwargs)
 
+    @engine_context
     def send_lane_message(self, *args: object, **kwargs: object) -> LaneMessageSendResult:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).send_message(*args, **kwargs)
 
+    @engine_context
     def update_lane_message_status(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).update_message_status(*args, **kwargs)
 
+    @engine_context
     def claim_projected_lane_messages(
         self, *args: object, **kwargs: object
     ) -> list[ProjectedLaneMessageRow]:
@@ -960,21 +1063,25 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).claim_pending(*args, **kwargs)
 
+    @engine_context
     def ack_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).ack(*args, **kwargs)
 
+    @engine_context
     def requeue_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).requeue(*args, **kwargs)
 
+    @engine_context
     def dead_letter_projected_lane_message(self, *args: object, **kwargs: object) -> None:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).dead_letter(*args, **kwargs)
 
+    @engine_context
     def list_projected_lane_messages(
         self, *args: object, **kwargs: object
     ) -> list[ProjectedLaneMessageRow]:
@@ -982,11 +1089,13 @@ class GraphKnowledgeEngine:
 
         return LaneMessagingService(self).list_projected(*args, **kwargs)
 
+    @engine_context
     def find_lane_messages(self, *args: object, **kwargs: object) -> list[Node]:
         from kogwistar.messaging import LaneMessagingService
 
         return LaneMessagingService(self).find_messages(*args, **kwargs)
 
+    @engine_context
     def repair_lane_message_projection(
         self, *args: object, **kwargs: object
     ) -> LaneMessageProjectionRepairResult:
@@ -1024,6 +1133,7 @@ class GraphKnowledgeEngine:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        repair_scan_interval_s: float = 0.0,
     ) -> IndexJobWorker:
         return self.indexing.make_index_job_worker(
             max_inflight=max_inflight,
@@ -1031,6 +1141,7 @@ class GraphKnowledgeEngine:
             lease_seconds=lease_seconds,
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
+            repair_scan_interval_s=repair_scan_interval_s,
         )
 
     # ----------------------------
@@ -1312,6 +1423,7 @@ class GraphKnowledgeEngine:
             )
 
         load_dotenv()
+        self._implementation_selection_snapshot = capture_implementation_selection()
         self.persistence_mode = persistence_mode
         self.embedding_profile = embedding_profile
         self.embedding_profile_mode = embedding_profile_mode
@@ -1438,6 +1550,21 @@ class GraphKnowledgeEngine:
                         AsyncPostgresTwoStageProjectionAdapter(self)
                     )
         elif backend is None or (type(backend) is str and backend == "chroma"):
+            from kogwistar._rust_bridge import (
+                graph_store_implementation_mode,
+                postgres_authority_implementation_mode,
+            )
+
+            graph_mode = graph_store_implementation_mode()
+            if graph_mode != "python":
+                raise ValueError(
+                    "Chroma graph storage is Python-only; "
+                    "KOGWISTAR_IMPL_GRAPH_STORE must be 'python'"
+                )
+            if postgres_authority_implementation_mode() == "rust":
+                raise ValueError(
+                    "KOGWISTAR_IMPL_POSTGRES_AUTHORITY=rust requires a PostgreSQL backend"
+                )
             # 2) Chroma client + collections; inject embedder on vectorized collections
             ChromaClient, ChromaSettings = _import_chroma_client()
             self.chroma_client = ChromaClient(
@@ -1537,6 +1664,7 @@ class GraphKnowledgeEngine:
                 node_refs_collection=self.node_refs_collection,
                 edge_refs_collection=self.edge_refs_collection,
                 persist_directory=persist_directory or "./chroma_db",
+                distance_metric=collection_metric,
             )
             if self.persistence_mode == "two_stage" and _is_async_storage_backend(
                 self.backend
@@ -1582,6 +1710,8 @@ class GraphKnowledgeEngine:
                     SQLiteChromaTwoStageProjectionAdapter(self)
                 )
         elif _is_pgvector_backend_instance(backend):
+            from .postgres_backend import PgVectorBackend
+
             from kogwistar._rust_bridge import (
                 graph_store_implementation_mode,
                 meta_store_implementation_mode,
@@ -1590,6 +1720,9 @@ class GraphKnowledgeEngine:
 
             from .engine_postgres_meta import EnginePostgresMetaStore
             from .rust_postgres_session import RustEnginePostgresMetaStore
+            from kogwistar.implementation_selection import (
+                postgres_authority_selectors_aligned,
+            )
 
             if type(backend) is str:
                 raise Exception("unreacheable")
@@ -1608,6 +1741,18 @@ class GraphKnowledgeEngine:
                     "KOGWISTAR_IMPL_META_STORE=rust and "
                     "KOGWISTAR_IMPL_GRAPH_STORE=rust so graph/event writes share one "
                     "transaction"
+                )
+            if not postgres_authority_selectors_aligned(
+                meta_mode=meta_mode,
+                graph_mode=graph_mode,
+                authority_mode=postgres_authority_mode,
+            ):
+                raise ValueError(
+                    "PostgreSQL implementation selectors must agree: "
+                    "KOGWISTAR_IMPL_META_STORE, KOGWISTAR_IMPL_GRAPH_STORE, and "
+                    "KOGWISTAR_IMPL_POSTGRES_AUTHORITY must select the same "
+                    "authority; use python for all three until the Rust path is "
+                    "ready"
                 )
             if postgres_authority_mode == "rust":
                 dsn = backend2.engine.url.render_as_string(hide_password=False)
@@ -1708,6 +1853,18 @@ class GraphKnowledgeEngine:
                 )
 
         # Backend UoW: in Postgres mode this becomes a real SQL transaction.
+        selected_transaction_authority = transaction_authority_for_selection(
+            self._implementation_selection_snapshot
+        )
+        metadata_implementation = getattr(
+            self.metadata, "sqlite_implementation", "python"
+        )
+        if metadata_implementation != selected_transaction_authority:
+            raise RuntimeError(
+                "metadata transaction implementation does not match the selected "
+                f"transaction authority ({metadata_implementation!r} != "
+                f"{selected_transaction_authority!r})"
+            )
         self._backend_uow = _build_postgres_uow_if_needed(self.backend)
         self.atomic_mutation_capability: AtomicMutationCapability = (
             get_atomic_mutation_capability(self.backend)
@@ -1723,12 +1880,12 @@ class GraphKnowledgeEngine:
                 raise TypeError("async PostgreSQL UoW requires an AsyncEngine")
             self._async_backend_uow = AsyncPostgresUnitOfWork(engine=async_engine)
         if (
-            self.persistence_mode == "two_stage"
-            and _is_pgvector_backend_instance(self.backend)
+            _is_pgvector_backend_instance(self.backend)
             and postgres_authority_mode == "rust"
         ):
-            # The native adapter writes through this same Rust-owned UoW.
+            # Rust is the sole transaction owner; never compose a Python SQLAlchemy UoW.
             self._backend_uow = self.metadata
+            self._async_backend_uow = None
         self.two_stage_projection_capability = get_two_stage_projection_capability(
             self.backend
         )
@@ -1795,23 +1952,44 @@ class GraphKnowledgeEngine:
         )
         self.cached_embed: Callable[[str], Iterable[float]] | None = None
         if embedding_cache_path:
-            self.embedding_cache = Memory(location=embedding_cache_path)
+            # The memoized function accepts only a digest. Joblib persists
+            # call arguments in metadata, so passing document text directly
+            # would disclose it in cache files and verbose logs.
+            self.embedding_cache = Memory(location=embedding_cache_path, verbose=0)
+            cache_local = threading.local()
 
-            def cached_embed(query: str, model_name: str) -> Iterable[float]:
-
+            def compute_embedding(query_digest: str) -> Iterable[float]:
+                query = getattr(cache_local, "query", None)
+                if not isinstance(query, str):
+                    raise RuntimeError("embedding cache query context is missing")
                 return self._iterative_defensive_emb(query)
 
-            from functools import partial
+            cached_compute = cached(self.embedding_cache, compute_embedding)
 
             name_fn = getattr(self._ef, "name", None)
             model_name = str(
                 name_fn() if callable(name_fn) else type(self._ef).__name__
             )
-            cached_embed = partial(
-                cached(self.embedding_cache, cached_embed), model_name=model_name
-            )
-            # MethodType
-            # a.foo = MethodType(foo, a)
+
+            def embedding_cache_key(query: str) -> str:
+                identity = f"{model_name}\0{query}".encode("utf-8")
+                return hashlib.sha256(identity).hexdigest()
+
+            def cached_embed(query: str) -> Iterable[float]:
+                query_digest = embedding_cache_key(query)
+                cache_local.query = query
+                try:
+                    return cached_compute(query_digest)
+                finally:
+                    del cache_local.query
+
+            def check_embedding_cache(query: str) -> bool:
+                checker = getattr(cached_compute, "check_call_in_cache", None)
+                if not callable(checker):
+                    return False
+                return bool(checker(embedding_cache_key(query)))
+
+            setattr(cached_embed, "check_call_in_cache", check_embedding_cache)
             self.cached_embed = cast(Callable[[str], Iterable[float]], cached_embed)
 
         # Namespaced subsystem APIs (new source-of-truth surface).
@@ -2173,9 +2351,11 @@ class GraphKnowledgeEngine:
     # ----------------------------
     # Chroma-style api adders
     # ----------------------------
+    @engine_context
     def add_pure_node(self, node: PureChromaNode) -> None:
         return self.write.add_pure_node(node)
 
+    @engine_context
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
         return self.write.add_pure_edge(edge)
 
@@ -2201,6 +2381,51 @@ class GraphKnowledgeEngine:
         - **Cross-Backend Synchronization**: Coordinates the SQLite/Postgres metadata
           transaction with the Vector backend's transaction (if supported).
         """
+        authority = transaction_authority_for_selection(
+            self._implementation_selection_snapshot
+        )
+        with transaction_authority_scope(authority):
+            with self._uow_impl():
+                yield self._uow_ctx_conn.get()
+
+    @asynccontextmanager
+    async def async_uow(self) -> AsyncIterator[object | None]:
+        """Join the configured async backend transaction when available.
+
+        This is primarily the async PostgreSQL boundary: metadata event writes
+        and async vector projection writes share the same connection and commit.
+        Backends without an async transactional capability retain their legacy
+        behavior rather than being given a false atomicity guarantee.
+        """
+        authority = transaction_authority_for_selection(
+            self._implementation_selection_snapshot
+        )
+        with transaction_authority_scope(authority):
+            backend_uow = getattr(self, "_async_backend_uow", None)
+            transaction = getattr(backend_uow, "transaction", None)
+            if authority == "rust":
+                transaction = getattr(self.metadata, "transaction", None)
+                if not callable(transaction):
+                    raise RuntimeError(
+                        "Rust transaction authority requires a native metadata transaction"
+                    )
+                async_transaction = getattr(self.metadata, "async_transaction", None)
+                if callable(async_transaction):
+                    async with cast(AsyncTransactionOwner, self.metadata).async_transaction():
+                        yield None
+                    return
+                with cast(SyncTransactionOwner, self.metadata).transaction():
+                    yield None
+                return
+            if not callable(transaction):
+                yield None
+                return
+            async with cast(AsyncUnitOfWork, backend_uow).transaction():
+                yield None
+
+    @contextmanager
+    def _uow_impl(self) -> Iterator[object | None]:
+        """Run the legacy UoW mechanics inside the authority guard."""
         self._ensure_uow_ctxvars()
 
         depth = self._uow_ctx_depth.get()
@@ -2263,6 +2488,7 @@ class GraphKnowledgeEngine:
     def add_document(self, document: Document) -> None:
         return self.write.add_document(document)
 
+    @engine_context
     def add_domain(self, domain: Domain) -> None:
         return self.write.add_domain(domain)
 

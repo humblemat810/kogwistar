@@ -29,7 +29,43 @@ from kogwistar.engine_core.embedding_profile import (
 from kogwistar.engine_core.engine import GraphKnowledgeEngine, StorageBackendFactory
 from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
 from kogwistar.engine_core.event_envelope import EntityEventEnvelope
+from kogwistar.engine_core.graph_contracts import (
+    GRAPH_MODEL_ENVELOPE_VERSION,
+    GraphModelAdapterError,
+    build_graph_model_slice_envelope,
+    build_graph_model_envelope,
+    graph_model_class_for,
+)
+from kogwistar.engine_core.graph_mutation_contract import (
+    GraphDefaultAclIntentV1,
+    GraphMutationBatchPayload,
+    GraphMutationBatchV2Payload,
+    GraphMutationContractError,
+    validate_graph_mutation_batch,
+    validate_graph_mutation_batch_v2,
+)
+from kogwistar.engine_core.graph_extraction_contract import (
+    GRAPH_EXTRACTION_WIRE_VERSION,
+    GraphExtractionContractError,
+    GraphExtractionRequestV1,
+    validate_graph_extraction_request,
+)
+from kogwistar.engine_core.graph_slice_manifest import (
+    SLICE_MODES,
+    build_slice_manifest,
+    project_with_manifest,
+)
+from kogwistar.engine_core.conversation_contracts import (
+    CONVERSATION_WIRE_VERSION,
+    ConversationSummaryV1,
+    ConversationTranscriptV1,
+    ConversationTurnV1,
+)
 from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.engine_core.index_job_provider import (
+    EmbeddingJobProviderInput,
+    embedding_job_provider_input,
+)
 from kogwistar.engine_core.jobs import JobQueueItem, JobQueueSubsystem
 from kogwistar.engine_core.lifecycle import LifecycleSubsystem
 from kogwistar.engine_core.multimodal import (
@@ -151,6 +187,10 @@ __all__ = [
     "AsyncSQLiteNamedProjectionStore",
     "AtomicMutationCapability",
     "CheckpointRecoveryState",
+    "CONVERSATION_WIRE_VERSION",
+    "ConversationSummaryV1",
+    "ConversationTranscriptV1",
+    "ConversationTurnV1",
     "ChromaBackend",
     "ChromaStorageInspector",
     "CorruptEmbeddingProfileError",
@@ -170,15 +210,28 @@ __all__ = [
     "EnginePostgresConfig",
     "EnginePostgresMetaStore",
     "EngineSQLite",
+    "EmbeddingJobProviderInput",
     "EngineType",
     "EntityEventEnvelope",
     "ExtractSubsystem",
     "ExtractionSchemaMode",
     "GraphKnowledgeEngine",
+    "GraphDefaultAclIntentV1",
+    "GraphMutationBatchPayload",
+    "GraphMutationBatchV2Payload",
+    "GraphMutationContractError",
+    "GRAPH_EXTRACTION_WIRE_VERSION",
+    "GraphExtractionContractError",
+    "GraphExtractionRequestV1",
+    "validate_graph_extraction_request",
+    "SLICE_MODES",
+    "GRAPH_MODEL_ENVELOPE_VERSION",
+    "GraphModelAdapterError",
     "InMemoryBackend",
     "IndexJob",
     "IndexJobRow",
     "IndexingSubsystem",
+    "embedding_job_provider_input",
     "IngestSubsystem",
     "JobQueueItem",
     "JobQueueSubsystem",
@@ -235,6 +288,13 @@ __all__ = [
     "build_postgres_backend",
     "endpoint_fingerprint",
     "get_atomic_mutation_capability",
+    "build_graph_model_envelope",
+    "build_graph_model_slice_envelope",
+    "build_slice_manifest",
+    "graph_model_class_for",
+    "project_with_manifest",
+    "validate_graph_mutation_batch",
+    "validate_graph_mutation_batch_v2",
     "require_acl_protocols",
     "similarity_from_distance",
 ]

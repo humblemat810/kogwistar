@@ -1,0 +1,27 @@
+{
+  "contract_version": 1,
+  "conversation_id": "conversation-1",
+  "run_id": "run-1",
+  "stage": "draft_answer",
+  "candidates": [
+    {
+      "id": "snapshot-later-step",
+      "run_step_seq": 5,
+      "attempt_seq": 0,
+      "properties": {"prompt_messages": "later workflow step"}
+    },
+    {
+      "id": "snapshot-retry-a",
+      "run_step_seq": 5,
+      "attempt_seq": 2,
+      "properties": {"prompt_messages": "latest retry"}
+    },
+    {
+      "id": "snapshot-z-old-step",
+      "run_step_seq": 4,
+      "attempt_seq": 9,
+      "properties": {"prompt_messages": "earlier workflow step"}
+    }
+  ],
+  "expected_snapshot_node_id": "snapshot-retry-a"
+}

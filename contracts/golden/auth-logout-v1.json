@@ -1,0 +1,7 @@
+{
+  "contract_version": 1,
+  "method": "POST",
+  "path": "/api/auth/logout",
+  "expected_status": 200,
+  "expected_json": {"ok": true}
+}

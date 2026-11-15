@@ -1,0 +1,451 @@
+// Domain-focused tests; shared fixtures live in the parent test module.
+use super::*;
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn stage1_document_lookup_is_namespace_and_kind_scoped() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("stage1_document_lookup");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let tables = Tables::new(&schema)?;
+    let client = store.client().await?;
+    for (namespace, kind, id, doc_id) in [
+        ("scope-a", "node", "node-a", "doc-a"),
+        ("scope-a", "edge", "edge-a", "doc-a"),
+        ("scope-a", "node", "node-b", "doc-b"),
+        ("scope-b", "node", "node-c", "doc-a"),
+    ] {
+        let metadata = serde_json::json!({"doc_id": doc_id}).to_string();
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {} (namespace, entity_kind, entity_id, document, metadata, \
+                     source_fingerprint, revision, materialization_status, updated_at_ms) \
+                     VALUES ($1,$2,$3,$4,$5::text::jsonb,'fingerprint',1,'pending',1)",
+                    tables.stage1_projections
+                ),
+                &[
+                    &namespace,
+                    &kind,
+                    &id,
+                    &format!(r#"{{"id":"{id}"}}"#),
+                    &metadata,
+                ],
+            )
+            .await
+            .map_err(|error| {
+                PostgresStoreError::Backend(format!("Stage-1 fixture insert: {error:?}"))
+            })?;
+    }
+    drop(client);
+
+    let node_rows = store
+        .stage1_graph_projections_for_documents(
+            "scope-a",
+            "node",
+            &["doc-a".to_owned(), "doc-b".to_owned()],
+        )
+        .await?;
+    assert_eq!(
+        node_rows
+            .iter()
+            .map(|row| row.entity_id.as_str())
+            .collect::<Vec<_>>(),
+        ["node-a", "node-b"]
+    );
+    let edge_rows = store
+        .stage1_graph_projections_for_documents("scope-a", "edge", &["doc-a".to_owned()])
+        .await?;
+    assert_eq!(edge_rows.len(), 1);
+    assert_eq!(edge_rows[0].entity_id, "edge-a");
+
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn rust_bootstrap_adds_scope_arbiter_without_changing_python_id_primary_key()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("python_graph_scope_index");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    let nodes = qualified(&tables.quoted_schema, "gke_nodes")?;
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!(
+            "CREATE EXTENSION IF NOT EXISTS vector; \
+             CREATE SCHEMA IF NOT EXISTS {}; \
+             CREATE TABLE {} (id VARCHAR PRIMARY KEY, document TEXT NULL, metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb, embedding vector(3) NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())",
+            tables.quoted_schema, nodes
+        ))
+        .await
+        .map_err(backend)?;
+    drop(client);
+
+    // Match Python's ordinary graph-table bootstrap: id remains the primary key.
+    store.ensure_schema().await?;
+    let client = store.client().await?;
+    let has_id_primary_key: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass($1) AND contype = 'p' AND pg_get_constraintdef(oid) = 'PRIMARY KEY (id)')",
+            &[&nodes],
+        )
+        .await
+        .map_err(backend)?
+        .try_get(0)
+        .map_err(backend)?;
+    let has_scope_index: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = $1 AND indexname = 'uq_graph_scope_identity_0')",
+            &[&schema],
+        )
+        .await
+        .map_err(backend)?
+        .try_get(0)
+        .map_err(backend)?;
+    assert!(has_id_primary_key);
+    assert!(has_scope_index);
+    drop(client);
+
+    let scope = GraphScope {
+        namespace: "python-schema".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    store
+        .upsert_graph_projection(GraphProjectionUpsert {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            record: GraphRecord {
+                id: "shared-id".to_owned(),
+                document: Some("{\"id\":\"shared-id\",\"label\":\"original\"}".to_owned()),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await?;
+
+    let conflicting_scope = GraphScope {
+        namespace: "other-namespace".to_owned(),
+        ..scope.clone()
+    };
+    assert!(
+        store
+            .upsert_graph_projection(GraphProjectionUpsert {
+                scope: conflicting_scope,
+                table: "gke_nodes".to_owned(),
+                record: GraphRecord {
+                    id: "shared-id".to_owned(),
+                    document: Some(
+                        "{\"id\":\"shared-id\",\"label\":\"must-not-overwrite\"}".to_owned()
+                    ),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            })
+            .await
+            .is_err()
+    );
+    let rows = store
+        .graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["shared-id".to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].document.as_deref().unwrap().contains("original"));
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn document_projection_upsert_reopens_and_retries_idempotently_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("document_projection");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let scope = kogwistar_store::GraphScope {
+        namespace: "docs".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let mut metadata = Map::new();
+    metadata.insert("doc_type".to_owned(), Value::String("text".to_owned()));
+    metadata.insert(
+        "insertion_method".to_owned(),
+        Value::String("integration-test".to_owned()),
+    );
+    let write = DocumentProjectionUpsert {
+        scope: scope.clone(),
+        record: GraphRecord {
+            id: "document-1".to_owned(),
+            document: Some("first body".to_owned()),
+            metadata,
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    DocumentStore::upsert_document_projection(&store, write.clone()).await?;
+
+    // A retry with the same identity replaces the projection rather than
+    // creating a duplicate row, while preserving the scoped contract.
+    let mut retry = write;
+    retry.record.document = Some("updated body".to_owned());
+    DocumentStore::upsert_document_projection(&store, retry).await?;
+
+    let read = GraphProjectionRead {
+        scope: scope.clone(),
+        table: "gke_documents".to_owned(),
+        ids: Some(vec!["document-1".to_owned()]),
+        metadata: kogwistar_store::MetadataFilter::default(),
+        limit: 10,
+    };
+    let rows = store.graph_projection_records(read.clone()).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].document.as_deref(), Some("updated body"));
+    assert_eq!(rows[0].metadata["namespace"], "docs");
+    assert_eq!(rows[0].metadata["workspace_id"], "workspace-a");
+    assert_eq!(rows[0].metadata["graph_space"], "knowledge");
+    assert_eq!(rows[0].metadata["doc_type"], "text");
+    assert_eq!(rows[0].metadata["insertion_method"], "integration-test");
+
+    let next_page = store
+        .graph_projection_page(GraphProjectionPageRead {
+            read: read.clone(),
+            after_id: Some("document-0".to_owned()),
+        })
+        .await?;
+    assert_eq!(next_page, rows);
+    let exhausted_page = store
+        .graph_projection_page(GraphProjectionPageRead {
+            read: read.clone(),
+            after_id: Some("document-1".to_owned()),
+        })
+        .await?;
+    assert!(exhausted_page.is_empty());
+
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    let reopened_rows = reopened.graph_projection_records(read).await?;
+    assert_eq!(reopened_rows, rows);
+
+    let cleanup = reopened.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgrade()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/graph-acl-v1.json"
+    ))?;
+    let schema = test_schema("graph_scope_identity");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await
+        .map_err(|error| PostgresStoreError::Backend(format!("initial schema: {error:?}")))?;
+
+    let base_scope = GraphScope {
+        namespace: "graph-type-isolation".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let legacy_id = "legacy-row-before-scope-upgrade";
+    store
+        .upsert_graph_projection(GraphProjectionUpsert {
+            scope: base_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            record: GraphRecord {
+                id: legacy_id.to_owned(),
+                document: Some(serde_json::json!({"id":legacy_id,"label":"legacy"}).to_string()),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await
+        .map_err(|error| PostgresStoreError::Backend(format!("legacy-row upsert: {error:?}")))?;
+
+    let tables = Tables::new(&schema)?;
+    let nodes = qualified(&tables.quoted_schema, "gke_nodes")?;
+    let quoted_schema = &tables.quoted_schema;
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!(
+            "ALTER TABLE {} DROP CONSTRAINT IF EXISTS gke_nodes_pkey; \
+             ALTER TABLE {} ADD PRIMARY KEY (id); \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_0; \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_1; \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_2; \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_3; \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_4; \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_5; \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_6; \
+             DROP INDEX IF EXISTS {}.uq_graph_scope_identity_7",
+            nodes,
+            nodes,
+            quoted_schema,
+            quoted_schema,
+            quoted_schema,
+            quoted_schema,
+            quoted_schema,
+            quoted_schema,
+            quoted_schema,
+            quoted_schema,
+        ))
+        .await
+        .map_err(|error| PostgresStoreError::Backend(format!("legacy PK setup: {error:?}")))?;
+    drop(client);
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await
+        .map_err(|error| PostgresStoreError::Backend(format!("schema upgrade: {error:?}")))?;
+
+    let isolation = &fixture["graph_type_isolation"];
+    let fixture_entity_id = isolation["entity_id"].as_str().unwrap();
+    let cases = isolation["cases"].as_array().unwrap();
+    for case in cases {
+        let truth_graph = case["truth_graph"].as_str().unwrap();
+        let entity_id = format!("{fixture_entity_id}-{truth_graph}");
+        let scope = GraphScope {
+            graph_space: Some(truth_graph.to_owned()),
+            ..base_scope.clone()
+        };
+        let document = serde_json::json!({"id":entity_id,"label":truth_graph});
+        store
+            .apply_graph_mutations_atomic(vec![GraphMutation {
+                scope,
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("graph-type-isolation-{truth_graph}"),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({"id":entity_id,"entity_type":"node"}),
+                record: GraphRecord {
+                    id: entity_id.to_owned(),
+                    document: Some(document.to_string()),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }])
+            .await
+            .map_err(|error| {
+                PostgresStoreError::Backend(format!("scoped mutation for {truth_graph}: {error:?}"))
+            })?;
+    }
+
+    let legacy_rows = store
+        .graph_projection_records(GraphProjectionRead {
+            scope: base_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![legacy_id.to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(legacy_rows.len(), 1);
+    assert_eq!(
+        legacy_rows[0].document.as_deref(),
+        Some("{\"id\":\"legacy-row-before-scope-upgrade\",\"label\":\"legacy\"}")
+    );
+
+    for case in cases {
+        let truth_graph = case["truth_graph"].as_str().unwrap();
+        let entity_id = format!("{fixture_entity_id}-{truth_graph}");
+        let scope = GraphScope {
+            graph_space: Some(truth_graph.to_owned()),
+            ..base_scope.clone()
+        };
+        let rows = store
+            .graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![entity_id.clone()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 10,
+            })
+            .await?;
+        assert_eq!(rows.len(), 1, "graph={truth_graph}");
+        let document: Value = serde_json::from_str(rows[0].document.as_deref().unwrap())?;
+        assert_eq!(document["label"], truth_graph);
+    }
+
+    let first_graph = cases[0]["truth_graph"].as_str().unwrap();
+    let second_graph = cases[1]["truth_graph"].as_str().unwrap();
+    let shared_id = format!("{fixture_entity_id}-{first_graph}");
+    assert!(
+        store
+            .apply_graph_mutations_atomic(vec![GraphMutation {
+                scope: GraphScope {
+                    graph_space: Some(second_graph.to_owned()),
+                    ..base_scope.clone()
+                },
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "graph-type-cross-space-id-conflict".to_owned(),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({"id":shared_id,"entity_type":"node"}),
+                record: GraphRecord {
+                    id: shared_id,
+                    document: Some(
+                        "{\"id\":\"shared\",\"label\":\"must-not-overwrite\"}".to_owned()
+                    ),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }])
+            .await
+            .is_err()
+    );
+
+    drop(store);
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    reopened
+        .client()
+        .await?
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}

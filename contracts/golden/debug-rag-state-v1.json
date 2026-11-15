@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "operations": [
+    "aa_debug_select_top_candidates/v1",
+    "aa_debug_answer_from_nodes/v1"
+  ],
+  "state": {
+    "question": "where?",
+    "max_used": 1,
+    "candidates": [
+      {"id": "node-1", "label": "Title", "summary": "Summary here", "doc": "body"},
+      {"id": "node-2", "label": "Ignored", "summary": "later", "doc": "body"}
+    ],
+    "op_log": ["aa_retrieve_candidates:2"]
+  },
+  "expected": {
+    "selection": {
+      "used_node_ids": ["node-1"],
+      "strategy": "top_candidates_debug"
+    },
+    "used_node_ids": ["node-1"],
+    "selected_candidates": [
+      {"id": "node-1", "label": "Title", "summary": "Summary here", "doc": "body"}
+    ],
+    "selected_op_log": [
+      "aa_retrieve_candidates:2",
+      "aa_debug_select_top_candidates:1"
+    ],
+    "answer": {
+      "text": "Debug RAG response\n\nQuestion: where?\n\nRetrieved nodes:\n1. Title [node-1]\n   Summary here",
+      "mode": "debug_rag",
+      "selected_node_ids": ["node-1"]
+    },
+    "evaluation": {
+      "is_sufficient": true,
+      "needs_more_info": false,
+      "missing_aspects": [],
+      "notes": "debug_rag_no_llm"
+    },
+    "final_op_log": [
+      "aa_retrieve_candidates:2",
+      "aa_debug_select_top_candidates:1",
+      "aa_debug_answer_from_nodes"
+    ]
+  }
+}

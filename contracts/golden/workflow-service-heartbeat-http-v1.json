@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "method": "POST",
+  "path": "/api/workflow/services/{service_id}/heartbeat",
+  "success_status": 200,
+  "request_body": {
+    "instance_id": "worker-1",
+    "payload": {
+      "last_error": "recovering"
+    }
+  },
+  "expected_response_fields": {
+    "instance_id": "worker-1",
+    "health_status": "healthy",
+    "lifecycle_status": "healthy",
+    "last_error": "recovering"
+  },
+  "required_timestamp_fields": [
+    "last_heartbeat_ms",
+    "updated_at_ms"
+  ]
+}

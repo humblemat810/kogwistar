@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "step_status": "ok",
+  "required_step_fields": [
+    "node_id",
+    "step_seq",
+    "workflow_id",
+    "workflow_node_id",
+    "op",
+    "status",
+    "duration_ms",
+    "result"
+  ],
+  "successful_result": {
+    "conversation_node_id": null,
+    "state_update": [["u", {"answer": "worker"}]],
+    "update": null,
+    "next_step_names": [],
+    "workflow_invocations": [],
+    "status": "success",
+    "answer": "worker"
+  },
+  "legacy_step_omits_trace_context": true
+}

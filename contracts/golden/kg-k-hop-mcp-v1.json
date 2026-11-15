@@ -1,0 +1,15 @@
+{
+  "contract_version": 1,
+  "operation": "kg_k_hop",
+  "arguments": {
+    "start_ids": ["n1"],
+    "k": 2,
+    "doc_id": "doc-a"
+  },
+  "expected_structured_content": {
+    "layers": [
+      {"nodes": [], "edges": ["e1"]},
+      {"nodes": ["n1", "n2"], "edges": []}
+    ]
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.run_submit",
+  "arguments": {
+    "workflow_id": "workflow-contract",
+    "conversation_id": "conversation-contract",
+    "initial_state": {"counter": 1},
+    "turn_node_id": "turn-contract",
+    "user_id": "user-contract",
+    "runtime_kind": "sync"
+  },
+  "python_service_arguments": {
+    "workflow_id": "workflow-contract",
+    "conversation_id": "conversation-contract",
+    "initial_state": {"counter": 1},
+    "turn_node_id": "turn-contract",
+    "user_id": "user-contract",
+    "runtime_kind": "sync"
+  },
+  "result": {
+    "run_id": "run-contract",
+    "conversation_id": "conversation-contract",
+    "workflow_id": "workflow-contract",
+    "turn_node_id": "turn-contract",
+    "status": "queued",
+    "priority_class": "foreground",
+    "token_budget": null,
+    "time_budget_ms": null,
+    "admission": "accepted"
+  }
+}

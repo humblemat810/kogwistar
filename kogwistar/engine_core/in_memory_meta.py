@@ -13,6 +13,7 @@ from types import TracebackType
 from typing import cast
 
 from ..json_types import JsonValue
+from ..implementation_selection import assert_python_transaction_entry_allowed
 from ..messaging.models import ProjectedLaneMessageRow
 from .engine_sqlite import IndexJobRow
 from .event_envelope import EntityEventEnvelope
@@ -45,6 +46,16 @@ def _json_int(value: object, default: int = 0) -> int:
         except ValueError:
             return default
     return default
+
+
+def _recorded_transition_id(event_type: str, payload_json: str) -> str | None:
+    if event_type != "workflow.recorded_transition.v1":
+        return None
+    payload = json.loads(payload_json)
+    if not isinstance(payload, dict):
+        return None
+    transition_id = payload.get("transition_id")
+    return transition_id if isinstance(transition_id, str) else None
 
 
 _active_in_memory_meta_txn: contextvars.ContextVar[_TxnView | None] = contextvars.ContextVar(
@@ -315,6 +326,7 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[_TxnView]:
+        assert_python_transaction_entry_allowed()
         _ = immediate
         active = _active_in_memory_meta_txn.get()
         if active is not None and active.owner is self:
@@ -476,7 +488,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
                 return False
-            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return False
             job.status = "DONE"
             job.lease_until = None
@@ -535,7 +554,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
                 return
-            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return
             if final:
                 job.status = "FAILED"
@@ -553,7 +579,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
             job = txn.state.index_jobs.get(str(job_id))
             if job is None:
                 return
-            if job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return
             job.retry_count += 1
             job.last_error = str(error or "")[:2000]
@@ -578,7 +611,14 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
         next_run_at = now + max(0, int(delay_seconds))
         with self.transaction() as txn:
             job = txn.state.index_jobs.get(str(job_id))
-            if job is None or job.status != "DOING" or (claim_token is not None and job.claim_token != claim_token):
+            if job is None or job.status != "DOING" or (
+                claim_token is not None
+                and (
+                    job.claim_token != claim_token
+                    or job.lease_until is None
+                    or job.lease_until < now
+                )
+            ):
                 return
             tail_position = max(
                 (item.created_at for item in txn.state.index_jobs.values()),
@@ -1341,6 +1381,15 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
     ) -> JsonObject:
         now = _now_ms()
         with self.transaction() as txn:
+            transition_id = _recorded_transition_id(event_type, payload_json)
+            if transition_id is not None and any(
+                _recorded_transition_id(row.event_type, row.payload_json) == transition_id
+                for rows in txn.state.server_run_events.values()
+                for row in rows
+            ):
+                raise ValueError(
+                    f"recorded runtime transition {transition_id!r} already exists"
+                )
             events = txn.state.server_run_events.setdefault(str(run_id), [])
             seq = (events[-1].seq + 1) if events else 1
             row = _ServerRunEventRow(

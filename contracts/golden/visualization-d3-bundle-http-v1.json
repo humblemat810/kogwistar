@@ -1,0 +1,30 @@
+{
+  "contract_version": 1,
+  "method": "GET",
+  "path_and_query": "/viz/d3.bundle?graph_type=WoRkFlOw&mode=classic&doc_id=doc-1&insertion_method=parser",
+  "success_status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "payload": {
+    "nodes": [
+      {
+        "id": "n1",
+        "label": "</script><script>alert('x')</script> & safe",
+        "type": "entity"
+      }
+    ],
+    "links": [],
+    "implementation_authority": "must-not-leak",
+    "seam_attestation_version": 1,
+    "seam_crossings": ["python"]
+  },
+  "expected_bundle_meta": {
+    "graph_type": "workflow",
+    "mode": "classic",
+    "insertion_method": "parser",
+    "doc_id": "doc-1"
+  },
+  "forbidden_fragments": [
+    "</script><script>alert('x')</script>",
+    "must-not-leak"
+  ]
+}

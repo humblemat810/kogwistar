@@ -19,6 +19,7 @@ from kogwistar.runtime.models import (
     WorkflowState,
 )
 from kogwistar.runtime.telemetry import TraceContext
+from .delegation_contract import attenuate_capabilities
 from .runtime_artifacts import _make_runtime_edge, _make_trace_span
 from .step_context import RunResult
 
@@ -37,11 +38,11 @@ def derive_child_authority_context(
     context = dict(parent)
     if "effective_capabilities" in context:
         parent_caps = {str(item) for item in context.get("effective_capabilities", ())}
-        requested = {
-            str(item)
-            for item in child_state.get("effective_capabilities", parent_caps)
-        }
-        context["effective_capabilities"] = tuple(sorted(parent_caps & requested))
+        requested = child_state.get("effective_capabilities")
+        context["effective_capabilities"] = attenuate_capabilities(
+            parent_caps,
+            requested if requested is not None else None,
+        )
     if "budget_limits" in context:
         context["budget_limits"] = dict(context["budget_limits"] or {})
     return MappingProxyType(context)

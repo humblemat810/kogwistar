@@ -1,11 +1,13 @@
 import hashlib
+import json
 import uuid
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Protocol
 
 from .async_compat import run_awaitable_blocking
 from .embedding_profile import EmbeddingStorageState
+from ..implementation_selection import assert_callback_side_effect_allowed
 from .storage_backend import (
     AsyncTwoStageProjectionAdapter,
     AtomicMutationCapability,
@@ -22,6 +24,8 @@ _VECTOR_COLLECTION_NAMES = (
     "domains",
     "node_docs",
 )
+_CHROMA_JSON_METADATA_PREFIX = "__kogwistar_json_v1__:"
+_CHROMA_MUTATION_METHODS = frozenset({"add", "upsert", "update", "delete"})
 
 
 class ChromaCollection(Protocol):
@@ -127,10 +131,12 @@ class ChromaStorageInspector:
 
 
 def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
-    """Adapt null and empty-list metadata for Chroma without mutating inputs.
+    """Adapt unsupported compound, null, and empty-list metadata for Chroma.
 
-    Chroma has no null metadata value. Omitting a null-valued optional key
-    preserves its effective ``metadata.get(key)`` value while allowing writes.
+    Chroma accepts only scalar metadata values and flat lists. Compound JSON
+    values use a tagged string representation and are restored on reads.
+    Null values are omitted, preserving their effective ``metadata.get(key)``
+    behavior. Inputs are never mutated.
     """
     metadatas = kwargs.get("metadatas")
     if not isinstance(metadatas, (list, tuple)):
@@ -141,16 +147,62 @@ def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
         if not isinstance(metadata, dict):
             sanitized.append(metadata)
             continue
-        safe_metadata = {
-            key: ("[]" if isinstance(value, list) and not value else value)
-            for key, value in metadata.items()
-            if value is not None
-        }
+        safe_metadata: dict[object, object] = {}
+        for key, value in metadata.items():
+            if value is None:
+                continue
+            if _is_compound_chroma_metadata(value):
+                safe_metadata[key] = _CHROMA_JSON_METADATA_PREFIX + json.dumps(
+                    value, sort_keys=True, separators=(",", ":")
+                )
+            elif isinstance(value, list) and not value:
+                safe_metadata[key] = "[]"
+            else:
+                safe_metadata[key] = value
         sanitized.append(safe_metadata)
         changed = changed or safe_metadata != metadata
     if not changed:
         return kwargs
     return {**kwargs, "metadatas": sanitized}
+
+
+def _is_compound_chroma_metadata(value: object) -> bool:
+    if isinstance(value, Mapping):
+        return True
+    if isinstance(value, (list, tuple)):
+        return any(isinstance(item, (Mapping, list, tuple)) for item in value)
+    return False
+
+
+def _restore_chroma_metadata_map(value: object) -> object:
+    if not isinstance(value, Mapping):
+        return value
+    restored: dict[object, object] = {}
+    for key, item in value.items():
+        if (
+            isinstance(item, str)
+            and item.startswith(_CHROMA_JSON_METADATA_PREFIX)
+        ):
+            restored[key] = json.loads(item[len(_CHROMA_JSON_METADATA_PREFIX) :])
+        else:
+            restored[key] = item
+    return restored
+
+
+def _restore_chroma_result(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    restored = dict(value)
+    if "metadatas" in restored:
+        def restore_rows(rows: object) -> object:
+            if isinstance(rows, list):
+                return [restore_rows(row) for row in rows]
+            return _restore_chroma_metadata_map(rows)
+
+        restored["metadatas"] = restore_rows(restored["metadatas"])
+    if "metadata" in restored:
+        restored["metadata"] = _restore_chroma_metadata_map(restored["metadata"])
+    return restored
 
 
 class _AwaitableValue:
@@ -202,8 +254,6 @@ class ChromaBackend:
     two_stage_projection_capability: TwoStageProjectionCapability
     two_stage_projection_adapter: TwoStageProjectionAdapter | None
     async_two_stage_projection_adapter: AsyncTwoStageProjectionAdapter | None
-    vector_distance_kind = "distance"
-
     def __init__(
         self,
         *,
@@ -217,6 +267,7 @@ class ChromaBackend:
         node_refs_collection: ChromaCollection,
         edge_refs_collection: ChromaCollection,
         persist_directory: str | None = None,
+        distance_metric: str = "cosine",
     ) -> None:
         self._collections: dict[str, ChromaCollection] = {
             "node_index": node_index_collection,
@@ -234,6 +285,14 @@ class ChromaBackend:
             if persist_directory
             else None
         )
+        metric = str(distance_metric).strip().lower()
+        if metric not in {"cosine", "ip", "l2"}:
+            raise ValueError("distance_metric must be one of: cosine, ip, l2")
+        self._vector_distance_kind = "squared_l2" if metric == "l2" else "distance"
+
+    @property
+    def vector_distance_kind(self) -> str:
+        return self._vector_distance_kind
 
     def embedding_storage_scope(self) -> str:
         """Return a stable, secret-free identity for this Chroma directory."""
@@ -273,9 +332,12 @@ class ChromaBackend:
             raise KeyError(f"Unknown collection_key={key!r}") from e
 
     def call(self, collection_key: str, method: str, **kwargs: object) -> object:
+        if method in _CHROMA_MUTATION_METHODS:
+            assert_callback_side_effect_allowed("Chroma collection mutation")
         coll = self._c(collection_key)
         fn = getattr(coll, method)
-        return _awaitable_result(run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs))))
+        result = run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs)))
+        return _awaitable_result(_restore_chroma_result(result))
 
     # --- node_index ---
     def node_index_get(self, **kwargs: object) -> object:
@@ -458,11 +520,13 @@ class AsyncChromaBackend(ChromaBackend):
     is_async_backend = True
 
     async def async_call(self, collection_key: str, method: str, **kwargs: object) -> object:
+        if method in _CHROMA_MUTATION_METHODS:
+            assert_callback_side_effect_allowed("Chroma collection mutation")
         coll = self._c(collection_key)
         result = getattr(coll, method)(**_chroma_safe_kwargs(kwargs))
         if hasattr(result, "__await__"):
             result = await result
-        return result
+        return _restore_chroma_result(result)
 
     async def async_node_get(self, **kwargs: object) -> object:
         return await self.async_call("node", "get", **kwargs)

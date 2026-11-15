@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.service_trigger",
+  "arguments": {
+    "service_id": "svc-contract",
+    "trigger_type": "external event",
+    "payload": {
+      "source": "contract-test"
+    }
+  },
+  "python_service_arguments": {
+    "service_id": "svc-contract",
+    "trigger_type": "external event",
+    "payload": {
+      "source": "contract-test"
+    }
+  },
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/services/svc-contract/trigger",
+    "body": {
+      "trigger_type": "external event",
+      "payload": {
+        "source": "contract-test"
+      }
+    }
+  },
+  "result": {
+    "service_id": "svc-contract",
+    "current_child_run_id": "run-contract",
+    "trigger_type": "external event"
+  }
+}

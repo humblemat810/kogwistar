@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source": "rust_server_admission",
+  "scheduler": {
+    "language": "rust",
+    "package": "kogwistar-api"
+  },
+  "worker_contract": {
+    "runtime_kind": "sync",
+    "protocol": "sync-v1",
+    "identity_status": "resolved_on_lane_claim"
+  }
+}

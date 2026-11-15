@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "baseline_fixture": "python-graph-model-payloads-v1.json",
+  "cases": [
+    "node.omitted_lifecycle_defaults",
+    "edge.omitted_lifecycle_defaults",
+    "node.deleted_alias_normalizes",
+    "edge.deleted_alias_normalizes",
+    "node.level_metadata_fallback",
+    "edge.level_metadata_fallback",
+    "node.level_top_level_precedence",
+    "edge.level_top_level_precedence"
+  ]
+}

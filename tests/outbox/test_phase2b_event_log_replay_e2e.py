@@ -228,6 +228,41 @@ def test_node_event_append_failure_does_not_create_projection(tmp_path, monkeypa
     assert {node.safe_get_id() for node in eng.get_nodes()} == set()
 
 
+def test_index_job_failure_is_repaired_by_canonical_replay(tmp_path, monkeypatch):
+    """Canonical replay restores derived jobs after post-commit queue failure."""
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=TEST_EMBEDDING,
+        backend_factory=build_fake_backend,
+    )
+    eng._phase1_enable_index_jobs = True
+    node = _mk_node("index-job-recovery-node", doc_id="d-recovery")
+
+    def fail_enqueue(*_args, **_kwargs):
+        raise RuntimeError("index queue unavailable")
+
+    monkeypatch.setattr(eng, "enqueue_index_jobs_for_node", fail_enqueue)
+    with pytest.raises(RuntimeError, match="index queue unavailable"):
+        eng.write.add_node(node)
+
+    events_before = _read_all_events(eng, "default")
+    assert any(
+        kind == "node" and entity_id == node.id and op == "ADD"
+        for _, kind, entity_id, op, _ in events_before
+    )
+    assert eng.backend.node_get(ids=[node.id], include=[])["ids"] == [node.id]
+
+    monkeypatch.undo()
+    assert eng.persist.replay_namespace(namespace="default", apply_indexes=True) >= 1
+
+    jobs = eng.meta_sqlite.list_index_jobs(namespace="default")
+    assert {job.index_kind for job in jobs if job.entity_id == node.id} >= {
+        "node_docs",
+        "node_refs",
+    }
+    assert _read_all_events(eng, "default") == events_before
+
+
 def test_lifecycle_event_append_failure_does_not_patch_projection(tmp_path, monkeypatch):
     eng = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),

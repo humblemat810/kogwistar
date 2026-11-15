@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -73,17 +75,230 @@ def test_capability_snapshot_route_exposes_effective_caps(monkeypatch, engine_tr
         workflow_engine,
         _runtime_success_runner,
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-capabilities-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     with TestClient(server.app) as client:
         headers = _token_header(client, role="ro", ns="workflow")
         resp = client.get("/api/workflow/capabilities", headers=headers)
-        resp.raise_for_status()
+        assert resp.status_code == contract["success_status"], resp.text
         payload = resp.json()
+        assert set(contract["required_fields"]).issubset(payload)
         assert payload["current_subject"]
-        assert "workflow.run.read" in payload["effective_capabilities"]
-        assert "project_view" in payload["effective_capabilities"]
+        assert set(contract["required_effective_capabilities"]).issubset(
+            payload["effective_capabilities"]
+        )
         assert payload["audit_log"]
-        assert payload["audit_log"][-1]["action"] == "project_view"
-        assert payload["audit_log"][-1]["outcome"] == "allow"
+        assert payload["audit_log"][-1]["action"] == contract["audit_action"]
+        assert payload["audit_log"][-1]["outcome"] == contract["allowed_outcome"]
+        denied_headers = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="project_view",
+        )
+        denied = client.get(
+            "/api/workflow/capabilities",
+            headers=denied_headers,
+        )
+        assert denied.status_code == contract["denied_status"]
+
+
+def test_capability_approve_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-capability-approve-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/workflow/capabilities/approve",
+            json=contract["request"],
+            headers=_token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username=contract["expected_subject"],
+                capabilities="approve_action,project_view,read_security_scope",
+            ),
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert set(contract["required_body_fields"]).issubset(payload)
+    assert payload["current_subject"] == contract["expected_subject"]
+    assert contract["expected_approval"] in payload["approvals"]
+    assert set(contract["effective_capabilities_include"]).issubset(
+        payload["effective_capabilities"]
+    )
+
+
+def test_capability_revoke_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    golden_dir = Path(__file__).resolve().parents[2] / "contracts" / "golden"
+    approve_contract = json.loads(
+        (golden_dir / "workflow-capability-approve-http-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    contract = json.loads(
+        (golden_dir / "workflow-capability-revoke-http-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["expected_subject"],
+            capabilities="approve_action,project_view,read_security_scope",
+        )
+        approved = client.post(
+            "/api/workflow/capabilities/approve",
+            json=approve_contract["request"],
+            headers=headers,
+        )
+        assert approved.status_code == approve_contract["http_status"]
+        response = client.post(
+            "/api/workflow/capabilities/revoke",
+            json=contract["request"],
+            headers=headers,
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert set(contract["required_body_fields"]).issubset(payload)
+    assert payload["current_subject"] == contract["expected_subject"]
+    assert contract["expected_revocation"] in payload["revoked"]
+    for capability in contract["effective_capabilities_exclude"]:
+        assert capability not in payload["effective_capabilities"]
+
+
+def test_workflow_budget_route_matches_contract_and_requires_security_scope(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-budget-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        allowed = client.get(
+            "/api/workflow/budget",
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities=",".join(contract["required_capabilities"]),
+            ),
+        )
+        assert allowed.status_code == contract["success_status"], allowed.text
+        payload = allowed.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert set(contract["required_cost_ledger_fields"]).issubset(
+            payload["cost_ledger"]
+        )
+        assert payload["budget_model"] == contract["budget_model"]
+
+        denied = client.get(
+            "/api/workflow/budget",
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities="project_view",
+            ),
+        )
+        assert denied.status_code == contract["denied_status"]
+
+
+def test_workflow_budget_history_matches_contract_and_requires_security_scope(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    service.cost_ledger.add_event(kind="token", amount=7, source="first")
+    service.cost_ledger.add_event(kind="time", amount=11, source="last")
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-budget-history-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        allowed = client.get(
+            "/api/workflow/budget/history",
+            params={"limit": contract["limit"]},
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities=",".join(contract["required_capabilities"]),
+            ),
+        )
+        assert allowed.status_code == contract["success_status"], allowed.text
+        payload = allowed.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert set(contract["required_cost_ledger_fields"]).issubset(
+            payload["cost_ledger"]
+        )
+        assert len(payload["events"]) == contract["limit"]
+        assert set(contract["required_event_fields"]).issubset(payload["events"][0])
+        assert payload["events"][0]["source"] == "last"
+
+        denied = client.get(
+            "/api/workflow/budget/history",
+            headers=_token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities="project_view",
+            ),
+        )
+        assert denied.status_code == contract["denied_status"]
 
 
 
@@ -664,6 +879,80 @@ def test_submit_turn_for_answer_requires_send_message(monkeypatch, engine_triple
                 user_id="user-msg",
                 text="hello",
             )
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_submit_turn_for_answer_rejects_user_id_not_owned_by_conversation(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "role": "rw",
+            "capabilities": ["send_message", "spawn_process"],
+            "sub": "authorized-sender",
+        }
+    )
+    try:
+        created = service.create_conversation(user_id="conversation-owner")
+        nodes_before = service._conversation_nodes(created["conversation_id"])
+        with pytest.raises(PermissionError, match="owner of the target conversation"):
+            service.submit_turn_for_answer(
+                conversation_id=created["conversation_id"],
+                user_id="different-user",
+                text="must not be persisted",
+            )
+        assert service._conversation_nodes(created["conversation_id"]) == nodes_before
+        assert (
+            registry.meta_store.list_server_runs(
+                conversation_id=created["conversation_id"], limit=100
+            )
+            == []
+        )
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_submit_turn_for_answer_keeps_authorized_actor_distinct_from_owner(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    monkeypatch.setattr(service._run_execution, "_run_answer", lambda _req: None)
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "role": "rw",
+            "capabilities": ["send_message", "spawn_process"],
+            "sub": "authorized-sender",
+        }
+    )
+    try:
+        created = service.create_conversation(user_id="conversation-owner")
+        response = service.submit_turn_for_answer(
+            conversation_id=created["conversation_id"],
+            user_id="conversation-owner",
+            text="authorized message",
+        )
+        run = registry.get_run(response["run_id"])
+        assert run is not None
+        assert run["user_id"] == "conversation-owner"
+        assert run["user_turn_node_id"] == response["user_turn_node_id"]
     finally:
         claims_ctx.reset(token)
 

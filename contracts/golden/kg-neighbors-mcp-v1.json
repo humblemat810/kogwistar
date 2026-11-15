@@ -1,0 +1,11 @@
+{
+  "contract_version": 1,
+  "operation": "kg_neighbors",
+  "arguments": {
+    "rid": "n1"
+  },
+  "expected_structured_content": {
+    "nodes": ["n2"],
+    "edges": ["e1"]
+  }
+}

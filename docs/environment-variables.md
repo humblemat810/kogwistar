@@ -14,6 +14,8 @@ tests, and optional integrations.
 | `GKE_PG_URL` | `kogwistar.workers.run_index_job_worker` | PostgreSQL connection string for `pg` backend runs. |
 | `GKE_PG_SCHEMA` | `kogwistar.workers.run_index_job_worker` | PostgreSQL schema name for pgvector collections. |
 | `GKE_EMBEDDING_DIM` | `kogwistar.workers.run_index_job_worker` | Embedding dimension used when constructing the backend. |
+| `GKE_PERSISTENCE_MODE` | `kogwistar.workers.run_index_job_worker` | Persistence mode shared with the producer: `single_stage` (default) or `two_stage`. |
+| `GKE_WORKER_REPAIR_SCAN_INTERVAL_S` | `kogwistar.workers.run_index_job_worker` | Interval for bounded two-stage lost-enqueue scans; defaults to `0` (disabled). Enable it on at most one designated worker per metadata store and namespace. Scanner ownership is operator-managed, not enforced by a lease. |
 | `GKE_JOBLIB_CACHE_DIR` | `scripts/tutorial_ladder.py`, `kogwistar.utils.cache_paths` | Cache directory for tutorial and runtime joblib caches. |
 | `GKE_TEST_PG_IMAGE` | `tests/conftest.py` | Docker image used for PostgreSQL testcontainers. |
 | `FRONTEND_SRC_PATH` | `scripts/export_schemas.py`, `kogwistar/scripts/schema_export.py` | Path to the frontend source tree for schema export tooling. |
@@ -30,6 +32,33 @@ tests, and optional integrations.
 | `JWT_ALG` | `kogwistar.server.auth_middleware` | JWT algorithm, usually `HS256` or `RS256`. |
 | `JWT_ISS` | `kogwistar.server.auth_middleware` | Optional JWT issuer check. |
 | `JWT_AUD` | `kogwistar.server.auth_middleware` | Optional JWT audience check. |
+
+## Native Rust API Server
+
+| Variable | Used By | Purpose |
+| --- | --- | --- |
+| `KOGWISTAR_BACKEND` | Rust `kogwistar-server` | Selects the native service backend: `pg` or `sqlite` (default). Other values, including `in_memory`, fail startup rather than silently selecting SQLite; the native HTTP application service does not yet compose the standalone in-memory store. The inline embedding worker supports PostgreSQL or SQLite metadata with an explicitly configured Chroma graph projection. |
+| `KOGWISTAR_PG_DSN` | Rust `kogwistar-server` | Required nonblank PostgreSQL DSN when `KOGWISTAR_BACKEND=pg`; missing configuration fails startup. |
+| `KOGWISTAR_PG_SCHEMA_BASE` | Rust `kogwistar-server` | PostgreSQL schema base; defaults to `kogwistar`. |
+| `KOGWISTAR_GRAPH_ROLE` | Rust `kogwistar-server` | Host-selected role (`kg_graph_type` / ACL `truth_graph`) for the generic document graph-upsert route. Defaults to `knowledge`; aliases follow Python normalization (`kg`, `chat`, `conv`, `dialog`, `wf`, `w`). Request payload metadata cannot override this role. It is independent of namespace, graph-space, and backend/schema selection. |
+| `KOGWISTAR_WISDOM_SCHEMA` | Rust `kogwistar-server` | Optional PostgreSQL schema for the generic graph operations exposed by the wisdom routes. Defaults to the legacy `<KOGWISTAR_PG_SCHEMA_BASE>_wisdom` schema so existing data remains reachable. Set it equal to `KOGWISTAR_PG_SCHEMA_BASE` to share the same physical graph store; namespace and ACL `truth_graph` still scope and authorize the role. |
+| `KOGWISTAR_META_SQLITE_PATH` | Rust `kogwistar-server` | Required nonblank path when `KOGWISTAR_BACKEND=sqlite`; missing configuration fails startup. It configures metadata/runtime/queue storage and does not make SQLite authoritative for graph data. |
+| `KOGWISTAR_CHROMA_ENDPOINT` | Rust `kogwistar-server` | Optional Chroma HTTP endpoint. When paired with `KOGWISTAR_META_SQLITE_PATH`, enables authenticated graph reads through public MCP (neighbors, find-edges, shortest-path, and k-hop) and the internal `POST /internal/graph/mutations` batch route. For that write path, SQLite commits canonical graph events and durable embedding jobs atomically; Chroma is an eventual, revision-fenced projection, not part of the SQLite transaction. Standalone SQLite metadata mode remains without graph-write authority. Startup fails if Chroma cannot be configured. |
+| `KOGWISTAR_CHROMA_NODE_COLLECTION` | Rust `kogwistar-server` | Node collection for the optional SQLite-metadata/Chroma-graph composition; defaults to `nodes`. |
+| `KOGWISTAR_CHROMA_EDGE_COLLECTION` | Rust `kogwistar-server` | Edge collection for the optional SQLite-metadata/Chroma-graph composition; defaults to `edges`. |
+| `KOGWISTAR_CHROMA_METRIC` | Rust `kogwistar-server` | Distance metric for the optional Chroma collections: `cosine` (default), `l2`/`squared_l2`, or `inner_product`/`ip`. Invalid values fail startup. |
+| `KOGWISTAR_EMBEDDING_PROVIDER` | Rust `kogwistar-server` | Enables Rust-side embedding provider construction; currently accepts `ollama`. |
+| `KOGWISTAR_EMBEDDING_MODEL` | Rust `kogwistar-server` | Ollama embedding model name; required when the provider is configured. |
+| `KOGWISTAR_EMBEDDING_DIMENSION` | Rust `kogwistar-server` | Positive vector dimension expected from the configured provider. |
+| `KOGWISTAR_EMBEDDING_ENDPOINT` | Rust `kogwistar-server` | Ollama endpoint; defaults to `http://127.0.0.1:11434`. |
+| `KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT` | Rust `kogwistar-server` | Optional OpenAI-compatible structured chat endpoint; must be configured with the model. |
+| `KOGWISTAR_CHAT_COMPLETIONS_MODEL` | Rust `kogwistar-server` | Model name for the optional native structured-answer provider. |
+| `KOGWISTAR_CHAT_COMPLETIONS_API_KEY` | Rust `kogwistar-server` | Optional bearer credential for the configured chat endpoint. |
+| `KOGWISTAR_CHAT_COMPLETIONS_STREAMING` | Rust `kogwistar-server` | Opts the structured-answer provider into bounded Chat Completions SSE normalization; defaults to `false`. Streamed tool calls fail closed and are not dispatched. |
+| `KOGWISTAR_EMBEDDING_WORKER_INLINE` | Rust `kogwistar-server` | Opts into an in-process Rust worker that polls supported embedding-job queues (batches up to 32, 60-second leases). Defaults off. Enabling it without a supported graph backend and configured provider fails startup. |
+| `KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S` | Rust `kogwistar-server` | Optional low-frequency full-namespace Chroma projection reconciliation interval in seconds. Defaults to `0` (off); enabling requires SQLite metadata plus `KOGWISTAR_CHROMA_ENDPOINT`. It can run without enabling embedding polling. |
+| `KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE` | Rust `kogwistar-server` | Namespace reconciled by the optional Rust Chroma scanner. Required when `KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S` is positive. Configure only one designated scanner per namespace. |
+| `KOGWISTAR_RUNTIME_NATIVE_INLINE` | Rust `kogwistar-server` | Opts into the separate inline recorded-workflow runtime worker. Defaults off. |
 | `JWT_PROTECTED_PATHS` | `kogwistar.server.auth_middleware` | Comma-separated list of protected paths. |
 | `DEV_STREAM_GUARD` | `kogwistar.server.auth_middleware` | Enables or disables the dev stream guard. |
 | `DEV_AUTH_EMAIL` | `kogwistar.server.auth.router` | Default developer auth email. |

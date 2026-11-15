@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 import time
 import uuid
@@ -57,7 +58,22 @@ def engine_triplet():
 
 
 @contextmanager
-def _service_claims():
+def _service_claims(*, read_security_scope: bool = False):
+    capabilities = [
+        "service.manage",
+        "service.inspect",
+        "service.heartbeat",
+        "project_view",
+        "spawn_process",
+        "workflow.run.read",
+        "workflow.run.write",
+        "workflow.design.write",
+        "workflow.design.inspect",
+        "read_graph",
+        "write_graph",
+    ]
+    if read_security_scope:
+        capabilities.append("read_security_scope")
     token = claims_ctx.set(
         {
             "ns": "workflow",
@@ -65,19 +81,7 @@ def _service_claims():
             "storage_ns": "default",
             "execution_ns": "default",
             "security_scope": "tenant/demo",
-            "capabilities": [
-                "service.manage",
-                "service.inspect",
-                "service.heartbeat",
-                "project_view",
-                "spawn_process",
-                "workflow.run.read",
-                "workflow.run.write",
-                "workflow.design.write",
-                "workflow.design.inspect",
-                "read_graph",
-                "write_graph",
-            ],
+            "capabilities": capabilities,
             "sub": "svc-tester",
         }
     )
@@ -563,6 +567,30 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
     created = _create_conversation(service)
     _build_minimal_workflow(service, workflow_id="wf.service.rest")
     _attach_fake_service_spawn(service, statuses=["succeeded"])
+    heartbeat_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-heartbeat-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    repair_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-repair-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    trigger_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-service-trigger-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    bulk_repair_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-services-repair-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     with TestClient(server.app) as client:
         headers = _token_header(
@@ -578,7 +606,10 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
                 "service_kind": "daemon",
                 "target_kind": "workflow",
                 "target_ref": "wf.service.rest",
-                "target_config": {"conversation_id": created["conversation_id"]},
+                "target_config": {
+                    "conversation_id": created["conversation_id"],
+                    "user_id": "tester",
+                },
                 "enabled": True,
             },
             headers=headers,
@@ -586,13 +617,44 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
         declared.raise_for_status()
         assert declared.json()["service_id"] == "svc.rest.demo"
 
-        beat = client.post(
-            "/api/workflow/services/svc.rest.demo/heartbeat",
-            json={"instance_id": "rest-1", "payload": {"ok": True}},
+        bulk_repaired = client.request(
+            bulk_repair_contract["method"],
+            bulk_repair_contract["path"],
             headers=headers,
         )
-        beat.raise_for_status()
-        assert beat.json()["health_status"] == "healthy"
+        assert bulk_repaired.status_code == bulk_repair_contract["success_status"]
+        bulk_body = bulk_repaired.json()
+        for field in bulk_repair_contract["required_body_fields"]:
+            assert field in bulk_body
+        assert len(bulk_body["repaired_service_ids"]) == bulk_repair_contract[
+            "expected_repaired_service_count"
+        ]
+        assert "svc.rest.demo" in bulk_body["repaired_service_ids"]
+
+        beat = client.post(
+            heartbeat_contract["path"].replace("{service_id}", "svc.rest.demo"),
+            json=heartbeat_contract["request_body"],
+            headers=headers,
+        )
+        assert beat.status_code == heartbeat_contract["success_status"], beat.text
+        heartbeat = beat.json()
+        for field, expected in heartbeat_contract["expected_response_fields"].items():
+            assert heartbeat[field] == expected
+        for field in heartbeat_contract["required_timestamp_fields"]:
+            assert isinstance(heartbeat[field], int)
+
+        repaired = client.post(
+            repair_contract["path"].replace("{service_id}", "svc.rest.demo"),
+            headers=headers,
+        )
+        assert repaired.status_code == repair_contract["success_status"], repaired.text
+        repair_body = repaired.json()
+        for field in repair_contract["required_body_fields"]:
+            assert field in repair_body
+        assert repair_body["service_id"] == "svc.rest.demo"
+        for field in repair_contract["required_projection_fields"]:
+            assert field in repair_body["projection"]
+        assert repair_body["projection"]["service_id"] == "svc.rest.demo"
 
         listed = client.get("/api/workflow/services", headers=headers)
         listed.raise_for_status()
@@ -601,22 +663,274 @@ def test_service_runtime_api_round_trip(monkeypatch, engine_triplet):
             for item in listed.json()["services"]
         )
 
-        triggered = client.post(
+        rejected_payload_owner = client.post(
             "/api/workflow/services/svc.rest.demo/trigger",
-            json={"trigger_type": "external event", "payload": {}},
+            json={
+                "trigger_type": "external event",
+                "payload": {"user_id": "victim"},
+            },
             headers=headers,
         )
-        triggered.raise_for_status()
-        run_id = str(triggered.json()["current_child_run_id"] or "")
+        assert rejected_payload_owner.status_code == 403
+
+        triggered = client.post(
+            trigger_contract["path"].replace("{service_id}", "svc.rest.demo"),
+            json=trigger_contract["request_body"],
+            headers=headers,
+        )
+        assert triggered.status_code == trigger_contract["success_status"], triggered.text
+        trigger_body = triggered.json()
+        for field, expected in trigger_contract["expected_response_fields"].items():
+            assert trigger_body[field] == expected
+        for field in trigger_contract["required_response_fields"]:
+            assert field in trigger_body
+        for field in trigger_contract["dynamic_snapshot_fields"]:
+            assert isinstance(trigger_body[field], str)
+        assert trigger_body["current_child_status"] == "succeeded"
+        assert trigger_body["service_id"] == "svc.rest.demo"
+        assert isinstance(trigger_body["last_triggered_at_ms"], int)
+        run_id = str(trigger_body["current_child_run_id"] or "")
         assert run_id
+        assert service.run_registry.get_run(run_id)["user_id"] == "tester"
+        service.run_registry.update_status(
+            run_id, status="running", started=True, finished=False
+        )
 
         events = client.get(
             "/api/workflow/services/svc.rest.demo/events", headers=headers
         )
-        events.raise_for_status()
-        names = [evt["event_type"] for evt in events.json()["events"]]
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-service-events-http-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert events.status_code == contract["success_status"], events.text
+        event_payload = events.json()
+        assert set(contract["required_envelope_fields"]).issubset(event_payload)
+        assert event_payload["service_id"] == "svc.rest.demo"
+        assert isinstance(event_payload["events"], list)
+        for event in event_payload["events"]:
+            assert set(contract["required_event_fields"]).issubset(event)
+        names = [evt["event_type"] for evt in event_payload["events"]]
         assert "service.heartbeat" not in names
         assert "service.triggered" in names
+
+        busy_spoof = client.post(
+            "/api/workflow/services/svc.rest.demo/trigger",
+            json={
+                "trigger_type": "external event",
+                "payload": {"user_id": "victim"},
+            },
+            headers=headers,
+        )
+        busy_spoof.raise_for_status()
+        assert busy_spoof.json()["current_child_run_id"] == run_id
+        after_spoof_events = client.get(
+            "/api/workflow/services/svc.rest.demo/events", headers=headers
+        )
+        after_spoof_events.raise_for_status()
+        assert after_spoof_events.json()["events"] == events.json()["events"]
+
+        configured_spoof = client.post(
+            "/api/workflow/services",
+            json={
+                "service_id": "svc.rest.spoof",
+                "service_kind": "daemon",
+                "target_kind": "workflow",
+                "target_ref": "wf.service.rest",
+                "target_config": {
+                    "conversation_id": created["conversation_id"],
+                    "user_id": "victim",
+                },
+                "enabled": True,
+            },
+            headers=headers,
+        )
+        configured_spoof.raise_for_status()
+        rejected_config = client.post(
+            "/api/workflow/services/svc.rest.spoof/trigger",
+            json={"trigger_type": "external event", "payload": {}},
+            headers=headers,
+        )
+        assert rejected_config.status_code == 403
+        spoof_events = client.get(
+            "/api/workflow/services/svc.rest.spoof/events", headers=headers
+        )
+        spoof_events.raise_for_status()
+        assert not any(
+            event["event_type"] in {"service.starting", "service.triggered"}
+            for event in spoof_events.json()["events"]
+        )
+
+
+def test_service_declare_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-service-declare-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/workflow/services",
+            json=contract["request"],
+            headers=_token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                capabilities="service.manage,service.inspect,project_view",
+            ),
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    for field, expected in contract["expected_body_fields"].items():
+        assert payload[field] == expected
+
+
+def test_service_get_rebuilds_missing_projection_from_history(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-service-get-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service_id = contract["request"]["service_id"]
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            capabilities="service.manage,service.inspect,project_view",
+        )
+        created = client.post(
+            "/api/workflow/services", json=contract["request"], headers=headers
+        )
+        assert created.status_code == contract["http_status"], created.text
+        declared_payload = created.json()
+        workflow_engine.meta_sqlite.clear_named_projection("service_registry", service_id)
+        response = client.get(f"/api/workflow/services/{service_id}", headers=headers)
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert payload == declared_payload
+    for field, expected in contract["expected_body_fields"].items():
+        assert payload[field] == expected
+    assert workflow_engine.meta_sqlite.get_named_projection("service_registry", service_id)
+
+
+def test_service_enable_disable_routes_match_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-service-toggle-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    service.service_supervisor.declare_service(
+        service_id=contract["service_id"],
+        service_kind="daemon",
+        target_kind="workflow",
+        target_ref="wf.service.toggle",
+        enabled=True,
+        autostart=False,
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            capabilities="service.manage,service.inspect,project_view",
+        )
+        for operation in ("disable", "enable"):
+            response = client.post(contract[operation]["path"], headers=headers)
+            assert response.status_code == contract["http_status"], response.text
+            payload = response.json()
+            for field, expected in contract[operation]["expected_fields"].items():
+                assert payload[field] == expected
+    assert any(
+        event["event_type"] == "service.degraded"
+        for event in service.service_supervisor.list_service_events(contract["service_id"])
+    )
+
+
+def test_service_list_route_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-services-list-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            capabilities="service.manage,service.inspect,project_view",
+        )
+        for service_id, enabled in (("svc-b", True), ("svc-a", False)):
+            created = client.post(
+                "/api/workflow/services",
+                json={
+                    "service_id": service_id,
+                    "target_ref": "wf.service.list",
+                    "enabled": enabled,
+                },
+                headers=headers,
+            )
+            assert created.status_code == 200, created.text
+
+        response = client.get(
+            f"/api/workflow/services?limit={contract['limit']}",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["http_status"], response.text
+    payload = response.json()
+    assert set(contract["required_body_fields"]).issubset(payload)
+    assert len(payload["services"]) == contract["limit"]
+    for field, expected in contract["expected_first_service"].items():
+        assert payload["services"][0][field] == expected
 
 
 def test_supervisor_flow_does_not_touch_service_health_projection(monkeypatch, engine_triplet):
@@ -666,6 +980,12 @@ def test_supervisor_flow_does_not_touch_service_health_projection(monkeypatch, e
 
 
 def test_service_operator_dashboard_round_trip(monkeypatch, engine_triplet):
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/operator-dashboard-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     service, _registry = _configure_server(
         monkeypatch,
@@ -678,8 +998,17 @@ def test_service_operator_dashboard_round_trip(monkeypatch, engine_triplet):
     created = _create_conversation(service)
     _build_minimal_workflow(service, workflow_id="wf.service.dashboard")
     _attach_fake_service_spawn(service, statuses=["succeeded"])
+    for status in contract["blocked_statuses"]:
+        service.run_registry.create_run(
+            run_id=f"dashboard-{status}-run",
+            conversation_id=created["conversation_id"],
+            workflow_id="wf.service.dashboard",
+            user_id="dashboard-test",
+            user_turn_node_id=f"dashboard-{status}-turn",
+            status=status,
+        )
 
-    with _service_claims():
+    with _service_claims(read_security_scope=True):
         service.declare_service(
             service_id="svc.dashboard.demo",
             service_kind="daemon",
@@ -691,9 +1020,42 @@ def test_service_operator_dashboard_round_trip(monkeypatch, engine_triplet):
         )
         service.service_supervisor.bootstrap()
         dashboard = service.operator_dashboard(limit=20)
-        assert "process_table" in dashboard
-        assert "message_queue" in dashboard
-        assert "blocked_runs" in dashboard
-        assert "capabilities" in dashboard
-        assert "resources" in dashboard
+        assert all(field in dashboard for field in contract["dashboard_fields"])
+        assert {row["status"] for row in dashboard["blocked_runs"]} == set(
+            contract["blocked_statuses"]
+        )
+        assert all(
+            set(node) == set(contract["blocked_flow_node_fields"])
+            for node in dashboard["blocked_flow_graph"]["nodes"]
+        )
         assert dashboard["resources"]["services"]["total_services"] >= 1
+
+    with TestClient(server.app) as client:
+        view_only_headers = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="project_view",
+        )
+        denied = client.get(
+            "/api/workflow/operator/dashboard?limit=20",
+            headers=view_only_headers,
+        )
+        assert denied.status_code == 403
+        headers = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
+        response = client.get("/api/workflow/operator/dashboard?limit=20", headers=headers)
+    assert response.status_code == 200, response.text
+    http_dashboard = response.json()
+    assert all(field in http_dashboard for field in contract["dashboard_fields"])
+    assert {row["status"] for row in http_dashboard["blocked_runs"]} == set(
+        contract["blocked_statuses"]
+    )
+    assert all(
+        set(node) == set(contract["blocked_flow_node_fields"])
+        for node in http_dashboard["blocked_flow_graph"]["nodes"]
+    )

@@ -1293,12 +1293,13 @@ def pg_schema(sa_engine) -> Iterator[str | None]:
         yield None
         return
     schema = f"gke_test_{uuid.uuid4().hex}"
-    with sa_engine.begin() as conn:
+    bootstrap_engine = sa_engine.execution_options(kogwistar_schema_bootstrap=True)
+    with bootstrap_engine.begin() as conn:
         conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
     try:
         yield schema
     finally:
-        with sa_engine.begin() as conn:
+        with bootstrap_engine.begin() as conn:
             conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
 
@@ -1311,13 +1312,16 @@ def async_pg_schema(async_sa_engine) -> Iterator[str | None]:
         yield None
         return
     schema = f"gke_async_test_{uuid.uuid4().hex}"
+    bootstrap_engine = async_sa_engine.execution_options(
+        kogwistar_schema_bootstrap=True
+    )
 
     async def _create() -> None:
-        async with async_sa_engine.begin() as conn:
+        async with bootstrap_engine.begin() as conn:
             await conn.execute(sa.text(f'CREATE SCHEMA IF NOT EXISTS "{schema}"'))
 
     async def _drop() -> None:
-        async with async_sa_engine.begin() as conn:
+        async with bootstrap_engine.begin() as conn:
             await conn.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
 
     _run_async_windows_safe(_create())

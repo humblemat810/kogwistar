@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "operation": "workflow.operator_inbox",
+  "arguments": {
+    "inbox_id": "ops & triage",
+    "status": "pending",
+    "limit": 12
+  },
+  "route": "GET /api/workflow/operator/inbox?limit=12&inbox_id=ops+%26+triage&status=pending",
+  "expected_result": {
+    "messages": []
+  }
+}

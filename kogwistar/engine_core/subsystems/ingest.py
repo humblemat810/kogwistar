@@ -21,6 +21,7 @@ from ..types import (
     RawPageIngestResult,
 )
 from ..utils.pages import coerce_pages
+from ...implementation_selection import implementation_selection_bound
 from .base import NamespaceProxy
 
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
+    @implementation_selection_bound
     def ingest_document_with_llm(
         self,
         document: Document,
@@ -68,6 +70,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             mode=mode,
         )
 
+    @implementation_selection_bound
     def ingest_text_with_llm(
         self,
         *,
@@ -132,6 +135,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                         self._e.commit_merge(left, right, verdict)
         return result
 
+    @implementation_selection_bound
     def extract_graph_with_llm_internal(
         self,
         content: str,
@@ -158,6 +162,7 @@ class IngestSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             parsed = LLMGraphExtraction.model_validate(parsed_payload)
         return result.raw, parsed, result.parsing_error
 
+    @implementation_selection_bound
     def add_page(
         self,
         *,

@@ -1,0 +1,8 @@
+{
+  "source_text": "Alpha connects to Beta.",
+  "cases": [
+    { "name": "null", "doc_id": null },
+    { "name": "number", "doc_id": 7 },
+    { "name": "empty", "doc_id": "" }
+  ]
+}

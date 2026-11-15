@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "workflow_id": "increment-counter-workflow-v1",
+  "initial_state": {
+    "counter": 0
+  },
+  "nodes": [
+    {
+      "id": "first",
+      "operation": "increment-counter",
+      "version": "v1",
+      "terminal": false
+    },
+    {
+      "id": "second",
+      "operation": "increment-counter",
+      "version": "v1",
+      "terminal": true
+    }
+  ],
+  "routes": [
+    {
+      "source_node_id": "first",
+      "target_node_id": "second",
+      "join_mask": 0
+    }
+  ],
+  "expected_status": "succeeded",
+  "expected_completed_steps": ["first", "second"],
+  "expected_step_sequences": [0, 1],
+  "trace_contract": {
+    "expected_attempts": [1, 1],
+    "trace_id_source": "run_id",
+    "require_nonempty_span_ids": true,
+    "require_distinct_parent_span_ids": true
+  },
+  "expected_final_state": {
+    "counter": 2
+  }
+}

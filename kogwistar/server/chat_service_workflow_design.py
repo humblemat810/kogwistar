@@ -13,6 +13,7 @@ from typing import Any, cast
 
 from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.id_provider import new_id_str
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonObject
 from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 
@@ -42,6 +43,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             raise PermissionError("designer_id must match authenticated subject")
         return resolved_designer
 
+    @implementation_selection_bound
     def workflow_design_history(self, *, workflow_id: str) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
@@ -61,6 +63,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
                 result["materialization_status"] = projection_status
             return result
 
+    @implementation_selection_bound
     def refresh_workflow_design_projection(self, *, workflow_id: str) -> JsonObject:
         workflow_id = str(workflow_id or "").strip()
         if not workflow_id:
@@ -84,6 +87,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             result["status"] = "ok"
             return result
 
+    @implementation_selection_bound
     def workflow_design_upsert_node(
         self,
         *,
@@ -201,6 +205,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             "can_redo": bool(history["can_redo"]),
         }
 
+    @implementation_selection_bound
     def workflow_design_upsert_edge(
         self,
         *,
@@ -324,6 +329,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             "can_redo": bool(history["can_redo"]),
         }
 
+    @implementation_selection_bound
     def workflow_design_delete_node(
         self,
         *,
@@ -424,6 +430,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             "can_redo": bool(history["can_redo"]),
         }
 
+    @implementation_selection_bound
     def workflow_design_delete_edge(
         self,
         *,
@@ -523,6 +530,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             "can_redo": bool(history["can_redo"]),
         }
 
+    @implementation_selection_bound
     def workflow_design_undo(
         self,
         *,
@@ -624,6 +632,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             result["status"] = "ok"
             return result
 
+    @implementation_selection_bound
     def workflow_design_redo(
         self,
         *,
@@ -706,6 +715,7 @@ class _WorkflowDesignService(_WorkflowDesignHistoryMixin):
             result["status"] = "ok"
             return result
 
+    @implementation_selection_bound
     def workflow_design_graph(
         self, workflow_id: str, refresh: bool = False
     ) -> dict[str, object]:

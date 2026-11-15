@@ -307,9 +307,24 @@ class ConversationEdge(Edge):
     metadata: dict[str, JsonValue] = Field(
         default_factory=dict, description="conversation edge metadata"
     )
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
     id_kind: ClassVar[str] = "conversation.edge"
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, object] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Apply model-copy updates through this subtype's validators."""
+        copied = super().model_copy(deep=deep)
+        if update is None:
+            return copied
+        for name, value in update.items():
+            setattr(copied, name, value)
+        return copied
 
     def identity_key(self) -> tuple[str, ...]:
         """
@@ -357,6 +372,21 @@ class ConversationNode(ConversationRoleMixin, Node):
     # id_policy: ClassVar[Literal["event", "canonical"]] = "canonical"
     # id_kind: ClassVar[str] = "model"  # override per subclass if you want stable separation
     id_kind: ClassVar[str] = "conversation.node"
+    model_config = ConfigDict(extra="allow", validate_assignment=True)
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, object] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Apply model-copy updates through this subtype's validators."""
+        copied = super().model_copy(deep=deep)
+        if update is None:
+            return copied
+        for name, value in update.items():
+            setattr(copied, name, value)
+        return copied
 
     def identity_key(self) -> tuple[str, ...]:
         # from conversation_orchestrator import get_id_for_conversation_turn

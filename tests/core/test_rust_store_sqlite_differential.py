@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import re
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +12,7 @@ import pytest
 from kogwistar._rust_bridge import RustParityError, store_sqlite
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.sqlite_context import (
+    SQLiteContextError,
     independent_sqlite_execution_context,
     sqlite_execution_context,
 )
@@ -29,10 +34,97 @@ def _rust(
     return store_sqlite(path=path, operation=operation, transaction_id=transaction_id)
 
 
+def _rust_reused(path: Path, operation: dict[str, Any]) -> Any:
+    return store_sqlite(path=path, operation=operation, reuse_session=True)
+
+
+def test_runtime_attestation_payload_round_trips_as_optional_shared_contract(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[2]
+    attestation = json.loads(
+        (root / "contracts" / "golden" / "runtime-implementation-attestation-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    attestation["scheduler"]["version"] = "fixture-version"
+    payload = {"run_id": "run-attestation", "implementation_attestation": attestation}
+
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    python.create_server_run(
+        run_id="run-attestation",
+        conversation_id="conversation",
+        workflow_id="workflow",
+        user_id=None,
+        user_turn_node_id="turn",
+    )
+
+    _rust(
+        python.db_path,
+        {
+            "kind": "append_server_run_event",
+            "run_id": "run-attestation",
+            "event_type": "run.created",
+            "payload_json": json.dumps(payload),
+        },
+    )
+    events = python.list_server_run_events("run-attestation")
+    assert events[0]["event_type"] == "run.created"
+    assert events[0]["payload"] == payload
+
+    trace_context = json.loads(
+        (root / "contracts" / "golden" / "runtime-trace-context-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    trace_payload = {
+        "run_id": "run-attestation",
+        "step_id": trace_context["context"]["node_id"],
+        "token_id": trace_context["context"]["token_id"],
+        "trace": {
+            "event": "runtime.native.step.completed",
+            **trace_context["expected"],
+        },
+    }
+    _rust(
+        python.db_path,
+        {
+            "kind": "append_server_run_event",
+            "run_id": "run-attestation",
+            "event_type": "workflow.trace.v1",
+            "payload_json": json.dumps(trace_payload),
+        },
+    )
+    trace_event = python.list_server_run_events("run-attestation")[1]
+    assert trace_event["event_type"] == "workflow.trace.v1"
+    assert trace_event["payload"] == trace_payload
+
+    legacy_payload = {"run_id": "run-legacy"}
+    python.create_server_run(
+        run_id="run-legacy",
+        conversation_id="conversation",
+        workflow_id="workflow",
+        user_id=None,
+        user_turn_node_id="turn-legacy",
+    )
+    _rust(
+        python.db_path,
+        {
+            "kind": "append_server_run_event",
+            "run_id": "run-legacy",
+            "event_type": "run.created",
+            "payload_json": json.dumps(legacy_payload),
+        },
+    )
+    assert python.list_server_run_events("run-legacy")[0]["payload"] == legacy_payload
+
+
 def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path) -> None:
     db = EngineSQLite(tmp_path)
     db.ensure_initialized()
     path = db.db_path
+    with closing(sqlite3.connect(path)) as conn, conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
     assert _rust(path, {"kind": "open_init"}) == {"initialized": True}
 
     assert db.next_global_seq() == 1
@@ -61,7 +153,6 @@ def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path
     assert _rust(path, {"kind": "cursor_get", "namespace": "alpha", "consumer": "sink"})[
         "last_seq"
     ] == 9
-
     appended = _rust(
         path,
         {
@@ -116,6 +207,125 @@ def test_python_sqlite_then_rust_reads_and_writes_actual_database(tmp_path: Path
             },
         )
     assert collision.value.code == "KOGWISTAR_STORE_EVENT_ID_NAMESPACE_COLLISION"
+
+
+def test_python_rejects_newer_sqlite_schema_without_mutating_database(
+    tmp_path: Path,
+) -> None:
+    db = EngineSQLite(tmp_path)
+    with closing(sqlite3.connect(db.db_path)) as conn, conn:
+        conn.execute("CREATE TABLE sentinel (value TEXT NOT NULL)")
+        conn.execute("INSERT INTO sentinel VALUES ('preserve')")
+        conn.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(RuntimeError, match="unsupported SQLite metadata schema version 2"):
+        db.ensure_initialized()
+
+    with closing(sqlite3.connect(db.db_path)) as conn, conn:
+        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
+        assert conn.execute("SELECT value FROM sentinel").fetchone() == ("preserve",)
+        assert conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='global_seq'"
+        ).fetchone() is None
+
+
+def test_python_and_rust_migrate_legacy_sqlite_queue_schema_equivalently(
+    tmp_path: Path,
+) -> None:
+    python_path = tmp_path / "python-legacy.db"
+    rust_path = tmp_path / "rust-legacy.db"
+    legacy_schema = """
+        CREATE TABLE index_jobs (
+            job_id TEXT PRIMARY KEY, entity_kind TEXT NOT NULL, entity_id TEXT NOT NULL,
+            index_kind TEXT NOT NULL, op TEXT NOT NULL, status TEXT NOT NULL,
+            lease_until INTEGER, retry_count INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT, payload_json TEXT, created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        INSERT INTO index_jobs VALUES (
+            'legacy-job', 'node', 'n1', 'node_embedding', 'UPSERT', 'PENDING',
+            NULL, 0, NULL, '{"legacy":true}', 10, 10
+        );
+        CREATE TABLE projected_lane_messages (
+            message_id TEXT PRIMARY KEY, namespace TEXT NOT NULL DEFAULT 'default',
+            inbox_id TEXT NOT NULL, conversation_id TEXT NOT NULL, recipient_id TEXT NOT NULL,
+            sender_id TEXT NOT NULL, msg_type TEXT NOT NULL, status TEXT NOT NULL,
+            seq INTEGER NOT NULL, conversation_seq INTEGER NOT NULL, claimed_by TEXT,
+            lease_until INTEGER, retry_count INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+            available_at INTEGER NOT NULL, run_id TEXT, step_id TEXT, correlation_id TEXT,
+            payload_json TEXT, error_json TEXT, prev_message_id TEXT, next_message_id TEXT,
+            inbox_tail_message_id TEXT, conversation_tail_message_id TEXT
+        );
+        INSERT INTO projected_lane_messages (
+            message_id, inbox_id, conversation_id, recipient_id, sender_id, msg_type,
+            status, seq, conversation_seq, created_at, available_at, payload_json
+        ) VALUES ('legacy-message', 'inbox', 'conversation', 'recipient', 'sender', 'text',
+                  'PENDING', 1, 1, 10, 10, '{"legacy":true}');
+    """
+    for path in (python_path, rust_path):
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.executescript(legacy_schema)
+
+    python = EngineSQLite(tmp_path, filename="python-legacy.db")
+    python.ensure_initialized()
+    assert _rust(rust_path, {"kind": "open_init"}) == {"initialized": True}
+    assert _rust(rust_path, {"kind": "close"}) is None
+
+    def schema_signature(path: Path) -> dict[str, object]:
+        with closing(sqlite3.connect(path)) as conn, conn:
+            table_names = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                )
+            ]
+            result: dict[str, object] = {}
+            for table in table_names:
+                columns = tuple(
+                    sorted(
+                        (
+                            row[1],
+                            row[2].upper(),
+                            row[3],
+                            row[4],
+                            row[5],
+                        )
+                        for row in conn.execute(f'PRAGMA table_info("{table}")')
+                    )
+                )
+                indexes = []
+                for row in conn.execute(f'PRAGMA index_list("{table}")'):
+                    index_name = row[1]
+                    sql_row = conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE type='index' AND name=?",
+                        (index_name,),
+                    ).fetchone()
+                    index_sql = (
+                            re.sub(
+                                r"\s*([(),=])\s*",
+                                r"\1",
+                                " ".join(sql_row[0].split()).lower(),
+                            )
+                        if sql_row and sql_row[0]
+                        else None
+                    )
+                    indexes.append((index_name, row[2], row[3], row[4], index_sql))
+                result[table] = (columns, tuple(sorted(indexes)))
+            return result
+
+    assert schema_signature(python_path) == schema_signature(rust_path)
+    for path in (python_path, rust_path):
+        with closing(sqlite3.connect(path)) as conn, conn:
+            assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+            assert conn.execute(
+                "SELECT job_id, namespace, coalesce_key, max_retries, payload_json "
+                "FROM index_jobs WHERE job_id='legacy-job'"
+            ).fetchone() == ("legacy-job", "default", "", 10, '{"legacy":true}')
+            assert conn.execute(
+                "SELECT message_id, purpose, payload_json FROM projected_lane_messages "
+                "WHERE message_id='legacy-message'"
+            ).fetchone() == ("legacy-message", "user_visible", '{"legacy":true}')
 
 
 def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tmp_path: Path) -> None:
@@ -178,6 +388,58 @@ def test_rust_sqlite_then_python_initializes_reads_writes_aliases_and_cursors(tm
     assert regresses.value.code == "KOGWISTAR_STORE_CURSOR_REGRESSES"
 
 
+def test_python_and_rust_sqlite_event_handoff_preserves_arbitrary_precision_json(
+    tmp_path: Path,
+) -> None:
+    db = EngineSQLite(tmp_path)
+    db.ensure_initialized()
+    positive = 1 << 200
+    negative = -(1 << 200)
+    python_payload = json.dumps(
+        {"metadata": {"positive": positive, "negative": negative}},
+        separators=(",", ":"),
+    )
+
+    assert db.append_entity_event(
+        namespace="integer-handoff",
+        event_id="python-large-integers",
+        entity_kind="node",
+        entity_id="python-node",
+        op="UPSERT",
+        payload_json=python_payload,
+    ) == 1
+    replay = _rust(
+        db.db_path,
+        {
+            "kind": "exclusive_raw_replay",
+            "namespace": "integer-handoff",
+            "after_seq": 0,
+            "limit": 10,
+        },
+    )
+    assert json.loads(replay[0]["payload_json"]) == json.loads(python_payload)
+
+    rust_payload = json.dumps(
+        {"metadata": {"positive": negative, "negative": positive}},
+        separators=(",", ":"),
+    )
+    appended = _rust(
+        db.db_path,
+        {
+            "kind": "raw_append",
+            "namespace": "integer-handoff",
+            "event_id": "rust-large-integers",
+            "entity_kind": "node",
+            "entity_id": "rust-node",
+            "op": "UPSERT",
+            "payload_json": rust_payload,
+        },
+    )
+    assert appended["seq"] == 2
+    python_events = list(db.iter_entity_events(namespace="integer-handoff", from_seq=2))
+    assert json.loads(python_events[0][4]) == json.loads(rust_payload)
+
+
 def test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible(
     tmp_path: Path,
 ) -> None:
@@ -207,6 +469,77 @@ def test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible(
                 "last_seq": seq,
             },
         )["last_seq"] == seq
+
+
+def test_reused_rust_autocommit_handle_is_visible_after_close(tmp_path: Path) -> None:
+    """A reused Rust session persists writes before relinquishing authority."""
+    path = tmp_path / "engine.db"
+    db = EngineSQLite(tmp_path)
+    db.ensure_initialized()
+    with sqlite_execution_context("rust"):
+        _rust_reused(path, {"kind": "open_init"})
+        try:
+            assert _rust_reused(
+                path,
+                {
+                    "kind": "raw_append",
+                    "namespace": "handoff",
+                    "event_id": "rust-first",
+                    "entity_kind": "node",
+                    "entity_id": "n1",
+                    "op": "UPSERT",
+                    "payload_json": '{"writer":"rust"}',
+                },
+            )["seq"] == 1
+            assert _rust_reused(
+                path,
+                {
+                    "kind": "raw_append",
+                    "namespace": "handoff",
+                    "event_id": "rust-second",
+                    "entity_kind": "node",
+                    "entity_id": "n2",
+                    "op": "UPSERT",
+                    "payload_json": '{"writer":"rust"}',
+                },
+            )["seq"] == 2
+            assert len(_rust_reused(path, {
+                "kind": "exclusive_raw_replay",
+                "namespace": "handoff",
+                "after_seq": 0,
+                "limit": 3,
+            })) == 2
+            with independent_sqlite_execution_context("python"):
+                with pytest.raises(SQLiteContextError) as conflict:
+                    db.append_entity_event(
+                        namespace="handoff",
+                        event_id="python-conflict",
+                        entity_kind="node",
+                        entity_id="n3",
+                        op="UPSERT",
+                        payload_json='{"writer":"python"}',
+                    )
+            assert conflict.value.code == "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT"
+        finally:
+            _rust_reused(path, {"kind": "close"})
+
+    assert db.append_entity_event(
+        namespace="handoff",
+        event_id="python-after-close",
+        entity_kind="node",
+        entity_id="n3",
+        op="UPSERT",
+        payload_json='{"writer":"python"}',
+    ) == 3
+    assert _rust(
+        path,
+        {
+            "kind": "exclusive_raw_replay",
+            "namespace": "handoff",
+            "after_seq": 0,
+            "limit": 4,
+        },
+    )[-1]["entity_id"] == "n3"
 
 
 def test_completed_rust_transaction_cannot_hide_later_python_commit(tmp_path: Path) -> None:

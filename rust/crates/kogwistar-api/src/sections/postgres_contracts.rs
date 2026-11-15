@@ -1,0 +1,451 @@
+#[derive(Clone)]
+pub struct PostgresRunApplicationService {
+    store: PostgresStore,
+    conversation_store: PostgresStore,
+    workflow_store: PostgresStore,
+    wisdom_store: PostgresStore,
+    graph_role: String,
+    max_queue: usize,
+    capabilities: SharedCapabilityState,
+    native_operations: kogwistar_runtime::NativeOperationRegistry,
+    owner_auth_store: Option<Arc<AuthStore>>,
+    embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
+    search_index_fts: Option<Arc<Mutex<rusqlite::Connection>>>,
+    embedding_storage_scope: Result<String, String>,
+    conversation_embedding_storage_scope: Result<String, String>,
+    workflow_embedding_storage_scope: Result<String, String>,
+    wisdom_embedding_storage_scope: Result<String, String>,
+    chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
+    transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoadPersistedGraphRequest {
+    doc_ids: Vec<String>,
+    #[serde(default)]
+    insertion_method: Option<String>,
+    #[serde(default = "default_true")]
+    #[serde(rename = "sid")]
+    _sid: bool,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProposeBruteForceRequest {
+    #[serde(default = "default_brute_force_pair_kind")]
+    pair_kind: String,
+    #[serde(default)]
+    allowed_docs: Option<Vec<String>>,
+    #[serde(default)]
+    anchor_doc_id: Option<String>,
+    #[serde(default)]
+    cross_doc_only: bool,
+    #[serde(default = "default_brute_force_anchor_only")]
+    anchor_only: bool,
+    #[serde(default = "default_brute_force_bucket_limit")]
+    limit_per_bucket: Option<i64>,
+    #[serde(default, rename = "where")]
+    where_filter: Option<Value>,
+}
+
+fn default_brute_force_pair_kind() -> String {
+    "any_any".to_owned()
+}
+
+fn default_brute_force_anchor_only() -> bool {
+    true
+}
+
+fn default_brute_force_bucket_limit() -> Option<i64> {
+    Some(200)
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphVisualizationRequest {
+    #[serde(default)]
+    doc_id: Option<String>,
+    #[serde(default = "default_graph_visualization_mode")]
+    mode: String,
+    #[serde(default)]
+    insertion_method: Option<String>,
+    #[serde(default = "default_graph_visualization_type")]
+    graph_type: String,
+}
+
+fn default_graph_visualization_mode() -> String {
+    "reify".to_owned()
+}
+
+fn default_graph_visualization_type() -> String {
+    "knowledge".to_owned()
+}
+
+impl GraphVisualizationRequest {
+    fn truth_graph(&self) -> &'static str {
+        match self.graph_type.to_ascii_lowercase().as_str() {
+            "conversation" => "conversation",
+            "workflow" => "workflow",
+            "wisdom" => "wisdom",
+            _ => "knowledge",
+        }
+    }
+}
+
+#[cfg(test)]
+mod visualization_graph_type_contract_tests {
+    use super::GraphVisualizationRequest;
+    use serde_json::Value;
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_contracts.rs#graph_type_normalization_matches_python_golden_contract; python=kogwistar/server_mcp_with_admin.py#api_viz_cytoscape; fixture=contracts/golden/visualization-graph-type-v1.json; rust_test=rust/crates/kogwistar-api/src/sections/postgres_contracts.rs#graph_type_normalization_matches_python_golden_contract; python_test=tests/test_visualization.py#test_visualization_route_graph_type_selection_matches_shared_rust_fixture
+    #[test]
+    fn graph_type_normalization_matches_python_golden_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/visualization-graph-type-v1.json"
+        )))
+        .expect("shared graph-type contract fixture is valid JSON");
+
+        for case in fixture["cases"].as_array().expect("fixture cases") {
+            let request: GraphVisualizationRequest = serde_json::from_value(serde_json::json!({
+                "graph_type": case["input"]
+            }))
+            .expect("fixture graph_type deserializes");
+            assert_eq!(
+                request.truth_graph(),
+                case["expected"].as_str().expect("expected graph type"),
+                "graph_type input: {}",
+                case["input"]
+            );
+        }
+    }
+}
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeOwnerBindingV1 {
+    version: u32,
+    user_id: String,
+    admitted_capabilities: BTreeSet<String>,
+    admitted_scope: Value,
+}
+
+#[derive(Clone)]
+struct PreparedConversationAdmission {
+    conversation_id: String,
+    owner_id: String,
+    expected_tail_id: Option<String>,
+    scope: GraphScope,
+    acl_principal: GraphAclPrincipal,
+    mutations: Vec<(GraphMutation, kogwistar_contracts::GraphModelEnvelope)>,
+    index_jobs: Vec<NewIndexJob>,
+    actor_user_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeAdmissionOutcome {
+    Queued,
+    QueueFull,
+    ConversationChanged,
+}
+
+fn parse_graph_neighbors_request(body: &[u8]) -> Result<GraphNeighborsRequestV1, String> {
+    let payload = std::str::from_utf8(body).map_err(|error| error.to_string())?;
+    let input = graph_neighbors_request_from_str(payload).map_err(|error| error.to_string())?;
+    input.validate().map_err(str::to_owned)?;
+    Ok(input)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphVectorQueryWireRequest {
+    entity_kind: String,
+    query_embeddings: Vec<Vec<f32>>,
+    metric: String,
+    #[serde(default = "default_graph_truth_graph")]
+    truth_graph: String,
+    #[serde(default = "default_graph_vector_n_results")]
+    n_results: usize,
+    #[serde(default, rename = "where")]
+    where_filter: Map<String, Value>,
+    #[serde(default)]
+    include: Option<Vec<String>>,
+}
+
+struct GraphVectorQueryRequest {
+    entity_kind: String,
+    query_embeddings: Vec<Vec<f32>>,
+    metric: DistanceMetric,
+    truth_graph: String,
+    n_results: usize,
+    where_filter: MetadataFilter,
+    include: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphVectorProposalRequest {
+    #[serde(default)]
+    new_node_ids: Option<Vec<String>>,
+    #[serde(default)]
+    new_edge_ids: Option<Vec<String>>,
+    #[serde(default = "default_graph_vector_n_results")]
+    top_k: usize,
+    #[serde(default = "default_graph_vector_score_mode")]
+    score_mode: String,
+    #[serde(default = "default_graph_vector_max_distance")]
+    max_distance: f64,
+    #[serde(default = "default_graph_vector_min_similarity")]
+    min_similarity: f64,
+    #[serde(default = "default_graph_vector_include_edges")]
+    include_edges: bool,
+    #[serde(default)]
+    allowed_docs: Option<Vec<String>>,
+    #[serde(default)]
+    anchor_doc_id: Option<String>,
+    #[serde(default)]
+    cross_doc_only: bool,
+    #[serde(default = "default_graph_vector_anchor_only")]
+    anchor_only: bool,
+    #[serde(default, rename = "where")]
+    where_filter: Option<Value>,
+}
+
+fn default_graph_vector_score_mode() -> String {
+    "distance".to_owned()
+}
+
+fn default_graph_vector_max_distance() -> f64 {
+    0.35
+}
+
+fn default_graph_vector_min_similarity() -> f64 {
+    0.65
+}
+
+fn default_graph_vector_include_edges() -> bool {
+    true
+}
+
+fn default_graph_vector_anchor_only() -> bool {
+    true
+}
+
+impl GraphVectorProposalRequest {
+    fn parse(body: &[u8]) -> Result<Self, String> {
+        let input: Self = serde_json::from_slice(body).map_err(|error| error.to_string())?;
+        if !(1..=1000).contains(&input.top_k) {
+            return Err("top_k must be between 1 and 1000".to_owned());
+        }
+        if !matches!(input.score_mode.as_str(), "distance" | "similarity") {
+            return Err("score_mode must be 'distance' or 'similarity'".to_owned());
+        }
+        if !input.max_distance.is_finite() || !input.min_similarity.is_finite() {
+            return Err("score thresholds must be finite numbers".to_owned());
+        }
+        for (field, ids) in [
+            ("new_node_ids", input.new_node_ids.as_ref()),
+            ("new_edge_ids", input.new_edge_ids.as_ref()),
+        ] {
+            if ids.is_some_and(|values| {
+                values.len() > 10_000 || values.iter().any(|id| id.trim().is_empty())
+            }) {
+                return Err(format!("{field} must contain at most 10000 non-empty IDs"));
+            }
+        }
+        if input
+            .allowed_docs
+            .as_ref()
+            .is_some_and(|docs| docs.iter().any(|doc| doc.trim().is_empty()))
+        {
+            return Err("allowed_docs must contain non-empty document IDs".to_owned());
+        }
+        Ok(input)
+    }
+}
+
+fn default_graph_vector_n_results() -> usize {
+    10
+}
+
+fn default_graph_truth_graph() -> String {
+    "knowledge".to_owned()
+}
+
+fn parse_graph_vector_query_request(body: &[u8]) -> Result<GraphVectorQueryRequest, String> {
+    let wire: GraphVectorQueryWireRequest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    if !matches!(wire.entity_kind.as_str(), "node" | "edge") {
+        return Err("entity_kind must be 'node' or 'edge'".to_owned());
+    }
+    if wire.truth_graph.trim().is_empty() || wire.truth_graph.len() > 255 {
+        return Err("truth_graph must contain 1 to 255 characters".to_owned());
+    }
+    if wire.query_embeddings.is_empty() || wire.query_embeddings.len() > 32 {
+        return Err("query_embeddings must contain 1 to 32 vectors".to_owned());
+    }
+    if wire
+        .query_embeddings
+        .iter()
+        .any(|embedding| embedding.is_empty() || embedding.len() > 8192)
+    {
+        return Err("each query embedding must contain 1 to 8192 values".to_owned());
+    }
+    if !(1..=1000).contains(&wire.n_results) {
+        return Err("n_results must be between 1 and 1000".to_owned());
+    }
+    if wire
+        .where_filter
+        .iter()
+        .any(|(key, value)| key.starts_with('$') || value.is_object())
+    {
+        return Err("where supports exact scalar/array equality only".to_owned());
+    }
+    let metric = match wire.metric.trim().to_ascii_lowercase().as_str() {
+        "cosine" => DistanceMetric::Cosine,
+        "l2" => DistanceMetric::L2,
+        "ip" | "inner" | "inner_product" | "innerproduct" => DistanceMetric::InnerProduct,
+        _ => return Err("metric must be cosine, l2, or ip".to_owned()),
+    };
+    let include = wire
+        .include
+        .unwrap_or_else(|| vec!["documents".into(), "embeddings".into(), "metadatas".into()]);
+    if include.iter().any(|field| {
+        !matches!(
+            field.as_str(),
+            "documents" | "embeddings" | "metadatas" | "distances"
+        )
+    }) {
+        return Err("include contains an unsupported field".to_owned());
+    }
+    Ok(GraphVectorQueryRequest {
+        entity_kind: wire.entity_kind,
+        query_embeddings: wire.query_embeddings,
+        metric,
+        truth_graph: wire.truth_graph,
+        n_results: wire.n_results,
+        where_filter: MetadataFilter {
+            equals: wire.where_filter.into_iter().collect(),
+        },
+        include,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphFindEdgesRequest {
+    relation: Option<String>,
+    src_label_contains: Option<String>,
+    tgt_label_contains: Option<String>,
+    doc_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphShortestPathRequest {
+    src_id: String,
+    dst_id: String,
+    doc_id: Option<String>,
+    #[serde(default = "default_graph_max_depth")]
+    max_depth: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GraphKHopRequest {
+    start_ids: Vec<String>,
+    #[serde(default = "default_graph_k")]
+    k: usize,
+    doc_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InternalConversationTranscriptRequest {
+    conversation_id: String,
+    #[serde(default = "default_conversation_limit")]
+    limit: usize,
+}
+
+struct ConversationTranscriptAuthorization {
+    principal: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InternalContextSnapshotRequest {
+    conversation_id: String,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    stage: Option<String>,
+}
+
+struct ContextSnapshotAuthorization {
+    principal: Value,
+}
+
+fn default_conversation_limit() -> usize {
+    10_000
+}
+
+fn default_graph_max_depth() -> usize {
+    8
+}
+
+fn default_graph_k() -> usize {
+    1
+}
+
+fn parse_graph_find_edges_request(body: &[u8]) -> Result<GraphFindEdgesRequest, String> {
+    serde_json::from_slice(body).map_err(|error| error.to_string())
+}
+
+fn parse_internal_conversation_transcript_request(
+    body: &[u8],
+) -> Result<InternalConversationTranscriptRequest, String> {
+    let input: InternalConversationTranscriptRequest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    validate_internal_conversation_transcript_request(&input)?;
+    Ok(input)
+}
+
+fn validate_internal_conversation_transcript_request(
+    input: &InternalConversationTranscriptRequest,
+) -> Result<(), String> {
+    if input.conversation_id.trim().is_empty() || input.limit > 10_000 {
+        return Err("conversation_id is required and limit must be <= 10000".to_owned());
+    }
+    Ok(())
+}
+
+fn parse_internal_context_snapshot_request(
+    body: &[u8],
+) -> Result<InternalContextSnapshotRequest, String> {
+    let input: InternalContextSnapshotRequest =
+        serde_json::from_slice(body).map_err(|error| error.to_string())?;
+    validate_internal_context_snapshot_request(&input)?;
+    Ok(input)
+}
+
+fn validate_internal_context_snapshot_request(
+    input: &InternalContextSnapshotRequest,
+) -> Result<(), String> {
+    if input.conversation_id.trim().is_empty()
+        || input.run_id.as_deref().is_some_and(str::is_empty)
+        || input.stage.as_deref().is_some_and(str::is_empty)
+    {
+        return Err("conversation_id is required and run_id/stage must not be empty".to_owned());
+    }
+    Ok(())
+}
+
+fn context_snapshot_syscall_field(
+    args: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<String>, String> {
+    match args.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) => Ok(Some(value.clone())),
+        Some(_) => Err(format!("{field} must be a string or null")),
+    }
+}

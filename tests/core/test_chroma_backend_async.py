@@ -46,12 +46,29 @@ def test_chroma_backend_round_trips_metadata_with_optional_nulls() -> None:
     backend.node_add(
         ids=["node-with-optional-null"],
         documents=["node payload"],
-        metadatas=[{"wf_predicate": None, "wf_priority": 100}],
+        metadatas=[
+            {
+                "wf_predicate": None,
+                "wf_priority": 100,
+                "implementation_selection": {
+                    "schema_version": 1,
+                    "effective_selectors": {"runtime": "python"},
+                },
+            }
+        ],
         embeddings=[[0.1, 0.2]],
     )
 
     result = backend.node_get(ids=["node-with-optional-null"])
-    assert result["metadatas"] == [{"wf_priority": 100}]
+    assert result["metadatas"] == [
+        {
+            "wf_priority": 100,
+            "implementation_selection": {
+                "schema_version": 1,
+                "effective_selectors": {"runtime": "python"},
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -63,13 +80,26 @@ async def test_async_chroma_backend_crud_round_trip(real_chroma_server):  # noqa
     await backend.document_add(
         ids=["doc-1"],
         documents=["hello"],
-        metadatas=[{"doc_id": "doc-1", "kind": "document"}],
+        metadatas=[
+            {
+                "doc_id": "doc-1",
+                "kind": "document",
+                "implementation_selection": {
+                    "schema_version": 1,
+                    "effective_selectors": {"runtime": "python"},
+                },
+            }
+        ],
         embeddings=[[0.1, 0.2, 0.3]],
     )
     got = await backend.document_get(ids=["doc-1"])
     assert got["ids"] == ["doc-1"]
     assert got["documents"] == ["hello"]
     assert got["metadatas"][0]["doc_id"] == "doc-1"
+    assert got["metadatas"][0]["implementation_selection"] == {
+        "schema_version": 1,
+        "effective_selectors": {"runtime": "python"},
+    }
 
     await backend.document_update(
         ids=["doc-1"],

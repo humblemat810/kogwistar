@@ -6,6 +6,7 @@ import copy
 import inspect
 import threading
 from collections.abc import Awaitable, Mapping
+from contextvars import copy_context
 from dataclasses import dataclass
 from typing import Literal, Protocol, cast
 
@@ -93,6 +94,7 @@ class HookRegistry:
         finished = threading.Event()
         if not self._callback_slots.acquire(blocking=False):
             raise TimeoutError("hook concurrency limit reached")
+        callback_context = copy_context()
 
         def invoke() -> None:
             try:
@@ -104,7 +106,8 @@ class HookRegistry:
                 finished.set()
 
         thread = threading.Thread(
-            target=invoke,
+            target=callback_context.run,
+            args=(invoke,),
             name=f"kogwistar-hook-{spec.hook_id}",
             daemon=True,
         )
@@ -218,6 +221,7 @@ async def _run_sync_async(
     finished = threading.Event()
     if not callback_slots.acquire(blocking=False):
         raise TimeoutError("hook concurrency limit reached")
+    callback_context = copy_context()
 
     def invoke() -> None:
         try:
@@ -230,7 +234,8 @@ async def _run_sync_async(
 
     try:
         threading.Thread(
-            target=invoke,
+            target=callback_context.run,
+            args=(invoke,),
             name=f"kogwistar-hook-{spec.hook_id}",
             daemon=True,
         ).start()

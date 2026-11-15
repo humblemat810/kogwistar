@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from kogwistar._rust_bridge import RustExtensionUnavailableError
 from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
@@ -30,6 +31,7 @@ class _RuntimeLaneNode:
     op: str
     metadata: dict
     terminal: bool = True
+    version: str = "v1"
 
     def safe_get_id(self) -> str:
         return self.id
@@ -43,11 +45,14 @@ def _lane_runtime_engine(tmp_path):
     )
 
 
-def _patch_single_step_design(monkeypatch, *, workflow_id: str, op: str) -> None:
+def _patch_single_step_design(
+    monkeypatch, *, workflow_id: str, op: str, version: str = "v1"
+) -> None:
     node = _RuntimeLaneNode(
         id=f"wf|{workflow_id}|send",
         op=op,
         metadata={"wf_terminal": True, "wf_start": True},
+        version=version,
     )
 
     def _validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
@@ -283,8 +288,13 @@ def test_async_runtime_linear_terminal_status_equivalent(monkeypatch):
         def add_edge(self, _edge):
             return None
 
+    class _Read:
+        def get_nodes(self, **_kwargs):
+            return []
+
     class _Engine:
         write = _Write()
+        read = _Read()
 
     resolver = AsyncMappingStepResolver()
 
@@ -443,8 +453,13 @@ def test_async_runtime_branch_join_status_and_state_equivalent(monkeypatch):
         def add_edge(self, _edge):
             return None
 
+    class _Read:
+        def get_nodes(self, **_kwargs):
+            return []
+
     class _Engine:
         write = _Write()
+        read = _Read()
 
     resolver = AsyncMappingStepResolver()
 
@@ -636,8 +651,13 @@ def test_async_runtime_native_update_schema_applies_known_and_falls_back_unknown
         def add_edge(self, _edge):
             return None
 
+    class _Read:
+        def get_nodes(self, **_kwargs):
+            return []
+
     class _Engine:
         write = _Write()
+        read = _Read()
 
     resolver = AsyncMappingStepResolver()
     resolver.set_state_schema({"op_log": "a"})
@@ -770,6 +790,109 @@ def test_async_runtime_resolver_send_lane_message_reaches_sync_mirror(
         "workflow_node_id": f"wf|{workflow_id}|send",
     }
     assert [str(node.id) for node in lane_nodes] == [rows[0].message_id]
+
+
+def test_async_runtime_dispatches_frozen_operation_version(tmp_path, monkeypatch):
+    """New async mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_dispatches_frozen_operation_version`.
+    Verify async execution dispatches the frozen operation version rather than
+    the currently registered default.
+    """
+    workflow_id = "wf-async-versioned-dispatch"
+    _patch_single_step_design(
+        monkeypatch, workflow_id=workflow_id, op="compute", version="v1"
+    )
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("compute", version="v2")
+    async def _current(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"selected": ctx.op_version})],
+        )
+
+    @resolver.register_versioned("compute", version="v1")
+    async def _historical(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"selected": f"historical-{ctx.op_version}"})],
+        )
+
+    runtime = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+    )
+
+    out = asyncio.run(
+        runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-versioned",
+            turn_node_id="turn-versioned",
+            initial_state={},
+            run_id="run-versioned-async",
+        )
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["selected"] == "historical-v1"
+
+
+def test_async_runtime_legacy_python_default_completes_without_native_loader(
+    tmp_path, monkeypatch
+):
+    """New async mirror of `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_legacy_python_default_completes_without_native_loader`.
+
+    Async legacy runtime selection must not acquire a Rust dependency implicitly.
+    """
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("native loader must not be called")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    workflow_id = "wf-async-legacy-python-default"
+    _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="compute")
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("compute")
+    async def _compute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": "python-default"})],
+        )
+
+    runtime = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+    )
+
+    out = asyncio.run(
+        runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-async-legacy-python-default",
+            turn_node_id="turn-async-legacy-python-default",
+            initial_state={},
+            run_id="run-async-legacy-python-default",
+        )
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["implementation"] == "python-default"
 
 
 def test_async_runtime_resolver_send_lane_message_appends_run_registry_event(
@@ -1092,6 +1215,58 @@ def test_async_runtime_auto_transaction_mode_uses_step_for_pg_backend(monkeypatc
     )
 
     assert rt.sync_runtime.transaction_mode == "step"
+
+
+def test_async_runtime_rust_postgres_authority_keeps_callbacks_outside_uow(monkeypatch):
+    """Async mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_rust_postgres_authority_keeps_callbacks_outside_uow`.
+    New async mirror for Rust Postgres transaction-authority parity.
+    """
+
+    class _PgVectorBackend:
+        pass
+
+    class _ConversationEngine:
+        backend = _PgVectorBackend()
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.PgVectorBackend",
+        _PgVectorBackend,
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    rt = AsyncWorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_ConversationEngine(),
+        step_resolver=AsyncMappingStepResolver(),
+        predicate_registry={},
+        trace=False,
+        experimental_native_scheduler=True,
+    )
+
+    assert rt.sync_runtime.transaction_mode == "none"
+    assert rt.sync_runtime._should_step_uow("ordinary_step", {}) is False
+
+
+def test_async_runtime_rejects_explicit_rust_step_uow(monkeypatch):
+    """Async mirror: `tests/runtime/test_sync_runtime_bijection_contract.py::test_sync_runtime_rejects_explicit_rust_step_uow`.
+    New async mirror for Rust step-UOW rejection parity.
+    """
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    with pytest.raises(ValueError, match="incompatible with Rust transaction authority"):
+        AsyncWorkflowRuntime(
+            workflow_engine=object(),
+            conversation_engine=object(),
+            step_resolver=AsyncMappingStepResolver(),
+            predicate_registry={},
+            transaction_mode="step",
+            trace=False,
+            experimental_native_scheduler=True,
+        )
 
 
 def test_async_runtime_missing_op_behavior():

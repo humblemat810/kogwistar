@@ -9,27 +9,46 @@ the stable lane ``message_id`` idempotency key.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import inspect
 import json
 import os
 import queue
 import sqlite3
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Callable, Protocol, cast
 
 import httpx
+from pydantic import ValidationError
 
 from kogwistar.id_provider import stable_id
+from kogwistar.engine_core.graph_mutation_contract import (
+    GraphMutationBatchPayload,
+    GraphMutationBatchV2Payload,
+)
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    callback_execution_scope,
+    capture_implementation_selection,
+    implementation_selection_bound,
+)
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import StepRunResult
+from kogwistar.runtime.telemetry import TraceContext
+from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
 
 from .contract import Predicate
+from .strict_json import normalize_json_value, strict_json_dumps
 
 JsonObject = dict[str, JsonValue]
+
+# A missing target is legacy-compatible; when present, Python workers must
+# never accept work explicitly addressed to another executor.
+PYTHON_EXECUTOR_TARGET = "python-worker"
 
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext
@@ -46,7 +65,7 @@ class RustStepResolver(Protocol):
 
 
 class RustDependencyProvider(Protocol):
-    def __call__(self, work: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]: ...
+    def __call__(self, work: Mapping[str, JsonValue]) -> Mapping[str, object]: ...
 
 
 RustPredicate = Predicate
@@ -90,7 +109,7 @@ class _FrozenWorkerRoute:
 
 def _json_copy(value: object, *, field: str) -> JsonValue:
     try:
-        return json.loads(_canonical(value))
+        return normalize_json_value(value, field=field)
     except (TypeError, ValueError) as error:
         raise RustWorkerError(f"{field} must be JSON-only: {error}") from error
 
@@ -100,6 +119,98 @@ def _json_object_copy(value: object, *, field: str) -> JsonObject:
     if not isinstance(copied, dict):
         raise RustWorkerError(f"{field} must be a JSON object")
     return copied
+
+
+def _claimed_work_trace_context(
+    work: Mapping[str, JsonValue], payload: Mapping[str, JsonValue], node_id: str
+) -> TraceContext:
+    """Build callback trace identity only from scheduler-owned claim fields."""
+    return TraceContext(
+        run_id=str(payload.get("run_id") or work.get("run_id") or ""),
+        token_id=str(payload.get("token_id") or work.get("run_id") or ""),
+        step_seq=_json_int(payload.get("step_seq")),
+        node_id=node_id,
+        attempt=_json_int(payload.get("attempt"), 1),
+        conversation_id=str(payload.get("conversation_id") or "") or None,
+        turn_node_id=str(payload.get("turn_node_id") or "") or None,
+    )
+
+
+def _with_worker_execution_trace(
+    effect: Mapping[str, JsonValue], work: Mapping[str, JsonValue], worker_id: str
+) -> JsonObject:
+    """Attach operational worker attribution without treating it as attestation."""
+    traced = dict(effect)
+    raw_traces = traced.get("trace_events", [])
+    if not isinstance(raw_traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+    traces = _json_copy(raw_traces, field="worker effect trace_events")
+    if not isinstance(traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+
+    payload = work.get("payload")
+    if not isinstance(payload, dict):
+        raise RustWorkerError("claimed work payload must be an object")
+    event: JsonObject = {
+        "schema_version": 1,
+        "event": "runtime.python_worker.result_prepared",
+        "executor_target": PYTHON_EXECUTOR_TARGET,
+        "worker_id": worker_id,
+        "identity_source": "worker_configuration",
+        "lease_claim_id": str(work["claimed_by"]),
+        "message_id": str(work["message_id"]),
+        "run_id": str(work["run_id"]),
+        "step_id": str(work["step_id"]),
+        "correlation_id": str(work["correlation_id"]),
+        "operation": str(payload["op"]),
+        "op_version": str(payload.get("op_version") or "v1"),
+    }
+    environment_id = payload.get("op_environment_id")
+    if isinstance(environment_id, str):
+        event["required_environment_id"] = environment_id
+    traces.append(event)
+    traced["trace_events"] = traces
+    return cast(JsonObject, traced)
+
+
+def _with_worker_submission_trace(
+    envelope: Mapping[str, JsonValue], work: Mapping[str, JsonValue], worker_id: str
+) -> JsonObject:
+    """Record the lease used for this delivery, including replay deliveries."""
+    traced = _json_copy(envelope, field="worker result envelope")
+    if not isinstance(traced, dict):
+        raise RustWorkerError("worker result envelope must be an object")
+    effect = traced.get("effect")
+    if not isinstance(effect, dict):
+        raise RustWorkerError("worker result envelope effect must be an object")
+    raw_traces = effect.get("trace_events", [])
+    if not isinstance(raw_traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+    traces = _json_copy(raw_traces, field="worker effect trace_events")
+    if not isinstance(traces, list):
+        raise RustWorkerError("worker effect trace_events must be an array")
+
+    payload = work.get("payload")
+    if not isinstance(payload, dict):
+        raise RustWorkerError("claimed work payload must be an object")
+    traces.append(
+        {
+            "schema_version": 1,
+            "event": "runtime.python_worker.result_submitted",
+            "executor_target": PYTHON_EXECUTOR_TARGET,
+            "worker_id": worker_id,
+            "identity_source": "worker_configuration",
+            "lease_claim_id": str(work["claimed_by"]),
+            "message_id": str(work["message_id"]),
+            "run_id": str(work["run_id"]),
+            "step_id": str(work["step_id"]),
+            "correlation_id": str(work["correlation_id"]),
+            "operation": str(payload["op"]),
+            "op_version": str(payload.get("op_version") or "v1"),
+        }
+    )
+    effect["trace_events"] = traces
+    return cast(JsonObject, traced)
 
 
 def _json_int(value: JsonValue | None, default: int = 0) -> int:
@@ -130,16 +241,35 @@ def _json_string_list(value: JsonValue | None) -> list[str]:
     return [str(item) for item in value]
 
 
-def _durable_state(value: Mapping[str, JsonValue], *, field: str) -> JsonObject:
+def _durable_state(value: Mapping[str, object], *, field: str) -> JsonObject:
+    from .base_runtime import NON_CHECKPOINT_STATE_KEYS
+
     durable = {
         key: item
         for key, item in value.items()
-        if key not in {"_deps", "dream_deps"}
+        if key not in NON_CHECKPOINT_STATE_KEYS
     }
     copied = _json_copy(durable, field=field)
     if not isinstance(copied, dict):
         raise RustWorkerError(f"{field} must be a JSON object")
     return copied
+
+
+def _environment_recipient_id(environment_id: str) -> str:
+    digest = base64.urlsafe_b64encode(hashlib.sha256(environment_id.encode()).digest())
+    return f"python-worker-env-{digest.decode().rstrip('=')}"
+
+
+def _worker_identity_recipient_id(identity: WorkerIdentityAttestationV1) -> str:
+    value = "\0".join(
+        (
+            identity.environment_id,
+            identity.artifact_sha256,
+            identity.dependency_lock_sha256,
+        )
+    )
+    digest = base64.urlsafe_b64encode(hashlib.sha256(value.encode()).digest())
+    return f"python-worker-identity-{digest.decode().rstrip('=')}"
 
 
 class RustStepResolverAdapter:
@@ -152,6 +282,8 @@ class RustStepResolverAdapter:
         predicate_registry: Mapping[str, RustPredicate] | None = None,
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
+        implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
+        worker_identity: WorkerIdentityAttestationV1 | None = None,
     ) -> None:
         if not callable(step_resolver):
             raise TypeError("step_resolver must be callable")
@@ -159,6 +291,43 @@ class RustStepResolverAdapter:
         self.predicate_registry = dict(predicate_registry or {})
         self.dependency_provider = dependency_provider
         self.cache_dir = os.fspath(cache_dir) if cache_dir is not None else None
+        self.worker_identity = worker_identity
+        self._implementation_selection_snapshot = (
+            implementation_selection_snapshot or capture_implementation_selection()
+        )
+
+    def _runtime_state(self, work: JsonObject, durable_state: JsonObject) -> dict[str, object]:
+        """Attach process-local dependencies without treating them as wire JSON."""
+        state: dict[str, object] = dict(durable_state)
+        if self.dependency_provider is not None:
+            dependencies = self.dependency_provider(work)
+            if not isinstance(dependencies, Mapping):
+                raise RustWorkerError("dependency_provider must return a mapping")
+            local_dependencies = dict(dependencies)
+            local_dependencies["_rust_worker_effects"] = True
+            state["_deps"] = local_dependencies
+        return state
+
+    @property
+    def claim_recipient_ids(self) -> tuple[str, ...]:
+        environments = getattr(self.step_resolver, "op_environment_ids", {})
+        versioned_environments = getattr(
+            self.step_resolver, "versioned_environment_ids", {}
+        )
+        environment_values = [
+            *environments.values(),
+            *versioned_environments.values(),
+        ] if isinstance(environments, Mapping) and isinstance(
+            versioned_environments, Mapping
+        ) else []
+        environment_ids = (
+            {str(value) for value in environment_values if isinstance(value, str)}
+        )
+        recipients = sorted(_environment_recipient_id(value) for value in environment_ids)
+        if self.worker_identity is not None:
+            recipients.append(_worker_identity_recipient_id(self.worker_identity))
+        recipients.append("python-worker")
+        return tuple(recipients)
 
     def _routes(self, payload: Mapping[str, JsonValue], node_id: str) -> list[_FrozenWorkerRoute]:
         raw_routes = payload.get("runtime_routes", [])
@@ -229,11 +398,157 @@ class RustStepResolverAdapter:
                     f"Rust worker protocol does not yet represent {capability} op {op!r}"
                 )
 
+    def _validate_op_version(self, op: str, payload: Mapping[str, JsonValue]) -> str:
+        requested = payload.get("op_version", "v1")
+        if not isinstance(requested, str) or not requested.strip():
+            raise RustWorkerError("claimed work op_version must be a non-empty string")
+        supports_version = getattr(self.step_resolver, "supports_version", None)
+        if callable(supports_version):
+            if not supports_version(op, requested):
+                registered_ops = getattr(self.step_resolver, "ops", set())
+                if op not in registered_ops and getattr(
+                    self.step_resolver, "default", None
+                ) is None:
+                    return requested
+                registered = getattr(self.step_resolver, "op_versions", {})
+                current = (
+                    registered.get(op, "v1")
+                    if isinstance(registered, Mapping)
+                    else "v1"
+                )
+                raise RustWorkerError(
+                    f"workflow op {op!r} requires version {requested!r}, "
+                    f"but this worker registers {current!r}"
+                )
+            return requested
+        registered = getattr(self.step_resolver, "op_versions", {})
+        current = (
+            registered.get(op, "v1") if isinstance(registered, Mapping) else "v1"
+        )
+        if requested != current:
+            raise RustWorkerError(
+                f"workflow op {op!r} requires version {requested!r}, "
+                f"but this worker registers {current!r}"
+            )
+        return requested
+
+    def _validate_op_environment(
+        self, op: str, payload: Mapping[str, JsonValue]
+    ) -> str | None:
+        requested = payload.get("op_environment_id")
+        if requested is not None and (
+            not isinstance(requested, str) or not requested.strip()
+        ):
+            raise RustWorkerError(
+                "claimed work op_environment_id must be a non-empty string"
+            )
+        registered = getattr(self.step_resolver, "op_environment_ids", {})
+        environment_for_version = getattr(
+            self.step_resolver, "environment_for_version", None
+        )
+        if callable(environment_for_version):
+            current = environment_for_version(op, str(payload.get("op_version", "v1")))
+        else:
+            current = registered.get(op) if isinstance(registered, Mapping) else None
+        if requested != current:
+            raise RustWorkerError(
+                f"workflow op {op!r} requires environment {requested!r}, "
+                f"but this worker registers {current!r}"
+            )
+        return requested
+
+    def _validate_worker_identity(self, payload: Mapping[str, JsonValue]) -> None:
+        requested = payload.get("required_worker_identity")
+        if requested is None and self.worker_identity is None:
+            return
+        if requested is None:
+            raise RustWorkerError("claimed work is missing required worker identity")
+        if self.worker_identity is None:
+            raise RustWorkerError("Python worker has no configured identity")
+        try:
+            required = WorkerIdentityAttestationV1.model_validate(requested)
+        except ValidationError as error:
+            raise RustWorkerError("claimed work has an invalid worker identity") from error
+        if required != self.worker_identity:
+            raise RustWorkerError("claimed work requires a different worker identity")
+
+    @staticmethod
+    def _validate_executor_target(
+        payload: Mapping[str, JsonValue], op: str
+    ) -> None:
+        requested = payload.get("executor_target")
+        if requested is not None and requested != PYTHON_EXECUTOR_TARGET:
+            raise RustWorkerError(
+                "Python worker cannot execute payload for executor target "
+                f"{requested!r}"
+            )
+        if op.startswith("rust-native/"):
+            raise RustWorkerError(
+                "Python worker cannot execute a rust-native operation"
+            )
+
+    @staticmethod
+    def _validate_work_identity(work: Mapping[str, object]) -> None:
+        """Reject work that cannot be correlated before invoking user code."""
+        required = ("message_id", "run_id", "step_id", "claimed_by", "correlation_id")
+        missing: list[str] = []
+        for field in required:
+            value = work.get(field)
+            if not isinstance(value, str) or not value.strip():
+                missing.append(field)
+        if missing:
+            raise RustWorkerError(
+                f"claimed work missing identity fields: {missing!r}"
+            )
+
+    def validate_work(self, work: JsonObject) -> None:
+        """Check static compatibility before the journal marks work executing."""
+        self._validate_work_identity(work)
+        payload = work.get("payload")
+        if not isinstance(payload, dict):
+            raise RustWorkerError("claimed work payload must be an object")
+        protocol = str(payload.get("worker_protocol") or "sync-v1")
+        if protocol != "sync-v1":
+            raise RustWorkerError(
+                f"sync Python worker cannot execute worker protocol {protocol!r}"
+            )
+        if payload.get("resume_effect") is not None:
+            return
+        op = str(payload.get("op") or "")
+        if not op:
+            raise RustWorkerError("claimed work requires a frozen workflow op")
+        self._validate_executor_target(payload, op)
+        op_version = self._validate_op_version(op, payload)
+        self._validate_op_environment(op, payload)
+        self._validate_worker_identity(payload)
+        self._resolve_sync_handler(op, op_version)
+
+    def _resolve_sync_handler(
+        self, op: str, op_version: str
+    ) -> Callable[..., object]:
+        resolve_version = getattr(self.step_resolver, "resolve_version", None)
+        try:
+            resolver = (
+                resolve_version(op, op_version)
+                if callable(resolve_version)
+                else self.step_resolver(op)
+            )
+        except Exception as error:
+            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
+        if not callable(resolver):
+            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        if inspect.iscoroutinefunction(resolver):
+            raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        return resolver
+
+    @implementation_selection_bound
     def __call__(self, work: JsonObject) -> JsonObject:
         # Keep these imports local: this module deliberately avoids importing
         # the public runtime while its protocol helpers are imported.
         from kogwistar.runtime.models import RunFailure
         from kogwistar.runtime.runtime import StepContext
+
+        self.validate_work(work)
 
         payload = work.get("payload")
         if not isinstance(payload, dict):
@@ -260,28 +575,18 @@ class RustStepResolverAdapter:
         node_id = str(payload.get("node_id") or work.get("step_id") or "")
         if not op or not node_id:
             raise RustWorkerError("claimed work requires frozen op and node_id")
+        op_version = self._validate_op_version(op, payload)
+        op_environment_id = self._validate_op_environment(op, payload)
         self._reject_unsupported_op(op)
         routes = self._routes(payload, node_id)
 
         raw_state = payload.get("state", payload.get("initial_state", {}))
         if not isinstance(raw_state, dict):
             raise RustWorkerError("claimed work state must be an object")
-        state = _durable_state(raw_state, field="claimed work state")
-        before = _json_object_copy(state, field="claimed work state")
-        if self.dependency_provider is not None:
-            dependencies = self.dependency_provider(work)
-            if not isinstance(dependencies, Mapping):
-                raise RustWorkerError("dependency_provider must return a mapping")
-            state["_deps"] = _json_copy(dict(dependencies), field="worker dependencies")
+        before = _json_object_copy(raw_state, field="claimed work state")
+        state = self._runtime_state(work, before)
 
-        try:
-            resolver = self.step_resolver(op)
-        except Exception as error:
-            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
-        if not callable(resolver):
-            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
-        if inspect.iscoroutinefunction(resolver):
-            raise RustWorkerError("async resolver callbacks are not in worker contract v1")
+        resolver = self._resolve_sync_handler(op, op_version)
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
 
@@ -294,19 +599,24 @@ class RustStepResolverAdapter:
             workflow_id=str(payload.get("workflow_id") or ""),
             workflow_node_id=node_id,
             op=op,
+            op_version=op_version,
+            op_environment_id=op_environment_id,
+            idempotency_key=str(work.get("message_id") or "") or None,
             token_id=str(payload.get("token_id") or work.get("run_id") or ""),
             attempt=_json_int(payload.get("attempt"), 1),
             step_seq=_json_int(payload.get("step_seq")),
             cache_dir=self.cache_dir,
             conversation_id=str(payload.get("conversation_id") or "") or None,
             turn_node_id=str(payload.get("turn_node_id") or "") or None,
+            trace_context=_claimed_work_trace_context(work, payload, node_id),
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
-            state=cast(dict[str, object], state),
+            state=state,
             authority_context={"effective_capabilities": ()},
         )
         try:
-            result = resolver(ctx)
+            with callback_execution_scope():
+                result = resolver(ctx)
         except RustWorkerError:
             raise
         except Exception as error:
@@ -328,18 +638,20 @@ class RustStepResolverAdapter:
             node_id=node_id,
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
+            trace_context=ctx.trace_ctx,
         )
 
     def _effect_from_result(
         self,
         *,
         result: StepRunResult,
-        state: JsonObject,
+        state: Mapping[str, object],
         before: JsonObject,
         routes: list[_FrozenWorkerRoute],
         node_id: str,
         message_queue: queue.Queue[JsonObject],
         lane_message_attempts: list[JsonObject],
+        trace_context: TraceContext,
     ) -> JsonObject:
         """Apply v1 result restrictions shared by sync-v1 and async-v2 workers."""
         from kogwistar.runtime.base_runtime import (
@@ -405,10 +717,12 @@ class RustStepResolverAdapter:
         }
         if isinstance(result_update, dict):
             result_keys.update(str(key) for key in result_update)
+        from .base_runtime import NON_CHECKPOINT_STATE_KEYS
+
         forbidden_result_keys = sorted(
             key
             for key in result_keys
-            if key in {"_deps", "dream_deps"} or key.startswith("_rt_")
+            if key in NON_CHECKPOINT_STATE_KEYS or key.startswith("_rt_")
         )
         if forbidden_result_keys:
             raise RustWorkerError(
@@ -487,6 +801,44 @@ class RustStepResolverAdapter:
             value = getattr(result, field, None)
             if value is not None:
                 effect[field] = _json_copy(value, field=f"result.{field}")
+        trace_events = effect.setdefault("trace_events", [])
+        if not isinstance(trace_events, list):
+            raise RustWorkerError("worker effect trace_events must be an array")
+        trace_events.append(
+            {
+                "schema_version": 1,
+                "event": "step_attempt_completed",
+                "operation": node_id,
+                **trace_context.as_fields(),
+            }
+        )
+        extra = getattr(result, "model_extra", None)
+        if isinstance(extra, Mapping):
+            has_v1 = "graph_mutation_batch" in extra
+            has_v2 = "graph_mutation_batch_v2" in extra
+            if has_v1 and has_v2:
+                raise RustWorkerError(
+                    "worker result cannot include both graph mutation batch versions"
+                )
+            if has_v1 or has_v2:
+                if result.status != "success":
+                    raise RustWorkerError(
+                        "graph mutation batches are only valid on successful worker results"
+                    )
+                if has_v1:
+                    batch = GraphMutationBatchPayload.model_validate(
+                        extra["graph_mutation_batch"]
+                    )
+                    effect["graph_mutation_batch"] = cast(
+                        JsonValue, batch.model_dump(mode="json")
+                    )
+                else:
+                    batch_v2 = GraphMutationBatchV2Payload.model_validate(
+                        extra["graph_mutation_batch_v2"]
+                    )
+                    effect["graph_mutation_batch_v2"] = cast(
+                        JsonValue, batch_v2.model_dump(mode="json")
+                    )
         return effect
 
 
@@ -498,9 +850,54 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
     exact restricted worker-effect contract shared with sync-v1.
     """
 
+    def validate_work(self, work: JsonObject) -> None:
+        self._validate_work_identity(work)
+        payload = work.get("payload")
+        if not isinstance(payload, dict):
+            raise RustWorkerError("claimed work payload must be an object")
+        if str(payload.get("worker_protocol") or "") != "async-v2":
+            raise RustWorkerError(
+                "async Python worker requires worker_protocol='async-v2'"
+            )
+        if payload.get("resume_effect") is not None:
+            return
+        op = str(payload.get("op") or "")
+        if not op:
+            raise RustWorkerError("claimed work requires a frozen workflow op")
+        self._validate_executor_target(payload, op)
+        op_version = self._validate_op_version(op, payload)
+        self._validate_op_environment(op, payload)
+        self._validate_worker_identity(payload)
+        self._resolve_async_handler(op, op_version)
+
+    def _resolve_async_handler(
+        self, op: str, op_version: str
+    ) -> Callable[..., object]:
+        resolve_async = getattr(self.step_resolver, "resolve_async", None)
+        resolve_async_version = getattr(
+            self.step_resolver, "resolve_async_version", None
+        )
+        try:
+            if callable(resolve_async_version):
+                resolver = resolve_async_version(op, op_version)
+            else:
+                resolver = (
+                    resolve_async(op)
+                    if callable(resolve_async)
+                    else self.step_resolver(op)
+                )
+        except Exception as error:
+            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
+        if not callable(resolver):
+            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        return resolver
+
+    @implementation_selection_bound
     async def execute(self, work: JsonObject) -> JsonObject:
         from kogwistar.runtime.models import RunFailure
         from kogwistar.runtime.runtime import StepContext
+
+        self.validate_work(work)
 
         payload = work.get("payload")
         if not isinstance(payload, dict):
@@ -523,27 +920,16 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         node_id = str(payload.get("node_id") or work.get("step_id") or "")
         if not op or not node_id:
             raise RustWorkerError("claimed work requires frozen op and node_id")
+        op_version = self._validate_op_version(op, payload)
+        op_environment_id = self._validate_op_environment(op, payload)
         self._reject_unsupported_op(op)
         routes = self._routes(payload, node_id)
         raw_state = payload.get("state", payload.get("initial_state", {}))
         if not isinstance(raw_state, dict):
             raise RustWorkerError("claimed work state must be an object")
-        state = _durable_state(raw_state, field="claimed work state")
-        before = _json_object_copy(state, field="claimed work state")
-        if self.dependency_provider is not None:
-            dependencies = self.dependency_provider(work)
-            if not isinstance(dependencies, Mapping):
-                raise RustWorkerError("dependency_provider must return a mapping")
-            state["_deps"] = _json_copy(dict(dependencies), field="worker dependencies")
-        try:
-            resolve_async = getattr(self.step_resolver, "resolve_async", None)
-            resolver = (
-                resolve_async(op) if callable(resolve_async) else self.step_resolver(op)
-            )
-        except Exception as error:
-            raise RustWorkerError(f"cannot resolve frozen op {op!r}: {error}") from error
-        if not callable(resolver):
-            raise RustWorkerError(f"step_resolver({op!r}) returned a non-callable")
+        before = _json_object_copy(raw_state, field="claimed work state")
+        state = self._runtime_state(work, before)
+        resolver = self._resolve_async_handler(op, op_version)
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
 
@@ -556,21 +942,26 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             workflow_id=str(payload.get("workflow_id") or ""),
             workflow_node_id=node_id,
             op=op,
+            op_version=op_version,
+            op_environment_id=op_environment_id,
+            idempotency_key=str(work.get("message_id") or "") or None,
             token_id=str(payload.get("token_id") or work.get("run_id") or ""),
             attempt=_json_int(payload.get("attempt"), 1),
             step_seq=_json_int(payload.get("step_seq")),
             cache_dir=self.cache_dir,
             conversation_id=str(payload.get("conversation_id") or "") or None,
             turn_node_id=str(payload.get("turn_node_id") or "") or None,
+            trace_context=_claimed_work_trace_context(work, payload, node_id),
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
-            state=cast(dict[str, object], state),
+            state=state,
             authority_context={"effective_capabilities": ()},
         )
         try:
-            result = resolver(ctx)
-            if inspect.isawaitable(result):
-                result = await result
+            with callback_execution_scope():
+                result = resolver(ctx)
+                if inspect.isawaitable(result):
+                    result = await result
         except RustWorkerError:
             raise
         except Exception as error:
@@ -590,11 +981,12 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             node_id=node_id,
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
+            trace_context=ctx.trace_ctx,
         )
 
 
 def _canonical(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return strict_json_dumps(value)
 
 
 def _work_digest(work: Mapping[str, JsonValue]) -> str:
@@ -689,7 +1081,12 @@ class WorkerResultJournal:
 
 
 class RustRuntimeWorker:
-    """Claim Rust runtime work, execute Python callback, submit durable result."""
+    """Claim Rust runtime work, execute Python callback, submit durable result.
+
+    Identity-pinned work requires an authenticated bearer token whose verified
+    ``kogwistar_worker_identity`` claim matches the configured worker identity.
+    The token issuer is responsible for binding that claim to host registration.
+    """
 
     def __init__(
         self,
@@ -698,13 +1095,25 @@ class RustRuntimeWorker:
         worker_id: str,
         journal_path: str | os.PathLike[str],
         execute: RustWorkerExecutor,
+        recipient_ids: Sequence[str] = ("python-worker",),
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.Client | None = None,
     ) -> None:
         if not worker_id.strip():
             raise ValueError("worker_id must not be empty")
+        normalized_recipient_ids = tuple(dict.fromkeys(recipient_ids))
+        if not normalized_recipient_ids or any(
+            not value.strip()
+            or value != value.strip()
+            or len(value.encode("utf-8")) > 256
+            for value in normalized_recipient_ids
+        ):
+            raise ValueError(
+                "recipient_ids must be canonical non-empty values up to 256 bytes"
+            )
         self.worker_id = worker_id
+        self.recipient_ids = normalized_recipient_ids
         self.execute = execute
         self.journal = WorkerResultJournal(journal_path)
         self._owns_client = client is None
@@ -723,20 +1132,26 @@ class RustRuntimeWorker:
         predicate_registry: Mapping[str, RustPredicate] | None = None,
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
+        implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
+        worker_identity: WorkerIdentityAttestationV1 | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.Client | None = None,
     ) -> RustRuntimeWorker:
+        adapter = RustStepResolverAdapter(
+            step_resolver,
+            predicate_registry=predicate_registry,
+            dependency_provider=dependency_provider,
+            cache_dir=cache_dir,
+            implementation_selection_snapshot=implementation_selection_snapshot,
+            worker_identity=worker_identity,
+        )
         return cls(
             base_url=base_url,
             worker_id=worker_id,
             journal_path=journal_path,
-            execute=RustStepResolverAdapter(
-                step_resolver,
-                predicate_registry=predicate_registry,
-                dependency_provider=dependency_provider,
-                cache_dir=cache_dir,
-            ),
+            execute=adapter,
+            recipient_ids=adapter.claim_recipient_ids,
             headers=headers,
             timeout=timeout,
             client=client,
@@ -779,6 +1194,8 @@ class RustRuntimeWorker:
             "limit": limit,
             "lease_seconds": lease_seconds,
         }
+        if self.recipient_ids != ("python-worker",):
+            payload["recipient_ids"] = list(self.recipient_ids)
         if run_id is not None:
             payload["run_id"] = run_id
         value = self._post(
@@ -794,6 +1211,7 @@ class RustRuntimeWorker:
     def _result_envelope(
         work: Mapping[str, JsonValue], effect: Mapping[str, JsonValue]
     ) -> JsonObject:
+        RustStepResolverAdapter._validate_work_identity(work)
         payload = work.get("payload")
         if not isinstance(payload, dict):
             raise RustWorkerError("claimed work payload must be an object")
@@ -809,10 +1227,6 @@ class RustRuntimeWorker:
             "claimed_by": claimed_by,
             "correlation_id": correlation_id,
         }
-        empty = sorted(key for key, value in required.items() if not value)
-        if empty:
-            raise RustWorkerError(f"claimed work missing identity fields: {empty!r}")
-
         restricted = {
             "contract_version": 1,
             "effect_id": str(
@@ -852,10 +1266,32 @@ class RustRuntimeWorker:
             "resume_payload",
             "usage",
             "trace_events",
+            "graph_mutation_batch",
+            "graph_mutation_batch_v2",
         }
         unknown = set(restricted).difference(allowed)
         if unknown:
             raise RustWorkerError(f"worker effect has unknown fields: {sorted(unknown)!r}")
+        if "graph_mutation_batch" in restricted:
+            capabilities = work.get("worker_effect_capabilities", [])
+            if not isinstance(capabilities, list) or (
+                "graph_mutation_batch_v1" not in capabilities
+            ):
+                raise RustWorkerError(
+                    "claimed server does not advertise graph_mutation_batch_v1"
+                )
+        if "graph_mutation_batch_v2" in restricted:
+            capabilities = work.get("worker_effect_capabilities", [])
+            if not isinstance(capabilities, list) or (
+                "graph_mutation_batch_v2" not in capabilities
+            ):
+                raise RustWorkerError(
+                    "claimed server does not advertise graph_mutation_batch_v2"
+                )
+        if "graph_mutation_batch" in restricted and "graph_mutation_batch_v2" in restricted:
+            raise RustWorkerError(
+                "worker effect cannot include both graph mutation batch versions"
+            )
         fixed = {
             "contract_version": 1,
             "effect_id": str(
@@ -874,12 +1310,14 @@ class RustRuntimeWorker:
         return cast(JsonObject, {
             "handoff": required,
             "effect": cast(JsonValue, restricted),
+            "transition": None,
         })
 
     def process(self, work: JsonObject) -> JsonObject:
         message_id = str(work.get("message_id") or "")
         if not message_id:
             raise RustWorkerError("claimed work missing message_id")
+        RustStepResolverAdapter._validate_work_identity(work)
         payload = work.get("payload")
         if not isinstance(payload, dict):
             raise RustWorkerError("claimed work payload must be an object")
@@ -888,20 +1326,29 @@ class RustRuntimeWorker:
             raise RustWorkerError(
                 "claimed work lacks frozen workflow op; refusing node-id resolver guess"
             )
+        validator = getattr(self.execute, "validate_work", None)
+        if not callable(validator):
+            validator = getattr(getattr(self.execute, "__self__", None), "validate_work", None)
+        if callable(validator):
+            validator(work)
         digest = _work_digest(work)
         envelope = self.journal.begin(message_id=message_id, work_digest=digest)
         if envelope is None:
             effect = self.execute(dict(work))
             if not isinstance(effect, Mapping):
                 raise RustWorkerError("worker callback must return an object")
-            envelope = self._result_envelope(work, effect)
+            traced_effect = _with_worker_execution_trace(effect, work, self.worker_id)
+            envelope = self._result_envelope(work, traced_effect)
             self.journal.complete(message_id=message_id, result=envelope)
         else:
             handoff = envelope.get("handoff")
             if not isinstance(handoff, dict):
                 raise RustWorkerError("journaled result lacks handoff object")
             handoff["claimed_by"] = work.get("claimed_by")
-        return self._post("/internal/runtime/results", envelope)
+        submitted_envelope = _with_worker_submission_trace(
+            envelope, work, self.worker_id
+        )
+        return self._post("/internal/runtime/results", submitted_envelope)
 
     def poll_once(
         self,
@@ -927,6 +1374,8 @@ class AsyncRustRuntimeWorker:
     synchronous SQLite transaction.  Cancellation or process loss between
     ``begin`` and ``complete`` therefore leaves ``executing`` and a later
     worker fails closed rather than replaying an unknown side effect.
+    Identity-pinned work requires the same verified worker-identity claim as
+    the synchronous adapter.
     """
 
     def __init__(
@@ -936,13 +1385,25 @@ class AsyncRustRuntimeWorker:
         worker_id: str,
         journal_path: str | os.PathLike[str],
         execute: AsyncRustWorkerExecutor,
+        recipient_ids: Sequence[str] = ("python-worker",),
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         if not worker_id.strip():
             raise ValueError("worker_id must not be empty")
+        normalized_recipient_ids = tuple(dict.fromkeys(recipient_ids))
+        if not normalized_recipient_ids or any(
+            not value.strip()
+            or value != value.strip()
+            or len(value.encode("utf-8")) > 256
+            for value in normalized_recipient_ids
+        ):
+            raise ValueError(
+                "recipient_ids must be canonical non-empty values up to 256 bytes"
+            )
         self.worker_id = worker_id
+        self.recipient_ids = normalized_recipient_ids
         self.execute = execute
         self.journal = WorkerResultJournal(journal_path)
         self._owns_client = client is None
@@ -961,20 +1422,26 @@ class AsyncRustRuntimeWorker:
         predicate_registry: Mapping[str, RustPredicate] | None = None,
         dependency_provider: RustDependencyProvider | None = None,
         cache_dir: str | os.PathLike[str] | None = None,
+        implementation_selection_snapshot: ImplementationSelectionSnapshot | None = None,
+        worker_identity: WorkerIdentityAttestationV1 | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float = 30.0,
         client: httpx.AsyncClient | None = None,
     ) -> AsyncRustRuntimeWorker:
+        adapter = AsyncRustStepResolverAdapter(
+            step_resolver,
+            predicate_registry=predicate_registry,
+            dependency_provider=dependency_provider,
+            cache_dir=cache_dir,
+            implementation_selection_snapshot=implementation_selection_snapshot,
+            worker_identity=worker_identity,
+        )
         return cls(
             base_url=base_url,
             worker_id=worker_id,
             journal_path=journal_path,
-            execute=AsyncRustStepResolverAdapter(
-                step_resolver,
-                predicate_registry=predicate_registry,
-                dependency_provider=dependency_provider,
-                cache_dir=cache_dir,
-            ).execute,
+            execute=adapter.execute,
+            recipient_ids=adapter.claim_recipient_ids,
             headers=headers,
             timeout=timeout,
             client=client,
@@ -1011,6 +1478,8 @@ class AsyncRustRuntimeWorker:
             "limit": limit,
             "lease_seconds": lease_seconds,
         }
+        if self.recipient_ids != ("python-worker",):
+            payload["recipient_ids"] = list(self.recipient_ids)
         if run_id is not None:
             payload["run_id"] = run_id
         value = await self._post("/internal/runtime/claim", payload)
@@ -1023,6 +1492,7 @@ class AsyncRustRuntimeWorker:
         message_id = str(work.get("message_id") or "")
         if not message_id:
             raise RustWorkerError("claimed work missing message_id")
+        RustStepResolverAdapter._validate_work_identity(work)
         payload = work.get("payload")
         if not isinstance(payload, dict):
             raise RustWorkerError("claimed work payload must be an object")
@@ -1031,6 +1501,11 @@ class AsyncRustRuntimeWorker:
             raise RustWorkerError(
                 "claimed work lacks frozen workflow op; refusing node-id resolver guess"
             )
+        validator = getattr(self.execute, "validate_work", None)
+        if not callable(validator):
+            validator = getattr(getattr(self.execute, "__self__", None), "validate_work", None)
+        if callable(validator):
+            validator(work)
         digest = _work_digest(work)
         envelope = self.journal.begin(message_id=message_id, work_digest=digest)
         if envelope is None:
@@ -1039,14 +1514,18 @@ class AsyncRustRuntimeWorker:
                 effect = await effect
             if not isinstance(effect, Mapping):
                 raise RustWorkerError("worker callback must return an object")
-            envelope = RustRuntimeWorker._result_envelope(work, effect)
+            traced_effect = _with_worker_execution_trace(effect, work, self.worker_id)
+            envelope = RustRuntimeWorker._result_envelope(work, traced_effect)
             self.journal.complete(message_id=message_id, result=envelope)
         else:
             handoff = envelope.get("handoff")
             if not isinstance(handoff, dict):
                 raise RustWorkerError("journaled result lacks handoff object")
             handoff["claimed_by"] = work.get("claimed_by")
-        return await self._post("/internal/runtime/results", envelope)
+        submitted_envelope = _with_worker_submission_trace(
+            envelope, work, self.worker_id
+        )
+        return await self._post("/internal/runtime/results", submitted_envelope)
 
     async def poll_once(
         self,

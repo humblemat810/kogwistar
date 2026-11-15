@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.service_get",
+  "arguments": {
+    "service_id": "svc-contract"
+  },
+  "python_service_arguments": {
+    "service_id": "svc-contract"
+  },
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/services/svc-contract"
+  },
+  "result": {
+    "service_id": "svc-contract",
+    "service_type": "scheduled",
+    "enabled": true
+  }
+}

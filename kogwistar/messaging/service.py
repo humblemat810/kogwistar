@@ -6,13 +6,18 @@ import uuid
 from contextlib import AbstractContextManager, nullcontext
 from datetime import datetime, timezone
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, NotRequired, Protocol, cast
+from typing import TYPE_CHECKING, Literal, NotRequired, Protocol, cast
 from typing_extensions import TypedDict
+from pydantic_extension.model_slicing import use_mode
 
 from kogwistar.acl import current_acl_context
 from kogwistar.engine_core.engine import scoped_namespace
 from kogwistar.engine_core.models import Edge, Grounding, Node, Span
 from kogwistar.engine_core.utils.refs import default_verification
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from kogwistar.id_provider import stable_id
 from kogwistar.server.auth_middleware import (
     can_access_security_scope,
@@ -71,6 +76,19 @@ class LaneMessageMetaStoreLike(Protocol):
 
 def _now_epoch() -> int:
     return int(time.time())
+
+
+def new_claim_attempt_owner(worker_id: str) -> str:
+    """Return an opaque lease owner unique to one worker claim attempt.
+
+    Keep the stable worker identity as a readable prefix, but never reuse it
+    alone as the lease token: an expired worker must not acknowledge a newer
+    claim made by another attempt with the same identity.
+    """
+    normalized = str(worker_id).strip()
+    if not normalized:
+        raise ValueError("worker_id must not be empty")
+    return f"{normalized}#{uuid.uuid4()}"
 
 
 def _now_iso() -> str:
@@ -229,9 +247,14 @@ class LaneMessagingService:
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
     def _meta_store(self) -> LaneMessageMetaStoreLike:
         return cast(LaneMessageMetaStoreLike, self.engine.meta_sqlite)
 
+    @implementation_selection_bound
     def send_message(
         self,
         *,
@@ -343,7 +366,15 @@ class LaneMessagingService:
             AbstractContextManager[object],
             unit_of_work() if callable(unit_of_work) else nullcontext(),
         )
-        with uow_context, scoped_namespace(self.engine, namespace):
+        # These graph objects are being persisted, so select the backend model
+        # contract explicitly rather than paying for heuristic caller-stack
+        # inspection on every Node and Edge validation.
+        with (
+            use_mode("backend"),
+            uow_context,
+            self.engine.write.defer_index_reconciliation(),
+            scoped_namespace(self.engine, namespace),
+        ):
             anchor_nodes = self._ensure_anchor_nodes(
                 conversation_id=conversation_id,
                 inbox_id=inbox_id,
@@ -506,6 +537,7 @@ class LaneMessagingService:
             recipient_anchor_id=str(anchor_nodes["recipient"].id),
         )
 
+    @implementation_selection_bound
     def update_message_status(
         self,
         *,
@@ -589,6 +621,7 @@ class LaneMessagingService:
                 ),
             )
 
+    @implementation_selection_bound
     def claim_pending(
         self,
         *,
@@ -601,6 +634,13 @@ class LaneMessagingService:
         msg_type: str | None = None,
         recipient_id: str | None = None,
     ) -> list[ProjectedLaneMessageRow]:
+        """Claim messages using the caller-supplied attempt owner.
+
+        Callers that hold a stable worker identity should prefer
+        `claim_pending_attempt`, which creates a fresh fencing token for each
+        attempt. Reusing a stable identity here cannot distinguish an expired
+        attempt from a later reclaim by the same worker.
+        """
         claim = self._meta_store().claim_projected_lane_messages
         claims = claims_ctx.get() or {}
         namespace = str(
@@ -640,9 +680,83 @@ class LaneMessagingService:
             claim_kwargs["recipient_id"] = recipient_id
         return claim(**claim_kwargs)
 
+    @implementation_selection_bound
+    def claim_pending_attempt(
+        self,
+        *,
+        inbox_id: str,
+        worker_id: str,
+        limit: int,
+        lease_seconds: int,
+        message_ids: list[str] | tuple[str, ...] | None = None,
+        run_id: str | None = None,
+        msg_type: str | None = None,
+        recipient_id: str | None = None,
+    ) -> list[ProjectedLaneMessageRow]:
+        """Claim messages with a fresh owner token derived from worker identity."""
+        return self.claim_pending(
+            inbox_id=inbox_id,
+            claimed_by=new_claim_attempt_owner(worker_id),
+            limit=limit,
+            lease_seconds=lease_seconds,
+            message_ids=message_ids,
+            run_id=run_id,
+            msg_type=msg_type,
+            recipient_id=recipient_id,
+        )
+
+    @implementation_selection_bound
     def ack(self, *, message_id: str, claimed_by: str) -> None:
         self._meta_store().ack_projected_lane_message(message_id=message_id, claimed_by=claimed_by)
 
+    @implementation_selection_bound
+    def link_message_to_step(
+        self,
+        *,
+        message_id: str,
+        step_id: str,
+        conversation_id: str,
+        run_id: str,
+        relation: Literal["handled_by_step", "emitted_by_step"] = "handled_by_step",
+    ) -> None:
+        """Persist a causal link from a lane message to a run execution step."""
+        if relation not in {"handled_by_step", "emitted_by_step"}:
+            raise ValueError("unsupported lane-message workflow-step relation")
+        claims = claims_ctx.get() or {}
+        namespace = str(
+            claims.get("storage_ns")
+            or getattr(self.engine, "namespace", "default")
+            or "default"
+        )
+        with scoped_namespace(self.engine, namespace):
+            message_nodes = self.engine.read.get_nodes(ids=[str(message_id)], limit=1)
+            step_nodes = self.engine.read.get_nodes(ids=[str(step_id)], limit=1)
+            if not message_nodes or not step_nodes:
+                raise ValueError("message and workflow step must exist before linking")
+            message_metadata = dict(getattr(message_nodes[0], "metadata", {}) or {})
+            step_metadata = dict(getattr(step_nodes[0], "metadata", {}) or {})
+            if (
+                message_metadata.get("artifact_kind") != "lane_message"
+                or message_metadata.get("conversation_id") != conversation_id
+                or message_metadata.get("run_id") != run_id
+            ):
+                raise ValueError("lane message does not belong to the requested run/conversation")
+            if (
+                step_metadata.get("entity_type") != "workflow_step_exec"
+                or step_metadata.get("run_id") != run_id
+                or step_metadata.get("conversation_id") != conversation_id
+            ):
+                raise ValueError("workflow step does not belong to the requested run/conversation")
+            edge_id = str(stable_id("lane_message_step_link", message_id, relation, step_id))
+            self._add_semantic_edge(
+                edge_id=edge_id,
+                source_id=str(message_id),
+                target_id=str(step_id),
+                relation=relation,
+                conversation_id=conversation_id,
+            )
+
+    @implementation_selection_bound
     def requeue(
         self,
         *,
@@ -662,6 +776,7 @@ class LaneMessagingService:
                 delay_seconds=int(delay_seconds),
             )
 
+    @implementation_selection_bound
     def dead_letter(
         self,
         *,
@@ -679,6 +794,7 @@ class LaneMessagingService:
                 ),
             )
 
+    @implementation_selection_bound
     def list_projected(
         self,
         *,
@@ -737,6 +853,7 @@ class LaneMessagingService:
             rows = [row for row in rows if row.message_id in matching_ids]
         return [row for row in rows if self._row_visible(row)]
 
+    @implementation_selection_bound
     def find_messages(
         self,
         *,
@@ -763,8 +880,14 @@ class LaneMessagingService:
         upper = _coerce_lane_datetime(created_at_lte)
         lower_available = _coerce_lane_datetime(available_at_gte)
         upper_available = _coerce_lane_datetime(available_at_lte)
+        # Idempotency is checked for every durable send. Filter the graph read
+        # at the backend instead of materializing the entire lane-message
+        # history and scanning it in Python on every send.
+        where = {"artifact_kind": "lane_message"}
+        if idempotency_key:
+            where["idempotency_key"] = str(idempotency_key)
         with scoped_namespace(self.engine, target_namespace):
-            nodes = self.engine.read.get_nodes(where={"artifact_kind": "lane_message"}, limit=100_000)
+            nodes = self.engine.read.get_nodes(where=where, limit=100_000)
         matched: list[Node] = []
         for node in nodes:
             metadata = dict(getattr(node, "metadata", {}) or {})
@@ -810,6 +933,7 @@ class LaneMessagingService:
         )
         return matched[: int(limit)]
 
+    @implementation_selection_bound
     def repair_projection(
         self,
         *,
@@ -1048,9 +1172,46 @@ class LaneMessagingService:
             actual_value = None if actual is None else str(actual)
             comparison_value = None if expected_value is None else str(expected_value)
             if actual_value != comparison_value:
+                if (
+                    key == "payload_json"
+                    and msg_type == "agent.provider_event"
+                    and self._same_provider_event_payload(actual_value, comparison_value)
+                ):
+                    continue
                 raise ValueError(
                     f"lane message idempotency conflict for {key}: expected {comparison_value!r}, got {actual_value!r}"
                 )
+
+    @staticmethod
+    def _same_provider_event_payload(actual: str | None, expected: str | None) -> bool:
+        """Ignore attempt-local producer coordinates for replayed provider events."""
+        if actual is None or expected is None:
+            return False
+        try:
+            actual_payload = json.loads(actual)
+            expected_payload = json.loads(expected)
+        except (TypeError, ValueError):
+            return False
+        if not isinstance(actual_payload, dict) or not isinstance(expected_payload, dict):
+            return False
+        actual_trace = actual_payload.get("trace")
+        expected_trace = expected_payload.get("trace")
+        if not isinstance(actual_trace, dict) or not isinstance(expected_trace, dict):
+            return False
+        actual_trace = dict(actual_trace)
+        expected_trace = dict(expected_trace)
+        for trace in (actual_trace, expected_trace):
+            for key in (
+                "producer_step_seq",
+                "producer_attempt",
+                "trace_id",
+                "span_id",
+                "parent_span_id",
+            ):
+                trace.pop(key, None)
+        actual_payload["trace"] = actual_trace
+        expected_payload["trace"] = expected_trace
+        return actual_payload == expected_payload
 
     def _ensure_projected_row_for_node(self, node: Node, *, namespace: str) -> None:
         message_id = str(getattr(node, "id", "") or "")

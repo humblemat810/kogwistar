@@ -1,0 +1,20 @@
+{
+  "contract_version": 1,
+  "operation": "kg_propose_bruteforce",
+  "arguments": {
+    "inp": {
+      "pair_kind": "node_node",
+      "allowed_docs": ["doc-a"]
+    }
+  },
+  "expected_structured_content": {
+    "pairs": [
+      {
+        "left_id": "n1",
+        "left_kind": "node",
+        "right_id": "n2",
+        "right_kind": "node"
+      }
+    ]
+  }
+}

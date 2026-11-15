@@ -62,6 +62,7 @@ class WorkflowNodeInfo:
     cacheable: bool
     terminal: bool
     fanout: bool
+    environment_id: str | None = None
 
 
 from ..engine_core.models import Edge, Node
@@ -216,6 +217,11 @@ def load_workflow_graph(
             cacheable=bool(md.get("wf_cacheable", True)),
             terminal=bool(md.get("wf_terminal", False)),
             fanout=bool(md.get("wf_fanout", False)),
+            environment_id=(
+                str(md["wf_environment_id"])
+                if md.get("wf_environment_id") is not None
+                else None
+            ),
         )
         if not info.op and not info.terminal:
             raise ValueError(f"workflow node {n.safe_get_id()} missing metadata wf_op")

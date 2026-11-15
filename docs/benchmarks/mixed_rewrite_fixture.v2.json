@@ -1,0 +1,24 @@
+{
+  "schema": "kogwistar-mixed-rewrite-fixture/v2",
+  "seed": "kogwistar-mixed-rewrite-v1",
+  "dimension": 384,
+  "vector_encoding": "SHAKE256(seed:index) little-endian uint32 samples mapped to [-1,1], L2-normalized, rounded to IEEE-754 float32",
+  "records": [
+    {"id": "mixed-node-00000", "revision": 1, "vector_sha256": "a43df5babf0da10840392687b1728fb71152fa2a335f63b6d859daf8777d841f"},
+    {"id": "mixed-node-00001", "revision": 1, "vector_sha256": "a59e0b9856f669701840865ad0ea56c3c419790cfe62dd62e2e4f941b8b41cd9"},
+    {"id": "mixed-node-00002", "revision": 1, "vector_sha256": "1bb10dadc28f5723732cbc95e9875d9dab8bfcad8e80cf47514d459c9525af90"},
+    {"id": "mixed-node-00003", "revision": 1, "vector_sha256": "964e4f8304d28a91b00a53f9fe20af6f0d2f0be3df8234ff4d546b3901e9e29c"},
+    {"id": "mixed-node-00004", "revision": 1, "vector_sha256": "d5533946b45fe8f66d22e9cf25f069f69d953110e3ad85d7989b39baf419d279"},
+    {"id": "mixed-node-00005", "revision": 1, "vector_sha256": "2ade5e069dee14181727316184eb27256157c92b82ee1ce46f73874b005e9378"},
+    {"id": "mixed-node-00006", "revision": 1, "vector_sha256": "ddca61b6ca5d01d3f2e19d4ac4e98f6606db7bbde683e205f334adb812c43208"},
+    {"id": "mixed-node-00007", "revision": 1, "vector_sha256": "c5d5f74bfad3115ed86f5230858cebafe935b20e338e02c8bcbc660d2cae7ff6"}
+  ],
+  "expected": {
+    "read_after_write_trace_sha256": "715f49813c05aaa37af71083467fb05ce667d1433ea706c9c8c142903eee67ee",
+    "concurrent_balanced_trace_sha256": "e072ddadbb0097d64836daac3fae7d9c3b45e8346b66882a689c21c86b803109",
+    "concurrent_read_heavy_trace_sha256": "d12e853acc10f9402c2bd4f8d565a3c2128328b92716a70f30b33d8618db6b83",
+    "canonical_event_projection_state_sha256": "86d8362a3381bbf4e7ee33b20a36c9e6ba77491e523813e1497a07e8a99035b0",
+    "vector_digest_list_sha256": "7f5b287764b6383a1df9a8d2a36b5b5d4c3b994b21a11979ae64d18d5cd51095",
+    "nearest_neighbor_for_each_record": "the same record id"
+  }
+}

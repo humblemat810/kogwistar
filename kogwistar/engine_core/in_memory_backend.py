@@ -37,12 +37,15 @@ import math
 from collections.abc import Awaitable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, TypeGuard, cast
 
 from kogwistar.engine_core.embedding_profile import EmbeddingStorageState
+from kogwistar.engine_core.canonical_events import canonical_revision_job_payload
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.models import Edge, Node
+from kogwistar.implementation_selection import assert_transaction_entry_allowed
 from kogwistar.engine_core.storage_backend import (
     NoopUnitOfWork,
     TwoStageProjectionCapability,
@@ -332,6 +335,7 @@ class _InMemoryCollection:
         embeddings: Sequence[Sequence[float]] | None = None,
         **_: object,
     ) -> None:
+        assert_transaction_entry_allowed()
         self._store(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
@@ -358,6 +362,7 @@ class _InMemoryCollection:
         embeddings: Sequence[Sequence[float]] | None = None,
         **_: object,
     ) -> None:
+        assert_transaction_entry_allowed()
         ids_list = [str(i) for i in ids]
         docs_list = list(documents or [])
         metas_list = list(metadatas or [])
@@ -379,6 +384,7 @@ class _InMemoryCollection:
 
     def clear_embeddings(self, ids: Sequence[str]) -> None:
         """Clear derived vectors for a new staged canonical revision."""
+        assert_transaction_entry_allowed()
         for row_id in [str(i) for i in ids]:
             row = self._rows.get(row_id)
             if row is not None:
@@ -509,6 +515,7 @@ class _InMemoryCollection:
         where: dict[str, object] | None = None,
         **_: object,
     ) -> None:
+        assert_transaction_entry_allowed()
         if ids is not None:
             for row_id in [str(i) for i in ids]:
                 self._rows.pop(row_id, None)
@@ -789,6 +796,114 @@ class _InMemoryTwoStageProjectionCommon:
             ),
         )
 
+    def _canonical_revision_is_current(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        expected_fingerprint: str | None = None,
+        expected_document: str | None = None,
+    ) -> bool:
+        revision = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            namespace=self.engine.namespace,
+        )
+        if revision is None or revision.state != "active":
+            return False
+        if expected_document is not None:
+            if entity_kind == "node":
+                entity: Node | Edge = Node.model_validate(revision.payload)
+                current_document, _ = self.engine.write.node_doc_and_meta(entity)
+            elif entity_kind == "edge":
+                entity = Edge.model_validate(revision.payload)
+                current_document = entity.model_dump_json(
+                    field_mode="backend", exclude=["embedding"]
+                )
+            else:
+                return False
+            try:
+                documents_match = json.loads(str(current_document)) == json.loads(
+                    expected_document
+                )
+            except (TypeError, ValueError):
+                documents_match = False
+            if not documents_match:
+                return False
+        if expected_fingerprint is not None:
+            fingerprint = json.loads(canonical_revision_job_payload(revision)).get(
+                "source_fingerprint"
+            )
+            if str(fingerprint or "") != expected_fingerprint:
+                return False
+        return True
+
+    def restore_stage1_from_canonical_event(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        """Restore the volatile vectorless projection from canonical events."""
+        with self.engine.metadata.transaction():
+            return self._restore_stage1_from_canonical_event_locked(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+
+    def _restore_stage1_from_canonical_event_locked(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        revision = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if revision is None or revision.state != "active":
+            return False
+        if entity_kind == "node":
+            entity: Node | Edge = Node.model_validate(revision.payload)
+            document, metadata = self.engine.write.node_doc_and_meta(entity)
+        elif entity_kind == "edge":
+            entity = Edge.model_validate(revision.payload)
+            document = entity.model_dump_json(
+                field_mode="backend", exclude=["embedding"]
+            )
+            metadata = self.engine.write.enrich_edge_meta(entity)
+        else:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+
+        revision_payload = self.engine.indexing.canonical_revision_payload(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        revision_identity = json.loads(revision_payload)
+        if int(revision_identity.get("canonical_revision") or 0) != int(
+            revision.revision
+        ):
+            return False
+        source_fingerprint = str(revision_identity.get("source_fingerprint") or "")
+
+        current = getattr(self.backend, f"{entity_kind}_get")(
+            ids=[entity_id], include=["documents", "embeddings"]
+        )
+        documents = current.get("documents") or []
+        embeddings = current.get("embeddings") or []
+        if (
+            documents
+            and documents[0] == str(document)
+            and embeddings
+            and embeddings[0] is not None
+        ):
+            return True
+        getattr(self.backend, f"{entity_kind}_upsert")(
+            ids=[entity_id],
+            documents=[str(document)],
+            metadatas=[dict(metadata or {})],
+            embeddings=[None],
+        )
+        return source_fingerprint == str(
+            json.loads(
+                self.engine.indexing.canonical_revision_payload(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            ).get("source_fingerprint")
+            or ""
+        )
+
     enqueue_embedding_job = _enqueue
 
 
@@ -831,7 +946,12 @@ class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
         if op.upper() == "DELETE":
-            getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
+            with self.engine.metadata.transaction():
+                if self._canonical_revision_is_current(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ):
+                    return
+                getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
             return
         current = getattr(self.backend, f"{entity_kind}_get")(
             ids=[entity_id], include=["documents", "metadatas"]
@@ -846,9 +966,22 @@ class _InMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
             return
         document = (current.get("documents") or [""])[0] or ""
         embedding = self.engine.embed.iterative_defensive_emb(str(document))
-        getattr(self.backend, f"{entity_kind}_update")(
-            ids=[entity_id], embeddings=[embedding]
-        )
+        with self.engine.metadata.transaction():
+            if not self._canonical_revision_is_current(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_fingerprint=expected or None,
+            ):
+                return
+            latest = getattr(self.backend, f"{entity_kind}_get")(
+                ids=[entity_id], include=["documents"]
+            )
+            latest_document = (latest.get("documents") or [None])[0]
+            if not latest.get("ids") or latest_document != document:
+                return
+            getattr(self.backend, f"{entity_kind}_update")(
+                ids=[entity_id], embeddings=[embedding]
+            )
 
 
 class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
@@ -857,28 +990,40 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
     async def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             node.doc_id = doc_id
+        entity_id = node.safe_get_id()
         doc, meta = self.engine.write.node_doc_and_meta(node)
-        self.backend.node_clear_embeddings(ids=[node.safe_get_id()])
-        self.backend.node_add(
-            ids=[node.safe_get_id()],
-            documents=[doc],
-            metadatas=[meta],
-            embeddings=[None],
-        )
+        with self.engine.metadata.transaction():
+            if not self._canonical_revision_is_current(
+                entity_kind="node", entity_id=entity_id, expected_document=doc
+            ):
+                return
+            self.backend.node_clear_embeddings(ids=[entity_id])
+            self.backend.node_add(
+                ids=[entity_id],
+                documents=[doc],
+                metadatas=[meta],
+                embeddings=[None],
+            )
         self._enqueue(entity_kind="node", entity_id=node.safe_get_id(), op="UPSERT")
 
     async def add_edge(self, edge: Edge, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
             edge.doc_id = doc_id
+        entity_id = edge.safe_get_id()
         doc = edge.model_dump_json(field_mode="backend", exclude=["embedding"])
         meta = self.engine.write.enrich_edge_meta(edge)
-        self.backend.edge_clear_embeddings(ids=[edge.safe_get_id()])
-        self.backend.edge_add(
-            ids=[edge.safe_get_id()],
-            documents=[str(doc)],
-            metadatas=[meta],
-            embeddings=[None],
-        )
+        with self.engine.metadata.transaction():
+            if not self._canonical_revision_is_current(
+                entity_kind="edge", entity_id=entity_id, expected_document=str(doc)
+            ):
+                return
+            self.backend.edge_clear_embeddings(ids=[entity_id])
+            self.backend.edge_add(
+                ids=[entity_id],
+                documents=[str(doc)],
+                metadatas=[meta],
+                embeddings=[None],
+            )
         self._enqueue(entity_kind="edge", entity_id=edge.safe_get_id(), op="UPSERT")
 
     async def apply_embedding_job(
@@ -892,7 +1037,12 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
         if op.upper() == "DELETE":
-            getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
+            with self.engine.metadata.transaction():
+                if self._canonical_revision_is_current(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ):
+                    return
+                getattr(self.backend, f"{entity_kind}_delete")(ids=[entity_id])
             return
         current = getattr(self.backend, f"{entity_kind}_get")(
             ids=[entity_id], include=["documents", "metadatas"]
@@ -916,9 +1066,22 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
             embedding = self.engine.embed.iterative_defensive_emb(str(document))
             if inspect.isawaitable(embedding):
                 embedding = await cast(Awaitable[object], embedding)
-        getattr(self.backend, f"{entity_kind}_update")(
-            ids=[entity_id], embeddings=[embedding]
-        )
+        with self.engine.metadata.transaction():
+            if not self._canonical_revision_is_current(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_fingerprint=expected or None,
+            ):
+                return
+            latest = getattr(self.backend, f"{entity_kind}_get")(
+                ids=[entity_id], include=["documents"]
+            )
+            latest_document = (latest.get("documents") or [None])[0]
+            if not latest.get("ids") or latest_document != document:
+                return
+            getattr(self.backend, f"{entity_kind}_update")(
+                ids=[entity_id], embeddings=[embedding]
+            )
 
     async def apply_embedding_jobs_batch(self, jobs: Sequence[object]) -> dict[str, BaseException | None]:
         """Embed compatible in-memory jobs in one provider call."""
@@ -982,9 +1145,25 @@ class AsyncInMemoryTwoStageProjectionAdapter(_InMemoryTwoStageProjectionCommon):
             prepared, embeddings
         ):
             try:
-                getattr(self.backend, f"{entity_kind}_update")(
-                    ids=[entity_id], embeddings=[embedding]
-                )
+                document = str(_row["document"])
+                with self.engine.metadata.transaction():
+                    if not self._canonical_revision_is_current(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        expected_fingerprint=_expected or None,
+                    ):
+                        outcomes[job_id] = None
+                        continue
+                    latest = getattr(self.backend, f"{entity_kind}_get")(
+                        ids=[entity_id], include=["documents"]
+                    )
+                    latest_document = (latest.get("documents") or [None])[0]
+                    if not latest.get("ids") or latest_document != document:
+                        outcomes[job_id] = None
+                        continue
+                    getattr(self.backend, f"{entity_kind}_update")(
+                        ids=[entity_id], embeddings=[embedding]
+                    )
                 outcomes[job_id] = None
             except BaseException as exc:
                 outcomes[job_id] = exc
@@ -1142,9 +1321,18 @@ def build_in_memory_backend(engine: GraphKnowledgeEngine) -> InMemoryBackend:
     backend = InMemoryBackend(engine)
     setattr(engine, "backend_kind", "memory")
     backend.backend_kind = "memory"
-    meta_store = InMemoryMetaStore()
+    from kogwistar._rust_bridge import meta_store_implementation_mode
+
+    if meta_store_implementation_mode() == "rust":
+        from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
+
+        meta_store = build_sqlite_meta_store(
+            Path(engine.persist_directory or "./chroma_db"), "meta.sqlite"
+        )
+    else:
+        meta_store = InMemoryMetaStore()
     meta_store.ensure_initialized()
-    setattr(engine, "meta_sqlite", meta_store)
+    setattr(engine, "metadata", meta_store)
     setattr(engine, "collection_lock", {
         "node": _DummyLock(),
         "edge": _DummyLock(),

@@ -31,6 +31,13 @@ def _as_graph_payload(value: object) -> GraphPayload:
     return cast(GraphPayload, value) if isinstance(value, dict) else {}
 
 
+def _entity_id(item: object) -> str:
+    """Read identity from either provenance-heavy or pure graph entities."""
+    safe_get_id = getattr(item, "safe_get_id", None)
+    value = safe_get_id() if callable(safe_get_id) else getattr(item, "id", None)
+    return str(value) if value is not None else ""
+
+
 class GraphQuery:
     """
     Thin traversal/search layer on top of GraphKnowledgeEngine's Chroma collections.
@@ -103,15 +110,23 @@ class GraphQuery:
         *,
         ids: Iterable[str] | None = None,
         where: Mapping[str, Any] | None = None,
+        limit: int | None = None,
     ) -> list[Edge]:
         """Read edges through the engine facade, including staged rows."""
         reader = getattr(self.e, "read", None)
         if reader is not None and callable(getattr(reader, "get_edges", None)):
             try:
+                kwargs: dict[str, Any] = {
+                    "ids": ids,
+                    "where": where,
+                    "include": ["documents"],
+                }
+                if limit is not None:
+                    kwargs["limit"] = limit
                 return list(
                     cast(
                         Iterable[Edge],
-                        reader.get_edges(ids=ids, where=where, include=["documents"]),
+                        reader.get_edges(**kwargs),
                     )
                 )
             except TypeError:
@@ -132,33 +147,20 @@ class GraphQuery:
                 return []
         if reader is not None:
             return []
-        got = _as_graph_payload(
-            self.e.backend.edge_get(ids=ids, where=where, include=["documents"])
-        )
+        kwargs = {"ids": ids, "where": where, "include": ["documents"]}
+        if limit is not None:
+            kwargs["limit"] = limit
+        got = _as_graph_payload(self.e.backend.edge_get(**kwargs))
         return [
             Edge.model_validate_json(doc) for doc in (got.get("documents") or []) if doc
         ]
 
     # ---- internals ----
     def _is_node(self, rid: str) -> bool:
-        reader = getattr(self.e, "read", None)
-        exists = getattr(reader, "node_exists", None)
-        if callable(exists):
-            return bool(exists(ids=[rid]))
-        if reader is not None:
-            return bool(self._read_nodes(ids=[rid]))
-        hit = _as_graph_payload(self.e.backend.node_get(ids=[rid]))
-        return (hit.get("ids") or [None])[0] == rid
+        return bool(self._read_nodes(ids=[rid]))
 
     def _is_edge(self, rid: str) -> bool:
-        reader = getattr(self.e, "read", None)
-        exists = getattr(reader, "edge_exists", None)
-        if callable(exists):
-            return bool(exists(ids=[rid]))
-        if reader is not None:
-            return bool(self._read_edges(ids=[rid]))
-        hit = _as_graph_payload(self.e.backend.edge_get(ids=[rid]))
-        return (hit.get("ids") or [None])[0] == rid
+        return bool(self._read_edges(ids=[rid]))
 
     def _stage1_endpoint_rows(self, *, edge_id: str | None = None) -> list[dict]:
         """Read pending structural endpoint rows from Stage 1.
@@ -223,7 +225,7 @@ class GraphQuery:
                 edge = Edge.model_validate_json(str(document))
             except Exception:
                 continue
-            current_edge_id = str(edge.safe_get_id())
+            current_edge_id = _entity_id(edge)
             for role, ids, endpoint_type in (
                 ("src", edge.source_ids or [], "node"),
                 ("tgt", edge.target_ids or [], "node"),
@@ -283,8 +285,8 @@ class GraphQuery:
                 for endpoint_id in ids:
                     endpoints.append(
                         {
-                            "id": f"{edge.safe_get_id()}::{role}::{endpoint_type}::{endpoint_id}",
-                            "edge_id": str(edge.safe_get_id()),
+                            "id": f"{_entity_id(edge)}::{role}::{endpoint_type}::{endpoint_id}",
+                            "edge_id": _entity_id(edge),
                             "endpoint_id": str(endpoint_id),
                             "endpoint_type": endpoint_type,
                             "role": role,
@@ -318,19 +320,56 @@ class GraphQuery:
             )
 
         existing = {
-            (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            (
+                str(row.get("edge_id")),
+                str(row.get("endpoint_id")),
+                str(row.get("endpoint_type")),
+                str(row.get("role")),
+            )
             for row in rows
         }
-        for row in await self._stage1_endpoint_rows_async(edge_id=edge_id):
+        staged_rows = await self._stage1_endpoint_rows_async(edge_id=edge_id)
+        staged_edge_ids = {
+            str(row.get("edge_id"))
+            for row in staged_rows
+            if matches(row) and row.get("edge_id")
+        }
+        for row in staged_rows:
             key = (
                 str(row.get("edge_id")),
                 str(row.get("endpoint_id")),
+                str(row.get("endpoint_type")),
                 str(row.get("role")),
             )
             if matches(row) and key not in existing:
                 rows.append(row)
                 existing.add(key)
-        return rows
+        return self._visible_endpoint_rows(rows, known_visible_edge_ids=staged_edge_ids)
+
+    def _visible_endpoint_rows(
+        self,
+        rows: list[GraphRow],
+        *,
+        known_visible_edge_ids: set[str] | None = None,
+    ) -> list[GraphRow]:
+        edge_ids = sorted(
+            {
+                str(row.get("edge_id"))
+                for row in rows
+                if isinstance(row.get("edge_id"), str) and row.get("edge_id")
+            }
+        )
+        if not edge_ids:
+            return []
+        visible_edge_ids = set(known_visible_edge_ids or ())
+        visible_edge_ids.update(
+            _entity_id(edge)
+            for edge in self._read_edges(
+                ids=[edge_id for edge_id in edge_ids if edge_id not in visible_edge_ids],
+                limit=len(edge_ids),
+            )
+        )
+        return [row for row in rows if str(row.get("edge_id")) in visible_edge_ids]
 
     async def _async_collection_call(
         self, collection_key: str, method: str, **kwargs: object
@@ -429,27 +468,22 @@ class GraphQuery:
     def _endpoint_rows(self, where: dict, *, edge_id: str | None = None) -> list[dict]:
         """Return backend endpoint rows plus matching transient Stage-1 rows."""
         rows: list[GraphRow] = []
-        
+
         reader = getattr(self.e, "read", None)
         endpoint_get = getattr(reader, "get_edge_endpoints", None)
         if callable(endpoint_get):
-            got = _as_graph_payload(
-                endpoint_get(where=where, include=["documents"])
-            )
+            got = _as_graph_payload(endpoint_get(where=where, include=["documents"]))
         elif reader is not None:
             got = {"documents": []}
         else:
             got = _as_graph_payload(
-                self.e.backend.edge_endpoints_get(
-                    where=where, include=["documents"]
-                )
+                self.e.backend.edge_endpoints_get(where=where, include=["documents"])
             )
         rows.extend(
             json.loads(document)
             for document in (got.get("documents") or [])
             if document
         )
-
 
         def matches(row: dict) -> bool:
             clauses = where.get("$and", [where]) if isinstance(where, dict) else []
@@ -462,7 +496,12 @@ class GraphQuery:
             return True
 
         existing = {
-            (str(row.get("edge_id")), str(row.get("endpoint_id")), str(row.get("role")))
+            (
+                str(row.get("edge_id")),
+                str(row.get("endpoint_id")),
+                str(row.get("endpoint_type")),
+                str(row.get("role")),
+            )
             for row in rows
         }
         for row in self._stage1_endpoint_rows(edge_id=edge_id):
@@ -470,12 +509,13 @@ class GraphQuery:
                 key = (
                     str(row.get("edge_id")),
                     str(row.get("endpoint_id")),
+                    str(row.get("endpoint_type")),
                     str(row.get("role")),
                 )
                 if key not in existing:
                     rows.append(row)
                     existing.add(key)
-        return rows
+        return self._visible_endpoint_rows(rows)
 
     # ---- doc scoping ----
     def nodes_in_doc(self, doc_id: str) -> list[Node]:
@@ -680,7 +720,7 @@ class GraphQuery:
         nodes = self._read_nodes(where=(where or None))
         out: list[str] = []
         for n in nodes:
-            nid = n.safe_get_id()
+            nid = _entity_id(n)
             if not nid:
                 continue
             if type and (n.type != type):
@@ -729,19 +769,15 @@ class GraphQuery:
         tgt_label_contains: str | None = None,
         doc_id: str | None = None,
     ) -> list[str]:
-        where = {}
-        if relation:
-            where["relation"] = relation
         if doc_id:
-            where["doc_id"] = doc_id
-        if not (where):
-            where = None
-        elif len(where) > 1:
-            where = {"$and": [{k: v} for k, v in where.items()]}
-        edges = self._read_edges(where=where)
+            edges = self.edges_in_doc(doc_id)
+            if relation:
+                edges = [edge for edge in edges if edge.relation == relation]
+        else:
+            edges = self._read_edges(where={"relation": relation} if relation else None)
         out: list[str] = []
         for e in edges:
-            eid = e.safe_get_id()
+            eid = _entity_id(e)
             if not eid:
                 continue
 
@@ -789,7 +825,11 @@ class GraphQuery:
             )
         )
         if isinstance(hits, list):
-            seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
+            seed_ids = (
+                [entity_id for node in hits[0] if (entity_id := _entity_id(node))]
+                if hits
+                else []
+            )
         else:
             hit_payload = _as_graph_payload(hits)
             seed_ids = [nid for nid in (hit_payload.get("ids") or [[]])[0]]
@@ -808,35 +848,39 @@ class GraphQuery:
         """Seed by a TEXT query using the collection's default embedding function, then expand K hops.
         This avoids any custom embedding pipeline and uses the underlying vector store's default embeddings.
         """
-        _where: dict[str, Any] = (
-            {"doc_id": doc_ids} if type(doc_ids) is str else {}
-        )
+        filters: list[Mapping[str, Any]] = []
+        if type(doc_ids) is str:
+            filters.append({"doc_id": doc_ids})
         if type(doc_ids) is list:
-            _where["doc_id"] = {"$in": doc_ids}
+            filters.append({"doc_id": {"$in": doc_ids}})
         if where:
-            if _where.get("and"):
-                if type(_where["and"]) is list:
-                    _where_and: list = _where["and"]
-                    _where_and.append(where)
-                else:
-                    raise SyntaxError(
-                        "vector backend syntax error: where invalid syntax"
-                    )
-                # _where['and'].append()
-            else:
-                _where = {"$and": [where, _where]}
+            filters.append(where)
+        _where: Mapping[str, Any] | None = (
+            filters[0]
+            if len(filters) == 1
+            else {"$and": filters}
+            if filters
+            else None
+        )
+        query_kwargs: dict[str, Any] = {"n_results": top_k}
+        if _where is not None:
+            query_kwargs["where"] = _where
         query_reader = getattr(getattr(self.e, "read", None), "query_nodes", None)
         hits = (
-            query_reader(query=query_text, n_results=top_k, where=_where)
+            query_reader(query=query_text, **query_kwargs)
             if callable(query_reader)
             else []
             if getattr(self.e, "read", None) is not None
             else self.e.backend.node_query(
-                query_texts=[query_text], n_results=top_k, where=_where
+                query_texts=[query_text], **query_kwargs
             )
         )
         if isinstance(hits, list):
-            seed_ids = [str(node.safe_get_id()) for node in hits[0]] if hits else []
+            seed_ids = (
+                [entity_id for node in hits[0] if (entity_id := _entity_id(node))]
+                if hits
+                else []
+            )
             seed_docs = [node.model_dump_json() for node in hits[0]] if hits else []
         else:
             hit_payload = _as_graph_payload(hits)

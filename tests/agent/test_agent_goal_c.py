@@ -32,7 +32,7 @@ from kogwistar.agent import (
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.messaging.models import ProjectedLaneMessageRow
-from kogwistar.messaging.service import LaneMessagingService
+from kogwistar.messaging.service import LaneMessagingService, new_claim_attempt_owner
 from kogwistar.runtime import MappingStepResolver, StepContext, WorkflowRuntime
 from kogwistar.runtime.base_runtime import (
     BaseRuntime,
@@ -85,6 +85,9 @@ def test_normal_plan_goal_are_graph_templates_and_metadata_is_advisory() -> None
         "goal",
     ]
     for design in designs:
+        assert design.workflow_version == "agent-v1"
+        assert all(node.metadata["wf_version"] == "v1" for node in design.nodes)
+        assert all(edge.metadata["wf_version"] == "v1" for edge in design.edges)
         stripped = without_agent_mode_metadata(design)
         assert graph_signature(stripped) == graph_signature(design)
         assert "wf_mode" not in stripped.nodes[0].metadata
@@ -521,13 +524,20 @@ class _FakeControlMessaging:
         self.rows[self.rows.index(row)] = updated
         return [updated]
 
+    def claim_pending_attempt(self, *, worker_id, message_ids, **kwargs):
+        return self.claim_pending(
+            message_ids=message_ids,
+            claimed_by=new_claim_attempt_owner(worker_id),
+            **kwargs,
+        )
+
     def ack(self, *, message_id, claimed_by):
         if self.fail_ack_once:
             self.fail_ack_once = False
             raise RuntimeError("ack interrupted")
         self.acks.append((message_id, claimed_by))
         for index, row in enumerate(self.rows):
-            if row.message_id == message_id:
+            if row.message_id == message_id and row.claimed_by == claimed_by:
                 self.rows[index] = replace(row, status="completed", claimed_by=None)
 
     def update_message_status(self, **kwargs):
@@ -558,12 +568,14 @@ def test_control_point_is_fifo_checkpoint_then_ack_and_filters_target() -> None:
     assert state["agent_control_pending_claims"][0]["conversation_id"] == "conv"
     assert state["agent_control_pending_claims"][0]["correlation_id"] == "corr-1"
     assert state["agent_control_pending_claims"][0]["run_id"] == "run-agent-c"
+    claim_owner = state["agent_control_pending_claims"][0]["claimed_by"]
+    assert str(claim_owner).startswith("worker-1#")
     assert messaging.acks == []
 
     acked = resolver.resolve("agent.control_ack")(_ctx(state, op="agent.control_ack"))
     assert isinstance(acked, RunSuccess)
     apply_state_update_inplace(state, acked.state_update)
-    assert messaging.acks == [("m-1", "worker-1")]
+    assert messaging.acks == [("m-1", claim_owner)]
 
     second = resolver.resolve("agent.control_point")(_ctx(state, op="agent.control_point"))
     assert isinstance(second, RunSuccess)
@@ -630,6 +642,26 @@ def test_control_point_queue_preserves_fifo_and_high_water_deduplicates() -> Non
     assert update["agent_control_duplicate"] is True
 
 
+def test_queue_control_point_reports_queue_not_live_steering() -> None:
+    messaging = _FakeControlMessaging()
+    resolver = MappingStepResolver()
+    register_control_point(
+        resolver,
+        messaging,
+        ControlPointSpec(
+            inbox_id="inbox:agent",
+            recipient_id="agent-1",
+            policy="queue",
+        ),
+    )
+    result = resolver.resolve("agent.control_point")(
+        _ctx({"agent_claimed_by": "worker-1"}, op="agent.control_point")
+    )
+
+    assert isinstance(result, RunSuccess)
+    assert result.state_update[0][1]["agent_control_action"] == "queue"
+
+
 def test_control_point_reclaims_after_crash_before_checkpoint() -> None:
     messaging = _FakeControlMessaging()
     resolver = MappingStepResolver()
@@ -643,17 +675,23 @@ def test_control_point_reclaims_after_crash_before_checkpoint() -> None:
     )
     assert isinstance(first, RunSuccess)
     assert messaging.rows[0].status == "claimed"
+    old_claim_owner = messaging.rows[0].claimed_by
 
     # Simulate process death before applying/checkpointing the returned state.
     messaging.rows[0] = replace(messaging.rows[0], lease_until=0)
     recovered = resolver.resolve("agent.control_point")(
-        _ctx({"agent_claimed_by": "worker-2"}, op="agent.control_point")
+        _ctx({"agent_claimed_by": "worker-1"}, op="agent.control_point")
     )
     assert isinstance(recovered, RunSuccess)
     assert recovered.state_update[0][1]["agent_control_input"] == {
         "direction": "short"
     }
-    assert messaging.rows[0].claimed_by == "worker-2"
+    new_claim_owner = messaging.rows[0].claimed_by
+    assert str(new_claim_owner).startswith("worker-1#")
+    assert new_claim_owner != old_claim_owner
+    messaging.ack(message_id="m-1", claimed_by=str(old_claim_owner))
+    assert messaging.rows[0].status == "claimed"
+    assert messaging.rows[0].claimed_by == new_claim_owner
 
 
 def test_control_point_ack_is_retried_after_checkpoint_before_ack_crash() -> None:
@@ -672,6 +710,7 @@ def test_control_point_ack_is_retried_after_checkpoint_before_ack_crash() -> Non
     assert isinstance(claimed, RunSuccess)
     apply_state_update_inplace(state, claimed.state_update)
     persisted = dict(state)
+    claim_owner = persisted["agent_control_pending_claims"][0]["claimed_by"]
 
     messaging.fail_ack_once = True
     failed_ack = resolver.resolve("agent.control_ack")(
@@ -685,7 +724,7 @@ def test_control_point_ack_is_retried_after_checkpoint_before_ack_crash() -> Non
     )
     assert isinstance(resumed, RunSuccess)
     apply_state_update_inplace(persisted, resumed.state_update)
-    assert messaging.acks == [("m-1", "worker-1")]
+    assert messaging.acks == [("m-1", claim_owner)]
     assert messaging.rows[0].status == "completed"
 
 

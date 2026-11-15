@@ -65,6 +65,7 @@ def _backend_for_dimension_check(expected_dimension: int) -> PgVectorBackend:
     backend.edges = SimpleNamespace(name="gke_edges")
     backend.documents = SimpleNamespace(name="gke_documents")
     backend.domains = SimpleNamespace(name="gke_domains")
+    backend.node_index = SimpleNamespace(name="gke_node_index")
     return backend
 
 
@@ -87,7 +88,13 @@ def test_pgvector_dimension_guard_reports_stale_column_before_writes() -> None:
     error = exc_info.value
     assert connection.params == {
         "schema": "wiki",
-        "table_names": ["gke_nodes", "gke_edges", "gke_documents", "gke_domains"],
+        "table_names": [
+            "gke_nodes",
+            "gke_edges",
+            "gke_documents",
+            "gke_domains",
+            "gke_node_index",
+        ],
     }
     assert error.expected_dimension == 1024
     assert error.mismatches[0].dimension == 2
@@ -104,7 +111,13 @@ def test_pgvector_dimension_guard_accepts_matching_live_columns() -> None:
                 "column_name": "embedding",
                 "type_name": "vector(1024)",
             }
-            for table_name in ("gke_nodes", "gke_edges", "gke_documents", "gke_domains")
+            for table_name in (
+                "gke_nodes",
+                "gke_edges",
+                "gke_documents",
+                "gke_domains",
+                "gke_node_index",
+            )
         ]
     )
 

@@ -224,7 +224,7 @@ def test_next_turn_duplicate_is_idempotent_in_add_edge(phase1_engine_pair):
     )
 
 
-def test_next_turn_duplicate_is_not_idempotent_in_add_pure_edge(phase1_engine_pair):
+def test_next_turn_duplicate_is_rejected_in_add_pure_edge(phase1_engine_pair):
     _kg_engine, conversation_engine = phase1_engine_pair
     conversation_id = "conv_idem_pure"
     user_id = "u"
@@ -250,13 +250,14 @@ def test_next_turn_duplicate_is_not_idempotent_in_add_pure_edge(phase1_engine_pa
     conversation_engine.add_pure_edge(e)
 
     e_dup = _mk_next_turn_edge(conversation_id=conversation_id, src=t1.id, tgt=t2.id)
-    conversation_engine.add_pure_edge(e_dup)
+    with pytest.raises(ValueError, match="next_turn outgoing already exists"):
+        conversation_engine.add_pure_edge(e_dup)
 
     assert (
         _count_next_turn_edges(
             conversation_engine, conversation_id=conversation_id, src=t1.id, tgt=t2.id
         )
-        == 2
+        == 1
     )
 
 

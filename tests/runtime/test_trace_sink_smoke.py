@@ -75,7 +75,7 @@ def _add_node(
                 "wf_op": op,
                 "wf_start": start,
                 "wf_terminal": terminal,
-                "wf_version": "v_smoke",
+                "wf_version": "v1",
             },
             domain_id=None,
             canonical_entity_id=None,

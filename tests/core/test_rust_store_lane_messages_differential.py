@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import time
 from typing import Any
 
 import pytest
@@ -69,7 +70,9 @@ def test_sqlite_python_rust_lane_round_trip_links_filters_and_raw_schema(tmp_pat
 
 
 def test_sqlite_claim_stale_owner_terminal_and_atomic_rollback(tmp_path: Path) -> None:
-    path = tmp_path / "lane.db"
+    python = EngineSQLite(tmp_path, filename="lane.db")
+    python.ensure_initialized()
+    path = python.db_path
     _sqlite(path, _row("message"))
     claim = _sqlite(path, {"kind": "claim_projected_lane_messages", "namespace": "ns", "inbox_id": "inbox", "claimed_by": "old", "lease_seconds": -1})
     assert claim[0]["claimed_by"] == "old"
@@ -90,13 +93,133 @@ def test_sqlite_claim_stale_owner_terminal_and_atomic_rollback(tmp_path: Path) -
         _sqlite(path, {"kind": "batch", "abort": True, "operations": [
             {"kind": "raw_append", "namespace": "ns", "event_id": "rolled-event", "entity_kind": "node", "entity_id": "n", "op": "UPSERT", "payload_json": "{}"},
             _row("rolled"),
+            {"kind": "enqueue_index_job", "job_id": "rolled-job", "namespace": "ns", "entity_kind": "node", "entity_id": "rolled-node", "index_kind": "doc", "op": "UPSERT"},
             {"kind": "claim_projected_lane_messages", "namespace": "ns", "inbox_id": "inbox", "claimed_by": "x"},
         ]})
     assert aborted.value.code == "KOGWISTAR_STORE_TRANSACTION_ABORTED"
     assert _sqlite(path, {"kind": "get_projected_lane_message", "message_id": "rolled"}) is None
     assert _sqlite(path, {"kind": "latest_retained_event_seq", "namespace": "ns"}) == 0
+    assert _sqlite(path, {"kind": "list_index_jobs", "namespace": "ns"}) == []
+    assert python.get_latest_entity_event_seq(namespace="ns") == 0
+    assert all(
+        row.message_id != "rolled"
+        for row in python.list_projected_lane_messages(namespace="ns")
+    )
+    assert python.list_index_jobs(namespace="ns") == []
     assert _sqlite(path, {"kind": "clear_projected_lane_messages", "namespace": "ns"}) == 2
     assert _sqlite(path, {"kind": "list_projected_lane_messages", "namespace": "ns"}) == []
+
+
+def test_sqlite_rust_dead_letter_is_durable_and_python_readable(tmp_path: Path) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    path = python.db_path
+    _sqlite(path, _row("rust-dead-letter"))
+    claim = _sqlite(
+        path,
+        {
+            "kind": "claim_projected_lane_messages",
+            "namespace": "ns",
+            "inbox_id": "inbox",
+            "claimed_by": "rust-attempt",
+            "message_ids": ["rust-dead-letter"],
+        },
+    )[0]
+
+    _sqlite(
+        path,
+        {
+            "kind": "dead_letter_projected_lane_message",
+            "message_id": "rust-dead-letter",
+            "claimed_by": claim["claimed_by"],
+            "error_json": '{"reason":"rust-rejected"}',
+        },
+    )
+    _sqlite(
+        path,
+        {
+            "kind": "dead_letter_projected_lane_message",
+            "message_id": "rust-dead-letter",
+            "claimed_by": "stale-attempt",
+            "error_json": '{"reason":"must-not-overwrite"}',
+        },
+    )
+
+    row = python.list_projected_lane_messages(namespace="ns", inbox_id="inbox")[0]
+    assert row.status == "dead-letter"
+    assert row.claimed_by is None and row.lease_until is None
+    assert row.error_json == '{"reason":"rust-rejected"}'
+
+    python.project_lane_message(
+        message_id="python-dead-letter",
+        namespace="ns",
+        inbox_id="inbox",
+        conversation_id="python-dead-letter-conversation",
+        recipient_id="recipient",
+        sender_id="python",
+        msg_type="notice",
+        status="pending",
+        created_at=1,
+        available_at=0,
+        run_id=None,
+        step_id=None,
+        correlation_id=None,
+    )
+    python_claim = python.claim_projected_lane_messages(
+        namespace="ns",
+        inbox_id="inbox",
+        claimed_by="python-attempt",
+        message_ids=["python-dead-letter"],
+        limit=1,
+    )[0]
+    python.dead_letter_projected_lane_message(
+        message_id="python-dead-letter",
+        claimed_by=python_claim.claimed_by or "",
+        error_json='{"reason":"python-rejected"}',
+    )
+    rust_row = _sqlite(
+        path,
+        {"kind": "get_projected_lane_message", "message_id": "python-dead-letter"},
+    )
+    assert rust_row["status"] == "dead-letter"
+    assert rust_row["claimed_by"] is None and rust_row["lease_until"] is None
+    assert rust_row["error_json"] == '{"reason":"python-rejected"}'
+    _sqlite(
+        path,
+        {
+            "kind": "dead_letter_projected_lane_message",
+            "message_id": "python-dead-letter",
+            "claimed_by": "stale-attempt",
+            "error_json": '{"reason":"must-not-overwrite"}',
+        },
+    )
+    assert _sqlite(
+        path,
+        {"kind": "get_projected_lane_message", "message_id": "python-dead-letter"},
+    )["error_json"] == '{"reason":"python-rejected"}'
+
+
+def test_sqlite_expired_lane_claim_cannot_be_finalized_before_reclaim(tmp_path: Path) -> None:
+    path = tmp_path / "expired-lane.db"
+    for operation in ("ack_projected_lane_message", "requeue_projected_lane_message", "dead_letter_projected_lane_message"):
+        message_id = operation
+        _sqlite(path, _row(message_id))
+        claim = _sqlite(
+            path,
+            {
+                "kind": "claim_projected_lane_messages",
+                "namespace": "ns",
+                "inbox_id": "inbox",
+                "claimed_by": "attempt-1",
+                "lease_seconds": -1,
+                "message_ids": [message_id],
+            },
+        )
+        assert claim[0]["lease_until"] < int(time.time())
+        _sqlite(path, {"kind": operation, "message_id": message_id, "claimed_by": "attempt-1"})
+        row = _sqlite(path, {"kind": "get_projected_lane_message", "message_id": message_id})
+        assert row["status"] == "claimed" and row["claimed_by"] == "attempt-1"
+        assert row["retry_count"] == 0
 
 
 def test_sqlite_concurrent_project_and_claim_are_exclusive(tmp_path: Path) -> None:
@@ -150,3 +273,167 @@ def test_postgres_lane_python_rust_and_concurrency(sa_engine, pg_dsn: str | None
     ids = [row["message_id"] for group in groups for row in group]
     assert len(ids) == len(set(ids)) == 8
     assert isinstance(next(row for group in groups for row in group)["lease_until"], str)
+
+    # An expired lease is no longer authority even before a replacement claim
+    # is created. Exercise both native Rust and Python finish paths against the
+    # same live PostgreSQL schema.
+    rust_finish = {
+        "ack": "ack_projected_lane_message",
+        "requeue": "requeue_projected_lane_message",
+        "dead_letter": "dead_letter_projected_lane_message",
+    }
+    for operation, kind in rust_finish.items():
+        message_id = f"rust-expired-{operation}"
+        rust(_row(message_id, available_at=0))
+        claim = rust(
+            {
+                "kind": "claim_projected_lane_messages",
+                "namespace": "ns",
+                "inbox_id": "inbox",
+                "claimed_by": "rust-attempt",
+                "lease_seconds": -5,
+                "message_ids": [message_id],
+            }
+        )
+        assert claim and claim[0]["claimed_by"] == "rust-attempt"
+        rust({"kind": kind, "message_id": message_id, "claimed_by": "rust-attempt"})
+        stored = rust({"kind": "get_projected_lane_message", "message_id": message_id})
+        assert stored["status"] == "claimed" and stored["claimed_by"] == "rust-attempt"
+        assert stored["retry_count"] == 0
+
+    python.project_lane_message(
+        message_id="python-dead-letter-success",
+        namespace="ns",
+        inbox_id="inbox",
+        conversation_id="python-dead-letter-conversation",
+        recipient_id="recipient",
+        sender_id="python",
+        msg_type="notice",
+        status="pending",
+        created_at=1,
+        available_at=0,
+        run_id=None,
+        step_id=None,
+        correlation_id=None,
+    )
+    success_claim = python.claim_projected_lane_messages(
+        namespace="ns",
+        inbox_id="inbox",
+        claimed_by="python-success-attempt",
+        limit=1,
+        lease_seconds=30,
+        message_ids=["python-dead-letter-success"],
+    )[0]
+    python.dead_letter_projected_lane_message(
+        message_id="python-dead-letter-success",
+        claimed_by=success_claim.claimed_by or "",
+        error_json='{"reason":"unrecoverable"}',
+    )
+    successful = python.list_projected_lane_messages(
+        namespace="ns",
+        inbox_id="inbox",
+        conversation_id="python-dead-letter-conversation",
+    )[0]
+    assert successful.status == "dead-letter"
+    assert successful.claimed_by is None and successful.lease_until is None
+    assert successful.error_json == '{"reason":"unrecoverable"}'
+    assert rust(
+        {"kind": "get_projected_lane_message", "message_id": "python-dead-letter-success"}
+    )["error_json"] == '{"reason":"unrecoverable"}'
+
+    python.project_lane_message(
+        message_id="rust-dead-letter-success",
+        namespace="ns",
+        inbox_id="inbox",
+        conversation_id="rust-dead-letter-conversation",
+        recipient_id="recipient",
+        sender_id="rust",
+        msg_type="notice",
+        status="pending",
+        created_at=1,
+        available_at=0,
+        run_id=None,
+        step_id=None,
+        correlation_id=None,
+    )
+    rust_claim = rust(
+        {
+            "kind": "claim_projected_lane_messages",
+            "namespace": "ns",
+            "inbox_id": "inbox",
+            "claimed_by": "rust-success-attempt",
+            "message_ids": ["rust-dead-letter-success"],
+        }
+    )[0]
+    rust(
+        {
+            "kind": "dead_letter_projected_lane_message",
+            "message_id": "rust-dead-letter-success",
+            "claimed_by": rust_claim["claimed_by"],
+            "error_json": '{"reason":"rust-rejected"}',
+        }
+    )
+    rust(
+        {
+            "kind": "dead_letter_projected_lane_message",
+            "message_id": "rust-dead-letter-success",
+            "claimed_by": "stale-attempt",
+            "error_json": '{"reason":"must-not-overwrite"}',
+        }
+    )
+    rust_dead_letter = python.list_projected_lane_messages(
+        namespace="ns",
+        inbox_id="inbox",
+        conversation_id="rust-dead-letter-conversation",
+    )[0]
+    assert rust_dead_letter.status == "dead-letter"
+    assert rust_dead_letter.claimed_by is None and rust_dead_letter.lease_until is None
+    assert rust_dead_letter.error_json == '{"reason":"rust-rejected"}'
+
+    for operation in ("ack", "requeue", "dead_letter"):
+        message_id = f"python-expired-{operation}"
+        python.project_lane_message(
+            message_id=message_id,
+            namespace="ns",
+            inbox_id="inbox",
+            conversation_id=f"conversation-{message_id}",
+            recipient_id="recipient",
+            sender_id="python",
+            msg_type="notice",
+            status="pending",
+            created_at=1,
+            available_at=0,
+            run_id=None,
+            step_id=None,
+            correlation_id=None,
+        )
+        claim = python.claim_projected_lane_messages(
+            namespace="ns",
+            inbox_id="inbox",
+            claimed_by="python-attempt",
+            limit=1,
+            lease_seconds=-5,
+            message_ids=[message_id],
+        )
+        assert claim and claim[0].claimed_by == "python-attempt"
+        if operation == "ack":
+            python.ack_projected_lane_message(
+                message_id=message_id, claimed_by="python-attempt"
+            )
+        elif operation == "requeue":
+            python.requeue_projected_lane_message(
+                message_id=message_id,
+                claimed_by="python-attempt",
+                delay_seconds=0,
+            )
+        else:
+            python.dead_letter_projected_lane_message(
+                message_id=message_id,
+                claimed_by="python-attempt",
+                error_json='{"reason":"expired"}',
+            )
+        stored = python.list_projected_lane_messages(
+            namespace="ns", inbox_id="inbox", conversation_id=f"conversation-{message_id}"
+        )[0]
+        assert stored.status == "claimed" and stored.claimed_by == "python-attempt"
+        assert stored.retry_count == 0

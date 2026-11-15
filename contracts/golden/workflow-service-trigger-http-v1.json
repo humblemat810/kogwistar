@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "method": "POST",
+  "path": "/api/workflow/services/{service_id}/trigger",
+  "success_status": 200,
+  "request_body": {
+    "trigger_type": "external event",
+    "payload": {
+      "source": "contract-test"
+    }
+  },
+  "expected_response_fields": {
+    "last_trigger_type": "external event"
+  },
+  "required_response_fields": [
+    "service_id",
+    "current_child_run_id",
+    "last_triggered_at_ms"
+  ],
+  "dynamic_snapshot_fields": [
+    "current_child_status"
+  ],
+  "state_semantics": "The run may advance before the response snapshot: Python can report a completed run while Rust durable admission reports queued."
+}

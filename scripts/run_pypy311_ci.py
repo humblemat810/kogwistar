@@ -9,7 +9,11 @@ import subprocess
 import sys
 from pathlib import Path
 
-MARKERS = "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama"
+MARKERS = (
+    "ci and not ci_full and not slow and not manual and not llm_real "
+    "and not requires_ollama and not requires_rust and not requires_langgraph "
+    "and not requires_pgvector"
+)
 
 
 def root() -> Path:
@@ -30,9 +34,25 @@ def main() -> int:
         venv = args.venv.resolve()
         if not venv.exists():
             subprocess.check_call([sys.executable, "-m", "venv", str(venv)], cwd=root())
+        python = str(venv_python(venv))
+        subprocess.check_call(
+            [python, "-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"],
+            cwd=root(),
+        )
+        subprocess.check_call(
+            [
+                python,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                str(root() / "requirements-pypy-3.11-experimental.txt"),
+            ],
+            cwd=root(),
+        )
         env = os.environ.copy()
         env["KOGWISTAR_PYPY_VENV_ACTIVE"] = "1"
-        command = [str(venv_python(venv)), str(Path(__file__).resolve()), "--skip-install"]
+        command = [python, str(Path(__file__).resolve()), "--skip-install"]
         return subprocess.call(command, cwd=root(), env=env)
 
     env = os.environ.copy()

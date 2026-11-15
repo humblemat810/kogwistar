@@ -1,0 +1,426 @@
+{
+  "schema_version": 1,
+  "operations": [
+    {
+      "method": "POST",
+      "path": "/api/add_index_entries",
+      "tasklet_id": "FW-03-03A-HTTP-POST-7437a87e"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/callback",
+      "tasklet_id": "FW-03-03A-HTTP-GET-3f7c2705"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/login",
+      "tasklet_id": "FW-03-03A-HTTP-GET-a8089377"
+    },
+    {
+      "method": "POST",
+      "path": "/api/auth/logout",
+      "tasklet_id": "FW-03-03A-HTTP-POST-dc297acc"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/me",
+      "tasklet_id": "FW-03-03A-HTTP-GET-d41dac18"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations",
+      "tasklet_id": "FW-03-03A-HTTP-GET-e0dc6609"
+    },
+    {
+      "method": "POST",
+      "path": "/api/conversations",
+      "tasklet_id": "FW-03-03A-HTTP-POST-06ebeb79"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}",
+      "tasklet_id": "FW-03-03A-HTTP-GET-89c079fb"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/snapshots/latest",
+      "tasklet_id": "FW-03-03A-HTTP-GET-b51ee1f1"
+    },
+    {
+      "method": "GET",
+      "path": "/api/conversations/{conversation_id}/turns",
+      "tasklet_id": "FW-03-03A-HTTP-GET-7dad12d0"
+    },
+    {
+      "method": "POST",
+      "path": "/api/conversations/{conversation_id}/turns:answer",
+      "tasklet_id": "FW-03-03A-HTTP-POST-fe141198"
+    },
+    {
+      "method": "POST",
+      "path": "/api/document",
+      "tasklet_id": "FW-03-03A-HTTP-POST-8d28876a"
+    },
+    {
+      "method": "POST",
+      "path": "/api/document.upsert_tree",
+      "tasklet_id": "FW-03-03A-HTTP-POST-46a01a68"
+    },
+    {
+      "method": "POST",
+      "path": "/api/document.validate_graph",
+      "tasklet_id": "FW-03-03A-HTTP-POST-6e72c43d"
+    },
+    {
+      "method": "POST",
+      "path": "/api/graph/upsert",
+      "tasklet_id": "FW-03-03A-HTTP-POST-ff574d21"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}",
+      "tasklet_id": "FW-03-03A-HTTP-GET-942f076b"
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/{run_id}/cancel",
+      "tasklet_id": "FW-03-03A-HTTP-POST-8ecb139e"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/checkpoints",
+      "tasklet_id": "FW-03-03A-HTTP-GET-c01cb68b"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/checkpoints/{step_seq}",
+      "tasklet_id": "FW-03-03A-HTTP-GET-cc1c09d6"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/events",
+      "tasklet_id": "FW-03-03A-HTTP-GET-03070335"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/events/poll",
+      "tasklet_id": "FW-03-03A-HTTP-GET-ca3e4d2f"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/evidence",
+      "tasklet_id": "FW-03-03A-HTTP-GET-c4ec1841"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/replay",
+      "tasklet_id": "FW-03-03A-HTTP-GET-350293cb"
+    },
+    {
+      "method": "POST",
+      "path": "/api/runs/{run_id}/resume",
+      "tasklet_id": "FW-03-03A-HTTP-POST-16cb26ff"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/resume-contract",
+      "tasklet_id": "FW-03-03A-HTTP-GET-40879ca4"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}/steps",
+      "tasklet_id": "FW-03-03A-HTTP-GET-d998dc57"
+    },
+    {
+      "method": "GET",
+      "path": "/api/search_index_hybrid",
+      "tasklet_id": "FW-03-03A-HTTP-GET-104a818f"
+    },
+    {
+      "method": "GET",
+      "path": "/api/syscall/v1",
+      "tasklet_id": "FW-03-03A-HTTP-GET-0276cc44"
+    },
+    {
+      "method": "GET",
+      "path": "/api/syscall/v1/audit",
+      "tasklet_id": "FW-03-03A-HTTP-GET-3fd6dc44"
+    },
+    {
+      "method": "POST",
+      "path": "/api/syscall/v1/{op}",
+      "tasklet_id": "FW-03-03A-HTTP-POST-2fcd7bac"
+    },
+    {
+      "method": "GET",
+      "path": "/api/viz/cytoscape.json",
+      "tasklet_id": "FW-03-03A-HTTP-GET-db651b56"
+    },
+    {
+      "method": "GET",
+      "path": "/api/viz/d3.json",
+      "tasklet_id": "FW-03-03A-HTTP-GET-8bff2a38"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/budget",
+      "tasklet_id": "FW-03-03A-HTTP-GET-41cea2c6"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/budget/history",
+      "tasklet_id": "FW-03-03A-HTTP-GET-ea066435"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/capabilities",
+      "tasklet_id": "FW-03-03A-HTTP-GET-4a869379"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/capabilities/approve",
+      "tasklet_id": "FW-03-03A-HTTP-POST-9e09cfbb"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/capabilities/revoke",
+      "tasklet_id": "FW-03-03A-HTTP-POST-3f800ae0"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/catalog/ops",
+      "tasklet_id": "FW-03-03A-HTTP-GET-504d2035"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/dead-letters",
+      "tasklet_id": "FW-03-03A-HTTP-GET-c60d5d69"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/dead-letters/{run_id}/replay",
+      "tasklet_id": "FW-03-03A-HTTP-POST-1d601433"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/edges",
+      "tasklet_id": "FW-03-03A-HTTP-POST-896a4b9c"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/workflow/design/{workflow_id}/edges/{edge_id}",
+      "tasklet_id": "FW-03-03A-HTTP-DELETE-f853b4cf"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/design/{workflow_id}/graph",
+      "tasklet_id": "FW-03-03A-HTTP-GET-97f82626"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/design/{workflow_id}/history",
+      "tasklet_id": "FW-03-03A-HTTP-GET-278647b6"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/nodes",
+      "tasklet_id": "FW-03-03A-HTTP-POST-bb56b3cb"
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/workflow/design/{workflow_id}/nodes/{node_id}",
+      "tasklet_id": "FW-03-03A-HTTP-DELETE-6d2b9489"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/redo",
+      "tasklet_id": "FW-03-03A-HTTP-POST-97e41d1e"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/design/{workflow_id}/undo",
+      "tasklet_id": "FW-03-03A-HTTP-POST-37b8ab5c"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/lane/progress",
+      "tasklet_id": "FW-03-03A-HTTP-GET-dd837bed"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/messages/repair-orphans",
+      "tasklet_id": "FW-03-03A-HTTP-POST-40910f93"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/operator/dashboard",
+      "tasklet_id": "FW-03-03A-HTTP-GET-43d9f440"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/resources",
+      "tasklet_id": "FW-03-03A-HTTP-GET-b459552c"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/runs",
+      "tasklet_id": "FW-03-03A-HTTP-POST-a0f3234d"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}",
+      "tasklet_id": "FW-03-03A-HTTP-GET-f86465af"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/runs/{run_id}/cancel",
+      "tasklet_id": "FW-03-03A-HTTP-POST-8957ad0a"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/checkpoints",
+      "tasklet_id": "FW-03-03A-HTTP-GET-558a42e7"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/checkpoints/{step_seq}",
+      "tasklet_id": "FW-03-03A-HTTP-GET-9e712d3a"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/events",
+      "tasklet_id": "FW-03-03A-HTTP-GET-ea750721"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/lineage",
+      "tasklet_id": "FW-03-03A-HTTP-GET-b9d21d15"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/replay",
+      "tasklet_id": "FW-03-03A-HTTP-GET-dba824ff"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/runs/{run_id}/resume",
+      "tasklet_id": "FW-03-03A-HTTP-POST-e6b662c3"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/resume-contract",
+      "tasklet_id": "FW-03-03A-HTTP-GET-41946228"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/runs/{run_id}/steps",
+      "tasklet_id": "FW-03-03A-HTTP-GET-b5049323"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/scheduler/timeline",
+      "tasklet_id": "FW-03-03A-HTTP-GET-8d1191ee"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/services",
+      "tasklet_id": "FW-03-03A-HTTP-GET-ea5861b7"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services",
+      "tasklet_id": "FW-03-03A-HTTP-POST-90c5d2e7"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/repair",
+      "tasklet_id": "FW-03-03A-HTTP-POST-811ebc9d"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/services/{service_id}",
+      "tasklet_id": "FW-03-03A-HTTP-GET-afa9f3a7"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/disable",
+      "tasklet_id": "FW-03-03A-HTTP-POST-a98fb634"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/enable",
+      "tasklet_id": "FW-03-03A-HTTP-POST-96633587"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/services/{service_id}/events",
+      "tasklet_id": "FW-03-03A-HTTP-GET-893e03e9"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/heartbeat",
+      "tasklet_id": "FW-03-03A-HTTP-POST-6d273898"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/repair",
+      "tasklet_id": "FW-03-03A-HTTP-POST-232bd6ed"
+    },
+    {
+      "method": "POST",
+      "path": "/api/workflow/services/{service_id}/trigger",
+      "tasklet_id": "FW-03-03A-HTTP-POST-33c5e064"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/tools/audit",
+      "tasklet_id": "FW-03-03A-HTTP-GET-6bc448ee"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflow/visibility",
+      "tasklet_id": "FW-03-03A-HTTP-GET-00fa121f"
+    },
+    {
+      "method": "POST",
+      "path": "/auth/dev-token",
+      "tasklet_id": "FW-03-03A-HTTP-POST-1decd954"
+    },
+    {
+      "method": "GET",
+      "path": "/designer/capabilities",
+      "tasklet_id": "FW-03-03A-HTTP-GET-539b217e"
+    },
+    {
+      "method": "GET",
+      "path": "/health",
+      "tasklet_id": "FW-03-03A-HTTP-GET-8dae33ec"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/cytoscape",
+      "tasklet_id": "FW-03-03A-HTTP-GET-9cf87495"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/d3",
+      "tasklet_id": "FW-03-03A-HTTP-GET-0a257751"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/d3.bundle",
+      "tasklet_id": "FW-03-03A-HTTP-GET-64c0cb0d"
+    },
+    {
+      "method": "GET",
+      "path": "/viz/go",
+      "tasklet_id": "FW-03-03A-HTTP-GET-562caaba"
+    },
+    {
+      "method": "DELETE",
+      "path": "/admin/doc/{doc_id}",
+      "classification": "unsupported",
+      "tasklet_id": "FW-03-03B"
+    }
+  ]
+}

@@ -1,0 +1,996 @@
+use kogwistar_runtime::{
+    NativeOperationOutput, NativeOperationRegistrationError, NativeOperationRegistry,
+    NativeRoutedOperationOutput, RecordedStateUpdate, RuntimeNativeExecutionError,
+    RuntimeNativeStepRequest, RuntimeSuccessor,
+};
+use serde_json::{Map, Value, json};
+
+pub(crate) fn register(
+    registry: &mut NativeOperationRegistry,
+) -> Result<(), NativeOperationRegistrationError> {
+    registry.register_routed("aa_maybe_iterate", "v1", execute_maybe_iterate)?;
+    registry.register("aa_retrieve_candidates", "v1", execute_retrieve_candidates)?;
+    registry.register(
+        "aa_debug_select_top_candidates",
+        "v1",
+        execute_debug_select_top_candidates,
+    )?;
+    registry.register(
+        "aa_debug_answer_from_nodes",
+        "v1",
+        execute_debug_answer_from_nodes,
+    )?;
+    registry.register(
+        "aa_select_used_evidence",
+        "v1",
+        execute_select_used_evidence,
+    )?;
+    registry.register("aa_evaluate_answer", "v1", execute_evaluate_answer)
+}
+
+fn execute_debug_select_top_candidates(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let candidates = request
+        .state
+        .get("candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let max_used = request
+        .state
+        .get("max_used")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(3)
+        .clamp(1, 5) as usize;
+    let mut selected = Vec::new();
+    let mut used_node_ids = Vec::new();
+    for candidate in candidates.iter().take(max_used) {
+        let Some(candidate) = candidate.as_object() else {
+            continue;
+        };
+        let Some(id) = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        used_node_ids.push(id.to_owned());
+        selected.push(Value::Object(candidate.clone()));
+    }
+    let update = Map::from_iter([
+        (
+            "selection".to_owned(),
+            json!({
+                "used_node_ids": used_node_ids,
+                "strategy": "top_candidates_debug"
+            }),
+        ),
+        ("used_node_ids".to_owned(), json!(used_node_ids)),
+        ("selected_candidates".to_owned(), Value::Array(selected)),
+    ]);
+    let log_entry = format!(
+        "aa_debug_select_top_candidates:{}",
+        update["used_node_ids"].as_array().map_or(0, Vec::len)
+    );
+    let mut op_log = request
+        .state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn execute_debug_answer_from_nodes(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let question = request
+        .state
+        .get("question")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut selected = request
+        .state
+        .get("selected_candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if selected.is_empty() {
+        selected = request
+            .state
+            .get("candidates")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|candidate| {
+                candidate
+                    .as_object()
+                    .and_then(|candidate| candidate.get("id"))
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty())
+            })
+            .take(3)
+            .cloned()
+            .collect();
+    }
+    let mut lines = vec![
+        "Debug RAG response".to_owned(),
+        String::new(),
+        format!("Question: {question}"),
+        String::new(),
+        "Retrieved nodes:".to_owned(),
+    ];
+    let mut selected_node_ids = Vec::new();
+    for (index, candidate) in selected.iter().enumerate() {
+        let Some(candidate) = candidate.as_object() else {
+            continue;
+        };
+        let id = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let label = candidate
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(if id.is_empty() { "(unknown)" } else { id });
+        let summary = ["summary", "doc"]
+            .iter()
+            .filter_map(|field| candidate.get(*field).and_then(Value::as_str))
+            .map(str::trim)
+            .find(|value| !value.is_empty())
+            .unwrap_or("(no summary available)");
+        lines.push(format!("{}. {} [{}]", index + 1, label, id));
+        lines.push(format!("   {summary}"));
+        if !id.is_empty() {
+            selected_node_ids.push(id.to_owned());
+        }
+    }
+    if selected.is_empty() {
+        lines.push("No knowledge nodes were retrieved.".to_owned());
+    }
+    let answer = json!({
+        "text": lines.join("\n"),
+        "mode": "debug_rag",
+        "selected_node_ids": selected_node_ids,
+    });
+    let evaluation = json!({
+        "is_sufficient": !selected.is_empty(),
+        "needs_more_info": false,
+        "missing_aspects": if selected.is_empty() { json!(["no_retrieval_hits"]) } else { json!([]) },
+        "notes": "debug_rag_no_llm",
+    });
+    let update = Map::from_iter([
+        ("answer".to_owned(), answer),
+        ("evaluation".to_owned(), evaluation),
+    ]);
+    let log_entry = "aa_debug_answer_from_nodes".to_owned();
+    let mut op_log = request
+        .state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn execute_retrieve_candidates(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    const MAX_CANDIDATES: usize = 200;
+    let candidates = request
+        .ephemeral_context
+        .get("authorized_candidate_records")
+        .and_then(Value::as_array)
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "authorized_candidate_records",
+            reason: "host-authorized retrieval results are required",
+        })?;
+    if candidates.len() > MAX_CANDIDATES {
+        return Err(RuntimeNativeExecutionError::InvalidState {
+            field: "authorized_candidate_records",
+            reason: "retrieval result count exceeds the native limit",
+        });
+    }
+    let mut projected = Vec::with_capacity(candidates.len());
+    for candidate in candidates {
+        let candidate = candidate
+            .as_object()
+            .ok_or(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                reason: "each host-authorized candidate must be an object",
+            })?;
+        let id = candidate
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .ok_or(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                reason: "each host-authorized candidate must have a non-empty ID",
+            })?;
+        for field in ["label", "summary", "doc"] {
+            if candidate
+                .get(field)
+                .is_some_and(|value| !value.is_null() && !value.is_string())
+            {
+                return Err(RuntimeNativeExecutionError::InvalidState {
+                    field: "authorized_candidate_records",
+                    reason: "candidate text fields must be strings or null",
+                });
+            }
+        }
+        projected.push(json!({
+            "id": id,
+            "label": candidate.get("label").cloned().unwrap_or(Value::Null),
+            "summary": candidate.get("summary").cloned().unwrap_or(Value::Null),
+            "doc": candidate.get("doc").and_then(Value::as_str).unwrap_or_default(),
+        }));
+    }
+    projected.sort_by(|left, right| {
+        left.get("id")
+            .and_then(Value::as_str)
+            .cmp(&right.get("id").and_then(Value::as_str))
+    });
+
+    let log_entry = format!("aa_retrieve_candidates:{}", projected.len());
+    let mut op_log = request
+        .state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let candidates = Value::Array(projected);
+    let update = Map::from_iter([("candidates".to_owned(), candidates.clone())]);
+    let mut final_state = request.state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn optional_integer(state: &Map<String, Value>, field: &str) -> i64 {
+    state.get(field).and_then(Value::as_i64).unwrap_or_default()
+}
+
+fn value_text(value: Option<&Value>) -> String {
+    match value {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Null) | None => "None".to_owned(),
+        Some(value) => value.to_string(),
+    }
+}
+
+fn candidate_field_text(candidate: &Map<String, Value>, field: &str) -> String {
+    candidate
+        .get(field)
+        .map(|value| value_text(Some(value)))
+        .unwrap_or_default()
+}
+
+fn tokens(text: &str) -> std::collections::BTreeSet<String> {
+    let lowercase = text.to_lowercase();
+    let mut tokens = std::collections::BTreeSet::new();
+    let mut current = String::new();
+    for character in lowercase.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            current.push(character);
+        } else {
+            if current.len() >= 3 {
+                tokens.insert(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+        }
+    }
+    if current.len() >= 3 {
+        tokens.insert(current);
+    }
+    tokens
+}
+
+fn execute_select_used_evidence(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let state = &request.state;
+    let selector = match state.get("evidence_selector") {
+        None | Some(Value::Null) => "llm".to_owned(),
+        Some(Value::String(value)) if value.is_empty() => "llm".to_owned(),
+        Some(Value::String(value)) => value.to_ascii_lowercase(),
+        _ => {
+            return Err(RuntimeNativeExecutionError::InvalidState {
+                field: "evidence_selector",
+                reason: "evidence_selector must be a string when provided",
+            });
+        }
+    };
+    if !matches!(selector.as_str(), "llm" | "bm25") {
+        return Err(RuntimeNativeExecutionError::InvalidState {
+            field: "evidence_selector",
+            reason: "evidence_selector must be the compatible llm or bm25 mode",
+        });
+    }
+    let candidates = state
+        .get("candidates")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let question_tokens = tokens(
+        state
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+    );
+    let mut scored = candidates
+        .iter()
+        .map(|candidate| {
+            let Some(candidate) = candidate.as_object() else {
+                return Err(RuntimeNativeExecutionError::InvalidState {
+                    field: "candidates",
+                    reason: "every candidate must be an object",
+                });
+            };
+            let text = format!(
+                "{} {}",
+                candidate_field_text(candidate, "label"),
+                candidate_field_text(candidate, "summary")
+            );
+            let candidate_tokens = tokens(&text);
+            let overlap = question_tokens.intersection(&candidate_tokens).count();
+            let score = overlap as f64 / (question_tokens.len() as f64 + 1e-6);
+            let id = if score > 0.0 {
+                Some(
+                    candidate
+                        .get("id")
+                        .filter(|value| !value.is_null())
+                        .map(|value| value_text(Some(value)))
+                        .filter(|value| !value.is_empty())
+                        .ok_or(RuntimeNativeExecutionError::InvalidState {
+                            field: "candidates.id",
+                            reason: "a matching candidate must have a non-empty ID",
+                        })?,
+                )
+            } else {
+                None
+            };
+            Ok((score, id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    // Stable descending order preserves Python's candidate order for score ties.
+    scored.sort_by(|left, right| right.0.total_cmp(&left.0));
+    let selected = scored
+        .into_iter()
+        .filter_map(|(score, id)| (score > 0.0).then_some(id).flatten())
+        .collect::<Vec<_>>();
+    let max_used = state.get("max_used").and_then(Value::as_i64).unwrap_or(8);
+    let limit = if max_used < 0 {
+        selected
+            .len()
+            .saturating_sub(max_used.unsigned_abs() as usize)
+    } else {
+        selected.len().min(max_used as usize)
+    };
+    let used_node_ids = selected.into_iter().take(limit).collect::<Vec<_>>();
+    let selection = json!({
+        "used_node_ids": used_node_ids,
+        "used_edge_ids": [],
+        "reasoning": "bm25_fallback_token_overlap"
+    });
+    let mut update = Map::new();
+    update.insert("selection".to_owned(), selection.clone());
+    update.insert("used_node_ids".to_owned(), json!(used_node_ids));
+    if selector == "llm" {
+        let run_step_seq = state
+            .get("run_step_seq")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| u64::try_from(request.step_seq).unwrap_or_default());
+        update.insert(
+            "run_step_seq".to_owned(),
+            json!(run_step_seq.saturating_add(1)),
+        );
+    }
+    let log_entry = format!("aa_select_used_evidence:{}", used_node_ids.len());
+    let mut op_log = state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn execute_evaluate_answer(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeOperationOutput, RuntimeNativeExecutionError> {
+    let state = &request.state;
+    let answer_text = state
+        .get("answer")
+        .and_then(Value::as_object)
+        .and_then(|answer| answer.get("text"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let used_node_ids = state
+        .get("used_node_ids")
+        .and_then(Value::as_array)
+        .is_some_and(|ids| !ids.is_empty());
+    let evidence_nodes = state
+        .get("_rt")
+        .and_then(Value::as_object)
+        .and_then(|runtime| runtime.get("evidence_pack"))
+        .and_then(Value::as_object)
+        .and_then(|pack| pack.get("nodes"))
+        .and_then(Value::as_array)
+        .is_some_and(|nodes| !nodes.is_empty());
+    let has_evidence = used_node_ids && evidence_nodes;
+    let is_sufficient = !answer_text.trim().is_empty() && has_evidence;
+    let needs_more_info = !is_sufficient;
+    let mut missing_aspects = Vec::new();
+    if !has_evidence {
+        missing_aspects.push("insufficient_evidence");
+    }
+    if answer_text.trim().is_empty() {
+        missing_aspects.push("empty_answer");
+    }
+    let evaluation = json!({
+        "is_sufficient": is_sufficient,
+        "needs_more_info": needs_more_info,
+        "missing_aspects": missing_aspects,
+        "notes": "heuristic_evaluation"
+    });
+
+    let run_step_seq = state
+        .get("run_step_seq")
+        .and_then(Value::as_i64)
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or(RuntimeNativeExecutionError::InvalidState {
+            field: "run_step_seq",
+            reason: "integer value exceeds supported range",
+        })?;
+    let max_candidates = state
+        .get("max_candidates")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(20);
+    let materialize_depth = state
+        .get("materialize_depth")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("shallow");
+    let (max_candidates, materialize_depth) = if needs_more_info && !is_sufficient {
+        (
+            max_candidates
+                .checked_mul(2)
+                .ok_or(RuntimeNativeExecutionError::InvalidState {
+                    field: "max_candidates",
+                    reason: "integer value exceeds supported range",
+                })?
+                .min(200),
+            "deep",
+        )
+    } else {
+        (max_candidates, materialize_depth)
+    };
+    let log_entry = "aa_evaluate_answer";
+    let update = Map::from_iter([
+        ("evaluation".to_owned(), evaluation),
+        ("run_step_seq".to_owned(), json!(run_step_seq)),
+        ("max_candidates".to_owned(), json!(max_candidates)),
+        ("materialize_depth".to_owned(), json!(materialize_depth)),
+    ]);
+    let mut op_log = state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+    Ok(NativeOperationOutput {
+        state_update: vec![
+            RecordedStateUpdate::Pair(("u".to_owned(), update)),
+            RecordedStateUpdate::Pair((
+                "a".to_owned(),
+                Map::from_iter([("op_log".to_owned(), Value::String(log_entry.to_owned()))]),
+            )),
+        ],
+        result: Some(json!({
+            "workflow_status": "succeeded",
+            "final_state": final_state,
+            "conversation_node_id": null
+        })),
+    })
+}
+
+fn selected_target(
+    request: &RuntimeNativeStepRequest,
+    should_iterate: bool,
+) -> Result<Vec<RuntimeSuccessor>, RuntimeNativeExecutionError> {
+    if request.runtime_routes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let matching = request
+        .runtime_routes
+        .iter()
+        .filter(|route| route.source_node_id == request.node_id)
+        .filter(|route| {
+            if should_iterate {
+                route.predicate.as_deref() == Some("aa_should_iterate")
+            } else {
+                route.is_default
+                    && route
+                        .predicate
+                        .as_deref()
+                        .is_none_or(|predicate| predicate == "always")
+            }
+        })
+        .map(|route| RuntimeSuccessor {
+            node_id: route.target_node_id.clone(),
+            join_mask: route.join_mask,
+        })
+        .collect::<Vec<_>>();
+    if matching.len() != 1 {
+        return Err(RuntimeNativeExecutionError::InvalidState {
+            field: "runtime_routes",
+            reason: "expected exactly one frozen route for the iteration decision",
+        });
+    }
+    Ok(matching)
+}
+
+fn execute_maybe_iterate(
+    request: &RuntimeNativeStepRequest,
+) -> Result<NativeRoutedOperationOutput, RuntimeNativeExecutionError> {
+    let state = &request.state;
+    let evaluation = state.get("evaluation").and_then(Value::as_object);
+    let iter_idx = optional_integer(state, "iter_idx");
+    let max_iter = state
+        .get("max_iter")
+        .and_then(Value::as_i64)
+        .filter(|value| *value != 0)
+        .unwrap_or(1);
+    let needs_more = evaluation
+        .and_then(|value| value.get("needs_more_info"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let sufficient = evaluation
+        .and_then(|value| value.get("is_sufficient"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let next_iter = iter_idx.checked_add(1);
+    let should_iterate = needs_more && !sufficient && next_iter.is_some_and(|next| next < max_iter);
+    let recorded_iter = if should_iterate {
+        next_iter.expect("iteration guard checked the increment")
+    } else {
+        iter_idx
+    };
+    let log_entry = if should_iterate {
+        "aa_maybe_iterate:True"
+    } else {
+        "aa_maybe_iterate:False"
+    };
+    let mut update = Map::new();
+    update.insert("should_iterate".to_owned(), json!(should_iterate));
+    update.insert("iter_idx".to_owned(), json!(recorded_iter));
+
+    let mut op_log = state
+        .get("op_log")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    op_log.push(json!(log_entry));
+    let mut final_state = state.clone();
+    final_state.extend(update.clone());
+    final_state.insert("op_log".to_owned(), Value::Array(op_log));
+
+    Ok(NativeRoutedOperationOutput {
+        output: NativeOperationOutput {
+            state_update: vec![
+                RecordedStateUpdate::Pair(("u".to_owned(), update)),
+                RecordedStateUpdate::Pair((
+                    "a".to_owned(),
+                    Map::from_iter([("op_log".to_owned(), Value::String(log_entry.to_owned()))]),
+                )),
+            ],
+            result: Some(json!({
+                "workflow_status": "succeeded",
+                "final_state": final_state,
+                "conversation_node_id": null
+            })),
+        },
+        successors: selected_target(request, should_iterate)?,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use kogwistar_runtime::{
+        RUST_NATIVE_EXECUTOR_TARGET, RuntimeNativeExecutionError, RuntimeNativeStepRequest,
+        RuntimeStaticRoute, execute_native_step_with_registry,
+    };
+    use serde_json::{Map, Value, json};
+
+    fn request(state: Value) -> RuntimeNativeStepRequest {
+        RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "aa_maybe_iterate".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-1".to_owned(),
+            workflow_id: "agentic_answering.v2".to_owned(),
+            node_id: "maybe-iterate".to_owned(),
+            conversation_id: "conv-1".to_owned(),
+            turn_node_id: None,
+            token_id: "token-1".to_owned(),
+            parent_token_id: None,
+            step_seq: 7,
+            state: serde_json::from_value::<Map<String, Value>>(state).unwrap(),
+            runtime_routes: vec![
+                RuntimeStaticRoute {
+                    edge_id: "iterate-again".to_owned(),
+                    source_node_id: "maybe-iterate".to_owned(),
+                    target_node_id: "retrieve".to_owned(),
+                    aliases: Vec::new(),
+                    join_mask: 0,
+                    predicate: Some("aa_should_iterate".to_owned()),
+                    multiplicity: "one".to_owned(),
+                    is_default: false,
+                    priority: 0,
+                    source_fanout: false,
+                },
+                RuntimeStaticRoute {
+                    edge_id: "persist-answer".to_owned(),
+                    source_node_id: "maybe-iterate".to_owned(),
+                    target_node_id: "persist".to_owned(),
+                    aliases: Vec::new(),
+                    join_mask: 0,
+                    predicate: None,
+                    multiplicity: "one".to_owned(),
+                    is_default: true,
+                    priority: 100,
+                    source_fanout: false,
+                },
+            ],
+            ephemeral_context: Map::new(),
+        }
+    }
+
+    #[test]
+    fn maybe_iterate_matches_python_loop_predicate_and_advances_only_when_routed() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let effect = execute_native_step_with_registry(
+            &request(json!({
+                "evaluation": {"needs_more_info": true, "is_sufficient": false},
+                "iter_idx": 0,
+                "max_iter": 2,
+                "op_log": ["aa_evaluate_answer"]
+            })),
+            &registry,
+        )
+        .unwrap();
+        assert!(effect.graph_mutation_batch_v2.is_none());
+        let result = effect.result.unwrap();
+        assert_eq!(effect.successors[0].node_id, "retrieve");
+        assert_eq!(result["final_state"]["should_iterate"], true);
+        assert_eq!(result["final_state"]["iter_idx"], 1);
+        assert_eq!(
+            result["final_state"]["op_log"],
+            json!(["aa_evaluate_answer", "aa_maybe_iterate:True"])
+        );
+    }
+
+    #[test]
+    fn maybe_iterate_stops_for_sufficient_or_exhausted_runs_and_uses_python_defaults() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        for state in [
+            json!({
+                "evaluation": {"needs_more_info": true, "is_sufficient": true},
+                "iter_idx": 0,
+                "max_iter": 2
+            }),
+            json!({
+                "evaluation": {"needs_more_info": true, "is_sufficient": false},
+                "iter_idx": 1,
+                "max_iter": 2
+            }),
+            json!({"evaluation": {"needs_more_info": true}}),
+        ] {
+            let effect = execute_native_step_with_registry(&request(state), &registry).unwrap();
+            assert_eq!(effect.successors[0].node_id, "persist");
+            let result = effect.result.unwrap();
+            assert_eq!(result["final_state"]["should_iterate"], false);
+        }
+    }
+
+    #[test]
+    fn maybe_iterate_fails_closed_when_frozen_routes_do_not_match_its_decision() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({
+            "evaluation": {"needs_more_info": true, "is_sufficient": false},
+            "iter_idx": 0,
+            "max_iter": 2
+        }));
+        request.runtime_routes.remove(0);
+        assert!(execute_native_step_with_registry(&request, &registry).is_err());
+    }
+
+    #[test]
+    fn bm25_evidence_selection_matches_python_overlap_order_and_limit() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/answer-bm25-selection-v1.json"
+        ))
+        .unwrap();
+        let mut request = request(fixture["state"].clone());
+        request.operation = "aa_select_used_evidence".to_owned();
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        let result = effect.result.unwrap();
+        assert_eq!(
+            result["final_state"]["selection"],
+            fixture["expected"]["selection"]
+        );
+        assert_eq!(
+            result["final_state"]["op_log"],
+            json!(["aa_select_used_evidence:2"])
+        );
+    }
+
+    #[test]
+    fn debug_rag_native_steps_match_python_state_and_answer_shape() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/debug-rag-state-v1.json"
+        ))
+        .unwrap();
+        let mut select = request(fixture["state"].clone());
+        select.operation = "aa_debug_select_top_candidates".to_owned();
+        let selected = execute_native_step_with_registry(&select, &registry)
+            .unwrap()
+            .result
+            .unwrap()["final_state"]
+            .clone();
+        let expected = &fixture["expected"];
+        assert_eq!(selected["selection"], expected["selection"]);
+        assert_eq!(selected["used_node_ids"], expected["used_node_ids"]);
+        assert_eq!(
+            selected["selected_candidates"],
+            expected["selected_candidates"]
+        );
+        assert_eq!(selected["op_log"], expected["selected_op_log"]);
+
+        let mut answer = request(selected);
+        answer.operation = "aa_debug_answer_from_nodes".to_owned();
+        let final_state = execute_native_step_with_registry(&answer, &registry)
+            .unwrap()
+            .result
+            .unwrap()["final_state"]
+            .clone();
+        assert_eq!(final_state["answer"], expected["answer"]);
+        assert_eq!(final_state["evaluation"], expected["evaluation"]);
+        assert_eq!(final_state["op_log"], expected["final_op_log"]);
+    }
+
+    #[test]
+    fn candidate_retrieval_requires_host_authorized_records_and_projects_canonical_candidates() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({"op_log": ["aa_prepare"]}));
+        request.operation = "aa_retrieve_candidates".to_owned();
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                ..
+            })
+        ));
+
+        request.ephemeral_context.insert(
+            "authorized_candidate_records".to_owned(),
+            json!([
+                {"id": "node-z", "label": "Z", "summary": null, "doc": "body z", "embedding": [1.0]},
+                {"id": "node-a", "label": "A", "summary": "summary a", "doc": "body a"}
+            ]),
+        );
+        let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+        let result = effect.result.unwrap();
+        assert_eq!(
+            result["final_state"]["candidates"],
+            json!([
+                {"id": "node-a", "label": "A", "summary": "summary a", "doc": "body a"},
+                {"id": "node-z", "label": "Z", "summary": null, "doc": "body z"}
+            ])
+        );
+        assert_eq!(
+            result["final_state"]["op_log"],
+            json!(["aa_prepare", "aa_retrieve_candidates:2"])
+        );
+        assert_eq!(effect.state_update.len(), 2);
+    }
+
+    #[test]
+    fn candidate_retrieval_rejects_malformed_host_projection() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({}));
+        request.operation = "aa_retrieve_candidates".to_owned();
+        request.ephemeral_context.insert(
+            "authorized_candidate_records".to_owned(),
+            json!([{"id": "node-1", "doc": {"untrusted": true}}]),
+        );
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "authorized_candidate_records",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn python_default_and_legacy_llm_selector_match_shared_bm25_contract() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/answer-bm25-selection-v1.json"
+        ))
+        .unwrap();
+        for selector in [None, Some("llm"), Some("LLM"), Some("bm25"), Some("BM25")] {
+            let mut state = fixture["state"].clone();
+            if let Some(selector) = selector {
+                state["evidence_selector"] = json!(selector);
+            } else {
+                state.as_object_mut().unwrap().remove("evidence_selector");
+            }
+            let mut request = request(state);
+            request.operation = "aa_select_used_evidence".to_owned();
+            let result = execute_native_step_with_registry(&request, &registry)
+                .unwrap()
+                .result
+                .unwrap();
+            assert_eq!(
+                result["final_state"]["selection"],
+                fixture["expected"]["selection"]
+            );
+            if selector.is_some_and(|value| value.eq_ignore_ascii_case("bm25")) {
+                assert!(result["final_state"].get("run_step_seq").is_none());
+            } else {
+                assert_eq!(result["final_state"]["run_step_seq"], 8);
+            }
+        }
+    }
+
+    #[test]
+    fn evidence_selection_rejects_unknown_strategy() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({
+            "evidence_selector": "provider_magic",
+            "question": "graph retrieval",
+            "candidates": [{"id": "node-1", "label": "graph", "summary": "retrieval"}]
+        }));
+        request.operation = "aa_select_used_evidence".to_owned();
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "evidence_selector",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn evidence_selection_rejects_malformed_strategy_type() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let mut request = request(json!({
+            "evidence_selector": 7,
+            "question": "graph retrieval",
+            "candidates": [{"id": "node-1", "label": "graph", "summary": "retrieval"}]
+        }));
+        request.operation = "aa_select_used_evidence".to_owned();
+        assert!(matches!(
+            execute_native_step_with_registry(&request, &registry),
+            Err(RuntimeNativeExecutionError::InvalidState {
+                field: "evidence_selector",
+                reason: "evidence_selector must be a string when provided",
+            })
+        ));
+    }
+
+    #[test]
+    fn answer_evaluation_matches_python_shared_contract_fixture() {
+        let registry = crate::native_answer_persist::registry().unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/answer-evaluation-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture["operation"], "aa_evaluate_answer/v1");
+        for case in fixture["cases"].as_array().unwrap() {
+            let mut request = request(case["state"].clone());
+            request.operation = "aa_evaluate_answer".to_owned();
+            let effect = execute_native_step_with_registry(&request, &registry).unwrap();
+            assert!(effect.graph_mutation_batch_v2.is_none());
+            let result = effect.result.unwrap();
+            let expected = &case["expected"];
+            assert_eq!(result["final_state"]["evaluation"], expected["evaluation"]);
+            assert_eq!(
+                result["final_state"]["run_step_seq"],
+                expected["run_step_seq"]
+            );
+            assert_eq!(
+                result["final_state"]["max_candidates"],
+                expected["max_candidates"]
+            );
+            assert_eq!(
+                result["final_state"]["materialize_depth"],
+                expected["materialize_depth"]
+            );
+            assert_eq!(
+                result["final_state"]["op_log"],
+                json!(["aa_evaluate_answer"]),
+                "case: {}",
+                case["name"]
+            );
+        }
+    }
+}

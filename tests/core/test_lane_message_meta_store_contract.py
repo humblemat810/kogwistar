@@ -193,6 +193,120 @@ def test_lane_message_claim_filters_target_before_lease(meta_factory, tmp_path):
     )[0].status == "pending"
 
 
+@pytest.mark.parametrize(
+    ("meta_factory", "operation"),
+    [
+        (lambda tmp_path: InMemoryMetaStore(), "ack"),
+        (lambda tmp_path: InMemoryMetaStore(), "requeue"),
+        (lambda tmp_path: InMemoryMetaStore(), "dead_letter"),
+        (lambda tmp_path: _sqlite_meta(tmp_path), "ack"),
+        (lambda tmp_path: _sqlite_meta(tmp_path), "requeue"),
+        (lambda tmp_path: _sqlite_meta(tmp_path), "dead_letter"),
+    ],
+    ids=[
+        "memory-ack", "memory-requeue", "memory-dead-letter",
+        "sqlite-ack", "sqlite-requeue", "sqlite-dead-letter",
+    ],
+)
+def test_expired_lane_claim_cannot_be_finalized_before_reclaim(
+    meta_factory, operation: str, tmp_path
+) -> None:
+    meta = meta_factory(tmp_path)
+    meta.project_lane_message(
+        message_id="expired",
+        namespace="ns-a",
+        inbox_id="inbox:worker",
+        conversation_id="conv-1",
+        recipient_id="worker",
+        sender_id="agent",
+        msg_type="work",
+        status="pending",
+        created_at=1,
+        available_at=1,
+        run_id=None,
+        step_id=None,
+        correlation_id=None,
+    )
+    claim = meta.claim_projected_lane_messages(
+        namespace="ns-a",
+        inbox_id="inbox:worker",
+        claimed_by="attempt-1",
+        lease_seconds=-1,
+        limit=1,
+    )[0]
+    assert claim.lease_until is not None
+    assert claim.lease_until < meta._lane_message_now_epoch()
+
+    if operation == "ack":
+        meta.ack_projected_lane_message(
+            message_id="expired", claimed_by="attempt-1"
+        )
+    elif operation == "requeue":
+        meta.requeue_projected_lane_message(
+            message_id="expired", claimed_by="attempt-1", delay_seconds=0
+        )
+    else:
+        meta.dead_letter_projected_lane_message(
+            message_id="expired", claimed_by="attempt-1"
+        )
+
+    row = meta.list_projected_lane_messages(namespace="ns-a", inbox_id="inbox:worker")[0]
+    assert row.status == "claimed"
+    assert row.claimed_by == "attempt-1"
+    assert row.retry_count == 0
+
+
+@pytest.mark.parametrize(
+    "meta_factory",
+    [
+        lambda tmp_path: InMemoryMetaStore(),
+        lambda tmp_path: _sqlite_meta(tmp_path),
+    ],
+    ids=["in-memory", "sqlite"],
+)
+def test_dead_letter_claimed_lane_message_is_durable_and_terminal(
+    meta_factory, tmp_path
+) -> None:
+    meta = meta_factory(tmp_path)
+    meta.project_lane_message(
+        message_id="dead-letter",
+        namespace="ns-a",
+        inbox_id="inbox:worker",
+        conversation_id="conv-1",
+        recipient_id="worker",
+        sender_id="agent",
+        msg_type="work",
+        status="pending",
+        created_at=1,
+        available_at=1,
+        run_id=None,
+        step_id=None,
+        correlation_id=None,
+    )
+    claim = meta.claim_projected_lane_messages(
+        namespace="ns-a",
+        inbox_id="inbox:worker",
+        claimed_by="attempt-1",
+        lease_seconds=30,
+        limit=1,
+    )[0]
+    meta.dead_letter_projected_lane_message(
+        message_id="dead-letter",
+        claimed_by=claim.claimed_by or "",
+        error_json='{"reason":"unrecoverable"}',
+    )
+    meta.dead_letter_projected_lane_message(
+        message_id="dead-letter",
+        claimed_by="another-attempt",
+        error_json='{"reason":"must-not-overwrite"}',
+    )
+
+    row = meta.list_projected_lane_messages(namespace="ns-a", inbox_id="inbox:worker")[0]
+    assert row.status == "dead-letter"
+    assert row.claimed_by is None and row.lease_until is None
+    assert row.error_json == '{"reason":"unrecoverable"}'
+
+
 def test_clear_projected_lane_messages_is_lane_specific_and_namespace_scoped(tmp_path):
     in_memory = InMemoryMetaStore()
     sqlite = _sqlite_meta(tmp_path)

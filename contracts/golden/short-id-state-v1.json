@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "run_id": "shared-contract-token",
+  "file_key": "4fabdae551ff25eeaf70c6d358df3ad6",
+  "state": {
+    "next": 3,
+    "l2s": {
+      "node-a": "<sid>1",
+      "node-b": "<sid>2"
+    },
+    "s2l": {
+      "<sid>1": "node-a",
+      "<sid>2": "node-b"
+    }
+  },
+  "next_entity": "node-c",
+  "expected_alias": "<sid>3"
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "request": {
+    "username": "dev@example.com",
+    "role": "rw",
+    "ns": "docs,workflow",
+    "capabilities": "project_view,workflow.run.read"
+  },
+  "response_fields": ["token"],
+  "stable_claims": {
+    "sub": "dev@example.com",
+    "role": "rw",
+    "ns": ["docs", "workflow"],
+    "capabilities": ["project_view", "workflow.run.read"],
+    "iss": "local"
+  },
+  "token_lifetime_seconds": 14400
+}

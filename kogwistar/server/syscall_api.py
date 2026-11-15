@@ -130,6 +130,7 @@ def create_syscall_router(
             "ops": [
                 "spawn_process",
                 "terminate_process",
+                "create_conversation",
                 "send_message",
                 "receive_message",
                 "mount_memory",
@@ -154,6 +155,46 @@ def create_syscall_router(
         op = str(op or inp.op or "").strip().lower()
         started_at = int(time.time() * 1000)
         try:
+            if op == "create_conversation":
+                require_role("rw")
+                require_namespace(conversation_namespace)
+                actor_id = get_user_id() if callable(get_user_id) else None
+                if not actor_id:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="conversation creation requires an authenticated principal",
+                    )
+                requested_user_id = inp.args.get("user_id")
+                if not isinstance(requested_user_id, str) or not requested_user_id.strip():
+                    raise ValueError("user_id is required")
+                if requested_user_id.strip().lower() != str(actor_id).strip().lower():
+                    raise PermissionError(
+                        "user_id must match the authenticated principal"
+                    )
+
+                def optional_id(name: str) -> str | None:
+                    value = inp.args.get(name)
+                    if value is None:
+                        return None
+                    if not isinstance(value, str) or not value.strip():
+                        raise ValueError(f"{name} must be a non-empty string or null")
+                    return value.strip()
+
+                payload = service.create_conversation(
+                    user_id=str(actor_id),
+                    conversation_id=optional_id("conversation_id"),
+                    start_node_id=optional_id("start_node_id"),
+                )
+                resp = _ok(version, op, payload)
+                audit_log.append(
+                    {
+                        "ts_ms": started_at,
+                        "version": version,
+                        "op": op,
+                        "status": "ok",
+                    }
+                )
+                return resp
             if op == "spawn_process":
                 require_role("rw")
                 require_namespace(workflow_namespaces)

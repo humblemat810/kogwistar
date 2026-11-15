@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import pytest
 
@@ -355,6 +356,57 @@ def test_neighbors_and_khop(small_graph):
     assert layers and "B" in layers[1]["nodes"]
 
 
+def test_graph_traversal_matches_shared_golden_contract(small_graph):
+    fixture = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/graph-traversal-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    assert fixture["schema_version"] == 1
+    engine, doc_id = small_graph
+    gq = GraphQuery(engine)
+    cases = {case["name"]: case for case in fixture["cases"]}
+
+    node_neighbors = gq.neighbors(
+        cases["node_to_edge_without_jump"]["rid"],
+        doc_id=doc_id,
+        allow_jump_edge=False,
+    )
+    assert sorted(node_neighbors["nodes"]) == cases["node_to_edge_without_jump"][
+        "expected_neighbors"
+    ]["nodes"]
+    assert sorted(node_neighbors["edges"]) == cases["node_to_edge_without_jump"][
+        "expected_neighbors"
+    ]["edges"]
+
+    edge_neighbors = gq.neighbors(cases["edge_to_nodes"]["rid"], doc_id=doc_id)
+    assert sorted(edge_neighbors["nodes"]) == cases["edge_to_nodes"]["expected_neighbors"][
+        "nodes"
+    ]
+    assert sorted(edge_neighbors["edges"]) == cases["edge_to_nodes"]["expected_neighbors"][
+        "edges"
+    ]
+
+    path_case = cases["shortest_path"]
+    path = gq.shortest_path(
+        path_case["src_id"], path_case["dst_id"], doc_id=doc_id, max_depth=8
+    )
+    assert path == path_case["expected_path"]
+    hop_case = cases["k_hop"]
+    layers = gq.k_hop(hop_case["start_ids"], k=hop_case["k"], doc_id=doc_id)
+    assert [
+        {"nodes": sorted(layer["nodes"]), "edges": sorted(layer["edges"])}
+        for layer in layers
+    ] == cases["k_hop"]["expected_layers"]
+
+    find_case = cases["find_edges"]
+    assert gq.find_edges(
+        relation=find_case["relation"],
+        src_label_contains=find_case["source_label_contains"],
+        tgt_label_contains=find_case["target_label_contains"],
+        doc_id=find_case["doc_id"],
+    ) == find_case["expected_edge_ids"]
+
+
 def test_shortest_path_and_find_edges(small_graph):
     engine, doc_id = small_graph
     gq = GraphQuery(engine)
@@ -388,7 +440,54 @@ def test_document_subgraph(small_graph):
 
 def test_semantic_seed_then_expand_text(small_graph):
     engine, _ = small_graph
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/semantic-seed-expand-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    same_doc_edge = Edge.model_validate_json(engine.edge_collection._docs["E1"])
+    cross_doc_edge = same_doc_edge.model_copy(
+        update={"id": "E2", "doc_id": "D2", "label": "cross-document link"}
+    )
+    engine.edge_collection.add(
+        ids=[cross_doc_edge.id],
+        documents=[cross_doc_edge.model_dump_json(field_mode="backend")],
+        metadatas=[{"doc_id": "D2", "relation": cross_doc_edge.relation}],
+    )
+    engine.edge_endpoints_collection.add(
+        ids=["E2::src::node::A", "E2::tgt::node::B"],
+        documents=[
+            json.dumps({"edge_id": "E2", "endpoint_id": "A"}),
+            json.dumps({"edge_id": "E2", "endpoint_id": "B"}),
+        ],
+        metadatas=[
+            {
+                "edge_id": "E2",
+                "endpoint_id": "A",
+                "endpoint_type": "node",
+                "role": "src",
+                "doc_id": "D2",
+            },
+            {
+                "edge_id": "E2",
+                "endpoint_id": "B",
+                "endpoint_type": "node",
+                "role": "tgt",
+                "doc_id": "D2",
+            },
+        ],
+    )
     gq = GraphQuery(engine)
-    out = gq.semantic_seed_then_expand_text("smok", top_k=5, hops=1)
-    assert out["seeds"]
-    assert isinstance(out["layers"], list) and out["layers"]
+    out = gq.semantic_seed_then_expand_text(
+        fixture["query_text"],
+        top_k=fixture["top_k"],
+        hops=fixture["hops"],
+        doc_ids=fixture["scope"]["doc_id"],
+    )
+    assert [json.loads(seed)["id"] for seed in out["seeds"]] == fixture[
+        "expected_seed_ids"
+    ]
+    assert sorted(json.loads(edge)["id"] for edge in out["layers"][0]["edges"]) == (
+        fixture["expected_first_layer_edge_ids"]
+    )

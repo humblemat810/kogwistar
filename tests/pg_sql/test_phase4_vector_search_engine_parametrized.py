@@ -3,7 +3,12 @@ import pytest
 pytestmark = pytest.mark.core
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.search_index.models import (
+    IndexingItem,
+    make_index_key_for_item,
+)
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.embeddings import build_test_embedding_function
 from tests.conftest import FakeEmbeddingFunction
 
 EMBEDDING_DIM = 3
@@ -73,6 +78,47 @@ def test_engine_vector_search_nodes_orders_neighbors(
     _insert_three(eng.backend)
     got = eng.vector_search_nodes([1.0, 0.0, 0.0], top_k=3)
     assert got["ids"][0] == ["A", "B", "C"]
+
+
+@pytest.mark.ci_full
+def test_search_index_hybrid_uses_pgvector_node_index(
+    request: pytest.FixtureRequest, tmp_path
+) -> None:
+    pytest.importorskip("sqlalchemy")
+    pytest.importorskip("pgvector")
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+    sa_engine = request.getfixturevalue("sa_engine")
+    pg_schema = request.getfixturevalue("pg_schema")
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=pg_schema)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "pg_search_index"),
+        backend=backend,
+        embedding_function=build_test_embedding_function("constant", dim=3),
+    )
+    item = IndexingItem(
+        node_id="pg-law-1",
+        canonical_title="Searchable Provision",
+        keywords=["hydraulic", "safety"],
+        aliases=["waterworks"],
+        provision="Inspect the hydraulic pressure valve.",
+        doc_id="regulations-1",
+    )
+    try:
+        engine.search_index.upsert_entries([item])
+        result = engine.search_index.search_hybrid("hydraulic safety", limit=5)
+        assert [row["node_id"] for row in result["results"]] == ["pg-law-1"]
+        stored = backend.node_index_get(
+            ids=[f"idx:{make_index_key_for_item(item)}"],
+            include=["documents", "metadatas", "embeddings"],
+        )
+        assert stored["ids"]
+        assert stored["metadatas"][0]["target_node_id"] == "pg-law-1"
+    finally:
+        engine.close()
 
 
 @pytest.mark.ci_full

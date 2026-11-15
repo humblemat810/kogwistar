@@ -1,0 +1,830 @@
+use kogwistar_contracts::stable_id;
+use kogwistar_store_postgres::{PostgresStoreError, PostgresUnitOfWork};
+
+type AclTargetKey = (String, String, String);
+type AclMutationTarget = (String, AclTargetKey);
+
+#[derive(Clone, Copy)]
+struct AclDefaultsContext<'a> {
+    truth_graph: &'a str,
+    owner_id: &'a str,
+    security_scope: Option<&'a str>,
+    effect_id: &'a str,
+}
+
+async fn resolve_default_acl_graph_effects(
+    uow: &PostgresUnitOfWork<'_>,
+    scope: &GraphScope,
+    mutations: &[GraphMutation],
+    context: AclDefaultsContext<'_>,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
+    resolve_default_acl_graph_effects_with_schema(
+        uow,
+        None,
+        scope,
+        mutations,
+        context,
+    )
+    .await
+}
+
+async fn resolve_default_acl_graph_effects_in_schema(
+    uow: &PostgresUnitOfWork<'_>,
+    schema: &str,
+    scope: &GraphScope,
+    mutations: &[GraphMutation],
+    context: AclDefaultsContext<'_>,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
+    resolve_default_acl_graph_effects_with_schema(
+        uow,
+        Some(schema),
+        scope,
+        mutations,
+        context,
+    )
+    .await
+}
+
+async fn resolve_default_acl_graph_effects_with_schema(
+    uow: &PostgresUnitOfWork<'_>,
+    schema: Option<&str>,
+    scope: &GraphScope,
+    mutations: &[GraphMutation],
+    context: AclDefaultsContext<'_>,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
+    let (targets, lock_targets) = acl_targets_for_graph_mutations(mutations);
+
+    for (kind, entity_id) in &lock_targets {
+        uow.lock_entity_identity(&scope.namespace, kind, entity_id).await?;
+    }
+    if targets.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    let target_entity_ids = targets
+        .iter()
+        .map(|(_, (_, entity_id, _))| entity_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let existing = match schema {
+        Some(schema) => {
+            uow.graph_acl_records_for_entities_in_schema(
+                schema,
+                scope,
+                context.truth_graph,
+                &target_entity_ids,
+            )
+            .await?
+        }
+        None => {
+            uow.graph_acl_records_for_entities(scope, context.truth_graph, &target_entity_ids)
+                .await?
+        }
+    };
+    derive_default_acl_graph_effects_from_records(
+        scope,
+        mutations,
+        targets,
+        existing,
+        context,
+    )
+    .map_err(PostgresStoreError::Backend)
+}
+
+fn acl_targets_for_graph_mutations(
+    mutations: &[GraphMutation],
+) -> (BTreeSet<AclMutationTarget>, BTreeSet<(String, String)>) {
+    let mut targets = BTreeSet::<AclMutationTarget>::new();
+    let mut lock_targets = BTreeSet::<(String, String)>::new();
+    for mutation in mutations {
+        if mutation.record.metadata.get("entity_type")
+            == Some(&Value::String("acl_record".to_owned()))
+        {
+            continue;
+        }
+        lock_targets.insert((mutation.entity_kind.clone(), mutation.record.id.clone()));
+        targets.insert((
+            mutation.entity_kind.clone(),
+            (
+                mutation.entity_kind.clone(),
+                mutation.record.id.clone(),
+                String::new(),
+            ),
+        ));
+        if let Some(mentions) = mutation.payload.get("mentions").and_then(Value::as_array) {
+            for (grounding_index, grounding) in mentions.iter().enumerate() {
+                let grounding_id = format!(
+                    "__kogwistar_acl_usage_v2__:{}:{}::mention::{grounding_index}",
+                    mutation.entity_kind, mutation.record.id
+                );
+                targets.insert((
+                    mutation.entity_kind.clone(),
+                    ("grounding".to_owned(), mutation.record.id.clone(), grounding_id),
+                ));
+                let Some(spans) = grounding.get("spans").and_then(Value::as_array) else {
+                    continue;
+                };
+                for span_index in 0..spans.len() {
+                    let span_id = format!(
+                        "__kogwistar_acl_usage_v2__:{}:{}::mention::{grounding_index}::span::{span_index}",
+                        mutation.entity_kind, mutation.record.id,
+                    );
+                    targets.insert((
+                        mutation.entity_kind.clone(),
+                        ("span".to_owned(), mutation.record.id.clone(), span_id),
+                    ));
+                }
+            }
+        }
+    }
+    (targets, lock_targets)
+}
+
+fn acl_target_entity_ids(targets: &BTreeSet<AclMutationTarget>) -> Vec<String> {
+    targets
+        .iter()
+        .map(|(_, (_, entity_id, _))| entity_id.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn derive_default_acl_graph_effects_from_records(
+    scope: &GraphScope,
+    mutations: &[GraphMutation],
+    targets: BTreeSet<AclMutationTarget>,
+    existing: Vec<GraphRecord>,
+    context: AclDefaultsContext<'_>,
+) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), String> {
+    if targets.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let latest = latest_acl_records(existing);
+    let mut derived_mutations = Vec::new();
+    let mut derived_jobs = Vec::new();
+
+    for mutation in mutations {
+        if mutation.record.metadata.get("entity_type")
+            == Some(&Value::String("acl_record".to_owned()))
+            || mutation.op == "TOMBSTONE"
+        {
+            continue;
+        }
+        let (mode, shared_principals, shared_groups) = acl_defaults_from_mutation(mutation);
+        for (_, (grain, entity_id, target_item_id)) in targets.iter().filter(
+            |(entity_kind, (_, id, _))| {
+                entity_kind == &mutation.entity_kind && id == &mutation.record.id
+            },
+        ) {
+            let key = (grain.clone(), entity_id.clone(), target_item_id.clone());
+            let previous = latest.get(&key);
+            if previous.is_some_and(|record| {
+                default_acl_matches(
+                    record,
+                    context.owner_id,
+                    context.security_scope,
+                    &mode,
+                    &shared_principals,
+                    &shared_groups,
+                )
+            }) {
+                continue;
+            }
+            let version = previous
+                .and_then(|record| record.metadata.get("acl_version"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0)
+                .checked_add(1)
+                .ok_or_else(|| "ACL version overflow".to_owned())?;
+            let acl_node = acl_record_mutation(
+                scope,
+                context.truth_graph,
+                grain,
+                entity_id,
+                target_item_id,
+                version,
+                context.owner_id,
+                context.security_scope,
+                &mode,
+                &shared_principals,
+                &shared_groups,
+                context.effect_id,
+            );
+            derived_jobs.extend(acl_index_jobs(scope, &acl_node, context.effect_id));
+            derived_mutations.push(acl_node);
+            if let Some(previous) = previous {
+                let current_id = derived_mutations.last().expect("just appended ACL node").record.id.clone();
+                let supersedes = acl_supersedes_mutation(
+                    scope,
+                    context.truth_graph,
+                    entity_id,
+                    grain,
+                    target_item_id,
+                    &current_id,
+                    &previous.id,
+                    context.effect_id,
+                );
+                derived_jobs.extend(acl_index_jobs(scope, &supersedes, context.effect_id));
+                derived_mutations.push(supersedes);
+            }
+        }
+    }
+    Ok((derived_mutations, derived_jobs))
+}
+
+fn latest_acl_records(records: Vec<GraphRecord>) -> BTreeMap<AclTargetKey, GraphRecord> {
+    let mut latest = BTreeMap::new();
+    for record in records {
+        let Some(entity_type) = record.metadata.get("entity_type").and_then(Value::as_str) else {
+            continue;
+        };
+        if entity_type != "acl_record" {
+            continue;
+        }
+        let (Some(grain), Some(entity_id)) = (
+            record.metadata.get("acl_target_grain").and_then(Value::as_str),
+            record.metadata.get("acl_target_entity_id").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        let target_item_id = record
+            .metadata
+            .get("acl_target_item_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let key = (grain.to_owned(), entity_id.to_owned(), target_item_id.to_owned());
+        let version = record.metadata.get("acl_version").and_then(Value::as_u64).unwrap_or(0);
+        let replace = latest.get(&key).is_none_or(|current: &GraphRecord| {
+            let current_version = current.metadata.get("acl_version").and_then(Value::as_u64).unwrap_or(0);
+            let current_tombstoned = current.metadata.get("tombstoned").and_then(Value::as_bool).unwrap_or(false);
+            let tombstoned = record.metadata.get("tombstoned").and_then(Value::as_bool).unwrap_or(false);
+            (current_tombstoned && !tombstoned) || (current_tombstoned == tombstoned && version > current_version)
+        });
+        if replace {
+            latest.insert(key, record);
+        }
+    }
+    latest
+}
+
+// Python parity: mirrors ACLManager._metadata_acl_defaults for mode and share aliases.
+fn acl_defaults_from_mutation(mutation: &GraphMutation) -> (String, Vec<String>, Vec<String>) {
+    let metadata = &mutation.record.metadata;
+    let requested_mode = metadata
+        .get("visibility")
+        .or_else(|| metadata.get("acl_mode"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let mode = match requested_mode.as_str() {
+        "private" | "shared" | "scope" | "group" | "public" => requested_mode,
+        _ => "private".to_owned(),
+    };
+    let aliases = |primary: &str, fallback: &str| {
+        metadata
+            .get(primary)
+            .or_else(|| metadata.get(fallback))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    (
+        mode,
+        aliases("shared_with_agents", "shared_with"),
+        aliases("shared_with_groups", "shared_groups"),
+    )
+}
+
+fn default_acl_matches(
+    record: &GraphRecord,
+    owner_id: &str,
+    security_scope: Option<&str>,
+    mode: &str,
+    shared_principals: &[String],
+    shared_groups: &[String],
+) -> bool {
+    let expected_principals = shared_principals
+        .iter()
+        .cloned()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    let expected_groups = shared_groups
+        .iter()
+        .cloned()
+        .map(Value::String)
+        .collect::<Vec<_>>();
+    record.metadata.get("acl_mode").and_then(Value::as_str) == Some(mode)
+        && record.metadata.get("owner_id").and_then(Value::as_str) == Some(owner_id)
+        && record.metadata.get("created_by").and_then(Value::as_str) == Some(owner_id)
+        && record.metadata.get("security_scope").and_then(Value::as_str) == security_scope
+        && record.metadata.get("shared_with_principals").and_then(Value::as_array)
+            == Some(&expected_principals)
+        && record.metadata.get("shared_with_groups").and_then(Value::as_array)
+            == Some(&expected_groups)
+        && record.metadata.get("tombstoned").and_then(Value::as_bool) != Some(true)
+}
+
+// These parameters are the independent authority and identity fields of the ACL record.
+#[allow(clippy::too_many_arguments)]
+fn acl_record_mutation(
+    scope: &GraphScope,
+    truth_graph: &str,
+    grain: &str,
+    entity_id: &str,
+    target_item_id: &str,
+    version: u64,
+    owner_id: &str,
+    security_scope: Option<&str>,
+    mode: &str,
+    shared_principals: &[String],
+    shared_groups: &[String],
+    effect_id: &str,
+) -> GraphMutation {
+    let node_id = stable_id(
+        "acl_record",
+        &[
+            truth_graph.to_owned(),
+            entity_id.to_owned(),
+            grain.to_owned(),
+            if target_item_id.is_empty() { "-" } else { target_item_id }.to_owned(),
+            version.to_string(),
+        ],
+    )
+    .to_string();
+    let label = format!("acl:{truth_graph}:{entity_id}:{grain}");
+    let summary = format!("{mode} acl for {entity_id} {grain}");
+    let metadata = json!({
+        "entity_type": "acl_record",
+        "acl_truth_graph": truth_graph,
+        "acl_target_entity_id": entity_id,
+        "acl_target_grain": grain,
+        "acl_target_item_id": target_item_id,
+        "acl_version": version,
+        "acl_mode": mode,
+        "created_by": owner_id,
+        "owner_id": owner_id,
+        "security_scope": security_scope,
+        "tombstoned": false,
+        "supersedes_version": if version > 1 { Some(version - 1) } else { None },
+        "level_from_root": 0,
+        "workspace_id": scope.workspace_id,
+        "graph_space": scope.graph_space,
+    });
+    let properties = json!({
+        "shared_with_principals": shared_principals,
+        "shared_with_groups": shared_groups,
+        "source_ids": [],
+        "derivation_type": null,
+        "derivation_audit": "{}",
+        "target_item_id": target_item_id,
+    });
+    let mut record_metadata = metadata.as_object().cloned().unwrap_or_default();
+    record_metadata.extend(properties.as_object().cloned().unwrap_or_default());
+    let span = acl_dummy_span(truth_graph);
+    let payload = json!({
+        "id": node_id,
+        "label": label,
+        "type": "entity",
+        "summary": summary,
+        "doc_id": format!("acl:{truth_graph}"),
+        "mentions": [{"spans": [span]}],
+        "metadata": metadata,
+        "properties": properties,
+        "embedding": null,
+        "level_from_root": 0,
+        "domain_id": null,
+        "canonical_entity_id": null,
+    });
+    let mut document_payload = payload.clone();
+    let document_object = document_payload
+        .as_object_mut()
+        .expect("ACL record payload is an object");
+    document_object.remove("metadata");
+    document_object.remove("embedding");
+    let record = GraphRecord {
+        id: node_id.clone(),
+        document: Some(document_payload.to_string()),
+        metadata: record_metadata,
+        embedding: None,
+    };
+    GraphMutation {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: stable_event_id(effect_id, &node_id),
+        op: "ADD".to_owned(),
+        payload,
+        record,
+        embedding_dim: 0,
+    }
+}
+
+// Keep the two entity identities and the target tuple explicit in the edge payload.
+#[allow(clippy::too_many_arguments)]
+fn acl_supersedes_mutation(
+    scope: &GraphScope,
+    truth_graph: &str,
+    entity_id: &str,
+    grain: &str,
+    target_item_id: &str,
+    current_id: &str,
+    previous_id: &str,
+    effect_id: &str,
+) -> GraphMutation {
+    let edge_id = stable_id("acl_supersedes", &[current_id.to_owned(), previous_id.to_owned()]).to_string();
+    let summary = "acl supersedes previous acl state";
+    let metadata = json!({
+        "entity_type": "acl_supersedes",
+        "acl_truth_graph": truth_graph,
+        "acl_target_entity_id": entity_id,
+        "acl_target_grain": grain,
+        "acl_target_item_id": target_item_id,
+        "level_from_root": 0,
+        "workspace_id": scope.workspace_id,
+        "graph_space": scope.graph_space,
+    });
+    let payload = json!({
+        "id": edge_id,
+        "label": "acl_supersedes",
+        "type": "relationship",
+        "summary": summary,
+        "relation": "acl_supersedes",
+        "source_ids": [current_id],
+        "target_ids": [previous_id],
+        "source_edge_ids": [],
+        "target_edge_ids": [],
+        "doc_id": format!("acl:{truth_graph}"),
+        "mentions": [{"spans": [acl_dummy_span(truth_graph)]}],
+        "metadata": metadata,
+        "properties": null,
+        "embedding": null,
+        "domain_id": null,
+    });
+    let document = payload.to_string();
+    GraphMutation {
+        scope: scope.clone(),
+        table: "gke_edges".to_owned(),
+        entity_kind: "edge".to_owned(),
+        event_id: stable_event_id(effect_id, &edge_id),
+        op: "ADD".to_owned(),
+        payload,
+        record: GraphRecord {
+            id: edge_id,
+            document: Some(document),
+            metadata: metadata.as_object().cloned().unwrap_or_default(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    }
+}
+
+fn acl_dummy_span(truth_graph: &str) -> Value {
+    json!({
+        "collection_page_url": format!("acl/{truth_graph}"),
+        "document_page_url": format!("acl/{truth_graph}"),
+        "doc_id": format!("acl:{truth_graph}"),
+        "insertion_method": "acl_record",
+        "page_number": 1,
+        "start_char": 0,
+        "end_char": 1,
+        "excerpt": "a",
+        "context_before": "",
+        "context_after": "",
+        "chunk_id": null,
+        "source_cluster_id": null,
+        "verification": null,
+    })
+}
+
+fn stable_event_id(effect_id: &str, entity_id: &str) -> String {
+    stable_id("runtime.worker.graph_event", &[effect_id.to_owned(), entity_id.to_owned()]).to_string()
+}
+
+fn acl_index_jobs(scope: &GraphScope, mutation: &GraphMutation, effect_id: &str) -> Vec<NewIndexJob> {
+    let kinds: &[&str] = if mutation.entity_kind == "edge" {
+        &["edge_refs", "edge_endpoints"]
+    } else {
+        &["node_docs", "node_refs"]
+    };
+    kinds
+        .iter()
+        .map(|index_kind| NewIndexJob {
+            job_id: stable_id(
+                "runtime.worker.index_job",
+                &[effect_id.to_owned(), mutation.record.id.clone(), (*index_kind).to_owned()],
+            )
+            .to_string(),
+            namespace: scope.namespace.clone(),
+            entity_kind: "node".to_owned(),
+            entity_id: mutation.record.id.clone(),
+            index_kind: (*index_kind).to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod graph_acl_effects_unit_tests {
+    use super::*;
+
+    #[test]
+    fn default_acl_projection_uses_host_owner_and_stable_identity() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("conversation".to_owned()),
+        };
+        let mutation = acl_record_mutation(
+            &scope,
+            "conversation",
+            "node",
+            "node-1",
+            "",
+            1,
+            "owner-a",
+            Some("tenant-a"),
+            "private",
+            &[],
+            &[],
+            "effect-1",
+        );
+        assert_eq!(mutation.entity_kind, "node");
+        assert_eq!(mutation.record.metadata["acl_mode"], "private");
+        assert_eq!(mutation.record.metadata["owner_id"], "owner-a");
+        assert_eq!(mutation.record.metadata["created_by"], "owner-a");
+        assert_eq!(mutation.record.metadata["security_scope"], "tenant-a");
+        assert_eq!(mutation.payload["id"], mutation.record.id);
+        assert_eq!(mutation.payload["metadata"]["acl_target_entity_id"], "node-1");
+        let node_document: Value = serde_json::from_str(
+            mutation.record.document.as_deref().expect("ACL node document"),
+        )
+        .expect("ACL node document remains JSON for Python graph readers");
+        assert_eq!(node_document["id"], mutation.record.id);
+        assert!(node_document.get("metadata").is_none());
+        assert!(node_document.get("embedding").is_none());
+        assert_eq!(mutation.event_id, stable_event_id("effect-1", &mutation.record.id));
+        assert!(acl_index_jobs(&scope, &mutation, "effect-1")
+            .iter()
+            .any(|job| job.index_kind == "node_refs"));
+        let supersedes = acl_supersedes_mutation(
+            &scope,
+            "conversation",
+            "node-1",
+            "node",
+            "",
+            &mutation.record.id,
+            "previous-acl-id",
+            "effect-1",
+        );
+        assert_eq!(supersedes.entity_kind, "edge");
+        assert_eq!(supersedes.payload["relation"], "acl_supersedes");
+        assert_eq!(supersedes.payload["source_ids"][0], mutation.record.id);
+        assert_eq!(supersedes.payload["target_ids"][0], "previous-acl-id");
+        let edge_document: Value = serde_json::from_str(
+            supersedes.record.document.as_deref().expect("ACL edge document"),
+        )
+        .expect("ACL supersedes edge document remains JSON for Python graph readers");
+        assert_eq!(edge_document["id"], supersedes.record.id);
+        assert_eq!(edge_document["relation"], "acl_supersedes");
+    }
+
+    #[test]
+    fn default_acl_match_is_idempotent_but_stale_policy_is_versioned() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let current = acl_record_mutation(
+            &scope,
+            "conversation",
+            "node",
+            "node-1",
+            "",
+            2,
+            "owner-a",
+            None,
+            "private",
+            &[],
+            &[],
+            "effect-current",
+        )
+        .record;
+        assert!(default_acl_matches(&current, "owner-a", None, "private", &[], &[]));
+        assert!(!default_acl_matches(&current, "other-owner", None, "private", &[], &[]));
+
+        let older = GraphRecord {
+            id: "older-acl".to_owned(),
+            document: None,
+            metadata: Map::from_iter([
+                ("entity_type".to_owned(), json!("acl_record")),
+                ("acl_target_entity_id".to_owned(), json!("node-1")),
+                ("acl_target_grain".to_owned(), json!("node")),
+                ("acl_target_item_id".to_owned(), json!("")),
+                ("acl_version".to_owned(), json!(1)),
+            ]),
+            embedding: None,
+        };
+        let latest = latest_acl_records(vec![older, current.clone()]);
+        assert_eq!(latest.len(), 1);
+        assert_eq!(
+            latest[&("node".to_owned(), "node-1".to_owned(), String::new())].id,
+            current.id
+        );
+    }
+
+    #[test]
+    fn acl_derivation_is_backend_independent_and_graph_role_generic() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("wisdom".to_owned()),
+        };
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "event-node-1".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"node-1","label":"item","metadata":{"engine_type":"wisdom"}}),
+            record: GraphRecord {
+                id: "node-1".to_owned(),
+                document: Some("item".to_owned()),
+                metadata: Map::from_iter([("engine_type".to_owned(), json!("wisdom"))]),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let (targets, _) = acl_targets_for_graph_mutations(std::slice::from_ref(&mutation));
+        let target_ids = acl_target_entity_ids(&targets);
+        assert_eq!(target_ids, vec!["node-1"]);
+        let (derived, jobs) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            std::slice::from_ref(&mutation),
+            targets.clone(),
+            Vec::new(),
+            AclDefaultsContext {
+                truth_graph: "wisdom",
+                owner_id: "owner-a",
+                security_scope: Some("tenant-a"),
+                effect_id: "effect-1",
+            },
+        )
+        .unwrap();
+        assert_eq!(derived.len(), 1);
+        assert_eq!(derived[0].record.metadata["owner_id"], "owner-a");
+        assert_eq!(derived[0].payload["metadata"]["acl_truth_graph"], "wisdom");
+        assert_eq!(jobs.len(), 2);
+
+        let existing = derived[0].record.clone();
+        let (unchanged, _) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            std::slice::from_ref(&mutation),
+            targets,
+            vec![existing],
+            AclDefaultsContext {
+                truth_graph: "wisdom",
+                owner_id: "owner-a",
+                security_scope: Some("tenant-a"),
+                effect_id: "effect-2",
+            },
+        )
+        .unwrap();
+        assert!(unchanged.is_empty());
+    }
+
+    #[test]
+    fn acl_usage_targets_remain_kind_scoped_for_same_string_ids() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let make_mutation = |kind: &str, mode: &str| GraphMutation {
+            scope: scope.clone(),
+            table: if kind == "node" { "gke_nodes" } else { "gke_edges" }.to_owned(),
+            entity_kind: kind.to_owned(),
+            event_id: format!("event-{kind}"),
+            op: "ADD".to_owned(),
+            payload: json!({
+                "id":"same-id",
+                "metadata":{"visibility":mode},
+                "mentions":[{"spans":[{"doc_id":"doc-1"}]}]
+            }),
+            record: GraphRecord {
+                id: "same-id".to_owned(),
+                document: Some(
+                    r#"{"mentions":[{"spans":[{"doc_id":"doc-1"}]}]}"#.to_owned(),
+                ),
+                metadata: Map::from_iter([("visibility".to_owned(), json!(mode))]),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let mutations = vec![make_mutation("node", "public"), make_mutation("edge", "private")];
+        let (targets, _) = acl_targets_for_graph_mutations(&mutations);
+        let (derived, _) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            &mutations,
+            targets,
+            Vec::new(),
+            AclDefaultsContext {
+                truth_graph: "knowledge",
+                owner_id: "writer",
+                security_scope: None,
+                effect_id: "effect-same-id",
+            },
+        )
+        .unwrap();
+
+        let usage_records = derived
+            .iter()
+            .filter(|mutation| {
+                matches!(
+                    mutation.record.metadata.get("acl_target_grain").and_then(Value::as_str),
+                    Some("grounding" | "span")
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(usage_records.len(), 4);
+        assert!(usage_records.iter().any(|mutation| {
+            mutation.record.metadata["acl_target_item_id"]
+                == "__kogwistar_acl_usage_v2__:node:same-id::mention::0"
+                && mutation.record.metadata["acl_mode"] == "public"
+        }));
+        assert!(usage_records.iter().any(|mutation| {
+            mutation.record.metadata["acl_target_item_id"]
+                == "__kogwistar_acl_usage_v2__:edge:same-id::mention::0"
+                && mutation.record.metadata["acl_mode"] == "private"
+        }));
+    }
+
+    #[test]
+    fn acl_derivation_preserves_supported_visibility_and_sharing_metadata() {
+        let scope = GraphScope {
+            namespace: "tenant-a".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let mut mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "event-node-public".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id":"node-public","label":"item","metadata":{}}),
+            record: GraphRecord {
+                id: "node-public".to_owned(),
+                document: Some("item".to_owned()),
+                metadata: Map::from_iter([
+                    ("visibility".to_owned(), json!("public")),
+                    ("shared_with_agents".to_owned(), json!(["Alice", "Bob"])),
+                    ("shared_with_groups".to_owned(), json!(["Team-A"])),
+                ]),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let (mode, principals, groups) = acl_defaults_from_mutation(&mutation);
+        assert_eq!(mode, "public");
+        assert_eq!(principals, ["alice", "bob"]);
+        assert_eq!(groups, ["team-a"]);
+        let (targets, _) = acl_targets_for_graph_mutations(std::slice::from_ref(&mutation));
+        let (derived, _) = derive_default_acl_graph_effects_from_records(
+            &scope,
+            std::slice::from_ref(&mutation),
+            targets,
+            Vec::new(),
+            AclDefaultsContext {
+                truth_graph: "knowledge",
+                owner_id: "owner-a",
+                security_scope: None,
+                effect_id: "effect-public",
+            },
+        )
+        .unwrap();
+        assert_eq!(derived[0].record.metadata["acl_mode"], "public");
+        assert_eq!(
+            derived[0].record.metadata["shared_with_principals"],
+            json!(["alice", "bob"])
+        );
+        assert_eq!(
+            derived[0].record.metadata["shared_with_groups"],
+            json!(["team-a"])
+        );
+
+        mutation.record.metadata.insert("visibility".to_owned(), json!("invalid"));
+        let (mode, _, _) = acl_defaults_from_mutation(&mutation);
+        assert_eq!(mode, "private", "unknown ACL modes must fail closed");
+    }
+}

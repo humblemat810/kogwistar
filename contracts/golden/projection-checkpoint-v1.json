@@ -1,0 +1,18 @@
+{
+  "contract_version": 1,
+  "projection_id": "usage",
+  "workspace_id": "workspace-1",
+  "projection_schema_version": 1,
+  "source_namespace": "usage-events",
+  "source_from_seq": 1,
+  "source_to_seq": 2,
+  "last_authoritative_seq": 2,
+  "last_materialized_seq": 2,
+  "projected_at_ms": 1700000000000,
+  "last_source_event_ts_ms": 1699999999000,
+  "snapshot_id": "snapshot-usage-2",
+  "raw_event_count": 2,
+  "materialization_status": "materialized",
+  "rebuild_reason": null,
+  "processed_event_ids": ["event-1", "event-2"]
+}

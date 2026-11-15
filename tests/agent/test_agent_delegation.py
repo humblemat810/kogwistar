@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,6 +14,11 @@ from kogwistar.agent import (
     build_delegated_invocation,
     delegated_initial_state,
 )
+from kogwistar.runtime.delegation_contract import (
+    DelegationAuthorityV1,
+    delegation_authority_payload,
+)
+from kogwistar.runtime.runtime_invocations import derive_child_authority_context
 
 pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.regression]
 
@@ -80,6 +87,32 @@ def test_delegation_cannot_escalate_capability_or_output_context() -> None:
         max_bytes=1024,
     )
     assert artifact["result"]["artifact_ref"].startswith("file:")
+
+
+def test_runtime_delegation_matches_versioned_authority_contract() -> None:
+    context = derive_child_authority_context(
+        {"effective_capabilities": ("graph.read", "workflow.run.write")},
+        {"effective_capabilities": ("graph.read",)},
+    )
+    assert context is not None
+    assert context["effective_capabilities"] == ("graph.read",)
+    assert delegation_authority_payload(
+        delegated_by="agent:parent",
+        parent=("graph.read", "workflow.run.write"),
+        requested=("graph.read",),
+    ) == json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/delegation-authority-v1.json").read_text(
+            encoding="utf-8"
+        )
+    ) | {"effective_capabilities": ["graph.read"]}
+    assert DelegationAuthorityV1(
+        delegated_by="agent:parent", effective_capabilities=("graph.read",)
+    ).as_payload()["schema_version"] == 1
+    with pytest.raises(PermissionError):
+        derive_child_authority_context(
+            {"effective_capabilities": ("graph.read",)},
+            {"effective_capabilities": ("service.manage",)},
+        )
 
 
 def test_delegation_rejects_model_profile_outside_host_allowlist() -> None:

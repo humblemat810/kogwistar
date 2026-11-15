@@ -7,24 +7,31 @@ license.workspace = true
 
 [dependencies]
 axum.workspace = true
+async-stream.workspace = true
 base64.workspace = true
 kogwistar-contracts = { path = "../kogwistar-contracts" }
+kogwistar-engine = { path = "../kogwistar-engine" }
 kogwistar-store = { path = "../kogwistar-store" }
+kogwistar-store-chroma = { path = "../kogwistar-store-chroma" }
+kogwistar-store-memory = { path = "../kogwistar-store-memory" }
 kogwistar-store-sqlite = { path = "../kogwistar-store-sqlite" }
 kogwistar-store-postgres = { path = "../kogwistar-store-postgres" }
 kogwistar-runtime = { path = "../kogwistar-runtime" }
+percent-encoding.workspace = true
 jsonwebtoken.workspace = true
+rusqlite.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "time"] }
 tower.workspace = true
+tokio-postgres.workspace = true
 url.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-tokio-postgres.workspace = true
+fs2.workspace = true
+thiserror.workspace = true
+winapi.workspace = true
 
 [build-dependencies]
 serde_json.workspace = true

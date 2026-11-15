@@ -21,7 +21,19 @@ def mint_dev_token(
     payload = {"username": username, "role": role, "ns": ns}
     if capabilities is not None:
         payload["capabilities"] = capabilities
-    resp = client.post("/auth/dev-token", json=payload)
+    state = getattr(getattr(client, "app", None), "state", None)
+    missing = object()
+    prior_mode = getattr(state, "auth_mode", missing) if state is not None else missing
+    if state is not None:
+        state.auth_mode = "dev"
+    try:
+        resp = client.post("/auth/dev-token", json=payload)
+    finally:
+        if state is not None:
+            if prior_mode is missing:
+                delattr(state, "auth_mode")
+            else:
+                state.auth_mode = prior_mode
     resp.raise_for_status()
     return str(resp.json()["token"])
 

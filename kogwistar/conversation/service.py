@@ -220,7 +220,9 @@ class ConversationService:
             edge_id = str(
                 stable_id("workflow.edge", "cancel_request", run_node_id, node_id)
             )
-            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
+            existing_edge = _backend_map(
+                eng.backend.edge_get(ids=[edge_id], include=[])
+            )
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -305,7 +307,9 @@ class ConversationService:
         run_got = _backend_map(eng.backend.node_get(ids=[run_node_id], include=[]))
         if run_got.get("ids"):
             edge_id = str(stable_id("workflow.edge", "cancelled", run_node_id, node_id))
-            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
+            existing_edge = _backend_map(
+                eng.backend.edge_get(ids=[edge_id], include=[])
+            )
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -341,7 +345,9 @@ class ConversationService:
                     node_id,
                 )
             )
-            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
+            existing_edge = _backend_map(
+                eng.backend.edge_get(ids=[edge_id], include=[])
+            )
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -377,7 +383,9 @@ class ConversationService:
                     str(last_processed_node_id),
                 )
             )
-            existing_edge = _backend_map(eng.backend.edge_get(ids=[edge_id], include=[]))
+            existing_edge = _backend_map(
+                eng.backend.edge_get(ids=[edge_id], include=[])
+            )
             if not existing_edge.get("ids"):
                 edge = ConversationEdge(
                     id=edge_id,
@@ -935,7 +943,48 @@ class ConversationService:
         Stored metadata captures the prompt hash, sequencing fields, token cost, and
         every referenced node id so later audits can reconstruct what the model saw.
         """
+        sid, node, edges = self.prepare_context_snapshot(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=run_step_seq,
+            attempt_seq=attempt_seq,
+            stage=stage,
+            view=view,
+            model_name=model_name,
+            budget_tokens=budget_tokens,
+            tail_turn_index=tail_turn_index,
+            extra_hash_payload=extra_hash_payload,
+            llm_input_payload=llm_input_payload,
+            evidence_pack_digest=evidence_pack_digest,
+        )
         eng = self.conversation_engine
+        if not _backend_map(eng.backend.node_get(ids=[sid], include=[])).get("ids"):
+            eng.write.add_node(node)
+        for edge in edges:
+            edge_id = edge.safe_get_id()
+            if edge_id is not None and not _backend_map(
+                eng.backend.edge_get(ids=[edge_id], include=[])
+            ).get("ids"):
+                eng.write.add_edge(edge)
+        return sid
+
+    def prepare_context_snapshot(
+        self,
+        *,
+        conversation_id: str,
+        run_id: str,
+        run_step_seq: int,
+        attempt_seq: int = 0,
+        stage: str,
+        view: PromptContext,
+        model_name: str = "",
+        budget_tokens: int = 0,
+        tail_turn_index: int = 0,
+        extra_hash_payload: dict[str, Any] | None = None,
+        llm_input_payload: dict[str, Any] | None = None,
+        evidence_pack_digest: dict[str, Any] | None = None,
+    ) -> tuple[str, ConversationNode, list[ConversationEdge]]:
+        """Build a context snapshot and dependency edges without persisting them."""
 
         def _stable_json(obj: object) -> str:
             return json.dumps(
@@ -1006,48 +1055,41 @@ class ConversationService:
             )
         )
 
-        existing = _backend_map(eng.backend.node_get(ids=[sid], include=[]))
-        if not existing.get("ids"):
-            node = ConversationNode(
-                id=sid,
-                label="Context Snapshot",
-                type="entity",
-                summary="",
-                conversation_id=conversation_id,
-                role="system",  # type: ignore
-                turn_index=None,
-                level_from_root=0,
-                properties={
-                    "entity_type": "context_snapshot",
-                    "prompt_messages": json.dumps(norm_msgs),
-                    "llm_input_payload": json.dumps(llm_input_payload or {}),
-                    "evidence_pack_digest": json.dumps(evidence_pack_digest or {}),
-                },
-                mentions=[
-                    Grounding(spans=[self.make_conversation_span(conversation_id)])
-                ],
-                metadata={
-                    "entity_type": "context_snapshot",
-                    "level_from_root": 0,
-                    "in_conversation_chain": False,
-                    "in_ui_chain": False,
-                    **meta_model.to_chroma_metadata(),
-                },
-                domain_id=None,
-                canonical_entity_id=None,
-            )
-            eng.write.add_node(node)
+        node = ConversationNode(
+            id=sid,
+            label="Context Snapshot",
+            type="entity",
+            summary="",
+            conversation_id=conversation_id,
+            role="system",  # type: ignore
+            turn_index=None,
+            level_from_root=0,
+            properties={
+                "entity_type": "context_snapshot",
+                "prompt_messages": json.dumps(norm_msgs),
+                "llm_input_payload": json.dumps(llm_input_payload or {}),
+                "evidence_pack_digest": json.dumps(evidence_pack_digest or {}),
+            },
+            mentions=[Grounding(spans=[self.make_conversation_span(conversation_id)])],
+            metadata={
+                "entity_type": "context_snapshot",
+                "level_from_root": 0,
+                "in_conversation_chain": False,
+                "in_ui_chain": False,
+                **meta_model.to_chroma_metadata(),
+            },
+            domain_id=None,
+            canonical_entity_id=None,
+        )
 
         scope = f"conv:{conversation_id}"
+        edges: list[ConversationEdge] = []
         for ordinal, nid in enumerate(used_node_ids):
             eid = str(
                 stable_id(
                     "conversation.edge", scope, "depends_on", sid, nid, str(ordinal)
                 )
             )
-            ex = _backend_map(eng.backend.edge_get(ids=[eid], include=[]))
-            if ex.get("ids"):
-                continue
             doc_id = scope
             sp = Span.from_dummy_for_conversation(doc_id=doc_id)
             edge = ConversationEdge(
@@ -1075,9 +1117,9 @@ class ConversationService:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
-            eng.write.add_edge(edge)
+            edges.append(edge)
 
-        return sid
+        return sid, node, edges
 
     def latest_context_snapshot_node(
         self,
@@ -1086,13 +1128,14 @@ class ConversationService:
         run_id: str | None = None,
         stage: str | None = None,
     ) -> ConversationNode | None:
-        where: dict[str, str] = {
-            "entity_type": "context_snapshot",
-        }
+        filters: list[dict[str, str]] = [{"entity_type": "context_snapshot"}]
         if run_id is not None:
-            where["run_id"] = run_id
+            filters.append({"run_id": run_id})
         if stage is not None:
-            where["stage"] = stage
+            filters.append({"stage": stage})
+        where: dict[str, Any] = (
+            filters[0] if len(filters) == 1 else {"$and": filters}
+        )
         snaps = self.conversation_engine.read.get_nodes(
             where=where,
             node_type=ConversationNode,
@@ -1106,13 +1149,15 @@ class ConversationService:
         if not snaps:
             return None
 
-        def _k(n: ConversationNode) -> int:
-            try:
-                return _json_int((n.metadata or {}).get("run_step_seq"))
-            except Exception:
-                return 0
+        def _k(n: ConversationNode) -> tuple[int, int, str]:
+            metadata = n.metadata or {}
+            return (
+                _json_int(metadata.get("run_step_seq")),
+                _json_int(metadata.get("attempt_seq")),
+                str(n.id or ""),
+            )
 
-        return sorted(snaps, key=_k)[-1]
+        return max(snaps, key=_k)
 
     def get_context_snapshot_payload(
         self,
@@ -1127,21 +1172,24 @@ class ConversationService:
         ids = got.get("ids") or []
         if not ids:
             raise KeyError(f"context snapshot node not found: {snapshot_node_id!r}")
+        backend_metadata = dict((got.get("metadatas") or [{}])[0] or {})
         doc = (got.get("documents") or [None])[0]
         if isinstance(doc, str):
             try:
                 payload = json.loads(doc)
                 if isinstance(payload, dict):
                     props = payload.get("properties") or {}
+                    metadata = dict(payload.get("metadata") or {})
+                    metadata.update(backend_metadata)
                     return {
                         "properties": props,
-                        "metadata": (payload.get("metadata") or {}),
+                        "metadata": metadata,
                     }
             except Exception:
                 pass
         return {
             "properties": {},
-            "metadata": (got.get("metadatas") or [{}])[0] or {},
+            "metadata": backend_metadata,
         }
 
     def latest_context_snapshot_cost(

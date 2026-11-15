@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.service_declare",
+  "arguments": {
+    "service_id": "svc-contract",
+    "service_kind": "daemon",
+    "target_kind": "workflow",
+    "target_ref": "wf.contract",
+    "target_config": {"runtime_kind": "sync"},
+    "enabled": false,
+    "autostart": false,
+    "restart_policy": {},
+    "heartbeat_ttl_ms": 1234,
+    "trigger_specs": []
+  },
+  "python_service_arguments": {
+    "service_id": "svc-contract",
+    "service_kind": "daemon",
+    "target_kind": "workflow",
+    "target_ref": "wf.contract",
+    "target_config": {"runtime_kind": "sync"},
+    "enabled": false,
+    "autostart": false,
+    "restart_policy": {},
+    "heartbeat_ttl_ms": 1234,
+    "trigger_specs": []
+  },
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/services"
+  },
+  "result": {
+    "service_id": "svc-contract",
+    "service_kind": "daemon",
+    "target_kind": "workflow",
+    "target_ref": "wf.contract",
+    "enabled": false,
+    "autostart": false,
+    "heartbeat_ttl_ms": 1234
+  }
+}

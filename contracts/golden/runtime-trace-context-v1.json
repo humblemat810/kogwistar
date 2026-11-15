@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "context": {
+    "run_id": "run-42",
+    "token_id": "token-7",
+    "step_seq": 3,
+    "node_id": "parse",
+    "attempt": 2
+  },
+  "expected": {
+    "trace_id": "run-42",
+    "span_id": "stp:run-42:token-7:3:2:parse",
+    "parent_span_id": "tok:run-42:token-7",
+    "attempt": 2
+  },
+  "retry_attempts": [
+    {
+      "retry_count": 0,
+      "attempt": 1,
+      "expected": {
+        "trace_id": "run-42",
+        "span_id": "stp:run-42:token-7:3:1:parse",
+        "parent_span_id": "tok:run-42:token-7",
+        "attempt": 1
+      }
+    },
+    {
+      "retry_count": 1,
+      "attempt": 2,
+      "expected": {
+        "trace_id": "run-42",
+        "span_id": "stp:run-42:token-7:3:2:parse",
+        "parent_span_id": "tok:run-42:token-7",
+        "attempt": 2
+      }
+    }
+  ],
+  "resume_continuation": {
+    "persisted": {
+      "trace_id": "0123456789abcdef0123456789abcdef",
+      "run_execution_span_id": "0123456789abcdef"
+    },
+    "expected_parent": {
+      "trace_id": "0123456789abcdef0123456789abcdef",
+      "span_id": "0123456789abcdef"
+    }
+  },
+  "native_resume_step": {
+    "trace_id": "{run_id}",
+    "span_id": "stp:{run_id}:{token_id}:{step_seq}:{attempt}:{node_id}",
+    "parent_span_id": "tok:{run_id}:{token_id}",
+    "attempt": 1
+  }
+}

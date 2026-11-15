@@ -1,20 +1,71 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
+import math
+import random
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import BaseModel
 
 from kogwistar import shortids
+from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
+from kogwistar._rust_bridge import (
+    RustParityError,
+    decode_persistent_graph_model_v2,
+    graph_model_level_from_root,
+    round_trip_raw_graph_model_envelope,
+    validate_graph_model_family,
+)
 from kogwistar.engine_core.in_memory_backend import (
     _matches_where,
     _matches_where_python,
 )
+from kogwistar.engine_core.graph_contracts import SUPPORTED_GRAPH_MODEL_CLASSES
+from kogwistar.engine_core.models import (
+    AssocFlattenedLLMEdge,
+    AssocFlattenedLLMNode,
+    ChromaMixin,
+    Edge,
+    EdgeMixin,
+    FlattenedLLMEdge,
+    FlattenedLLMNode,
+    GraphEntityBase,
+    Grounding,
+    LLMEdge,
+    LLMEdgeExtraction,
+    LLMNode,
+    LLMNodeExtraction,
+    LevelAwareMixin,
+    PureChromaEdge,
+    PureChromaNode,
+    Node,
+    Span,
+    TombstoneMixin,
+    DocNode,
+)
 from kogwistar.id_provider import stable_id
 from kogwistar.provenance import evidence_pack_digest_hash
 from kogwistar.runtime.base_runtime import apply_state_update_inplace
+from kogwistar.runtime.checkpointed_projection import ProjectionCheckpoint
+from kogwistar.runtime.models import (
+    WorkflowCancelledNode,
+    WorkflowCheckpointNode,
+    WorkflowCompletedNode,
+    WorkflowEdge,
+    WorkflowFailedNode,
+    WorkflowRunNode,
+    WorkflowRuntimeEdge,
+    WorkflowStepExecNode,
+    WorkflowNode,
+)
 from kogwistar.runtime.serialize import stable_json_dumps
+from kogwistar.splitter import split_doc_deterministic
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -23,6 +74,86 @@ FIXTURE = json.loads(
     (ROOT / "contracts" / "golden" / "deterministic-primitives.json").read_text(
         encoding="utf-8"
     )
+)
+STATE_UPDATE_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "runtime-state-update-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+GRAPH_MODEL_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "python-graph-model-payloads-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+ACL_NODE_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "acl-node-model-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+GRAPH_MODEL_INVALID_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "graph-model-invalid-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+GRAPH_MODEL_LEGACY_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "graph-model-legacy-compat-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+WORKFLOW_OPERATION_VERSION_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "workflow-operation-version-v1.json"
+    ).read_text(encoding="utf-8")
+)
+SOURCE_MAP_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "source-map-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+PROJECTION_CHECKPOINT_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "projection-checkpoint-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+WORKFLOW_RUNTIME_EDGE_METADATA_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "workflow-runtime-edge-metadata-v1.json"
+    ).read_text(encoding="utf-8")
+)
+WORKFLOW_RUNTIME_NODE_METADATA_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "workflow-runtime-node-metadata-v1.json"
+    ).read_text(encoding="utf-8")
+)
+CONVERSATION_GRAPH_METADATA_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "conversation-graph-metadata-v1.json"
+    ).read_text(encoding="utf-8")
+)
+CONVERSATION_NODE_PAYLOAD_FIXTURE = json.loads(
+    (ROOT / "contracts" / "golden" / "conversation-node-payload-v1.json").read_text(
+        encoding="utf-8"
+    )
+)
+WORKFLOW_DESIGN_METADATA_FIXTURE = json.loads(
+    (
+        ROOT
+        / "contracts"
+        / "golden"
+        / "workflow-design-metadata-v1.json"
+    ).read_text(encoding="utf-8")
 )
 
 
@@ -38,11 +169,1288 @@ def test_stable_id_matches_python_golden(monkeypatch, mode: str) -> None:
         assert str(stable_id(case["kind"], *case["parts"])) == case["expected"]
 
 
+def test_python_source_map_projection_matches_shared_chunk_contract() -> None:
+    fixture = SOURCE_MAP_FIXTURE
+    content = "alpha beta"
+    chunks = split_doc_deterministic(
+        doc_id=fixture["doc_id"],
+        content=content,
+        max_chars=5,
+        overlap_chars=0,
+        prefer_window=0,
+    )
+    projected = {
+        "contract_version": 1,
+        "doc_id": fixture["doc_id"],
+        "chunks": [
+            {
+                "chunk_id": f"chunk-{index}",
+                "doc_id": chunk.doc_id,
+                "start_char": chunk.start_char,
+                "end_char": chunk.end_char,
+                "text": chunk.text,
+            }
+            for index, chunk in enumerate(chunks)
+        ],
+    }
+    assert projected == fixture
+
+
+def test_python_projection_checkpoint_matches_shared_wire_contract() -> None:
+    fixture = dict(PROJECTION_CHECKPOINT_FIXTURE)
+    checkpoint = ProjectionCheckpoint.from_wire(fixture)
+    assert checkpoint.to_wire() == fixture
+    assert asdict(checkpoint) == {
+        key: value
+        for key, value in fixture.items()
+        if key != "contract_version"
+    } | {"processed_event_ids": tuple(fixture["processed_event_ids"])}
+
+
+def test_python_projection_checkpoint_wire_decoder_fails_closed() -> None:
+    fixture = dict(PROJECTION_CHECKPOINT_FIXTURE)
+    with pytest.raises(ValueError, match="unknown"):
+        ProjectionCheckpoint.from_wire({**fixture, "unexpected": True})
+
+    with pytest.raises(ValueError, match="unique"):
+        ProjectionCheckpoint.from_wire(
+            {**fixture, "processed_event_ids": ["event-1", "event-1"]}
+        )
+
+
+@pytest.mark.requires_rust
+def test_native_graph_model_registry_matches_python_seam() -> None:
+    """Detect a stale native extension before it accepts partial graph parity."""
+
+    from kogwistar import _rust
+
+    assert tuple(_rust.supported_graph_model_classes()) == SUPPORTED_GRAPH_MODEL_CLASSES
+
+
+@pytest.mark.requires_rust
+def test_native_graph_capabilities_match_python_model_inheritance() -> None:
+    """Keep Rust capability profiles tied to Python's actual model MROs."""
+    from kogwistar import _rust
+
+    python_models: dict[str, type[BaseModel]] = {
+        "node": Node,
+        "edge": Edge,
+        "acl_node": ACLNode,
+        "acl_edge": ACLEdge,
+        "conversation_node": ConversationNode,
+        "conversation_edge": ConversationEdge,
+        "workflow_node": WorkflowNode,
+        "workflow_edge": WorkflowEdge,
+        "workflow_run_node": WorkflowRunNode,
+        "workflow_step_exec_node": WorkflowStepExecNode,
+        "workflow_checkpoint_node": WorkflowCheckpointNode,
+        "workflow_completed_node": WorkflowCompletedNode,
+        "workflow_cancelled_node": WorkflowCancelledNode,
+        "workflow_failed_node": WorkflowFailedNode,
+        "workflow_runtime_edge": WorkflowRuntimeEdge,
+        "pure_chroma_node": PureChromaNode,
+        "pure_chroma_edge": PureChromaEdge,
+        "doc_node": DocNode,
+        "llm_node": LLMNode,
+        "llm_edge": LLMEdge,
+        "llm_node_extraction": LLMNodeExtraction,
+        "llm_edge_extraction": LLMEdgeExtraction,
+        "flattened_llm_node": FlattenedLLMNode,
+        "flattened_llm_edge": FlattenedLLMEdge,
+        "assoc_flattened_llm_node": AssocFlattenedLLMNode,
+        "assoc_flattened_llm_edge": AssocFlattenedLLMEdge,
+    }
+    profiles = {
+        profile["model_class"]: profile
+        for profile in json.loads(_rust.graph_model_capability_profiles())
+    }
+    assert tuple(python_models) == SUPPORTED_GRAPH_MODEL_CLASSES
+    assert set(profiles) == set(python_models)
+
+    for model_class, model in python_models.items():
+        profile = profiles[model_class]
+        assert profile["entity_kind"] == (
+            "edge" if issubclass(model, EdgeMixin) else "node"
+        ), model_class
+        expected_capabilities = {
+            "graph_entity": issubclass(model, GraphEntityBase),
+            "edge_entity": issubclass(model, EdgeMixin),
+            "metadata": issubclass(model, ChromaMixin),
+            "lifecycle": issubclass(model, TombstoneMixin),
+            "level": issubclass(model, LevelAwareMixin),
+        }
+        for capability, expected in expected_capabilities.items():
+            assert profile[capability] is expected, f"{model_class}.{capability}"
+
+    edge_node_pairs = (
+        ("edge", "node"),
+        ("acl_edge", "acl_node"),
+        ("conversation_edge", "conversation_node"),
+        ("workflow_edge", "workflow_node"),
+        ("workflow_runtime_edge", "workflow_run_node"),
+        ("pure_chroma_edge", "pure_chroma_node"),
+        ("llm_edge", "llm_node"),
+        ("llm_edge_extraction", "llm_node_extraction"),
+        ("flattened_llm_edge", "flattened_llm_node"),
+        ("assoc_flattened_llm_edge", "assoc_flattened_llm_node"),
+    )
+    inherited = ("graph_entity", "metadata", "lifecycle", "level")
+    for edge_class, node_class in edge_node_pairs:
+        edge_profile = profiles[edge_class]
+        node_profile = profiles[node_class]
+        assert edge_profile["edge_entity"] is True, edge_class
+        for capability in inherited:
+            assert edge_profile[capability] is node_profile[capability], (
+                f"{edge_class} must retain {node_class}.{capability}"
+            )
+
+        edge_model_mixins = {
+            base.__name__
+            for base in python_models[edge_class].__mro__
+            if base.__name__.endswith("Mixin")
+        }
+        node_model_mixins = {
+            base.__name__
+            for base in python_models[node_class].__mro__
+            if base.__name__.endswith("Mixin")
+        }
+        node_only_mixins = (
+            {"ConversationRoleMixin"} if node_class == "conversation_node" else set()
+        )
+        inherited_mixins = node_model_mixins - node_only_mixins
+        assert inherited_mixins <= edge_model_mixins, edge_class
+        assert len(edge_model_mixins) > len(inherited_mixins), edge_class
+        assert "EdgeMixin" in edge_model_mixins - inherited_mixins, edge_class
+
+
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
 def test_canonical_json_matches_python_golden(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", mode)
     for case in FIXTURE["canonical_json"]:
         assert stable_json_dumps(case["value"]) == case["expected"]
+
+
+@pytest.mark.requires_rust
+def test_python_node_edge_backend_payloads_round_trip_through_rust_json(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+
+    def evidence(text: str) -> Span:
+        return Span(
+            collection_page_url="https://example.test/source",
+            document_page_url="https://example.test/source#span",
+            doc_id="doc:rust-python-parity",
+            insertion_method="contract-test",
+            page_number=1,
+            start_char=0,
+            end_char=len(text),
+            excerpt=text,
+            context_before="",
+            context_after="",
+        )
+
+    node = Node(
+        id="parity-node",
+        label="Python node",
+        type="entity",
+        summary="A complete Pydantic node payload crosses the Rust persistence seam.",
+        doc_id="doc:rust-python-parity",
+        mentions=[Grounding(spans=[evidence("Node evidence")])],
+        metadata={"workspace_id": "ws", "graph_space": "facts", "kind": "node"},
+        embedding=[1.0, 0.0, 0.0],
+        level_from_root=0,
+        domain_id=None,
+        canonical_entity_id="entity:parity-node",
+        properties={"attributes": ["unicode-雪", "nested-payload"]},
+    )
+    edge = Edge(
+        id="parity-edge",
+        label="supports",
+        type="relationship",
+        summary="The typed edge preserves both endpoint and source-span data.",
+        doc_id="doc:rust-python-parity",
+        mentions=[Grounding(spans=[evidence("Edge evidence")])],
+        metadata={"workspace_id": "ws", "graph_space": "facts", "kind": "edge"},
+        embedding=[0.0, 1.0, 0.0],
+        domain_id=None,
+        canonical_entity_id=None,
+        properties={"confidence_label": "high"},
+        source_ids=[node.id],
+        target_ids=["external:target"],
+        relation="supports",
+        source_edge_ids=[],
+        target_edge_ids=[],
+    )
+    hyperedge = edge.model_copy(
+        update={
+            "id": "parity-hyperedge",
+            "label": "qualifies",
+            "summary": "An edge can relate to other edges through typed edge endpoint fields.",
+            "relation": "qualifies",
+            "source_edge_ids": ["parity-edge"],
+            "target_edge_ids": ["parity-edge-target"],
+        }
+    )
+
+    assert GRAPH_MODEL_FIXTURE["schema_version"] == 1
+    for model, kind, case in zip(
+        (node, edge, hyperedge),
+        ("node", "edge", "edge_with_edge_endpoints"),
+        GRAPH_MODEL_FIXTURE["cases"],
+        strict=True,
+    ):
+        payload = model.model_dump(field_mode="backend", dump_format="json")
+        wire_json = stable_json_dumps(payload)
+        assert case["kind"] == kind
+        assert payload == case["payload"]
+        assert wire_json == case["canonical_json"]
+        restored = type(model).model_validate(json.loads(wire_json))
+        assert restored.model_dump(field_mode="backend", dump_format="json") == payload
+
+
+@pytest.mark.requires_rust
+def test_base_node_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    case = next(item for item in GRAPH_MODEL_FIXTURE["cases"] if item["kind"] == "node")
+    model = Node.model_validate(case["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = case["canonical_json_sha256"]
+
+    assert canonical_json == case["canonical_json"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "node", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+@pytest.mark.parametrize("kind", ["edge", "edge_with_edge_endpoints"])
+def test_base_edge_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    case = next(item for item in GRAPH_MODEL_FIXTURE["cases"] if item["kind"] == kind)
+    model = Edge.model_validate(case["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = case["canonical_json_sha256"]
+
+    assert canonical_json == case["canonical_json"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "edge", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_conversation_node_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    fixture = CONVERSATION_NODE_PAYLOAD_FIXTURE
+    model = ConversationNode.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert canonical_json == fixture["canonical_json"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "conversation_node", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_workflow_run_node_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture = json.loads(
+        (ROOT / "contracts" / "golden" / "workflow-run-node-model-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    model = WorkflowRunNode.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+    assert _rust.canonical_json(json.dumps(payload, ensure_ascii=False)) == canonical_json
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "workflow_run_node", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert rust_round_trip["payload"] == fixture["payload"]
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_workflow_node_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    fixture = json.loads(
+        (ROOT / "contracts" / "golden" / "workflow-node-model-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    model = WorkflowNode.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "workflow_node", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert rust_round_trip["payload"] == fixture["payload"]
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_workflow_step_exec_node_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    fixture = json.loads(
+        (
+            ROOT
+            / "contracts"
+            / "golden"
+            / "workflow-step-exec-node-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    model = WorkflowStepExecNode.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+
+    envelope = stable_json_dumps(
+        {
+            "schema_version": 1,
+            "model_class": "workflow_step_exec_node",
+            "payload": payload,
+        }
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert rust_round_trip["payload"] == fixture["payload"]
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_acl_node_type_tag_and_extension_metadata_round_trip_through_rust(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture = ACL_NODE_FIXTURE
+    model = ACLNode.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    assert payload == fixture["payload"]
+    assert payload["metadata"]["share_extension"] == "retained"
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+    assert _rust.canonical_json(json.dumps(payload, ensure_ascii=False)) == canonical_json
+
+    wire = stable_json_dumps(
+        {
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": payload,
+        }
+    )
+    _rust.validate_graph_model_family(wire)
+    round_trip = json.loads(_rust.round_trip_raw_graph_model_envelope(wire))
+    assert round_trip["model_class"] == fixture["model_class"]
+    assert round_trip["payload"] == payload
+    rust_payload_json = stable_json_dumps(round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_acl_edge_payload_digest_is_stable_through_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture = json.loads(
+        (ROOT / "contracts" / "golden" / "acl-edge-model-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    model = ACLEdge.model_validate(fixture["payload"])
+    payload = model.model_dump(field_mode="backend", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+    assert _rust.canonical_json(json.dumps(payload, ensure_ascii=False)) == canonical_json
+
+    envelope = stable_json_dumps(
+        {"schema_version": 1, "model_class": "acl_edge", "payload": payload}
+    )
+    rust_round_trip = json.loads(round_trip_raw_graph_model_envelope(envelope))
+    rust_payload_json = stable_json_dumps(rust_round_trip["payload"])
+    assert rust_round_trip["payload"] == fixture["payload"]
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_llm_edge_extraction_payload_digest_matches_rust_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The transient Python extraction DTO shares exact wire bytes with Rust."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture = json.loads(
+        (ROOT / "contracts" / "golden" / "llm-edge-extraction-model-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    validation_payload = dict(fixture["payload"])
+    validation_payload["mentions"] = [
+        {**span, "insertion_method": "contract-test"}
+        for span in fixture["payload"]["mentions"]
+    ]
+    model = LLMEdgeExtraction.model_validate(validation_payload)
+    payload = model.model_dump(field_mode="llm", dump_format="json")
+    canonical_json = stable_json_dumps(payload)
+    expected_digest = fixture["canonical_json_sha256"]
+
+    assert payload == fixture["payload"]
+    assert hashlib.sha256(canonical_json.encode("utf-8")).hexdigest() == expected_digest
+    assert _rust.canonical_json(json.dumps(payload, ensure_ascii=False)) == canonical_json
+
+    wire = stable_json_dumps(
+        {
+            "schema_version": fixture["schema_version"],
+            "model_class": fixture["model_class"],
+            "payload": payload,
+        }
+    )
+    _rust.validate_graph_model_family(wire)
+    round_trip = json.loads(round_trip_raw_graph_model_envelope(wire))
+    assert round_trip["model_class"] == "llm_edge_extraction"
+    assert round_trip["payload"] == fixture["payload"]
+    rust_payload_json = stable_json_dumps(round_trip["payload"])
+    assert hashlib.sha256(rust_payload_json.encode("utf-8")).hexdigest() == expected_digest
+
+
+@pytest.mark.requires_rust
+def test_python_and_rust_reject_shared_invalid_persistent_graph_cases(monkeypatch) -> None:
+    """Python and Rust must reject the same malformed Node/Edge contract cases."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    baseline_by_kind = {
+        case["kind"]: case["payload"] for case in GRAPH_MODEL_FIXTURE["cases"]
+    }
+    baseline_by_kind["pure_chroma_node"] = copy.deepcopy(baseline_by_kind["node"])
+    baseline_by_kind["pure_chroma_node"].pop("mentions")
+    baseline_by_kind["pure_chroma_edge"] = copy.deepcopy(baseline_by_kind["edge"])
+    baseline_by_kind["pure_chroma_edge"].pop("mentions")
+    baseline_by_kind["edge_with_edge_endpoints"] = copy.deepcopy(
+        next(
+            case["payload"]
+            for case in GRAPH_MODEL_FIXTURE["cases"]
+            if case["kind"] == "edge_with_edge_endpoints"
+        )
+    )
+    model_by_kind = {
+        "node": Node,
+        "edge": Edge,
+        "pure_chroma_node": PureChromaNode,
+        "pure_chroma_edge": PureChromaEdge,
+        "edge_with_edge_endpoints": Edge,
+    }
+    rust_class_by_kind = {
+        "node": "node",
+        "edge": "edge",
+        "pure_chroma_node": "pure_chroma_node",
+        "pure_chroma_edge": "pure_chroma_edge",
+        "edge_with_edge_endpoints": "edge",
+    }
+    assert GRAPH_MODEL_INVALID_FIXTURE["schema_version"] == 1
+    for case_id in GRAPH_MODEL_INVALID_FIXTURE["cases"]:
+        kind, mutation = case_id.split(".", maxsplit=1)
+        payload = copy.deepcopy(baseline_by_kind[kind])
+        if mutation == "invalid_lifecycle_status":
+            payload["metadata"]["lifecycle_status"] = "purged"
+        elif mutation == "empty_id":
+            payload["id"] = ""
+        elif mutation == "invalid_redirect_id":
+            payload["metadata"]["redirect_to_id"] = 7
+        elif mutation == "empty_node_endpoint_id" and kind == "edge":
+            payload["source_ids"] = [""]
+        elif mutation == "empty_edge_endpoint_id" and kind == "edge":
+            payload["source_edge_ids"] = [""]
+        elif mutation == "empty_source_edge_endpoint_id" and kind == "edge_with_edge_endpoints":
+            payload["source_edge_ids"] = [""]
+        elif mutation == "empty_target_edge_endpoint_id" and kind == "edge_with_edge_endpoints":
+            payload["target_edge_ids"] = [""]
+        elif mutation == "negative_span_start_char" and kind == "node":
+            payload["mentions"][0]["spans"][0]["start_char"] = -1
+        elif mutation == "span_end_not_after_start" and kind == "node":
+            span = payload["mentions"][0]["spans"][0]
+            span["start_char"] = 8
+            span["end_char"] = 8
+        elif mutation == "span_offset_exceeds_u64" and kind == "node":
+            payload["mentions"][0]["spans"][0]["end_char"] = 18446744073709551616
+        elif mutation == "missing_relation" and kind == "edge":
+            payload.pop("relation")
+        elif mutation == "properties_not_mapping":
+            payload["properties"] = ["not", "a", "mapping"]
+        elif mutation == "properties_nested_mapping":
+            payload["properties"] = {"invalid": {"nested": {"value": 1}}}
+        elif mutation == "properties_nested_list" and kind in {
+            "edge",
+            "pure_chroma_edge",
+        }:
+            payload["properties"] = {"invalid": [[1]]}
+        else:
+            raise AssertionError(f"unknown graph-model parity fixture: {case_id}")
+
+        with pytest.raises(ValueError):
+            model_by_kind[kind].model_validate(payload)
+        with pytest.raises(Exception):
+            _rust.validate_graph_model_family(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "model_class": rust_class_by_kind[kind],
+                        "payload": payload,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+
+@pytest.mark.requires_rust
+def test_python_and_rust_match_unsigned_64bit_span_offset_boundary(monkeypatch) -> None:
+    """Persistent source offsets accept u64 max and reject values outside the wire type."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    span = payload["mentions"][0]["spans"][0]
+    wire = {"schema_version": 1, "model_class": "node", "payload": payload}
+    span["end_char"] = 18446744073709551615
+    Node.model_validate(copy.deepcopy(payload))
+    _rust.validate_graph_model_family(json.dumps(wire))
+
+    span["end_char"] = 18446744073709551616
+    with pytest.raises(ValueError):
+        Node.model_validate(copy.deepcopy(payload))
+    with pytest.raises(Exception):
+        _rust.validate_graph_model_family(json.dumps(wire))
+
+
+@pytest.mark.requires_rust
+def test_python_and_rust_preserve_shared_legacy_graph_defaults(monkeypatch) -> None:
+    """Legacy lifecycle omissions and aliases retain the same meaning in both languages."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    baseline_by_kind = {
+        case["kind"]: case["payload"] for case in GRAPH_MODEL_FIXTURE["cases"]
+    }
+    model_by_kind = {"node": Node, "edge": Edge}
+    assert GRAPH_MODEL_LEGACY_FIXTURE["schema_version"] == 1
+    for case_id in GRAPH_MODEL_LEGACY_FIXTURE["cases"]:
+        kind, compatibility_case = case_id.split(".", maxsplit=1)
+        payload = copy.deepcopy(baseline_by_kind[kind])
+        if compatibility_case == "omitted_lifecycle_defaults":
+            payload["metadata"].pop("lifecycle_status")
+            payload["metadata"].pop("redirect_to_id")
+            expected_status = "active"
+        elif compatibility_case == "deleted_alias_normalizes":
+            payload["metadata"]["lifecycle_status"] = "deleted"
+            expected_status = "tombstoned"
+        elif compatibility_case == "level_metadata_fallback":
+            payload.pop("level_from_root")
+            payload["metadata"]["level_from_root"] = 2
+            expected_status = "active"
+        elif compatibility_case == "level_top_level_precedence":
+            payload["level_from_root"] = 3
+            payload["metadata"]["level_from_root"] = 2
+            expected_status = "active"
+        else:
+            raise AssertionError(f"unknown graph-model compatibility case: {case_id}")
+
+        python_model = model_by_kind[kind].model_validate(copy.deepcopy(payload))
+        python_payload = python_model.model_dump(
+            field_mode="backend", dump_format="json"
+        )
+        assert python_payload["metadata"]["lifecycle_status"] == expected_status
+        assert python_payload["metadata"]["redirect_to_id"] is None
+        if compatibility_case == "level_metadata_fallback":
+            assert python_payload["level_from_root"] == 2
+            assert python_payload["metadata"]["level_from_root"] == 2
+        elif compatibility_case == "level_top_level_precedence":
+            assert python_payload["level_from_root"] == 3
+            assert python_payload["metadata"]["level_from_root"] == 3
+
+        wire = json.dumps(
+            {"schema_version": 1, "model_class": kind, "payload": payload},
+            ensure_ascii=False,
+        )
+        _rust.validate_graph_model_family(wire)
+        rust_decoded = json.loads(_rust.decode_persistent_graph_model_v2(wire))
+        assert rust_decoded["entity"] == python_payload, case_id
+
+
+@pytest.mark.requires_rust
+@pytest.mark.parametrize(("kind", "model_type"), [("node", Node), ("edge", Edge)])
+@pytest.mark.parametrize("large_level", [2**64, 2**200, -(2**64), -(2**200)])
+def test_python_arbitrary_size_hierarchy_integer_validates_through_rust(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    model_type: type[Node] | type[Edge],
+    large_level: int,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+
+    payload = copy.deepcopy(
+        next(
+            case["payload"]
+            for case in GRAPH_MODEL_FIXTURE["cases"]
+            if case["kind"] == kind
+        )
+    )
+    payload["level_from_root"] = large_level
+    payload["metadata"]["level_from_root"] = large_level
+    python_model = model_type.model_validate(payload)
+    python_payload = python_model.model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert python_payload["level_from_root"] == large_level
+    assert python_payload["metadata"]["level_from_root"] == large_level
+
+    wire = json.dumps(
+        {"schema_version": 1, "model_class": kind, "payload": python_payload},
+        ensure_ascii=False,
+    )
+    assert str(large_level) in wire
+    validate_graph_model_family(
+        {"schema_version": 1, "model_class": kind, "payload": python_payload}
+    )
+
+    round_trip = round_trip_raw_graph_model_envelope(wire)
+    assert json.loads(round_trip) == json.loads(wire)
+    assert round_trip.count(str(large_level)) == 2
+    assert graph_model_level_from_root(wire) == str(large_level)
+    decoded = decode_persistent_graph_model_v2(wire)
+    assert decoded["schema_version"] == 2
+    assert decoded["model_class"] == kind
+    assert decoded["level_from_root"] == str(large_level)
+    assert decoded["entity"]["id"] == python_payload["id"]
+    assert decoded["entity"]["level_from_root"] is None
+    assert decoded["raw_payload"] == python_payload
+
+    metadata_only = copy.deepcopy(python_payload)
+    metadata_only.pop("level_from_root")
+    metadata_only["metadata"]["level_from_root"] = large_level
+    metadata_wire = json.dumps(
+        {"schema_version": 1, "model_class": kind, "payload": metadata_only},
+        ensure_ascii=False,
+    )
+    assert graph_model_level_from_root(metadata_wire) == str(large_level)
+    metadata_decoded = decode_persistent_graph_model_v2(metadata_wire)
+    assert metadata_decoded["model_class"] == kind
+    assert metadata_decoded["level_from_root"] == str(large_level)
+    assert metadata_decoded["raw_payload"] == metadata_only
+
+    explicit_null = copy.deepcopy(python_payload)
+    explicit_null["level_from_root"] = None
+    explicit_null["metadata"]["level_from_root"] = large_level
+    null_wire = json.dumps(
+        {"schema_version": 1, "model_class": kind, "payload": explicit_null},
+        ensure_ascii=False,
+    )
+    assert graph_model_level_from_root(null_wire) is None
+    null_decoded = decode_persistent_graph_model_v2(null_wire)
+    assert null_decoded["model_class"] == kind
+    assert null_decoded["level_from_root"] is None
+    assert null_decoded["raw_payload"] == explicit_null
+
+
+@pytest.mark.requires_rust
+def test_tombstoned_edge_lifecycle_is_shared_by_python_and_rust(monkeypatch) -> None:
+    """An edge tombstone must cross the same typed seam as a node tombstone."""
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    fixture_path = ROOT / "contracts" / "golden" / "graph-model-lifecycle-redirect-v1.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    assert fixture["schema_version"] == 1
+    payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    payload["metadata"]["lifecycle_status"] = fixture["input_lifecycle_status"]
+    payload["metadata"]["redirect_to_id"] = fixture["redirect_to_id"]
+
+    normalized = Edge.model_validate(payload).model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert normalized["metadata"]["lifecycle_status"] == fixture["expected_lifecycle_status"]
+    assert normalized["metadata"]["redirect_to_id"] == fixture["redirect_to_id"]
+    assert normalized["source_ids"] == payload["source_ids"]
+    assert normalized["target_ids"] == payload["target_ids"]
+    restored = Edge.model_validate(normalized).model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert restored == normalized
+    _rust.validate_graph_model_family(
+        json.dumps(
+            {"schema_version": 1, "model_class": "edge", "payload": normalized},
+            ensure_ascii=False,
+        )
+    )
+
+    invalid = copy.deepcopy(normalized)
+    invalid["metadata"]["lifecycle_status"] = "purged"
+    with pytest.raises(ValueError, match="lifecycle_status"):
+        Edge.model_validate(invalid)
+    with pytest.raises(Exception, match="lifecycle_status"):
+        _rust.validate_graph_model_family(
+            json.dumps(
+                {"schema_version": 1, "model_class": "edge", "payload": invalid},
+                ensure_ascii=False,
+            )
+        )
+
+
+@pytest.mark.requires_rust
+def test_python_family_payloads_validate_through_rust_graph_contract(monkeypatch) -> None:
+    """Derived Python payloads use the same typed family boundary as Rust."""
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    base_node = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+
+    def envelope(model_class: str, payload: dict[str, Any]) -> str:
+        return json.dumps(
+            {"schema_version": 1, "model_class": model_class, "payload": payload},
+            ensure_ascii=False,
+        )
+
+    def project(
+        model_type: type[BaseModel],
+        payload: dict[str, Any],
+        *,
+        field_mode: str = "backend",
+    ) -> dict[str, Any]:
+        return model_type.model_validate(payload).model_dump(
+            field_mode=field_mode, dump_format="json"
+        )
+
+    workflow_node = copy.deepcopy(base_node)
+    workflow_node["metadata"] = {
+        "entity_type": "workflow_node",
+        "workflow_id": "wf:python-fixture",
+        "wf_op": "parse",
+    }
+    workflow_node = project(WorkflowNode, workflow_node)
+    _rust.validate_graph_model_family(envelope("workflow_node", workflow_node))
+
+    workflow_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    workflow_edge["metadata"] = {
+        "entity_type": "workflow_edge",
+        "workflow_id": "wf:python-fixture",
+        "wf_predicate": "ok",
+        "wf_priority": 1,
+    }
+    workflow_edge = project(WorkflowEdge, workflow_edge)
+    _rust.validate_graph_model_family(envelope("workflow_edge", workflow_edge))
+
+    runtime_nodes = [
+        (
+            WorkflowRunNode,
+            "workflow_run_node",
+            {
+                "entity_type": "workflow_run",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "turn_node_id": "turn:python-fixture",
+            },
+        ),
+        (
+            WorkflowStepExecNode,
+            "workflow_step_exec_node",
+            {
+                "entity_type": "workflow_step_exec",
+                "run_id": "run:python-fixture",
+                "workflow_id": "wf:python-fixture",
+                "workflow_node_id": "wf-node:parse",
+                "step_seq": 0,
+                "op": "parse",
+                "result_json": "{}",
+            },
+        ),
+        (
+            WorkflowCheckpointNode,
+            "workflow_checkpoint_node",
+            {
+                "entity_type": "workflow_checkpoint",
+                "run_id": "run:python-fixture",
+                "workflow_id": "wf:python-fixture",
+                "step_seq": 0,
+                "state_json": "{}",
+            },
+        ),
+        (
+            WorkflowCompletedNode,
+            "workflow_completed_node",
+            {
+                "entity_type": "workflow_completed",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "accepted_step_seq": 0,
+            },
+        ),
+        (
+            WorkflowCancelledNode,
+            "workflow_cancelled_node",
+            {
+                "entity_type": "workflow_cancelled",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "accepted_step_seq": 0,
+            },
+        ),
+        (
+            WorkflowFailedNode,
+            "workflow_failed_node",
+            {
+                "entity_type": "workflow_failed",
+                "workflow_id": "wf:python-fixture",
+                "run_id": "run:python-fixture",
+                "conversation_id": "conversation:python-fixture",
+                "accepted_step_seq": 0,
+            },
+        ),
+    ]
+    for model_type, model_class, metadata in runtime_nodes:
+        runtime_node = copy.deepcopy(base_node)
+        runtime_node["metadata"] = metadata
+        runtime_node = project(model_type, runtime_node)
+        _rust.validate_graph_model_family(envelope(model_class, runtime_node))
+
+    runtime_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    runtime_edge["metadata"] = {
+        "entity_type": "conversation_edge",
+        "relation": "next",
+    }
+    runtime_edge = project(WorkflowRuntimeEdge, runtime_edge)
+    _rust.validate_graph_model_family(envelope("workflow_runtime_edge", runtime_edge))
+
+    conversation_node = copy.deepcopy(base_node)
+    conversation_node["metadata"] = {
+        "entity_type": "conversation_node",
+        "level_from_root": 0,
+        "role": "user",
+        "turn_index": 0,
+    }
+    conversation_node = project(ConversationNode, conversation_node)
+    _rust.validate_graph_model_family(envelope("conversation_node", conversation_node))
+
+    for entity_type, role, turn_index in (
+        ("conversation_start", "system", -1),
+        ("conversation_turn", "user", 0),
+        ("conversation_summary", "system", 1),
+        ("assistant_turn", "assistant", 2),
+    ):
+        conversation_subtype = copy.deepcopy(base_node)
+        conversation_subtype["metadata"] = {
+            "entity_type": entity_type,
+            "level_from_root": 0,
+            "role": role,
+            "turn_index": turn_index,
+            "conversation_id": "conversation:python-fixture",
+            "user_id": "user:python-fixture",
+        }
+        conversation_subtype = project(ConversationNode, conversation_subtype)
+        _rust.validate_graph_model_family(
+            envelope("conversation_node", conversation_subtype)
+        )
+
+    conversation_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    conversation_edge["metadata"] = {
+        "causal_type": "chain",
+        "char_distance_from_last_summary": 4,
+        "turn_distance_from_last_summary": 1,
+    }
+    conversation_edge = project(ConversationEdge, conversation_edge)
+    _rust.validate_graph_model_family(envelope("conversation_edge", conversation_edge))
+
+    llm_node = copy.deepcopy(base_node)
+    llm_node.pop("embedding")
+    llm_node = project(LLMNode, llm_node, field_mode="llm")
+    _rust.validate_graph_model_family(envelope("llm_node", llm_node))
+
+    llm_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    llm_edge.pop("embedding")
+    llm_edge = project(LLMEdge, llm_edge, field_mode="llm")
+    _rust.validate_graph_model_family(envelope("llm_edge", llm_edge))
+
+    pure_chroma_node = copy.deepcopy(base_node)
+    pure_chroma_node.pop("mentions")
+    pure_chroma_node = project(PureChromaNode, pure_chroma_node)
+    _rust.validate_graph_model_family(envelope("pure_chroma_node", pure_chroma_node))
+
+    flattened_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    flattened_edge.pop("embedding")
+    flattened_edge["mentions"] = [{"span_ids": ["sp:edge-1"]}]
+    flattened_edge = project(FlattenedLLMEdge, flattened_edge, field_mode="llm")
+    _rust.validate_graph_model_family(
+        envelope("flattened_llm_edge", flattened_edge)
+    )
+    _rust.validate_graph_model_family(
+        envelope("assoc_flattened_llm_edge", flattened_edge)
+    )
+
+    doc_node = {
+        "id": "doc-node:python",
+        "label": "Page 1",
+        "type": "page",
+        "summary": "A document page",
+        "doc_id": "document:python",
+        "mentions": base_node["mentions"],
+    }
+    doc_node = project(DocNode, doc_node)
+    _rust.validate_graph_model_family(envelope("doc_node", doc_node))
+
+    acl_node = copy.deepcopy(base_node)
+    acl_node["metadata"] = {
+        "entity_type": "acl_record",
+        "acl_truth_graph": "truth:python",
+        "acl_target_entity_id": "parity-node",
+        "acl_target_grain": "node",
+        "acl_version": 1,
+        "acl_mode": "private",
+    }
+    acl_node = project(ACLNode, acl_node)
+    _rust.validate_graph_model_family(envelope("acl_node", acl_node))
+
+    acl_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    acl_edge["metadata"] = {
+        "entity_type": "acl_targets_truth",
+        "acl_truth_graph": "truth:python",
+        "acl_target_entity_id": "parity-node",
+        "acl_target_grain": "node",
+        "level_from_root": 0,
+    }
+    acl_edge = project(ACLEdge, acl_edge)
+    _rust.validate_graph_model_family(envelope("acl_edge", acl_edge))
+
+    invalid_llm = copy.deepcopy(base_node)
+    with pytest.raises(Exception):
+        _rust.validate_graph_model_family(envelope("llm_node", invalid_llm))
+
+
+@pytest.mark.requires_rust
+def test_workflow_runtime_edge_metadata_matches_python_model_contract() -> None:
+    from kogwistar import _rust
+
+    fixture = WORKFLOW_RUNTIME_EDGE_METADATA_FIXTURE
+    assert fixture["schema_version"] == 1
+    base_edge = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+
+    for case in fixture["cases"]:
+        metadata = case["metadata"]
+        payload = copy.deepcopy(base_edge)
+        payload["metadata"] = metadata
+        if case["valid"]:
+            python_payload = WorkflowRuntimeEdge.model_validate(payload).model_dump(
+                field_mode="backend", dump_format="json"
+            )
+            _rust.validate_graph_model_family(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "model_class": fixture["model_class"],
+                        "payload": python_payload,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            with pytest.raises(Exception):
+                WorkflowRuntimeEdge.model_validate(payload)
+            with pytest.raises(Exception):
+                _rust.validate_graph_model_family(
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "model_class": fixture["model_class"],
+                            "payload": payload,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+
+
+@pytest.mark.requires_rust
+def test_workflow_runtime_node_metadata_matches_python_model_contract() -> None:
+    from kogwistar import _rust
+
+    fixture = WORKFLOW_RUNTIME_NODE_METADATA_FIXTURE
+    assert fixture["schema_version"] == 1
+    base_node = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    model_by_class: dict[str, type[BaseModel]] = {
+        "workflow_run_node": WorkflowRunNode,
+        "workflow_step_exec_node": WorkflowStepExecNode,
+        "workflow_checkpoint_node": WorkflowCheckpointNode,
+        "workflow_completed_node": WorkflowCompletedNode,
+        "workflow_cancelled_node": WorkflowCancelledNode,
+        "workflow_failed_node": WorkflowFailedNode,
+    }
+
+    for case in fixture["cases"]:
+        model_class = case["model_class"]
+        payload = copy.deepcopy(base_node)
+        payload["metadata"] = case["metadata"]
+        if case["valid"]:
+            python_payload = (
+                model_by_class[model_class]
+                .model_validate(payload)
+                .model_dump(field_mode="backend", dump_format="json")
+            )
+            rust_payload = python_payload
+        else:
+            with pytest.raises(Exception):
+                model_by_class[model_class].model_validate(payload)
+            rust_payload = payload
+
+        envelope = json.dumps(
+            {
+                "schema_version": 1,
+                "model_class": model_class,
+                "payload": rust_payload,
+            },
+            ensure_ascii=False,
+        )
+        if case["valid"]:
+            _rust.validate_graph_model_family(envelope)
+        else:
+            with pytest.raises(Exception):
+                _rust.validate_graph_model_family(envelope)
+
+
+@pytest.mark.requires_rust
+def test_conversation_graph_metadata_matches_python_model_contract() -> None:
+    from kogwistar import _rust
+
+    fixture = CONVERSATION_GRAPH_METADATA_FIXTURE
+    assert fixture["schema_version"] == 1
+    node_payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    edge_payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    model_by_class: dict[str, type[BaseModel]] = {
+        "conversation_node": ConversationNode,
+        "conversation_edge": ConversationEdge,
+    }
+
+    for case in fixture["cases"]:
+        model_class = case["model_class"]
+        payload = copy.deepcopy(
+            edge_payload if model_class == "conversation_edge" else node_payload
+        )
+        payload["metadata"] = case["metadata"]
+        payload.update(case.get("top_level", {}))
+        if case["valid"]:
+            python_payload = (
+                model_by_class[model_class]
+                .model_validate(payload)
+                .model_dump(field_mode="backend", dump_format="json")
+            )
+        else:
+            with pytest.raises(Exception):
+                model_by_class[model_class].model_validate(payload)
+            python_payload = payload
+
+        envelope = json.dumps(
+            {
+                "schema_version": 1,
+                "model_class": model_class,
+                "payload": python_payload,
+            },
+            ensure_ascii=False,
+        )
+        if case["valid"]:
+            _rust.validate_graph_model_family(envelope)
+        else:
+            with pytest.raises(Exception):
+                _rust.validate_graph_model_family(envelope)
+
+
+@pytest.mark.requires_rust
+def test_workflow_design_metadata_matches_python_model_contract() -> None:
+    from kogwistar import _rust
+
+    fixture = WORKFLOW_DESIGN_METADATA_FIXTURE
+    assert fixture["schema_version"] == 1
+    node_payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+    edge_payload = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][1]["payload"])
+    model_by_class: dict[str, type[BaseModel]] = {
+        "workflow_node": WorkflowNode,
+        "workflow_edge": WorkflowEdge,
+    }
+
+    for case in fixture["cases"]:
+        model_class = case["model_class"]
+        payload = copy.deepcopy(
+            edge_payload if model_class == "workflow_edge" else node_payload
+        )
+        payload["metadata"] = case["input_metadata"]
+        if case["valid"]:
+            python_payload = (
+                model_by_class[model_class]
+                .model_validate(payload)
+                .model_dump(field_mode="backend", dump_format="json")
+            )
+            for field, expected in case["serialized_metadata"].items():
+                assert python_payload["metadata"].get(field) == expected, (
+                    case["id"],
+                    field,
+                )
+            rust_payload = python_payload
+        else:
+            with pytest.raises(Exception):
+                model_by_class[model_class].model_validate(payload)
+            rust_payload = payload
+
+        envelope = json.dumps(
+            {
+                "schema_version": 1,
+                "model_class": model_class,
+                "payload": rust_payload,
+            },
+            ensure_ascii=False,
+        )
+        if case["valid"]:
+            _rust.validate_graph_model_family(envelope)
+        else:
+            with pytest.raises(Exception):
+                _rust.validate_graph_model_family(envelope)
+
+
+@pytest.mark.requires_rust
+def test_workflow_operation_version_fixture_matches_native_graph_validator(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    from kogwistar import _rust
+
+    base_node = copy.deepcopy(GRAPH_MODEL_FIXTURE["cases"][0]["payload"])
+
+    def envelope(payload: dict[str, Any]) -> str:
+        return json.dumps(
+            {"schema_version": 1, "model_class": "workflow_node", "payload": payload},
+            ensure_ascii=False,
+        )
+
+    for version in WORKFLOW_OPERATION_VERSION_FIXTURE["valid"]:
+        candidate = copy.deepcopy(base_node)
+        candidate["metadata"] = {
+            "entity_type": "workflow_node",
+            "workflow_id": "wf:version-fixture",
+            "wf_op": "compute",
+            "wf_version": version,
+        }
+        normalized = WorkflowNode.model_validate(candidate).model_dump(
+            field_mode="backend", dump_format="json"
+        )
+        _rust.validate_graph_model_family(envelope(normalized))
+
+    for version in WORKFLOW_OPERATION_VERSION_FIXTURE["invalid"]:
+        candidate = copy.deepcopy(base_node)
+        candidate["metadata"] = {
+            "entity_type": "workflow_node",
+            "workflow_id": "wf:version-fixture",
+            "wf_op": "compute",
+            "wf_version": version,
+        }
+        with pytest.raises(ValueError):
+            WorkflowNode.model_validate(candidate)
+        with pytest.raises(Exception):
+            _rust.validate_graph_model_family(envelope(candidate))
+
+    legacy = copy.deepcopy(base_node)
+    legacy["metadata"] = {
+        "entity_type": "workflow_node",
+        "workflow_id": "wf:version-fixture",
+        "wf_op": "compute",
+    }
+    normalized_legacy = WorkflowNode.model_validate(legacy).model_dump(
+        field_mode="backend", dump_format="json"
+    )
+    assert (
+        normalized_legacy["metadata"]["wf_version"]
+        == WORKFLOW_OPERATION_VERSION_FIXTURE["legacy_default"]
+    )
+    _rust.validate_graph_model_family(envelope(normalized_legacy))
+
+
+@pytest.mark.parametrize("mode", ["shadow", "rust"])
+def test_canonical_json_float_magnitude_sweep_matches_python(
+    monkeypatch, mode: str
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", mode)
+    rng = random.Random(20261024)
+    values = [
+        math.ldexp((-1.0 if index % 2 else 1.0) * (0.5 + rng.random()), exponent)
+        for exponent in range(-1074, 1024, 7)
+        for index in range(3)
+    ]
+    values.extend(math.ldexp(1.0, exponent) for exponent in range(-1074, 1024))
+    payload = {"values": values}
+    expected = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+    assert stable_json_dumps(payload) == expected
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
@@ -146,6 +1554,39 @@ def test_short_ids_round_trip_ordering_and_non_json_fallback(
     assert type(raised.value) is ValueError
 
 
+@pytest.mark.parametrize("as_document", [False, True])
+def test_short_id_shadow_mismatch_rolls_back_entire_object_mapping(
+    monkeypatch, tmp_path, as_document: bool
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "shadow")
+    mapper = shortids.ShortIdMapper("shadow-rollback", root_dir=str(tmp_path))
+    mapper.set_obj_max_depth(2)
+    mapper.set_id_keys(scalars=("id",), lists=("source_ids",))
+    original_state = copy.deepcopy(mapper.state)
+    rust_transform = shortids._rust_short_id_transform
+    calls = 0
+
+    def mismatch_second_alias(*, payload, python_value):
+        nonlocal calls
+        result = rust_transform(payload=payload, python_value=python_value)
+        calls += 1
+        if calls == 2:
+            return {**result, "value": "<sid>999"}
+        return result
+
+    monkeypatch.setattr(shortids, "_rust_short_id_transform", mismatch_second_alias)
+    with pytest.raises(RustParityError, match="parity mismatch"):
+        value = {"id": "node:one", "source_ids": ["edge:one"]}
+        if as_document:
+            mapper.l2s_doc(json.dumps(value))
+        else:
+            mapper.l2s_obj(value)
+
+    assert calls == 2
+    assert mapper.state == original_state
+    assert json.loads(mapper._file().read_text(encoding="utf-8")) == original_state
+
+
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
 def test_runtime_state_reducer_parity_idempotency_and_invalid_inputs(monkeypatch, mode: str) -> None:
     monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", mode)
@@ -162,6 +1603,67 @@ def test_runtime_state_reducer_parity_idempotency_and_invalid_inputs(monkeypatch
         apply_state_update_inplace({}, [("e", {"items": 1})])
     with pytest.raises(AttributeError):
         apply_state_update_inplace({"items": 1}, [("a", {"items": "x"})])
+
+
+@pytest.mark.parametrize("mode", ["shadow", "rust"])
+def test_runtime_state_reducer_matches_shared_python_golden(
+    monkeypatch, mode: str
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", mode)
+    assert STATE_UPDATE_FIXTURE["schema_version"] == 1
+    for case in STATE_UPDATE_FIXTURE["cases"]:
+        state = copy.deepcopy(case["state"])
+        apply_state_update_inplace(
+            state,
+            copy.deepcopy(case["state_update"]),
+            copy.deepcopy(case["update"]),
+            state_schema=copy.deepcopy(case["state_schema"]),
+        )
+        assert state == case["expected"], f"case {case['name']} in {mode} mode"
+
+
+def test_runtime_state_reducer_seeded_differential_sweep(monkeypatch) -> None:
+    rng = random.Random(20261024)
+
+    for sample in range(128):
+        initial_state: dict[str, Any] = {
+            "items": [sample, "seed"],
+            "events": [{"sequence": sample}],
+            "current": sample,
+        }
+        if sample % 2:
+            state_update = [
+                ("u", {"current": rng.randint(-10_000, 10_000)}),
+                ("a", {"events": {"sequence": sample, "kind": "append"}}),
+                ("e", {"items": [rng.randint(-100, 100) for _ in range(sample % 7)]}),
+            ]
+            update = None
+            state_schema: dict[str, str] = {}
+        else:
+            state_update = []
+            update = {
+                "events": [rng.randint(-100, 100) for _ in range(sample % 5)],
+                "current": rng.randint(-10_000, 10_000),
+            }
+            state_schema = {"events": "a"}
+
+        python_state = copy.deepcopy(initial_state)
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "python")
+        apply_state_update_inplace(
+            python_state,
+            copy.deepcopy(state_update),
+            copy.deepcopy(update),
+            state_schema=copy.deepcopy(state_schema),
+        )
+        rust_state = copy.deepcopy(initial_state)
+        monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+        apply_state_update_inplace(
+            rust_state,
+            copy.deepcopy(state_update),
+            copy.deepcopy(update),
+            state_schema=copy.deepcopy(state_schema),
+        )
+        assert rust_state == python_state, f"sample {sample} differs between reducers"
 
 
 @pytest.mark.parametrize("mode", ["shadow", "rust"])
@@ -188,6 +1690,28 @@ def test_runtime_state_reducer_preserves_python_object_identity(
     assert state["assigned"] is assigned
     assert state["items"][0] is appended
     assert state["items"][1] is extended
+
+
+def test_runtime_state_reducer_parity_mismatch_does_not_mutate_caller_state(
+    monkeypatch,
+) -> None:
+    from kogwistar.runtime import base_runtime
+
+    state = {"items": ["seed"], "stable": {"value": 1}}
+    original = copy.deepcopy(state)
+    monkeypatch.setattr(base_runtime, "runtime_implementation_mode", lambda: "rust")
+    monkeypatch.setattr(
+        base_runtime,
+        "runtime_apply_state_update",
+        lambda *, payload: {"items": ["seed", "incorrect"], "stable": {"value": 1}},
+    )
+
+    with pytest.raises(RustParityError, match="parity mismatch"):
+        base_runtime.apply_state_update_inplace(
+            state, [("a", {"items": "expected"})]
+        )
+
+    assert state == original
 
 
 @pytest.mark.parametrize(

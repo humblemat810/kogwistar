@@ -320,7 +320,7 @@ class ServiceHealthRegistry:
         workspace_id: str | None = None,
         namespace: str | None = None,
     ) -> JsonObject | None:
-        get_projection = getattr(self.engine.meta_sqlite, "get_named_projection", None)
+        get_projection = getattr(self.engine.metadata, "get_named_projection", None)
         if not callable(get_projection):
             return None
         key = self._resolve_projection_key(
@@ -342,7 +342,7 @@ class ServiceHealthRegistry:
         limit: int = 1000,
     ) -> list[JsonObject]:
         list_projection = getattr(
-            self.engine.meta_sqlite, "list_named_projections", None
+            self.engine.metadata, "list_named_projections", None
         )
         if not callable(list_projection):
             return []
@@ -514,7 +514,7 @@ class ServiceHealthRegistry:
         namespace: str | None = None,
     ) -> None:
         latest_seq = 0
-        getter = getattr(self.engine.meta_sqlite, "get_latest_entity_event_seq", None)
+        getter = getattr(self.engine.metadata, "get_latest_entity_event_seq", None)
         if callable(getter):
             latest_seq = (
                 _optional_int(
@@ -529,7 +529,7 @@ class ServiceHealthRegistry:
             ),
             namespace=self._coalesce_scope(namespace, payload.get("namespace")),
         )
-        self.engine.meta_sqlite.replace_named_projection(
+        self.engine.metadata.replace_named_projection(
             SERVICE_HEALTH_PROJECTION_NAMESPACE,
             projection_key,
             payload,
@@ -598,7 +598,7 @@ class ServiceHealthRegistry:
             return self._projection_key(
                 service_id, workspace_id=workspace_id, namespace=namespace
             )
-        get_projection = getattr(self.engine.meta_sqlite, "get_named_projection", None)
+        get_projection = getattr(self.engine.metadata, "get_named_projection", None)
         if callable(get_projection):
             direct = get_projection(
                 SERVICE_HEALTH_PROJECTION_NAMESPACE, str(service_id)
@@ -639,7 +639,7 @@ class ServiceHealthRegistry:
 
     def _projection_rows(self) -> list[JsonObject]:
         list_projection = getattr(
-            self.engine.meta_sqlite, "list_named_projections", None
+            self.engine.metadata, "list_named_projections", None
         )
         if not callable(list_projection):
             return []
@@ -647,7 +647,7 @@ class ServiceHealthRegistry:
         return [_json_object(row) for row in rows]
 
     def _get_projection_payload_by_key(self, key: str) -> JsonObject | None:
-        get_projection = getattr(self.engine.meta_sqlite, "get_named_projection", None)
+        get_projection = getattr(self.engine.metadata, "get_named_projection", None)
         if not callable(get_projection):
             return None
         row = get_projection(SERVICE_HEALTH_PROJECTION_NAMESPACE, key)

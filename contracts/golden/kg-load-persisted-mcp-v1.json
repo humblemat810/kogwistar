@@ -1,0 +1,15 @@
+{
+  "contract_version": 1,
+  "operation": "kg_load_persisted",
+  "arguments": {
+    "inp": {
+      "doc_ids": ["doc-a"],
+      "insertion_method": "parser",
+      "sid": false
+    }
+  },
+  "expected_structured_content": {
+    "node_ids": ["n1", "n2"],
+    "edge_ids": ["e1"]
+  }
+}

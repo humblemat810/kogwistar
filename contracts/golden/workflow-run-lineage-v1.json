@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "response": {
+    "run_id": "lineage-child",
+    "lineage": [
+      {
+        "run_id": "lineage-child",
+        "workflow_id": "wf-child",
+        "parent_run_id": "lineage-parent",
+        "status": "completed",
+        "wf_invoked": []
+      },
+      {
+        "run_id": "lineage-parent",
+        "workflow_id": "wf-parent",
+        "parent_run_id": null,
+        "status": "completed",
+        "wf_invoked": []
+      }
+    ]
+  }
+}

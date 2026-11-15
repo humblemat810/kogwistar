@@ -5,15 +5,18 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from pathlib import Path
 
 import pytest
 
 from kogwistar.cdc.change_event import ChangeEvent
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.search_index.models import (
     IndexingItem,
     make_index_key_for_item,
 )
+from kogwistar.implementation_selection import callback_execution_scope
 
 pytestmark = pytest.mark.ci_full
 
@@ -38,17 +41,6 @@ def _read_entity_events(engine: GraphKnowledgeEngine):
     iter_events = getattr(engine.meta_sqlite, "iter_entity_events", None)
     assert iter_events is not None
     return list(iter_events(namespace="default"))
-
-
-def _replay_search_index_events(engine: GraphKnowledgeEngine) -> None:
-    items: list[IndexingItem] = []
-    for _, entity_kind, _entity_id, op, payload_json in _read_entity_events(engine):
-        if entity_kind != "search_index" or op != "search_index.upsert":
-            continue
-        payload = json.loads(payload_json)
-        items.append(IndexingItem(**payload))
-    assert items, "Expected at least one search_index event to replay"
-    engine.search_index.upsert_entries(items)
 
 
 def test_search_index_cdc_and_event_sourcing(temp_engine_dir):
@@ -85,17 +77,55 @@ def test_search_index_cdc_and_event_sourcing(temp_engine_dir):
     assert found, "Event not found in meta event log"
 
 
-def test_search_index_replay(temp_engine_dir):
-    engine = GraphKnowledgeEngine(persist_directory=temp_engine_dir)
-    item = IndexingItem(
-        node_id="replayed-node",
-        canonical_title="Replay Title",
-        keywords=[],
-        aliases=[],
-        provision="manual",
-        doc_id="doc-replay",
+def test_search_index_mutation_is_rejected_inside_worker_callback(temp_engine_dir):
+    engine = GraphKnowledgeEngine(
+        persist_directory=temp_engine_dir,
+        backend_factory=build_in_memory_backend,
     )
+    item = IndexingItem(
+        node_id="callback-node",
+        canonical_title="Callback Index Entry",
+        keywords=["callback"],
+        aliases=[],
+        provision="test",
+    )
+
+    with callback_execution_scope():
+        with pytest.raises(RuntimeError, match="Search index mutation.*worker callback"):
+            engine.search_index.upsert_entries([item])
+
+    connection = engine.search_index._connect()
+    try:
+        row_count = connection.execute(
+            "SELECT COUNT(*) FROM semantic_index"
+        ).fetchone()[0]
+    finally:
+        connection.close()
+
+    assert row_count == 0
+    assert engine.backend.node_index.count() == 0
+    assert not any(
+        kind == "search_index" and op == "search_index.upsert"
+        for _, kind, _, op, _ in _read_entity_events(engine)
+    )
+
+
+def test_search_index_replay(temp_engine_dir):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/search-index-entry-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine = GraphKnowledgeEngine(
+        persist_directory=temp_engine_dir,
+        backend_factory=build_in_memory_backend,
+    )
+    item = IndexingItem.model_validate(fixture["request"]["index"][0])
     engine.search_index.upsert_entries([item])
+    revised = item.model_copy(
+        update={"keywords": ["latesttoken"], "aliases": []}
+    )
+    engine.search_index.upsert_entries([revised])
 
     index_db_path = os.path.join(temp_engine_dir, "index.db")
     conn = sqlite3.connect(index_db_path)
@@ -117,16 +147,44 @@ def test_search_index_replay(temp_engine_dir):
     )
     delete_fn(ids=[f"idx:{index_key}"])
 
-    search_res = engine.search_index.search_hybrid("Replay", limit=5)
+    search_res = engine.search_index.search_hybrid("Permit", limit=5)
     assert len(search_res["results"]) == 0
 
     # Replay from the persisted entity event log into the projection.
-    _replay_search_index_events(engine)
+    assert engine.replay_namespace(namespace="default", from_seq=1) > 0
 
-    search_res2 = engine.search_index.search_hybrid("Replay", limit=5)
-    assert len(search_res2["results"]) > 0
-    assert search_res2["results"][0]["node_id"] == "replayed-node"
-    assert search_res2["results"][0]["canonical_title"] == "Replay Title"
+    search_res2 = engine.search_index.search_hybrid("latesttoken", limit=5)
+    assert len(search_res2["results"]) == 1
+    assert search_res2["results"][0]["node_id"] == revised.node_id
+    conn = sqlite3.connect(index_db_path)
+    try:
+        projected_keywords = conn.execute(
+            "SELECT keywords FROM semantic_index WHERE index_key=?",
+            (index_key,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert projected_keywords == "latesttoken"
+    conn = sqlite3.connect(index_db_path)
+    try:
+        stale_fts_count = conn.execute(
+            "SELECT COUNT(*) FROM semantic_index_fts "
+            "WHERE semantic_index_fts MATCH 'authorization'"
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert stale_fts_count == 0
+    vector_projection = engine.backend.node_index_get(
+        ids=[f"idx:{index_key}"], include=["metadatas"]
+    )
+    assert vector_projection["metadatas"][0]["keywords"] == '["latesttoken"]'
+
+    events = [
+        event
+        for event in _read_entity_events(engine)
+        if event[1] == "search_index" and event[3] == "search_index.upsert"
+    ]
+    assert len(events) == 2
 
 
 def test_search_index_retrieval(temp_engine_dir):

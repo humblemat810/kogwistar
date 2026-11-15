@@ -1,0 +1,3214 @@
+pub const FROZEN_OPENAPI_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/openapi.json"));
+pub const FROZEN_MCP_TOOLS_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/mcp-tools.json"));
+const CYTOSCAPE_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/cytoscape.html"));
+const D3_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/d3.html"));
+const GO_TEMPLATE: &str = include_str!(concat!(env!("OUT_DIR"), "/go.html"));
+
+const INTERNAL_RUNTIME_CLAIM_ROUTE: &str = "/internal/runtime/claim";
+const INTERNAL_RUNTIME_RESULTS_ROUTE: &str = "/internal/runtime/results";
+const MAX_RUNTIME_WORKER_RESULT_BYTES: usize = 2 * 1024 * 1024;
+const INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE: &str = "/internal/runtime/native/execute";
+const INTERNAL_GRAPH_MUTATIONS_ROUTE: &str = "/internal/graph/mutations";
+const INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE: &str = "/internal/graph/load-persisted";
+const INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE: &str = "/internal/graph/propose-bruteforce";
+const INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE: &str = "/internal/conversation/transcript";
+const INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE: &str =
+    "/internal/conversation/context-snapshot";
+const INTERNAL_GRAPH_NEIGHBORS_ROUTE: &str = "/internal/graph/neighbors";
+const INTERNAL_GRAPH_VECTOR_QUERY_ROUTE: &str = "/internal/graph/vector-query";
+const INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE: &str = "/internal/graph/propose-vector";
+const INTERNAL_GRAPH_FIND_EDGES_ROUTE: &str = "/internal/graph/find-edges";
+const INTERNAL_GRAPH_SHORTEST_PATH_ROUTE: &str = "/internal/graph/shortest-path";
+const INTERNAL_GRAPH_K_HOP_ROUTE: &str = "/internal/graph/k-hop";
+const INTERNAL_GRAPH_VIZ_D3_ROUTE: &str = "/internal/graph/viz-d3";
+const INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE: &str = "/internal/graph/viz-cytoscape";
+
+const INTERNAL_APPLICATION_EFFECT_ROUTES: &[&str] = &[
+    INTERNAL_RUNTIME_CLAIM_ROUTE,
+    INTERNAL_RUNTIME_RESULTS_ROUTE,
+    INTERNAL_RUNTIME_NATIVE_EXECUTE_ROUTE,
+    INTERNAL_DOCUMENT_PROJECTION_ROUTE,
+    INTERNAL_GRAPH_MUTATIONS_ROUTE,
+    INTERNAL_GRAPH_LOAD_PERSISTED_ROUTE,
+    INTERNAL_GRAPH_PROPOSE_BRUTE_FORCE_ROUTE,
+    INTERNAL_CONVERSATION_TRANSCRIPT_ROUTE,
+    INTERNAL_CONVERSATION_CONTEXT_SNAPSHOT_ROUTE,
+    INTERNAL_GRAPH_NEIGHBORS_ROUTE,
+    INTERNAL_GRAPH_VECTOR_QUERY_ROUTE,
+    INTERNAL_GRAPH_PROPOSE_VECTOR_ROUTE,
+    INTERNAL_GRAPH_FIND_EDGES_ROUTE,
+    INTERNAL_GRAPH_SHORTEST_PATH_ROUTE,
+    INTERNAL_GRAPH_K_HOP_ROUTE,
+    INTERNAL_GRAPH_VIZ_D3_ROUTE,
+    INTERNAL_GRAPH_VIZ_CYTOSCAPE_ROUTE,
+];
+
+fn rust_native_attested(mut value: Value) -> Value {
+    attach_rust_native_seam_attestation(&mut value);
+    value
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HealthSnapshot {
+    pub backend: String,
+    pub persist_directory: String,
+    pub conversation_persist_directory: String,
+    pub workflow_persist_directory: String,
+    pub wisdom_persist_directory: String,
+    #[serde(default)]
+    pub pg_schema_base: Option<String>,
+}
+
+pub fn health_response(snapshot: &HealthSnapshot) -> Value {
+    json!({
+        "ok": true,
+        "backend": snapshot.backend,
+        "persist_directory": snapshot.persist_directory,
+        "conversation_persist_directory": snapshot.conversation_persist_directory,
+        "workflow_persist_directory": snapshot.workflow_persist_directory,
+        "wisdom_persist_directory": snapshot.wisdom_persist_directory,
+        "pg_schema_base": snapshot.pg_schema_base,
+    })
+}
+
+pub fn health_response_from_str(payload_json: &str) -> Result<String, serde_json::Error> {
+    let snapshot: HealthSnapshot = serde_json::from_str(payload_json)?;
+    serde_json::to_string(&health_response(&snapshot))
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApiAuthRequest {
+    #[serde(default)]
+    pub roles: Vec<String>,
+    #[serde(default)]
+    pub required_roles: Vec<String>,
+}
+
+pub fn authorize(request: &ApiAuthRequest) -> bool {
+    request.required_roles.is_empty()
+        || request
+            .required_roles
+            .iter()
+            .any(|required| request.roles.iter().any(|role| role_allows(role, required)))
+}
+
+fn role_allows(role: &str, required: &str) -> bool {
+    match (role, required) {
+        ("rw", "ro" | "rw") | ("ro", "ro") => true,
+        _ => role == required,
+    }
+}
+
+pub fn authorize_from_str(payload_json: &str) -> Result<String, serde_json::Error> {
+    let request: ApiAuthRequest = serde_json::from_str(payload_json)?;
+    serde_json::to_string(&json!({"allowed": authorize(&request)}))
+}
+
+pub fn sse_frame(event: &str, data: &Value, id: Option<&str>) -> String {
+    let mut frame = String::new();
+    if let Some(id) = id {
+        frame.push_str("id: ");
+        frame.push_str(id);
+        frame.push('\n');
+    }
+    frame.push_str("event: ");
+    frame.push_str(event);
+    frame.push('\n');
+    frame.push_str("data: ");
+    frame.push_str(&serde_json::to_string(data).expect("JSON value always serializes"));
+    frame.push_str("\n\n");
+    frame
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SseFrameRequest {
+    pub event: String,
+    pub data: Value,
+    #[serde(default)]
+    pub id: Option<String>,
+}
+
+pub fn sse_frame_from_str(payload_json: &str) -> Result<String, serde_json::Error> {
+    let request: SseFrameRequest = serde_json::from_str(payload_json)?;
+    Ok(sse_frame(
+        &request.event,
+        &request.data,
+        request.id.as_deref(),
+    ))
+}
+
+pub fn mcp_result(id: Value, result: Value) -> Value {
+    json!({"jsonrpc": "2.0", "id": id, "result": result})
+}
+
+/// Return whether the Rust application currently owns a frozen MCP operation.
+///
+/// The shared catalog describes the complete product surface, including
+/// Python-owned operations. A Rust server must not advertise those operations
+/// until it has an equivalent handler and authority path.
+fn rust_mcp_tool_supported(surface: &str, name: &str) -> bool {
+    match surface {
+        "workflow" => matches!(
+            name,
+            "workflow.budget_history"
+                | "workflow.budget_snapshot"
+                | "workflow.blocked_runs"
+                | "workflow.capabilities_snapshot"
+                | "workflow.capability_approve"
+                | "workflow.capability_revoke"
+                | "workflow.dead_letter_replay"
+                | "workflow.dead_letters"
+                | "workflow.design_edge_delete"
+                | "workflow.design_edge_upsert"
+                | "workflow.design_history"
+                | "workflow.design_node_delete"
+                | "workflow.design_node_upsert"
+                | "workflow.design_redo"
+                | "workflow.design_undo"
+                | "workflow.message_orphans_repair"
+                | "workflow.operator_dashboard"
+                | "workflow.operator_inbox"
+                | "workflow.process_table"
+                | "workflow.process_timeline"
+                | "workflow.run_cancel"
+                | "workflow.run_checkpoint_get"
+                | "workflow.run_events"
+                | "workflow.run_evidence"
+                | "workflow.run_lineage"
+                | "workflow.run_replay"
+                | "workflow.run_resume"
+                | "workflow.run_resume_contract"
+                | "workflow.run_status"
+                | "workflow.run_steps"
+                | "workflow.run_submit"
+                | "workflow.scheduler_timeline"
+                | "workflow.service_declare"
+                | "workflow.service_disable"
+                | "workflow.service_enable"
+                | "workflow.service_events"
+                | "workflow.service_get"
+                | "workflow.service_heartbeat"
+                | "workflow.service_list"
+                | "workflow.service_repair"
+                | "workflow.service_trigger"
+                | "workflow.services_repair"
+                | "workflow.tool_audit"
+                | "workflow.visibility_snapshot"
+        ),
+        "conversation" => matches!(
+            name,
+            "conversation.create"
+                | "conversation.ask"
+                | "conversation.get_transcript"
+                | "conversation.run_status"
+                | "conversation.cancel_run"
+        ),
+        "root" => matches!(
+            name,
+            "document_id_from_file_name"
+                | "kg_load_persisted"
+                | "kg_propose_bruteforce"
+                | "kg_find_edges"
+                | "kg_k_hop"
+                | "kg_neighbors"
+                | "propose_vector"
+                | "kg_semantic_seed_then_expand_text"
+                | "kg_shortest_path"
+                | "kg_viz_cytoscape_json"
+                | "kg_viz_d3_json"
+                | "wisdom.kg_upsert_graph"
+                | "wisdom.semantic_seed_then_expand"
+        ),
+        _ => false,
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpResultRequest {
+    pub id: Value,
+    pub result: Value,
+}
+
+pub fn mcp_result_from_str(payload_json: &str) -> Result<String, serde_json::Error> {
+    let request: McpResultRequest = serde_json::from_str(payload_json)?;
+    serde_json::to_string(&mcp_result(request.id, request.result))
+}
+
+pub fn cli_health(snapshot: &HealthSnapshot) -> String {
+    format!("ok backend={}", snapshot.backend)
+}
+
+pub fn cli_health_from_str(payload_json: &str) -> Result<String, serde_json::Error> {
+    let snapshot: HealthSnapshot = serde_json::from_str(payload_json)?;
+    validate_server_backend(&snapshot.backend).map_err(serde_json::Error::io)?;
+    Ok(cli_health(&snapshot))
+}
+
+#[derive(Clone)]
+pub struct ApiState {
+    pub health: HealthSnapshot,
+    pub required_roles: Vec<String>,
+    pub implementation: ImplementationSnapshot,
+    pub auth: AuthConfig,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AuthConfig {
+    pub mode: String,
+    pub algorithm: Option<String>,
+    pub key: Option<String>,
+    pub jwks_json: Option<String>,
+    pub issuer: Option<String>,
+    pub audience: Option<String>,
+    pub oidc_providers_json: Option<String>,
+    pub auth_db_url: Option<String>,
+}
+
+impl AuthConfig {
+    pub fn from_environment() -> Self {
+        Self {
+            mode: std::env::var("AUTH_MODE").unwrap_or_else(|_| "oidc".to_owned()),
+            algorithm: std::env::var("JWT_ALG")
+                .ok()
+                .or_else(|| Some("HS256".to_owned())),
+            key: std::env::var("JWT_SECRET").ok(),
+            jwks_json: std::env::var("JWT_JWKS_JSON").ok(),
+            issuer: std::env::var("JWT_ISS").ok(),
+            audience: std::env::var("JWT_AUD").ok(),
+            oidc_providers_json: std::env::var("OIDC_PROVIDERS_JSON").ok(),
+            auth_db_url: std::env::var("AUTH_DB_URL")
+                .ok()
+                .or_else(|| Some("sqlite:///auth.sqlite".to_owned())),
+        }
+    }
+
+    fn configured(&self) -> bool {
+        self.key.as_deref().is_some_and(|key| !key.is_empty())
+            || self
+                .jwks_json
+                .as_deref()
+                .is_some_and(|jwks| !jwks.is_empty())
+    }
+}
+
+fn environment(name: &str, default: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| default.to_owned())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ServerBackend {
+    Postgres,
+    Sqlite,
+    InMemory,
+}
+
+impl ServerBackend {
+    fn from_config(value: &str) -> Result<Self, std::io::Error> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "pg" => Ok(Self::Postgres),
+            "sqlite" => Ok(Self::Sqlite),
+            "in_memory" => Ok(Self::InMemory),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "KOGWISTAR_BACKEND must be pg, sqlite, or in_memory",
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Postgres => "pg",
+            Self::Sqlite => "sqlite",
+            Self::InMemory => "in_memory",
+        }
+    }
+}
+
+pub fn validate_server_backend(value: &str) -> Result<(), std::io::Error> {
+    ServerBackend::from_config(value).map(|_| ())
+}
+
+fn required_backend_setting(
+    name: &'static str,
+    value: Option<String>,
+) -> Result<String, std::io::Error> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{name} is required for the selected KOGWISTAR_BACKEND"),
+            )
+        })
+}
+
+#[cfg(test)]
+mod server_backend_tests {
+    use super::{ServerBackend, required_backend_setting};
+
+    #[test]
+    fn server_backend_config_accepts_only_implemented_compositions() {
+        assert_eq!(
+            ServerBackend::from_config("pg").unwrap(),
+            ServerBackend::Postgres
+        );
+        assert_eq!(
+            ServerBackend::from_config(" SQLITE ").unwrap(),
+            ServerBackend::Sqlite
+        );
+        assert_eq!(
+            ServerBackend::from_config(" IN_MEMORY ").unwrap(),
+            ServerBackend::InMemory
+        );
+        for unsupported in ["chroma", "postgres", "typo", ""] {
+            let error = ServerBackend::from_config(unsupported)
+                .expect_err("unsupported backend must fail before server startup");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+        for missing in [None, Some(String::new()), Some("  \t".to_owned())] {
+            assert!(required_backend_setting("KOGWISTAR_PG_DSN", missing).is_err());
+        }
+        assert_eq!(
+            required_backend_setting("KOGWISTAR_META_SQLITE_PATH", Some("db.sqlite".to_owned()))
+                .unwrap(),
+            "db.sqlite"
+        );
+    }
+
+    #[test]
+    fn cli_health_rejects_backend_outside_server_compositions() {
+        let payload = r#"{
+            "backend":"chroma",
+            "persist_directory":"root",
+            "conversation_persist_directory":"conversation",
+            "workflow_persist_directory":"workflow",
+            "wisdom_persist_directory":"wisdom"
+        }"#;
+        let error = super::cli_health_from_str(payload)
+            .expect_err("CLI health must reject a backend the Rust server cannot compose");
+        assert!(
+            error
+                .to_string()
+                .contains("KOGWISTAR_BACKEND must be pg, sqlite, or in_memory")
+        );
+    }
+}
+
+// PYTHON_PARITY: kogwistar/server/bootstrap.py::ServerStorageSettings.schema_for("wisdom")
+fn configured_wisdom_schema(base_schema: &str, configured: Option<&str>) -> Result<String, String> {
+    match configured {
+        Some(schema) if schema.trim().is_empty() => {
+            Err("KOGWISTAR_WISDOM_SCHEMA must not be empty".to_owned())
+        }
+        Some(schema) => Ok(schema.trim().to_owned()),
+        None => Ok(format!("{base_schema}_wisdom")),
+    }
+}
+
+fn embedding_provider_from_settings(
+    provider: Option<&str>,
+    model: Option<&str>,
+    dimension: Option<&str>,
+    endpoint: Option<&str>,
+) -> Result<Option<Arc<dyn EmbeddingProvider>>, String> {
+    let Some(provider) = provider.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    if !provider.eq_ignore_ascii_case("ollama") {
+        return Err("KOGWISTAR_EMBEDDING_PROVIDER supports only 'ollama'".to_owned());
+    }
+    let model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            "KOGWISTAR_EMBEDDING_MODEL is required when embedding is enabled".to_owned()
+        })?;
+    let dimension = dimension
+        .ok_or_else(|| {
+            "KOGWISTAR_EMBEDDING_DIMENSION is required when embedding is enabled".to_owned()
+        })?
+        .parse::<usize>()
+        .map_err(|_| "KOGWISTAR_EMBEDDING_DIMENSION must be a positive integer".to_owned())?;
+    if dimension == 0 {
+        return Err("KOGWISTAR_EMBEDDING_DIMENSION must be a positive integer".to_owned());
+    }
+    let endpoint = endpoint
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("http://127.0.0.1:11434");
+    let profile = kogwistar_engine::embedding::EmbeddingProfile {
+        provider: provider.to_ascii_lowercase(),
+        model: model.to_owned(),
+        dimension,
+        similarity_metric: "cosine".to_owned(),
+        endpoint_fingerprint: None,
+        max_sequence_length: None,
+        crop_token_budget: None,
+        tokenizer_fingerprint: None,
+        crop_policy: None,
+        embedding_kind: Some("single_vector".to_owned()),
+        model_revision: None,
+        preprocessing_fingerprint: None,
+        max_image_patches: None,
+    };
+    let provider = kogwistar_engine::embedding::OllamaEmbeddingProvider::new(
+        profile,
+        endpoint,
+        std::time::Duration::from_secs(60),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Some(Arc::new(provider)))
+}
+
+fn chat_completion_provider_from_environment()
+-> Result<Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>, String> {
+    let endpoint = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    let model = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_MODEL")
+        .ok()
+        .filter(|value| !value.trim().is_empty());
+    match (endpoint, model) {
+        (None, None) => Ok(None),
+        (Some(endpoint), Some(model)) => {
+            let api_key = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_API_KEY")
+                .ok()
+                .filter(|value| !value.is_empty());
+            let streaming = std::env::var("KOGWISTAR_CHAT_COMPLETIONS_STREAMING")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| {
+                    parse_inline_worker_flag(
+                        "KOGWISTAR_CHAT_COMPLETIONS_STREAMING",
+                        Some(&value),
+                    )
+                })
+                .transpose()?
+                .unwrap_or(false);
+            crate::native_answer_generation::OpenAiCompatibleChatConfig::new(
+                endpoint, model, api_key,
+            )
+            .map(|provider| provider.with_streaming(streaming))
+            .map(Some)
+        }
+        _ => Err(
+            "KOGWISTAR_CHAT_COMPLETIONS_ENDPOINT and KOGWISTAR_CHAT_COMPLETIONS_MODEL must be configured together"
+                .to_owned(),
+        ),
+    }
+}
+
+fn parse_inline_worker_flag(name: &str, value: Option<&str>) -> Result<bool, String> {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        None | Some("") | Some("0") | Some("false") | Some("no") | Some("off") => Ok(false),
+        Some("1") | Some("true") | Some("yes") | Some("on") => Ok(true),
+        Some(_) => Err(format!("{name} must be a boolean")),
+    }
+}
+
+fn boolean_environment(name: &str) -> Result<bool, std::io::Error> {
+    match std::env::var(name) {
+        Ok(value) => parse_inline_worker_flag(name, Some(&value)).map_err(std::io::Error::other),
+        Err(std::env::VarError::NotPresent) => Ok(false),
+        Err(std::env::VarError::NotUnicode(_)) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{name} is not valid Unicode"),
+        )),
+    }
+}
+
+fn parse_projection_reconcile_interval(raw: Option<&str>) -> Result<std::time::Duration, String> {
+    let Some(raw) = raw else {
+        return Ok(std::time::Duration::ZERO);
+    };
+    let seconds = raw
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "must be a non-negative integer number of seconds".to_owned())?;
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
+fn parse_projection_reconcile_namespace(
+    interval: std::time::Duration,
+    namespace: Option<String>,
+) -> Result<String, String> {
+    if interval.is_zero() {
+        return Ok(String::new());
+    }
+    let namespace = namespace.ok_or_else(|| {
+        "KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE is required when periodic projection reconciliation is enabled".to_owned()
+    })?;
+    if namespace.trim().is_empty() {
+        return Err("KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE must not be empty".to_owned());
+    }
+    Ok(namespace)
+}
+
+fn projection_reconcile_settings() -> Result<(std::time::Duration, String), std::io::Error> {
+    const INTERVAL_NAME: &str = "KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S";
+    let raw = match std::env::var(INTERVAL_NAME) {
+        Ok(raw) => Some(raw),
+        Err(std::env::VarError::NotPresent) => None,
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("{INTERVAL_NAME} is not valid Unicode"),
+            ));
+        }
+    };
+    let interval = parse_projection_reconcile_interval(raw.as_deref()).map_err(|error| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("{INTERVAL_NAME} {error}"),
+        )
+    })?;
+    let namespace = std::env::var("KOGWISTAR_PROJECTION_RECONCILE_NAMESPACE").ok();
+    let namespace =
+        parse_projection_reconcile_namespace(interval, namespace).map_err(std::io::Error::other)?;
+    Ok((interval, namespace))
+}
+
+/// Run the packaged Rust server using the same environment contract as the
+/// standalone binary.  PyO3 calls this function so native wheels need not ship
+/// a second platform-specific executable beside the extension module.
+pub async fn run_server_from_environment() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let backend = ServerBackend::from_config(&environment("KOGWISTAR_BACKEND", "sqlite"))?;
+    let inline_native_runtime = boolean_environment("KOGWISTAR_RUNTIME_NATIVE_INLINE")?;
+    let backend_setting = match backend {
+        ServerBackend::Postgres => Some(required_backend_setting(
+            "KOGWISTAR_PG_DSN",
+            std::env::var("KOGWISTAR_PG_DSN").ok(),
+        )?),
+        ServerBackend::Sqlite => Some(required_backend_setting(
+            "KOGWISTAR_META_SQLITE_PATH",
+            std::env::var("KOGWISTAR_META_SQLITE_PATH").ok(),
+        )?),
+        ServerBackend::InMemory => None,
+    };
+    let host = environment("KOGWISTAR_SERVER_HOST", "127.0.0.1");
+    let port = environment("KOGWISTAR_SERVER_PORT", "8000");
+    let listener = tokio::net::TcpListener::bind(format!("{host}:{port}")).await?;
+    let required_roles = environment("KOGWISTAR_SERVER_REQUIRED_ROLES", "")
+        .split(',')
+        .map(str::trim)
+        .filter(|role| !role.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let inline_embedding_worker = boolean_environment("KOGWISTAR_EMBEDDING_WORKER_INLINE")?;
+    let (reconcile_interval, reconcile_namespace) = projection_reconcile_settings()?;
+    let state = ApiState {
+        health: HealthSnapshot {
+            backend: backend.as_str().to_owned(),
+            persist_directory: environment("KOGWISTAR_PERSIST_DIRECTORY", ".kogwistar"),
+            conversation_persist_directory: environment(
+                "KOGWISTAR_CONVERSATION_PERSIST_DIRECTORY",
+                ".kogwistar/conversation",
+            ),
+            workflow_persist_directory: environment(
+                "KOGWISTAR_WORKFLOW_PERSIST_DIRECTORY",
+                ".kogwistar/workflow",
+            ),
+            wisdom_persist_directory: environment(
+                "KOGWISTAR_WISDOM_PERSIST_DIRECTORY",
+                ".kogwistar/wisdom",
+            ),
+            pg_schema_base: (backend == ServerBackend::Postgres)
+                .then(|| environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar")),
+        },
+        required_roles,
+        implementation: ImplementationSnapshot::default(),
+        auth: AuthConfig::from_environment(),
+    };
+    let mut embedding_worker_available = false;
+    let mut projection_reconciliation_available = false;
+    let application: Arc<dyn ApplicationService> = if backend == ServerBackend::Postgres {
+        let dsn = backend_setting
+            .clone()
+            .expect("PostgreSQL backend requires its DSN");
+        let schema_base = environment("KOGWISTAR_PG_SCHEMA_BASE", "kogwistar");
+        let wisdom_schema = configured_wisdom_schema(
+            &schema_base,
+            std::env::var("KOGWISTAR_WISDOM_SCHEMA").ok().as_deref(),
+        )
+        .map_err(std::io::Error::other)?;
+        let knowledge_schema = format!("{schema_base}_knowledge");
+        let conversation_schema = format!("{schema_base}_conversation");
+        let workflow_schema = format!("{schema_base}_workflow");
+        let mut service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+            &dsn,
+            &knowledge_schema,
+            &conversation_schema,
+            &workflow_schema,
+            &wisdom_schema,
+        )
+        .map_err(std::io::Error::other)?;
+        let search_index_path = std::path::PathBuf::from(environment(
+            "KOGWISTAR_PERSIST_DIRECTORY",
+            ".kogwistar",
+        ))
+        .join("index.db");
+        service = service
+            .with_search_index_path(search_index_path)
+            .map_err(std::io::Error::other)?;
+        service = service
+            .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
+            .map_err(std::io::Error::other)?;
+        if let Some(provider) =
+            chat_completion_provider_from_environment().map_err(std::io::Error::other)?
+        {
+            service = service.with_chat_completion_provider(provider);
+        }
+        service = service
+            .with_owner_auth_config(&state.auth)
+            .await
+            .map_err(std::io::Error::other)?;
+        let embedding_provider = embedding_provider_from_settings(
+            std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_DIMENSION")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT")
+                .ok()
+                .as_deref(),
+        )
+        .map_err(std::io::Error::other)?;
+        if let Some(provider) = embedding_provider {
+            service = service.with_embedding_provider(provider);
+            embedding_worker_available = true;
+        }
+        service
+            .ensure_graph_type_schemas()
+            .await
+            .map_err(std::io::Error::other)?;
+        Arc::new(service)
+    } else if backend == ServerBackend::Sqlite {
+        let path = backend_setting.expect("SQLite backend requires its database path");
+        let chroma = match std::env::var("KOGWISTAR_CHROMA_ENDPOINT") {
+            Ok(endpoint) if !endpoint.trim().is_empty() => {
+                let metric = match environment("KOGWISTAR_CHROMA_METRIC", "cosine")
+                    .trim()
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "cosine" => DistanceMetric::Cosine,
+                    "l2" | "squared_l2" => DistanceMetric::L2,
+                    "inner_product" | "ip" => DistanceMetric::InnerProduct,
+                    _ => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "KOGWISTAR_CHROMA_METRIC must be cosine, l2, or inner_product",
+                        )
+                        .into());
+                    }
+                };
+                Some(SqliteChromaGraphConfig {
+                    endpoint,
+                    metric,
+                    node_collection: environment("KOGWISTAR_CHROMA_NODE_COLLECTION", "nodes"),
+                    edge_collection: environment("KOGWISTAR_CHROMA_EDGE_COLLECTION", "edges"),
+                })
+            }
+            _ => None,
+        };
+        let chroma_configured = chroma.is_some();
+        projection_reconciliation_available = chroma_configured;
+        let mut service = open_sqlite_application_service(path, chroma)
+            .await
+            .map_err(std::io::Error::other)?;
+        let search_index_path = std::path::PathBuf::from(environment(
+            "KOGWISTAR_PERSIST_DIRECTORY",
+            ".kogwistar",
+        ))
+        .join("index.db");
+        service = service
+            .with_search_index_path(search_index_path)
+            .map_err(std::io::Error::other)?;
+        service = service
+            .with_graph_role(environment("KOGWISTAR_GRAPH_ROLE", "knowledge"))
+            .map_err(std::io::Error::other)?;
+        service = service
+            .with_owner_auth_config(&state.auth)
+            .await
+            .map_err(std::io::Error::other)?;
+        if chroma_configured {
+            if let Some(provider) =
+                chat_completion_provider_from_environment().map_err(std::io::Error::other)?
+            {
+                service = service.with_chat_completion_provider(provider);
+            }
+            let embedding_provider = embedding_provider_from_settings(
+                std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
+                    .ok()
+                    .as_deref(),
+                std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+                std::env::var("KOGWISTAR_EMBEDDING_DIMENSION")
+                    .ok()
+                    .as_deref(),
+                std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT")
+                    .ok()
+                    .as_deref(),
+            )
+            .map_err(std::io::Error::other)?;
+            if let Some(provider) = embedding_provider {
+                service = service.with_embedding_provider(provider);
+                embedding_worker_available = true;
+            }
+        }
+        Arc::new(service)
+    } else {
+        let mut service = InMemoryGraphApplicationService::default();
+        let search_index_path = std::path::PathBuf::from(environment(
+            "KOGWISTAR_PERSIST_DIRECTORY",
+            ".kogwistar",
+        ))
+        .join("index.db");
+        service = service
+            .with_search_index_path(search_index_path)
+            .map_err(std::io::Error::other)?;
+        service = service
+            .with_owner_auth_config(&state.auth)
+            .await
+            .map_err(std::io::Error::other)?;
+        if let Some(provider) =
+            chat_completion_provider_from_environment().map_err(std::io::Error::other)?
+        {
+            service = service.with_chat_completion_provider(provider);
+        }
+        let embedding_provider = embedding_provider_from_settings(
+            std::env::var("KOGWISTAR_EMBEDDING_PROVIDER")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_MODEL").ok().as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_DIMENSION")
+                .ok()
+                .as_deref(),
+            std::env::var("KOGWISTAR_EMBEDDING_ENDPOINT")
+                .ok()
+                .as_deref(),
+        )
+        .map_err(std::io::Error::other)?;
+        if let Some(provider) = embedding_provider {
+            service = service.with_embedding_provider(provider);
+        }
+        Arc::new(service)
+    };
+    if inline_embedding_worker && !embedding_worker_available {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "KOGWISTAR_EMBEDDING_WORKER_INLINE requires a supported graph backend and configured embedding provider (SQLite+Chroma or PostgreSQL)",
+        )
+        .into());
+    }
+    if !reconcile_interval.is_zero() && !projection_reconciliation_available {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "KOGWISTAR_PROJECTION_RECONCILE_INTERVAL_S requires the SQLite+Chroma graph projection",
+        )
+        .into());
+    }
+    let native_worker = if inline_native_runtime {
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        let application = Arc::clone(&application);
+        Some((
+            shutdown,
+            tokio::spawn(supervise_inline_native_worker(application, shutdown_rx)),
+        ))
+    } else {
+        None
+    };
+    let embedding_worker = if inline_embedding_worker || !reconcile_interval.is_zero() {
+        let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
+        Some((
+            shutdown,
+            tokio::spawn(supervise_inline_embedding_worker(
+                Arc::clone(&application),
+                shutdown_rx,
+                inline_embedding_worker,
+                reconcile_interval,
+                reconcile_namespace,
+            )),
+        ))
+    } else {
+        None
+    };
+    let server_result = axum::serve(listener, router_with_application(state, application))
+        .with_graceful_shutdown(async {
+            let _ = tokio::signal::ctrl_c().await;
+        })
+        .await;
+    if let Some((shutdown, native_worker)) = native_worker {
+        let _ = shutdown.send(());
+        let _ = native_worker.await;
+    }
+    if let Some((shutdown, embedding_worker)) = embedding_worker {
+        let _ = shutdown.send(());
+        let _ = embedding_worker.await;
+    }
+    server_result?;
+    Ok(())
+}
+
+/// Versioned request passed from an HTTP or MCP adapter to application logic.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ApiEffectRequest {
+    pub contract_version: u32,
+    pub method: String,
+    pub path_and_query: String,
+    pub body: Vec<u8>,
+    pub principal: Value,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ApiEffectResponse {
+    pub status: u16,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+pub trait ApplicationService: Send + Sync + 'static {
+    /// Execute one Rust-targeted message through typed backend operations.
+    /// Services without an inline runtime leave work for the external worker.
+    fn execute_inline_native_work_once(
+        &self,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    /// Run one bounded embedding/projection batch when this service owns an
+    /// explicitly configured inline worker. Other services leave it disabled.
+    fn execute_inline_embedding_work_once(
+        &self,
+        _limit: usize,
+        _lease_seconds: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(false) })
+    }
+
+    /// Reconcile one eventual graph projection namespace. Services without
+    /// that projection reject an explicitly scheduled reconciliation.
+    fn reconcile_eventual_projection_once(
+        &self,
+        _namespace: String,
+        _page_size: usize,
+    ) -> Pin<Box<dyn Future<Output = Result<usize, String>> + Send + '_>> {
+        Box::pin(async { Err("eventual projection reconciliation is unsupported".to_owned()) })
+    }
+
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        GraphAuthorityCapability::Unsupported
+    }
+
+    fn document_authority_capability(&self) -> DocumentAuthorityCapability {
+        DocumentAuthorityCapability::Unsupported
+    }
+
+    /// Advertise only operations this concrete authority can execute.
+    ///
+    /// Keeping discovery on the application service prevents an unavailable or
+    /// partially wired backend from claiming the static catalog's operations.
+    fn supports_mcp_tool(&self, _surface: &str, _name: &str) -> bool {
+        false
+    }
+
+    fn supports_mcp_tool_for_principal(
+        &self,
+        surface: &str,
+        name: &str,
+        _principal: &Value,
+    ) -> bool {
+        self.supports_mcp_tool(surface, name)
+    }
+
+    /// Report which frozen HTTP operations this concrete service can execute.
+    ///
+    /// Transport registration is deliberately not used as evidence: the
+    /// default service is unavailable, and partially wired services must not
+    /// claim the capabilities of the complete route catalog.
+    fn supports_http_operation(&self, _method: &str, _path: &str) -> bool {
+        false
+    }
+
+    fn implemented_http_operations(&self) -> usize {
+        FROZEN_OPENAPI_ROUTES
+            .iter()
+            .filter(|(method, path)| self.supports_http_operation(method, path))
+            .count()
+    }
+
+    fn execute(
+        &self,
+        request: ApiEffectRequest,
+    ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>>;
+}
+
+async fn run_one_inline_native_worker_iteration(
+    application: &dyn ApplicationService,
+) -> Result<bool, String> {
+    application.execute_inline_native_work_once().await
+}
+
+async fn run_inline_native_worker(application: Arc<dyn ApplicationService>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+    loop {
+        interval.tick().await;
+        loop {
+            match run_one_inline_native_worker_iteration(application.as_ref()).await {
+                Ok(false) => break,
+                Ok(true) => continue,
+                Err(error) => {
+                    eprintln!("inline Rust runtime worker failed: {error}");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+async fn reconcile_projection_if_due(
+    application: &dyn ApplicationService,
+    interval: std::time::Duration,
+    namespace: &str,
+    next_reconcile: &mut tokio::time::Instant,
+) {
+    if interval.is_zero() || tokio::time::Instant::now() < *next_reconcile {
+        return;
+    }
+    *next_reconcile = tokio::time::Instant::now() + interval;
+    match application
+        .reconcile_eventual_projection_once(namespace.to_owned(), 100)
+        .await
+    {
+        Ok(reconciled) => {
+            eprintln!("inline Rust projection reconciliation completed: {reconciled} changes");
+        }
+        Err(error) => {
+            eprintln!("inline Rust projection reconciliation failed: {error}");
+        }
+    }
+}
+
+async fn run_inline_embedding_worker(
+    application: Arc<dyn ApplicationService>,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    poll_embeddings: bool,
+    reconcile_interval: std::time::Duration,
+    reconcile_namespace: String,
+) {
+    const BATCH_LIMIT: usize = 32;
+    const LEASE_SECONDS: i64 = 60;
+    let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+    let mut next_reconcile = tokio::time::Instant::now();
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => return,
+            _ = interval.tick() => {}
+        }
+        loop {
+            reconcile_projection_if_due(
+                application.as_ref(),
+                reconcile_interval,
+                &reconcile_namespace,
+                &mut next_reconcile,
+            )
+            .await;
+            if !poll_embeddings {
+                break;
+            }
+            match application
+                .execute_inline_embedding_work_once(BATCH_LIMIT, LEASE_SECONDS)
+                .await
+            {
+                Ok(true) => continue,
+                Ok(false) => break,
+                Err(error) => {
+                    eprintln!("inline Rust embedding worker failed: {error}");
+                    tokio::select! {
+                        _ = &mut shutdown => return,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => break,
+                    }
+                }
+            }
+        }
+    }
+}
+
+async fn supervise_inline_embedding_worker(
+    application: Arc<dyn ApplicationService>,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+    poll_embeddings: bool,
+    reconcile_interval: std::time::Duration,
+    reconcile_namespace: String,
+) {
+    loop {
+        let (worker_shutdown, worker_shutdown_rx) = tokio::sync::oneshot::channel();
+        let worker_application = Arc::clone(&application);
+        let mut worker = tokio::spawn(run_inline_embedding_worker(
+            worker_application,
+            worker_shutdown_rx,
+            poll_embeddings,
+            reconcile_interval,
+            reconcile_namespace.clone(),
+        ));
+        tokio::select! {
+            result = &mut worker => {
+                match result {
+                    Ok(()) => eprintln!("inline Rust embedding worker exited unexpectedly"),
+                    Err(error) => eprintln!("inline Rust embedding worker task failed: {error}"),
+                }
+            }
+            _ = &mut shutdown => {
+                let _ = worker_shutdown.send(());
+                let _ = worker.await;
+                return;
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            _ = &mut shutdown => return,
+        }
+    }
+}
+
+async fn supervise_inline_native_worker(
+    application: Arc<dyn ApplicationService>,
+    mut shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
+    loop {
+        let worker_application = Arc::clone(&application);
+        let mut worker = tokio::spawn(run_inline_native_worker(worker_application));
+        tokio::select! {
+            result = &mut worker => {
+                match result {
+                    Ok(()) => eprintln!("inline Rust runtime worker exited unexpectedly"),
+                    Err(error) => eprintln!("inline Rust runtime worker task failed: {error}"),
+                }
+            }
+            _ = &mut shutdown => {
+                worker.abort();
+                let _ = worker.await;
+                return;
+            }
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+            _ = &mut shutdown => return,
+        }
+    }
+}
+
+fn native_result_for_claimed_work(
+    work: RuntimeClaimedWork,
+    registry: &kogwistar_runtime::NativeOperationRegistry,
+) -> Result<RuntimeWorkerResultRequest, String> {
+    let (handoff, native_request) = native_request_for_claimed_work(&work)?;
+    native_result_from_request(handoff, native_request, registry)
+}
+
+fn native_request_for_claimed_work(
+    work: &RuntimeClaimedWork,
+) -> Result<
+    (
+        RecordedWorkerHandoff,
+        kogwistar_runtime::RuntimeNativeStepRequest,
+    ),
+    String,
+> {
+    let handoff = RecordedWorkerHandoff {
+        message_id: work.message_id.clone(),
+        claimed_by: work.claimed_by.clone(),
+        run_id: work.run_id.clone(),
+        step_id: work
+            .step_id
+            .clone()
+            .ok_or_else(|| "claimed native work is missing step_id".to_owned())?,
+        correlation_id: work
+            .correlation_id
+            .clone()
+            .ok_or_else(|| "claimed native work is missing correlation_id".to_owned())?,
+    };
+    let mut native_request = native_step_request_from_payload(&handoff, work.payload.clone())?;
+    native_request.ephemeral_context.insert(
+        "_trace_attempt".to_owned(),
+        Value::from(work.attempt_number),
+    );
+    Ok((handoff, native_request))
+}
+
+fn native_result_from_request(
+    handoff: RecordedWorkerHandoff,
+    native_request: kogwistar_runtime::RuntimeNativeStepRequest,
+    registry: &kogwistar_runtime::NativeOperationRegistry,
+) -> Result<RuntimeWorkerResultRequest, String> {
+    let mut effect =
+        kogwistar_runtime::execute_native_step_with_registry(&native_request, registry)
+            .map_err(|error| format!("native execution rejected: {error}"))?;
+    if let Some(provider_result) = native_request
+        .ephemeral_context
+        .get("provider_event_request_result")
+    {
+        let result = effect.result.get_or_insert_with(|| json!({}));
+        if let Some(fields) = result.as_object_mut() {
+            fields.insert(
+                "provider_event_request_result".to_owned(),
+                provider_result.clone(),
+            );
+        } else {
+            let operation_result = result.clone();
+            *result = json!({
+                "operation_result": operation_result,
+                "provider_event_request_result": provider_result,
+            });
+        }
+    }
+    if let Some(events) = native_request
+        .ephemeral_context
+        .get("_provider_event_trace_summaries")
+        .and_then(Value::as_array)
+    {
+        const MAX_PROVIDER_EVENT_TRACES: usize = 256;
+        for (index, summary) in events.iter().take(MAX_PROVIDER_EVENT_TRACES).enumerate() {
+            let mut trace = json!({
+                "schema_version": 1,
+                "event": "provider.semantic_event.observed",
+                "executor_target": kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+                "provider_id": "openai_compatible_chat_completions",
+                "provider_model": native_request
+                    .ephemeral_context
+                    .get("provider_model")
+                    .and_then(Value::as_str),
+                "run_id": native_request.run_id,
+                "workflow_id": native_request.workflow_id,
+                "conversation_id": native_request.conversation_id,
+                "turn_node_id": native_request.turn_node_id,
+                "node_id": native_request.node_id,
+                "token_id": native_request.token_id,
+                "step_seq": native_request.step_seq,
+                "event_index": index,
+                "provider_event": summary,
+            });
+            if let Some(fields) = trace.as_object_mut() {
+                fields.extend(kogwistar_runtime::native_trace_context_fields(
+                    &native_request,
+                ));
+            }
+            attach_rust_native_seam_attestation(&mut trace);
+            effect.trace_events.push(trace);
+        }
+        if events.len() > MAX_PROVIDER_EVENT_TRACES {
+            let mut trace = json!({
+                "schema_version": 1,
+                "event": "provider.semantic_event.trace_truncated",
+                "run_id": native_request.run_id,
+                "node_id": native_request.node_id,
+                "step_seq": native_request.step_seq,
+                "omitted_count": events.len() - MAX_PROVIDER_EVENT_TRACES,
+            });
+            if let Some(fields) = trace.as_object_mut() {
+                fields.extend(kogwistar_runtime::native_trace_context_fields(
+                    &native_request,
+                ));
+            }
+            attach_rust_native_seam_attestation(&mut trace);
+            effect.trace_events.push(trace);
+        }
+    }
+    Ok(RuntimeWorkerResultRequest {
+        handoff,
+        transition: None,
+        effect: Some(effect),
+    })
+}
+
+#[cfg(test)]
+mod provider_event_trace_tests {
+    use super::*;
+
+    #[test]
+    fn native_worker_result_carries_content_free_provider_event_trace() {
+        let mut request = kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-event-trace".to_owned(),
+            workflow_id: "workflow-event-trace".to_owned(),
+            node_id: "answer".to_owned(),
+            conversation_id: "conversation-event-trace".to_owned(),
+            turn_node_id: Some("turn-1".to_owned()),
+            token_id: "token-1".to_owned(),
+            parent_token_id: None,
+            step_seq: 3,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+        request.ephemeral_context.insert(
+            "_provider_event_trace_summaries".to_owned(),
+            json!([{
+                "kind": "response_completed",
+                "response_id": "resp-1",
+                "provider_event_id": "resp-1:2",
+                "provider_sequence": 2,
+                "details": {"input_tokens": 8, "output_tokens": 13}
+            }]),
+        );
+        let result = native_result_from_request(
+            RecordedWorkerHandoff {
+                message_id: "lane-1".to_owned(),
+                claimed_by: "rust-native-worker".to_owned(),
+                run_id: "run-event-trace".to_owned(),
+                step_id: "answer".to_owned(),
+                correlation_id: "run-event-trace".to_owned(),
+            },
+            request,
+            &kogwistar_runtime::NativeOperationRegistry::default(),
+        )
+        .unwrap();
+        let effect = result.effect.unwrap();
+        let provider_trace = effect
+            .trace_events
+            .iter()
+            .find(|trace| trace["event"] == "provider.semantic_event.observed")
+            .unwrap();
+        assert_eq!(provider_trace["run_id"], "run-event-trace");
+        assert_eq!(
+            provider_trace["executor_target"],
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+        );
+        assert_eq!(
+            provider_trace["provider_id"],
+            "openai_compatible_chat_completions"
+        );
+        assert_eq!(provider_trace["step_seq"], 3);
+        assert_eq!(
+            provider_trace["provider_event"]["kind"],
+            "response_completed"
+        );
+    }
+
+    #[test]
+    fn native_effect_acknowledgement_reaches_authoritative_worker_result() {
+        let mut fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/agent-durable-provider-event-v1.json"
+        )))
+        .unwrap();
+        let event = fixture["envelope"].take();
+        let event_id = event["event_id"].as_str().unwrap().to_owned();
+        let claim = json!({
+            "message_id": format!("msg:{event_id}"),
+            "claimed_by": "event-worker#attempt-1",
+            "event_id": event_id,
+        });
+        let mut request = kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "agent.event.receive".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: "run-fixture-001".to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: "receive-event".to_owned(),
+            conversation_id: "conversation-fixture-001".to_owned(),
+            turn_node_id: None,
+            token_id: "token".to_owned(),
+            parent_token_id: None,
+            step_seq: 4,
+            state: Map::new(),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+        request
+            .ephemeral_context
+            .insert("authorized_provider_event".to_owned(), event.clone());
+        request
+            .ephemeral_context
+            .insert("authorized_provider_event_claim".to_owned(), claim.clone());
+        let registry = kogwistar_runtime::NativeOperationRegistry::default();
+        let received =
+            kogwistar_runtime::execute_native_step_with_registry(&request, &registry).unwrap();
+        request.operation = "agent.event.ack".to_owned();
+        request.node_id = "ack-event".to_owned();
+        request.state = kogwistar_contracts::apply_state_update_pairs(
+            Value::Object(Map::new()),
+            received.state_update.iter().map(|update| match update {
+                kogwistar_runtime::RecordedStateUpdate::Pair((mode, payload)) => {
+                    (mode.as_str(), payload)
+                }
+                kogwistar_runtime::RecordedStateUpdate::Object { mode, payload } => {
+                    (mode.as_str(), payload)
+                }
+            }),
+        )
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .clone();
+        request.ephemeral_context.clear();
+        let result = native_result_from_request(
+            RecordedWorkerHandoff {
+                message_id: "worker-lane".to_owned(),
+                claimed_by: "rust-native-worker#attempt-1".to_owned(),
+                run_id: "run-fixture-001".to_owned(),
+                step_id: "ack-event".to_owned(),
+                correlation_id: "run-fixture-001".to_owned(),
+            },
+            request,
+            &registry,
+        )
+        .unwrap();
+
+        assert_eq!(
+            result.effect.unwrap().provider_event_acknowledgements,
+            vec![kogwistar_runtime::ProviderEventAcknowledgementV1 {
+                message_id: format!("msg:{event_id}"),
+                claimed_by: "event-worker#attempt-1".to_owned(),
+                event_id,
+            }]
+        );
+    }
+}
+
+fn failed_native_result(
+    handoff: RecordedWorkerHandoff,
+    request: &kogwistar_runtime::RuntimeNativeStepRequest,
+    code: &str,
+    message: &str,
+) -> RuntimeWorkerResultRequest {
+    let mut trace = json!({
+        "schema_version": kogwistar_runtime::RUST_NATIVE_OPERATION_SCHEMA_VERSION,
+        "event": "runtime.native.step.failed",
+        "executor_target": kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET,
+        "operation": request.operation,
+        "op_version": request.op_version,
+        "run_id": request.run_id,
+        "workflow_id": request.workflow_id,
+        "conversation_id": request.conversation_id,
+        "turn_node_id": request.turn_node_id,
+        "node_id": request.node_id,
+        "token_id": request.token_id,
+        "parent_token_id": request.parent_token_id,
+        "step_seq": request.step_seq,
+        "error_code": code,
+    });
+    if let Some(fields) = trace.as_object_mut() {
+        fields.extend(kogwistar_runtime::native_trace_context_fields(request));
+    }
+    attach_rust_native_seam_attestation(&mut trace);
+    RuntimeWorkerResultRequest {
+        handoff,
+        transition: None,
+        effect: Some(RecordedWorkerSuccessEffect {
+            contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+            effect_id: format!(
+                "native-step|{}|{}|{}|{}",
+                request.run_id, request.node_id, request.token_id, request.step_seq
+            ),
+            status: kogwistar_runtime::RuntimeWorkerEffectStatus::Failed,
+            state_update: Vec::new(),
+            update: None,
+            state_schema: Map::new(),
+            successors: Vec::new(),
+            route_next: Vec::new(),
+            result: Some(json!({"code": code})),
+            errors: vec![message.to_owned()],
+            wait_reason: None,
+            resume_payload: None,
+            usage: None,
+            trace_events: vec![trace],
+            graph_mutation_batch: None,
+            graph_mutation_batch_v2: None,
+            provider_event_publications: Vec::new(),
+            provider_event_acknowledgements: Vec::new(),
+        }),
+    }
+}
+
+#[derive(Default)]
+pub struct UnavailableApplicationService;
+
+impl ApplicationService for UnavailableApplicationService {
+    fn supports_mcp_tool(&self, _surface: &str, _name: &str) -> bool {
+        false
+    }
+
+    fn execute(
+        &self,
+        request: ApiEffectRequest,
+    ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+        Box::pin(async move { unavailable_effect(request) })
+    }
+}
+
+fn unavailable_effect(request: ApiEffectRequest) -> ApiEffectResponse {
+    ApiEffectResponse {
+        status: StatusCode::NOT_IMPLEMENTED.as_u16(),
+        content_type: "application/json".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "code": "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER",
+            "message": "Rust application capability is not cut over",
+            "method": request.method,
+            "path": request.path_and_query,
+            "contract_version": request.contract_version,
+        }))
+        .unwrap(),
+    }
+}
+
+fn decoded_json(raw: Option<String>) -> Value {
+    raw.as_deref()
+        .filter(|value| !value.is_empty())
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn server_run_value(run: ServerRun) -> Value {
+    let terminal = matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled");
+    json!({
+        "run_id": run.run_id,
+        "conversation_id": run.conversation_id,
+        "workflow_id": run.workflow_id,
+        "user_id": run.user_id,
+        "user_turn_node_id": run.user_turn_node_id,
+        "assistant_turn_node_id": run.assistant_turn_node_id,
+        "status": run.status,
+        "cancel_requested": run.cancel_requested,
+        "result": decoded_json(run.result_json),
+        "error": decoded_json(run.error_json),
+        "created_at_ms": run.created_at_ms,
+        "updated_at_ms": run.updated_at_ms,
+        "started_at_ms": run.started_at_ms,
+        "finished_at_ms": run.finished_at_ms,
+        "terminal": terminal,
+    })
+}
+
+fn resumed_run_result(
+    run: ServerRun,
+    state: Option<kogwistar_runtime::RecordedRuntimeState>,
+) -> Value {
+    let mut final_state = state
+        .map(|state| Value::Object(state.state))
+        .unwrap_or_else(|| json!({}));
+    if let Some(fields) = final_state.as_object_mut() {
+        fields.remove("_deps");
+    }
+    let budget = final_state
+        .get("budget")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    json!({
+        "workflow_status": run.status,
+        "final_state": final_state,
+        "budget": budget,
+    })
+}
+
+fn server_run_event_value(event: ServerRunEvent) -> Value {
+    json!({
+        "seq": event.seq,
+        "run_id": event.run_id,
+        "event_type": event.event_type,
+        "payload": serde_json::from_str::<Value>(&event.payload_json).unwrap_or_else(|_| json!({})),
+        "created_at_ms": event.created_at_ms,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct RecordedInspectionSnapshot {
+    event_seq: i64,
+    created_at_ms: i64,
+    transition_id: String,
+    transition_kind: String,
+    step_seq: i64,
+    workflow_id: String,
+    workflow_node_id: String,
+    state: Value,
+    state_update: Value,
+    update: Value,
+    next_step_names: Vec<String>,
+    result: Value,
+    errors: Vec<Value>,
+    server_status: String,
+    trace_context: Option<Value>,
+    operation: Option<String>,
+    duration_ms: Option<u64>,
+}
+
+fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
+    events
+        .into_iter()
+        .filter(|event| event.event_type == "workflow.recorded_transition.v1")
+        .filter_map(|event| {
+            let payload: Value = serde_json::from_str(&event.payload_json).ok()?;
+            let reduced = payload.get("reduced")?;
+            let state = reduced.get("state")?;
+            Some(RecordedInspectionSnapshot {
+                event_seq: event.seq,
+                created_at_ms: event.created_at_ms,
+                transition_id: payload["transition_id"].as_str()?.to_owned(),
+                transition_kind: reduced
+                    .get("kind")
+                    .and_then(Value::as_str)
+                    .unwrap_or("recorded_step_success")
+                    .to_owned(),
+                step_seq: state["last_step_seq"].as_i64()?,
+                workflow_id: state["workflow_id"].as_str()?.to_owned(),
+                workflow_node_id: state["last_node_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                state: state.get("state").cloned().unwrap_or_else(|| json!({})),
+                state_update: reduced
+                    .get("state_update")
+                    .cloned()
+                    .unwrap_or_else(|| json!([])),
+                update: reduced.get("update").cloned().unwrap_or(Value::Null),
+                next_step_names: state["frontier"]["pending"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|pending| pending.as_array()?.first()?.as_str())
+                    .map(str::to_owned)
+                    .collect(),
+                result: reduced.get("result").cloned().unwrap_or(Value::Null),
+                errors: reduced["errors"].as_array().cloned().unwrap_or_default(),
+                server_status: reduced["server_status"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                trace_context: None,
+                operation: None,
+                duration_ms: None,
+            })
+        })
+        .collect()
+}
+
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#recorded_step_snapshots; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-trace-context-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/inline_owner_authority.rs#recorded_step_snapshots_matches_python_fixture; python_test=tests/server/test_chat_server_api.py#test_chat_debug_endpoints_namespace_and_workflow_viz
+fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
+    let trace_events = events
+        .iter()
+        .filter(|event| event.event_type == "workflow.trace.v1")
+        .filter_map(|event| {
+            let payload: Value = serde_json::from_str(&event.payload_json).ok()?;
+            let trace = payload.get("trace")?;
+            let trace_event = trace.get("event")?.as_str()?;
+            if !matches!(
+                trace_event,
+                "runtime.native.step.completed" | "step_attempt_completed"
+            ) {
+                return None;
+            }
+            let step_seq = trace.get("step_seq")?.as_i64()?;
+            let node_id = trace.get("node_id")?.as_str()?.to_owned();
+            let trace_context = json!({
+                "trace_id": trace.get("trace_id"),
+                "span_id": trace.get("span_id"),
+                "parent_span_id": trace.get("parent_span_id"),
+                "attempt": trace.get("attempt"),
+            });
+            Some((
+                event.seq,
+                step_seq,
+                node_id,
+                trace_context,
+                trace.get("operation").and_then(Value::as_str).map(str::to_owned),
+                trace.get("duration_ms").and_then(Value::as_u64),
+            ))
+        })
+        .collect::<Vec<_>>();
+    let mut steps = Vec::<RecordedInspectionSnapshot>::new();
+    for snapshot in recorded_inspection_snapshots(events) {
+        if snapshot.step_seq < 0 || snapshot.transition_kind == "complete" {
+            continue;
+        }
+        let mut snapshot = snapshot;
+        snapshot.operation = snapshot
+            .state
+            .get("_rt_node_ops")
+            .and_then(Value::as_object)
+            .and_then(|node_ops| node_ops.get(&snapshot.workflow_node_id))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        snapshot.trace_context = trace_events
+            .iter()
+            .filter(|(_, step_seq, node_id, _, _, _)| {
+                *step_seq == snapshot.step_seq && node_id == &snapshot.workflow_node_id
+            })
+            .max_by_key(|(event_seq, _, _, _, _, _)| event_seq)
+            .map(|(_, _, _, trace_context, operation, duration_ms)| {
+                if operation.is_some() {
+                    snapshot.operation.clone_from(operation);
+                }
+                if duration_ms.is_some() {
+                    snapshot.duration_ms = *duration_ms;
+                }
+                trace_context.clone()
+            });
+        if steps.last().is_some_and(|previous| {
+            previous.step_seq == snapshot.step_seq
+                && previous.workflow_node_id == snapshot.workflow_node_id
+        }) {
+            steps.pop();
+            steps.push(snapshot);
+            continue;
+        }
+        steps.push(snapshot);
+    }
+    steps
+}
+
+fn python_step_result(snapshot: &RecordedInspectionSnapshot) -> Value {
+    let status = if !snapshot.errors.is_empty() {
+        "failure"
+    } else if snapshot.server_status == "suspended" {
+        "suspended"
+    } else {
+        "success"
+    };
+    let mut result = json!({
+        "conversation_node_id": null,
+        "state_update": snapshot.state_update,
+        "update": snapshot.update,
+        "next_step_names": snapshot.next_step_names,
+        "workflow_invocations": [],
+        "status": status,
+    });
+    if !snapshot.errors.is_empty() {
+        result["errors"] = json!(snapshot.errors);
+    }
+    if let Some(fields) = snapshot.result.as_object() {
+        let projected = result.as_object_mut().expect("result is an object");
+        for (key, value) in fields {
+            projected.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    } else if !snapshot.result.is_null() {
+        result["result"] = snapshot.result.clone();
+    }
+    result
+}
+
+fn runtime_inspection_effect(
+    request: &ApiEffectRequest,
+    run_id: &str,
+    tail: &[&str],
+    events: Vec<ServerRunEvent>,
+) -> ApiEffectResponse {
+    let steps = recorded_step_snapshots(events);
+    match tail {
+        ["steps"] => {
+            let steps = if query_parameter_present(&request.path_and_query, "limit") {
+                let limit =
+                    query_integer(&request.path_and_query, "limit", 200).clamp(1, 1000) as usize;
+                steps.into_iter().take(limit).collect::<Vec<_>>()
+            } else {
+                steps
+            };
+            let steps = steps
+                .into_iter()
+                .map(|step| {
+                    let result = python_step_result(&step);
+                    let mut value = json!({
+                        "node_id": format!("wf_step|{}|{}", run_id, step.step_seq),
+                        "step_seq": step.step_seq,
+                        "workflow_id": step.workflow_id,
+                        "workflow_node_id": step.workflow_node_id,
+                        "op": step.operation.unwrap_or_else(|| step.workflow_node_id.clone()),
+                        "status": if step.errors.is_empty() { "ok" } else { "error" },
+                        "duration_ms": step.duration_ms.unwrap_or(0),
+                        "result": result,
+                        "event_seq": step.event_seq,
+                        "created_at_ms": step.created_at_ms,
+                        "transition_id": step.transition_id,
+                    });
+                    if let Some(trace_context) = step.trace_context {
+                        value["trace_context"] = trace_context;
+                    }
+                    value
+                })
+                .collect::<Vec<_>>();
+            json_effect(
+                StatusCode::OK,
+                json!({
+                    "run_id": run_id,
+                    "steps": steps,
+                }),
+            )
+        }
+        ["checkpoints"] => json_effect(
+            StatusCode::OK,
+            json!({
+                "run_id": run_id,
+                "checkpoints": steps.into_iter().map(|step| json!({
+                    "node_id": format!("wf_ckpt|{}|{}", run_id, step.step_seq),
+                    "step_seq": step.step_seq,
+                    "workflow_id": step.workflow_id,
+                    "state": step.state,
+                    "event_seq": step.event_seq,
+                    "created_at_ms": step.created_at_ms,
+                    "status": step.server_status,
+                })).collect::<Vec<_>>(),
+            }),
+        ),
+        ["checkpoints", raw_step_seq] => {
+            let Ok(step_seq) = raw_step_seq.parse::<i64>() else {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "step_seq must be an integer",
+                );
+            };
+            match steps.into_iter().find(|step| step.step_seq == step_seq) {
+                Some(step) => json_effect(
+                    StatusCode::OK,
+                    json!({"run_id": run_id, "step_seq": step_seq, "state": step.state}),
+                ),
+                None => effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CHECKPOINT_NOT_FOUND",
+                    format!("No checkpoint for {run_id} at step {step_seq}"),
+                ),
+            }
+        }
+        ["replay"] => {
+            let target_step_seq =
+                query_integer(&request.path_and_query, "target_step_seq", i64::MIN);
+            if target_step_seq == i64::MIN {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "target_step_seq is required and must be an integer",
+                );
+            }
+            match steps
+                .into_iter()
+                .find(|step| step.step_seq == target_step_seq)
+            {
+                Some(step) => json_effect(
+                    StatusCode::OK,
+                    json!({
+                        "run_id": run_id,
+                        "target_step_seq": target_step_seq,
+                        "state": step.state,
+                    }),
+                ),
+                None => effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CHECKPOINT_NOT_FOUND",
+                    format!("No checkpoint for {run_id} at step {target_step_seq}"),
+                ),
+            }
+        }
+        _ => unreachable!("runtime inspection called with unsupported route"),
+    }
+}
+
+fn is_runtime_inspection_tail(tail: &[&str]) -> bool {
+    matches!(
+        tail,
+        ["steps"] | ["checkpoints"] | ["checkpoints", _] | ["replay"]
+    )
+}
+
+fn resume_contract_value(state: Option<RecordedRuntimeState>, run_id: &str) -> Value {
+    const PERSISTED_KEYS: [&str; 5] = [
+        "run_id",
+        "workflow_id",
+        "step_seq",
+        "state_json",
+        "checkpoint_schema_version",
+    ];
+    const EPHEMERAL_KEYS: [&str; 3] = ["_deps", "_rt_join", "_rt"];
+    const SUPPORTED_WAIT_REASONS: [&str; 6] = [
+        "approval",
+        "message",
+        "schedule_delay",
+        "external_callback",
+        "dependency",
+        "rate_window",
+    ];
+
+    let has_checkpoint = state.as_ref().is_some_and(|state| state.last_step_seq >= 0);
+    let mut state_keys = state
+        .as_ref()
+        .map(|state| state.state.keys().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    state_keys.sort();
+    let resume_options = state
+        .as_ref()
+        .map(|state| {
+            state
+                .frontier
+                .suspended
+                .iter()
+                .map(|(node_id, _, token_id, _)| {
+                    json!({
+                        "suspended_node_id": node_id,
+                        "suspended_token_id": token_id,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let latest_wait_reason = state.as_ref().and_then(|state| {
+        state
+            .state
+            .get("wait_reason")
+            .cloned()
+            .or_else(|| state.wait_reason.clone().map(Value::String))
+    });
+    let mut contract = json!({
+        "run_id": run_id,
+        "latest_checkpoint_step_seq": state.as_ref().filter(|_| has_checkpoint).map(|state| state.last_step_seq),
+        "latest_wait_reason": latest_wait_reason,
+        "checkpoint_schema_version": if has_checkpoint { Value::from(1) } else { Value::Null },
+        "persisted_keys": PERSISTED_KEYS,
+        "ephemeral_keys": EPHEMERAL_KEYS,
+        "supported_wait_reasons": SUPPORTED_WAIT_REASONS,
+        "compatible": has_checkpoint,
+        "state_keys": state_keys,
+        "resume_options": resume_options,
+    });
+    if let Some(state) = state {
+        let node_ops = state
+            .state
+            .get("_rt_node_ops")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_versions = state
+            .state
+            .get("_rt_node_versions")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_environment_ids = state
+            .state
+            .get("_rt_node_environment_ids")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_worker_identities = state
+            .state
+            .get("_rt_node_worker_identities")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let node_executor_targets = state
+            .state
+            .get("_rt_node_executor_targets")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        contract["status"] = json!(state.status);
+        contract["wait_reason"] = json!(state.wait_reason);
+        contract["resume_payload"] = json!(state.resume_payload);
+        contract["suspended"] = json!(state.frontier.suspended);
+        contract["last_step_seq"] = json!(state.last_step_seq);
+        contract["runtime_routes"] = json!(state.static_routes);
+        contract["node_ops"] = node_ops;
+        contract["node_versions"] = node_versions;
+        contract["node_environment_ids"] = node_environment_ids;
+        contract["node_worker_identities"] = node_worker_identities;
+        if node_executor_targets
+            .as_object()
+            .is_some_and(|targets| !targets.is_empty())
+        {
+            contract["node_executor_targets"] = node_executor_targets;
+        }
+    }
+    contract
+}
+
+fn active_runtime_lane_covers_token(lanes: &[ProjectedLaneMessage], token_id: &str) -> bool {
+    lanes.iter().any(|lane| {
+        matches!(lane.status.as_str(), "pending" | "claimed")
+            && lane
+                .payload_json
+                .as_deref()
+                .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+                .and_then(|payload| payload["token_id"].as_str().map(str::to_owned))
+                .is_some_and(|candidate| candidate == token_id)
+    })
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeGraphPlan {
+    start_node_id: String,
+    join_node_ids: Vec<String>,
+    start_join_mask: i64,
+    routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
+    node_ops: std::collections::BTreeMap<String, String>,
+    node_versions: std::collections::BTreeMap<String, String>,
+    node_environment_ids: std::collections::BTreeMap<String, String>,
+    node_worker_identities: std::collections::BTreeMap<String, Value>,
+    node_executor_targets: std::collections::BTreeMap<String, String>,
+}
+
+fn is_answer_workflow_id(workflow_id: &str) -> bool {
+    matches!(workflow_id, "agentic_answering.v2" | "debug.rag.v1")
+}
+
+fn answer_workflow_admission_ready(
+    workflow_id: &str,
+    plan: Option<&RuntimeGraphPlan>,
+    native_operations: &kogwistar_runtime::NativeOperationRegistry,
+) -> bool {
+    !is_answer_workflow_id(workflow_id)
+        || plan.is_some_and(|value| {
+            answer_workflow_plan_is_executable(workflow_id, value, native_operations)
+        })
+}
+
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#answer_workflow_plan_is_executable; python=kogwistar/conversation/agentic_answering_design.py#build_agentic_answering_workflow_design; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/answer_workflow_admission.rs#answer_workflow_admission_supports_per_node_python_and_registered_rust_executors; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
+fn answer_workflow_plan_is_executable(
+    workflow_id: &str,
+    plan: &RuntimeGraphPlan,
+    native_operations: &kogwistar_runtime::NativeOperationRegistry,
+) -> bool {
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+    ))
+    .expect("answer workflow runtime contract fixture is valid JSON");
+    if contract["schema_version"].as_u64() != Some(1) {
+        return false;
+    }
+    let Some(workflow) = contract["workflows"].get(workflow_id) else {
+        return false;
+    };
+    let required_ops = workflow["required_ops"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let required_predicates = workflow["required_predicates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let python_executor_ops = workflow["python_executor_ops"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let python_op_version = workflow["python_op_version"].as_str();
+    let Some(required_routes) = workflow["required_routes"].as_array() else {
+        return false;
+    };
+    let Some(required_fanout_ops) = workflow["required_fanout_ops"].as_array() else {
+        return false;
+    };
+    let required_fanout_ops = required_fanout_ops
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let Some(required_join_ops) = workflow["required_join_ops"].as_array() else {
+        return false;
+    };
+    let required_join_ops = required_join_ops
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    if required_ops.is_empty()
+        || !python_executor_ops.is_subset(&required_ops)
+        || (!python_executor_ops.is_empty() && python_op_version.is_none())
+        || required_routes.is_empty()
+    {
+        return false;
+    }
+    let Some(start_op) = plan.node_ops.get(&plan.start_node_id) else {
+        return false;
+    };
+    let plan_ops = plan
+        .node_ops
+        .values()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    let plan_predicates = plan
+        .routes
+        .iter()
+        .filter_map(|route| route.predicate.as_deref())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut plan_fanout_ops = std::collections::BTreeSet::new();
+    for route in plan.routes.iter().filter(|route| route.source_fanout) {
+        let Some(source_op) = plan.node_ops.get(&route.source_node_id) else {
+            return false;
+        };
+        plan_fanout_ops.insert(source_op.as_str());
+    }
+    let plan_join_ops = plan
+        .join_node_ids
+        .iter()
+        .filter_map(|node_id| plan.node_ops.get(node_id).map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    let requires_default_route = workflow["requires_default_route"].as_bool() == Some(true);
+    let mut expected_route_semantics = Vec::with_capacity(required_routes.len());
+    for route in required_routes {
+        let (Some(source), Some(target), Some(is_default), Some(priority), Some(multiplicity)) = (
+            route["from"].as_str(),
+            route["to"].as_str(),
+            route["default"].as_bool(),
+            route["priority"].as_i64(),
+            route["multiplicity"].as_str(),
+        ) else {
+            return false;
+        };
+        let predicate = match &route["predicate"] {
+            Value::Null => None,
+            Value::String(value) if !value.is_empty() => Some(value.clone()),
+            _ => return false,
+        };
+        expected_route_semantics.push((
+            source.to_owned(),
+            target.to_owned(),
+            predicate,
+            is_default,
+            priority,
+            multiplicity.to_owned(),
+        ));
+    }
+    let mut actual_route_semantics = Vec::with_capacity(plan.routes.len());
+    for route in &plan.routes {
+        let (Some(source), Some(target)) = (
+            plan.node_ops.get(&route.source_node_id),
+            plan.node_ops.get(&route.target_node_id),
+        ) else {
+            return false;
+        };
+        actual_route_semantics.push((
+            source.clone(),
+            target.clone(),
+            route.predicate.clone(),
+            route.is_default,
+            route.priority,
+            route.multiplicity.clone(),
+        ));
+    }
+    expected_route_semantics.sort();
+    actual_route_semantics.sort();
+    if start_op != "start"
+        || plan.node_ops.len() != required_ops.len()
+        || plan.node_versions.len() != required_ops.len()
+        || plan_ops != required_ops
+        || plan_predicates != required_predicates
+        || plan_fanout_ops != required_fanout_ops
+        || plan_join_ops != required_join_ops
+        || actual_route_semantics != expected_route_semantics
+        || (requires_default_route && !plan.routes.iter().any(|route| route.is_default))
+    {
+        return false;
+    }
+    plan.node_ops.iter().all(|(node_id, op)| {
+        let Some(version) = plan.node_versions.get(node_id).map(String::as_str) else {
+            return false;
+        };
+        match plan
+            .node_executor_targets
+            .get(node_id)
+            .map(String::as_str)
+            .unwrap_or(kogwistar_runtime::PYTHON_EXECUTOR_TARGET)
+        {
+            kogwistar_runtime::PYTHON_EXECUTOR_TARGET => {
+                python_executor_ops.contains(op.as_str()) && Some(version) == python_op_version
+            }
+            kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET => {
+                native_operations.supports(op, version)
+            }
+            _ => false,
+        }
+    })
+}
+
+fn submitted_runtime_graph_conflicts(
+    graph_plan: &RuntimeGraphPlan,
+    input: &RuntimeSubmitRun,
+) -> bool {
+    let Some(start_node_id) = input
+        .start_node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    if input.node_ops.is_empty() {
+        return false;
+    }
+    let canonical_routes = |routes: &[kogwistar_runtime::RuntimeStaticRoute]| {
+        let mut values = routes
+            .iter()
+            .cloned()
+            .map(|mut route| {
+                route.aliases.sort();
+                route.aliases.dedup();
+                serde_json::to_string(&route).expect("runtime route serializes")
+            })
+            .collect::<Vec<_>>();
+        values.sort();
+        values
+    };
+    let submitted_versions = if input.node_versions.is_empty() {
+        input
+            .node_ops
+            .keys()
+            .map(|node_id| (node_id.clone(), "v1".to_owned()))
+            .collect()
+    } else {
+        input.node_versions.clone()
+    };
+    let submitted_environment_ids = input.node_environment_ids.clone();
+    graph_plan.start_node_id != start_node_id
+        || graph_plan.join_node_ids != input.join_node_ids
+        || graph_plan.start_join_mask != input.start_join_mask
+        || canonical_routes(&graph_plan.routes) != canonical_routes(&input.runtime_routes)
+        || graph_plan.node_ops != input.node_ops
+        || graph_plan.node_versions != submitted_versions
+        || graph_plan.node_environment_ids != submitted_environment_ids
+        || graph_plan.node_worker_identities != input.node_worker_identities
+        || graph_plan.node_executor_targets != input.node_executor_targets
+}
+
+fn runtime_worker_identity_map_is_valid(
+    identities: &BTreeMap<String, Value>,
+    environment_ids: &BTreeMap<String, String>,
+    executor_targets: &BTreeMap<String, String>,
+) -> bool {
+    identities.iter().all(|(node_id, raw_identity)| {
+        if node_id.trim().is_empty() {
+            return false;
+        }
+        let Ok(identity) = kogwistar_contracts::worker_identity_attestation_from_str(
+            &raw_identity.to_string(),
+        ) else {
+            return false;
+        };
+        environment_ids.get(node_id) == Some(&identity.environment_id)
+            && executor_targets
+                .get(node_id)
+                .map(String::as_str)
+                .unwrap_or(kogwistar_runtime::PYTHON_EXECUTOR_TARGET)
+                == kogwistar_runtime::PYTHON_EXECUTOR_TARGET
+    })
+}
+
+fn runtime_join_outstanding(join_count: usize, start_join_mask: i64) -> Vec<i64> {
+    (0..join_count)
+        .map(|index| i64::from(start_join_mask & (1_i64 << index) != 0))
+        .collect()
+}
+
+fn default_runtime_priority_class() -> String {
+    "foreground".to_owned()
+}
+
+fn native_operation_name(operation: &str) -> Option<&str> {
+    kogwistar_runtime::native_operation_name(operation)
+}
+
+fn validate_native_operation_registry(
+    operations: &std::collections::BTreeMap<String, String>,
+    versions: &std::collections::BTreeMap<String, String>,
+    executor_targets: &std::collections::BTreeMap<String, String>,
+    registry: &kogwistar_runtime::NativeOperationRegistry,
+) -> Result<(), (&'static str, String)> {
+    for (node_id, target) in executor_targets {
+        let Some(operation) = operations.get(node_id) else {
+            return Err((
+                "KOGWISTAR_INVALID_EXECUTOR_TARGET",
+                format!("executor target references unknown workflow node {node_id:?}"),
+            ));
+        };
+        if !matches!(
+            target.as_str(),
+            kogwistar_runtime::PYTHON_EXECUTOR_TARGET
+                | kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+        ) {
+            return Err((
+                "KOGWISTAR_INVALID_EXECUTOR_TARGET",
+                format!("workflow node {node_id:?} has unsupported executor target {target:?}"),
+            ));
+        }
+        if target == kogwistar_runtime::PYTHON_EXECUTOR_TARGET
+            && native_operation_name(operation).is_some()
+        {
+            return Err((
+                "KOGWISTAR_INVALID_EXECUTOR_TARGET",
+                format!("Rust-native operation for workflow node {node_id:?} cannot target Python"),
+            ));
+        }
+    }
+    for (node_id, operation) in operations {
+        let target = executor_targets.get(node_id).map(String::as_str);
+        let rust_targeted = target == Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
+        let legacy_native_name = target.is_none() && operation.starts_with("rust-native/");
+        let Some(name) = kogwistar_runtime::native_operation_for_target(operation, target) else {
+            if (rust_targeted || legacy_native_name)
+                && (operation.trim().is_empty()
+                    || (operation.starts_with("rust-native/")
+                        && native_operation_name(operation).is_none()))
+            {
+                return Err((
+                    "KOGWISTAR_INVALID_NATIVE_OPERATION",
+                    format!("node {node_id:?} has an empty Rust-native operation name"),
+                ));
+            }
+            continue;
+        };
+        let version = versions.get(node_id).map(String::as_str).unwrap_or("v1");
+        if !registry.supports(name, version) {
+            return Err((
+                "KOGWISTAR_NATIVE_OPERATION_UNREGISTERED",
+                format!(
+                    "Rust-native operation {name:?} version {version:?} for node {node_id:?} is not registered"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn add_executor_target(payload: &mut Value, operation: &str, executor_target: Option<&str>) {
+    if let Some(target) = executor_target.or_else(|| {
+        native_operation_name(operation).map(|_| kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+    }) {
+        payload["executor_target"] = json!(target);
+    }
+}
+
+fn runtime_worker_recipient_for_operation(
+    operation: &str,
+    environment_id: Option<&str>,
+    executor_target: Option<&str>,
+    worker_identity: Option<&Value>,
+) -> String {
+    let target = executor_target.or_else(|| {
+        native_operation_name(operation).map(|_| kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+    });
+    if target == Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET) {
+        kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned() + "-worker"
+    } else if let Some(identity) = worker_identity {
+        let Some(environment_id) = identity["environment_id"].as_str() else {
+            return "python-worker-identity-invalid".to_owned();
+        };
+        let Some(artifact_sha256) = identity["artifact_sha256"].as_str() else {
+            return "python-worker-identity-invalid".to_owned();
+        };
+        let Some(dependency_lock_sha256) = identity["dependency_lock_sha256"].as_str() else {
+            return "python-worker-identity-invalid".to_owned();
+        };
+        runtime_worker_identity_recipient(
+            environment_id,
+            artifact_sha256,
+            dependency_lock_sha256,
+        )
+    } else {
+        runtime_worker_recipient(environment_id)
+    }
+}
+
+fn runtime_worker_recipient_for_state(state: &RecordedRuntimeState, node_id: &str) -> String {
+    let operation = state
+        .state
+        .get("_rt_node_ops")
+        .and_then(Value::as_object)
+        .and_then(|ops| ops.get(node_id))
+        .and_then(Value::as_str)
+        .unwrap_or("noop");
+    let environment_id = state
+        .state
+        .get("_rt_node_environment_ids")
+        .and_then(Value::as_object)
+        .and_then(|ids| ids.get(node_id))
+        .and_then(Value::as_str);
+    let executor_target = state
+        .state
+        .get("_rt_node_executor_targets")
+        .and_then(Value::as_object)
+        .and_then(|targets| targets.get(node_id))
+        .and_then(Value::as_str);
+    let worker_identity = state
+        .state
+        .get("_rt_node_worker_identities")
+        .and_then(Value::as_object)
+        .and_then(|identities| identities.get(node_id));
+    runtime_worker_recipient_for_operation(
+        operation,
+        environment_id,
+        executor_target,
+        worker_identity,
+    )
+}
+
+fn install_authoritative_node_executor_targets(
+    state: &mut serde_json::Map<String, Value>,
+    targets: &std::collections::BTreeMap<String, String>,
+) {
+    state.remove("_rt_node_executor_targets");
+    if !targets.is_empty() {
+        state.insert(
+            "_rt_node_executor_targets".to_owned(),
+            serde_json::to_value(targets).expect("runtime node executor targets serialize"),
+        );
+    }
+}
+
+fn effective_runtime_claim_recipients(values: &[String]) -> Result<Vec<String>, String> {
+    if values.is_empty() {
+        return Ok(vec!["python-worker".to_owned()]);
+    }
+    let mut unique = BTreeSet::new();
+    let mut ordered = Vec::with_capacity(values.len());
+    for value in values {
+        if value.trim().is_empty() || value.trim() != value || value.len() > 256 {
+            return Err(
+                "recipient_ids must contain canonical non-empty values up to 256 bytes".to_owned(),
+            );
+        }
+        if !unique.insert(value.clone()) {
+            return Err("recipient_ids must not contain duplicates".to_owned());
+        }
+        ordered.push(value.clone());
+    }
+    Ok(ordered)
+}
+
+const REGISTERED_WORKER_IDENTITY_CLAIM: &str = "kogwistar_worker_identity";
+
+fn runtime_claim_identity_registration_matches(
+    principal: &Value,
+    recipient_ids: &[String],
+) -> Result<(), &'static str> {
+    let identity_recipients = recipient_ids
+        .iter()
+        .filter(|recipient| recipient.starts_with("python-worker-identity-"))
+        .collect::<Vec<_>>();
+    if identity_recipients.is_empty() {
+        return Ok(());
+    }
+    if identity_recipients.len() != 1 {
+        return Err("one registered worker identity recipient is allowed per claim");
+    }
+
+    let registered = principal
+        .get(REGISTERED_WORKER_IDENTITY_CLAIM)
+        .ok_or("authenticated principal has no registered worker identity")?;
+    let identity = worker_identity_attestation_from_str(&registered.to_string())
+        .map_err(|_| "authenticated worker identity registration is invalid")?;
+    let expected_recipient = runtime_worker_identity_recipient(
+        &identity.environment_id,
+        &identity.artifact_sha256,
+        &identity.dependency_lock_sha256,
+    );
+    if identity_recipients[0] != &expected_recipient {
+        return Err("requested worker identity is not registered to this principal");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeSubmitRun {
+    #[serde(default)]
+    run_id: Option<String>,
+    workflow_id: String,
+    conversation_id: String,
+    #[serde(default)]
+    turn_node_id: Option<String>,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    initial_state: serde_json::Map<String, Value>,
+    #[serde(default = "default_runtime_priority_class")]
+    priority_class: String,
+    #[serde(default)]
+    token_budget: Option<i64>,
+    #[serde(default)]
+    time_budget_ms: Option<i64>,
+    #[serde(default = "default_runtime_kind")]
+    runtime_kind: String,
+    #[serde(default)]
+    join_node_ids: Vec<String>,
+    #[serde(default)]
+    start_join_mask: i64,
+    #[serde(default)]
+    runtime_routes: Vec<kogwistar_runtime::RuntimeStaticRoute>,
+    #[serde(default)]
+    start_node_id: Option<String>,
+    #[serde(default)]
+    node_ops: BTreeMap<String, String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    node_versions: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    node_environment_ids: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    node_worker_identities: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    node_executor_targets: BTreeMap<String, String>,
+}
+
+fn default_runtime_claim_limit() -> usize {
+    1
+}
+
+fn default_runtime_claim_lease() -> i64 {
+    60
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeClaimRequest {
+    claimed_by: String,
+    #[serde(default = "default_runtime_claim_limit")]
+    limit: usize,
+    #[serde(default = "default_runtime_claim_lease")]
+    lease_seconds: i64,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recipient_ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeWorkerResultRequest {
+    handoff: RecordedWorkerHandoff,
+    #[serde(default)]
+    transition: Option<RecordedRuntimeTransition>,
+    #[serde(default)]
+    effect: Option<RecordedWorkerSuccessEffect>,
+}
+
+fn runtime_worker_result_from_body(
+    body: &[u8],
+) -> Result<RuntimeWorkerResultRequest, ApiEffectResponse> {
+    if body.len() > MAX_RUNTIME_WORKER_RESULT_BYTES {
+        return Err(effect_error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "KOGWISTAR_REQUEST_TOO_LARGE",
+            "Runtime worker result exceeds the 2 MiB request limit",
+        ));
+    }
+    serde_json::from_slice(body).map_err(|error| {
+        effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            error.to_string(),
+        )
+    })
+}
+
+fn validate_runtime_lane_executor(
+    lane: &ProjectedLaneMessage,
+    requested_executor_target: &str,
+) -> Result<(), &'static str> {
+    let recipient_target = (lane.recipient_id == "rust-native-worker")
+        .then_some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
+    let payload = match lane.payload_json.as_deref() {
+        Some(payload_json) => Some(
+            serde_json::from_str::<Value>(payload_json)
+                .map_err(|_| "claimed runtime lane payload is not valid JSON")?,
+        ),
+        None => None,
+    };
+    let operation_target = payload
+        .as_ref()
+        .and_then(|value| value.get("op"))
+        .and_then(Value::as_str)
+        .and_then(kogwistar_runtime::native_operation_name)
+        .map(|_| kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
+    let explicit_target = match payload
+        .as_ref()
+        .and_then(|value| value.get("executor_target"))
+    {
+        Some(Value::String(target)) => Some(target.as_str()),
+        Some(Value::Null) | None => None,
+        Some(_) => return Err("claimed runtime lane has an invalid executor target"),
+    };
+    if explicit_target.is_some_and(|target| {
+        recipient_target.is_some_and(|recipient| recipient != target)
+            || operation_target.is_some_and(|operation| operation != target)
+    }) {
+        return Err("claimed runtime lane executor metadata is inconsistent");
+    }
+    let actual_target = explicit_target
+        .or(operation_target)
+        .or(recipient_target)
+        .unwrap_or("python-worker");
+    if actual_target != requested_executor_target {
+        return Err("worker result route does not match the claimed lane executor target");
+    }
+    Ok(())
+}
+
+fn validate_python_worker_submission_trace_binding(
+    trace_events: &[Value],
+    handoff: &RecordedWorkerHandoff,
+) -> Result<(), &'static str> {
+    let expected_fields = [
+        ("message_id", handoff.message_id.as_str()),
+        ("run_id", handoff.run_id.as_str()),
+        ("step_id", handoff.step_id.as_str()),
+        ("correlation_id", handoff.correlation_id.as_str()),
+    ];
+    let mut prepared_count = 0;
+    let mut submitted_events = Vec::new();
+    for event in trace_events {
+        let kind = event.get("event").and_then(Value::as_str);
+        if !matches!(
+            kind,
+            Some("runtime.python_worker.result_prepared")
+                | Some("runtime.python_worker.result_submitted")
+        ) {
+            continue;
+        }
+        if event
+            .get("schema_version")
+            .is_some_and(|value| value.as_u64() != Some(1))
+            || event
+                .get("executor_target")
+                .is_some_and(|value| value.as_str() != Some("python-worker"))
+            || event
+                .get("identity_source")
+                .is_some_and(|value| value.as_str() != Some("worker_configuration"))
+            || event
+                .get("worker_id")
+                .and_then(Value::as_str)
+                .is_some_and(str::is_empty)
+        {
+            return Err("Python worker trace event has an invalid identity envelope");
+        }
+        for (field, expected) in expected_fields {
+            if event
+                .get(field)
+                .and_then(Value::as_str)
+                .is_some_and(|actual| actual != expected)
+            {
+                return Err("Python worker trace event does not match the claimed handoff");
+            }
+        }
+        match kind {
+            Some("runtime.python_worker.result_prepared") => prepared_count += 1,
+            Some("runtime.python_worker.result_submitted") => submitted_events.push(event),
+            _ => unreachable!("filtered to known Python worker trace events"),
+        }
+    }
+    if prepared_count > 1 {
+        return Err("multiple Python worker result-prepared trace events");
+    }
+    let Some(event) = submitted_events.first() else {
+        return Ok(());
+    };
+    if submitted_events.len() > 1 {
+        return Err("multiple Python worker result-submitted trace events");
+    }
+
+    let lease_claim_id = handoff.claimed_by.as_str();
+    let Some((worker_id, lease_nonce)) = lease_claim_id.rsplit_once('#') else {
+        return Err("Python worker submission lease claim ID is malformed");
+    };
+    if worker_id.is_empty() || lease_nonce.is_empty() {
+        return Err("Python worker submission lease claim ID is malformed");
+    }
+    if event.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || event.get("executor_target").and_then(Value::as_str) != Some("python-worker")
+        || event.get("worker_id").and_then(Value::as_str) != Some(worker_id)
+        || event.get("identity_source").and_then(Value::as_str) != Some("worker_configuration")
+        || event.get("lease_claim_id").and_then(Value::as_str) != Some(lease_claim_id)
+    {
+        return Err("Python worker submission trace does not match the claimed lease");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeNativeExecuteRequest {
+    handoff: RecordedWorkerHandoff,
+    payload: Value,
+}
+
+fn native_step_request_from_payload(
+    handoff: &RecordedWorkerHandoff,
+    payload: Value,
+) -> Result<kogwistar_runtime::RuntimeNativeStepRequest, String> {
+    if handoff.claimed_by != "rust-native-worker"
+        && !handoff.claimed_by.starts_with("rust-native-worker#")
+    {
+        return Err("native execution requires the rust-native worker claim".to_owned());
+    }
+    if payload["kind"] == "workflow.run.execute" {
+        if payload["executor_target"]
+            .as_str()
+            .is_some_and(|target| target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+        {
+            return Err("native run payload has a conflicting executor target".to_owned());
+        }
+        let run_id = payload["run_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks run_id".to_owned())?;
+        let workflow_id = payload["workflow_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks workflow_id".to_owned())?;
+        let conversation_id = payload["conversation_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks conversation_id".to_owned())?;
+        let node_id = payload["start_node_id"]
+            .as_str()
+            .ok_or_else(|| "native run payload lacks start_node_id".to_owned())?;
+        let executor_target = payload["executor_target"].as_str();
+        let operation = payload["op"]
+            .as_str()
+            .and_then(|operation| {
+                kogwistar_runtime::native_operation_for_target(operation, executor_target)
+            })
+            .ok_or_else(|| {
+                "native run payload must resolve to a registered Rust operation".to_owned()
+            })?;
+        let runtime_routes = serde_json::from_value(payload["runtime_routes"].clone())
+            .map_err(|error| format!("invalid native runtime routes: {error}"))?;
+        if handoff.run_id != run_id || handoff.step_id != node_id {
+            return Err("native run payload does not match the claimed handoff".to_owned());
+        }
+        let op_version = match payload.get("op_version") {
+            None => "v1".to_owned(),
+            Some(Value::String(version)) => version.clone(),
+            Some(_) => return Err("native run payload has an invalid op_version".to_owned()),
+        };
+        return Ok(kogwistar_runtime::RuntimeNativeStepRequest {
+            executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: operation.to_owned(),
+            op_version,
+            run_id: run_id.to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            node_id: node_id.to_owned(),
+            conversation_id: conversation_id.to_owned(),
+            turn_node_id: payload["turn_node_id"].as_str().map(str::to_owned),
+            token_id: run_id.to_owned(),
+            parent_token_id: None,
+            step_seq: 0,
+            state: serde_json::from_value(payload["initial_state"].clone())
+                .map_err(|error| format!("invalid native initial state: {error}"))?,
+            runtime_routes,
+            ephemeral_context: Map::new(),
+        });
+    }
+
+    let payload: kogwistar_runtime::RuntimeStepExecutePayload = serde_json::from_value(payload)
+        .map_err(|error| format!("invalid native step payload: {error}"))?;
+    let operation = payload
+        .op
+        .as_str()
+        .and_then(|operation| {
+            kogwistar_runtime::native_operation_for_target(
+                operation,
+                payload.executor_target.as_deref(),
+            )
+        })
+        .ok_or_else(|| {
+            "native step payload must resolve to a registered Rust operation".to_owned()
+        })?;
+    if payload
+        .executor_target
+        .as_deref()
+        .is_some_and(|target| target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+    {
+        return Err("native step payload has a conflicting executor target".to_owned());
+    }
+    if handoff.run_id != payload.run_id || handoff.step_id != payload.node_id {
+        return Err("native step payload does not match the claimed handoff".to_owned());
+    }
+    Ok(kogwistar_runtime::RuntimeNativeStepRequest {
+        executor_target: kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+        operation: operation.to_owned(),
+        op_version: payload.op_version,
+        run_id: payload.run_id,
+        workflow_id: payload.workflow_id,
+        node_id: payload.node_id,
+        conversation_id: payload.conversation_id,
+        turn_node_id: payload.turn_node_id,
+        token_id: payload.token_id,
+        parent_token_id: payload.parent_token_id,
+        step_seq: payload.step_seq,
+        state: payload.state,
+        runtime_routes: payload.runtime_routes,
+        ephemeral_context: Map::new(),
+    })
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeResumeRequest {
+    suspended_node_id: String,
+    suspended_token_id: String,
+    #[serde(default)]
+    client_result: Value,
+    workflow_id: String,
+    conversation_id: String,
+    #[serde(default)]
+    turn_node_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RuntimeClaimedWork {
+    message_id: String,
+    claimed_by: String,
+    run_id: String,
+    step_id: Option<String>,
+    correlation_id: Option<String>,
+    payload: Value,
+    expected_event_seq: i64,
+    lease_until: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    worker_effect_capabilities: Vec<String>,
+    #[serde(skip)]
+    attempt_number: u64,
+}
+
+fn runtime_claimed_work(
+    lane: ProjectedLaneMessage,
+    claimed_by: &str,
+    run_id: String,
+    payload: Value,
+    expected_event_seq: i64,
+) -> RuntimeClaimedWork {
+    let attempt_number = lane.retry_count.max(0).saturating_add(1) as u64;
+    let payload = if lane.recipient_id.starts_with("python-worker") && attempt_number > 1 {
+        let mut payload = payload;
+        if let Some(fields) = payload.as_object_mut() {
+            fields.insert("attempt".to_owned(), Value::from(attempt_number));
+        }
+        payload
+    } else {
+        payload
+    };
+    RuntimeClaimedWork {
+        message_id: lane.message_id,
+        claimed_by: claimed_by.to_owned(),
+        run_id,
+        step_id: lane.step_id,
+        correlation_id: lane.correlation_id,
+        payload,
+        expected_event_seq,
+        lease_until: lane.lease_until,
+        worker_effect_capabilities: Vec::new(),
+        attempt_number,
+    }
+}
+
+fn runtime_start_transition(payload: &Value, run_id: &str) -> RecordedRuntimeTransition {
+    let start_node_id = payload["start_node_id"].as_str().unwrap_or("start");
+    let join_node_ids = string_list(&payload["join_node_ids"]);
+    let start_join_mask = payload["start_join_mask"].as_i64().unwrap_or_default();
+    RecordedRuntimeTransition {
+        contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+        transition_id: format!("start-{run_id}"),
+        expected_event_seq: payload["expected_event_seq"].as_i64().unwrap_or_default(),
+        kind: RecordedTransitionKind::Start,
+        run_id: run_id.to_owned(),
+        workflow_id: payload["workflow_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        conversation_id: payload["conversation_id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned(),
+        user_id: payload["user_id"].as_str().map(str::to_owned),
+        user_turn_node_id: payload["turn_node_id"].as_str().map(str::to_owned),
+        step_seq: 0,
+        node_id: Some(start_node_id.to_owned()),
+        token_id: Some(run_id.to_owned()),
+        parent_token_id: None,
+        initial_state: Some(
+            payload["initial_state"]
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+        ),
+        state_update: Vec::new(),
+        update: None,
+        state_schema: serde_json::Map::new(),
+        frontier: Some(RuntimeFrontier {
+            pending: vec![(
+                start_node_id.to_owned(),
+                start_join_mask,
+                run_id.to_owned(),
+                None,
+            )],
+            join_outstanding: runtime_join_outstanding(join_node_ids.len(), start_join_mask),
+            join_waiters: join_node_ids
+                .iter()
+                .cloned()
+                .map(|node_id| (node_id, Vec::new()))
+                .collect(),
+            join_node_ids,
+            ..RuntimeFrontier::default()
+        }),
+        result: None,
+        wait_reason: None,
+        resume_payload: None,
+        errors: Vec::new(),
+    }
+}
+
+fn runtime_submit_retry_response(
+    existing: &ServerRun,
+    lanes: &[ProjectedLaneMessage],
+    expected_worker_payload: &Value,
+) -> Result<Option<Value>, String> {
+    let Some(lane) = lanes.iter().find(|lane| {
+        lane.run_id.as_deref() == Some(existing.run_id.as_str())
+            && lane.msg_type == "workflow.run.execute"
+    }) else {
+        return Ok(None);
+    };
+    let mut persisted: Value =
+        serde_json::from_str(lane.payload_json.as_deref().unwrap_or("{}"))
+            .map_err(|error| format!("existing runtime admission payload is invalid: {error}"))?;
+    if let Some(object) = persisted.as_object_mut() {
+        object.remove("expected_event_seq");
+        object.remove("runtime_started");
+    }
+    if &persisted != expected_worker_payload {
+        return Err(format!(
+            "run_id {:?} already belongs to a different runtime admission",
+            existing.run_id
+        ));
+    }
+    Ok(Some(json!({
+        "run_id": existing.run_id,
+        "conversation_id": existing.conversation_id,
+        "workflow_id": existing.workflow_id,
+        "turn_node_id": existing.user_turn_node_id,
+        "status": existing.status,
+        "priority_class": expected_worker_payload["priority_class"],
+        "token_budget": expected_worker_payload["token_budget"],
+        "time_budget_ms": expected_worker_payload["time_budget_ms"],
+        "admission": "accepted",
+        "idempotent": true,
+        "lane_message_id": lane.message_id,
+    })))
+}
+
+fn string_list(value: &Value) -> Vec<String> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn runtime_graph_plan_from_snapshot(payload_json: &str) -> Option<RuntimeGraphPlan> {
+    let payload: Value = serde_json::from_str(payload_json).ok()?;
+    let nodes = payload["nodes"].as_array()?;
+    let edges = payload["edges"].as_array()?;
+    let node_ids = nodes
+        .iter()
+        .map(|node| node["id"].as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()?;
+    let node_id_set = node_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    if node_id_set.len() != node_ids.len() {
+        return None;
+    }
+    let start_nodes = nodes
+        .iter()
+        .filter(|node| node["metadata"]["wf_start"].as_bool() == Some(true))
+        .collect::<Vec<_>>();
+    if start_nodes.len() != 1 {
+        return None;
+    }
+    let start_node_id = start_nodes[0]["id"].as_str()?.to_owned();
+    let node_ops = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let op = node["metadata"]["wf_op"]
+                .as_str()
+                .or_else(|| node["metadata"]["op"].as_str())
+                .unwrap_or("noop");
+            Some((node_id.to_owned(), op.to_owned()))
+        })
+        .collect();
+    let node_versions = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let version = node["metadata"]["wf_version"]
+                .as_str()
+                .or_else(|| node["metadata"]["wf.version"].as_str())
+                .unwrap_or("v1");
+            Some((node_id.to_owned(), version.to_owned()))
+        })
+        .collect();
+    let node_environment_ids: std::collections::BTreeMap<String, String> = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let environment_id = node["metadata"]["wf_environment_id"]
+                .as_str()
+                .or_else(|| node["metadata"]["wf.environment_id"].as_str())?
+                .trim();
+            if environment_id.is_empty() {
+                return None;
+            }
+            Some((node_id.to_owned(), environment_id.to_owned()))
+        })
+        .collect();
+    let mut node_executor_targets = std::collections::BTreeMap::new();
+    for node in nodes {
+        let Some(raw_target) = node["metadata"].get("wf_executor_target") else {
+            continue;
+        };
+        let node_id = node["id"].as_str()?;
+        let target = raw_target.as_str()?;
+        if !matches!(
+            target,
+            kogwistar_runtime::PYTHON_EXECUTOR_TARGET
+                | kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
+        ) {
+            return None;
+        }
+        node_executor_targets.insert(node_id.to_owned(), target.to_owned());
+    }
+    let mut node_worker_identities = std::collections::BTreeMap::new();
+    for node in nodes {
+        let Some(raw_identity) = node["metadata"].get("wf_worker_identity") else {
+            continue;
+        };
+        if raw_identity.is_null() {
+            continue;
+        }
+        let node_id = node["id"].as_str()?;
+        let identity = kogwistar_contracts::worker_identity_attestation_from_str(
+            &raw_identity.to_string(),
+        )
+        .ok()?;
+        let environment_id = node_environment_ids.get(node_id)?;
+        if environment_id != &identity.environment_id
+            || node_executor_targets
+                .get(node_id)
+                .map(String::as_str)
+                .unwrap_or(kogwistar_runtime::PYTHON_EXECUTOR_TARGET)
+                != kogwistar_runtime::PYTHON_EXECUTOR_TARGET
+        {
+            return None;
+        }
+        node_worker_identities.insert(
+            node_id.to_owned(),
+            serde_json::to_value(identity).ok()?,
+        );
+    }
+    let node_aliases = nodes
+        .iter()
+        .filter_map(|node| {
+            let node_id = node["id"].as_str()?;
+            let mut aliases = vec![
+                node_id.to_owned(),
+                node_id.split('|').next_back().unwrap_or(node_id).to_owned(),
+            ];
+            for alias in [node["label"].as_str(), node["metadata"]["wf_op"].as_str()] {
+                if let Some(alias) = alias.filter(|value| !value.is_empty()) {
+                    aliases.push(alias.to_owned());
+                }
+            }
+            aliases.sort();
+            aliases.dedup();
+            Some((node_id.to_owned(), aliases))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut join_node_ids = nodes
+        .iter()
+        .filter(|node| node["metadata"]["wf_join"].as_bool() == Some(true))
+        .filter_map(|node| node["id"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    join_node_ids.sort();
+    if join_node_ids.len() >= i64::BITS as usize {
+        return None;
+    }
+    let fanout_nodes = nodes
+        .iter()
+        .filter(|node| node["metadata"]["wf_fanout"].as_bool() == Some(true))
+        .filter_map(|node| node["id"].as_str().map(str::to_owned))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut topology_edges = Vec::new();
+    let mut route_metadata = Vec::new();
+    let mut adjacency = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for edge in edges {
+        let edge_id = edge["id"].as_str().unwrap_or_default().to_owned();
+        let edge_label = edge["label"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+        let predicate = edge["metadata"]["wf_predicate"]
+            .as_str()
+            .filter(|predicate| !predicate.is_empty())
+            .map(str::to_owned);
+        let multiplicity = edge["metadata"]["wf_multiplicity"]
+            .as_str()
+            .unwrap_or("one")
+            .to_owned();
+        let is_default = edge["metadata"]["wf_is_default"].as_bool().unwrap_or(false);
+        let priority = edge["metadata"]["wf_priority"].as_i64().unwrap_or(100);
+        // Python's workflow loader treats each design edge as a single transition
+        // using its first source and first target. Keep Rust routing identical.
+        let source = edge["source_ids"].as_array()?.first()?.as_str()?.to_owned();
+        let target = edge["target_ids"].as_array()?.first()?.as_str()?.to_owned();
+        if !node_id_set.contains(&source) || !node_id_set.contains(&target) {
+            return None;
+        }
+        topology_edges.push([source.clone(), target.clone()]);
+        adjacency
+            .entry(source.clone())
+            .or_default()
+            .push(target.clone());
+        let mut aliases = node_aliases.get(&target).cloned().unwrap_or_else(|| {
+            vec![
+                target.clone(),
+                target.split('|').next_back().unwrap_or(&target).to_owned(),
+            ]
+        });
+        if let Some(label) = edge_label.as_ref()
+            && !aliases.contains(label)
+        {
+            aliases.push(label.clone());
+        }
+        aliases.sort();
+        aliases.dedup();
+        route_metadata.push((
+            edge_id,
+            source.clone(),
+            target,
+            aliases,
+            predicate,
+            multiplicity,
+            is_default,
+            priority,
+            fanout_nodes.contains(&source),
+        ));
+    }
+    let reachable = {
+        let mut visited = std::collections::BTreeSet::new();
+        let mut pending = vec![start_node_id.clone()];
+        while let Some(node_id) = pending.pop() {
+            if visited.insert(node_id.clone()) {
+                pending.extend(adjacency.get(&node_id).into_iter().flatten().cloned());
+            }
+        }
+        visited
+    };
+    let terminal_reachable = nodes.iter().any(|node| {
+        let Some(node_id) = node["id"].as_str() else {
+            return false;
+        };
+        let explicit_terminal = node["metadata"]["wf_terminal"].as_bool() == Some(true)
+            || node["metadata"]["terminal"].as_bool() == Some(true);
+        let sink = adjacency.get(node_id).is_none_or(Vec::is_empty);
+        (explicit_terminal || sink) && reachable.contains(node_id)
+    });
+    if !terminal_reachable {
+        return None;
+    }
+    let may_reach_json = kogwistar_contracts::workflow_may_reach_join_from_str(
+        &serde_json::to_string(&json!({
+            "node_ids": node_ids,
+            "edges": topology_edges,
+            "join_ids": join_node_ids,
+        }))
+        .ok()?,
+    )
+    .ok()?;
+    let may_reach: Value = serde_json::from_str(&may_reach_json).ok()?;
+    let mask = |node_id: &str| -> i64 {
+        may_reach[node_id]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_u64)
+            .filter(|bit| *bit < i64::BITS as u64)
+            .fold(0_i64, |value, bit| value | (1_i64 << bit))
+    };
+    let routes = route_metadata
+        .into_iter()
+        .map(
+            |(
+                edge_id,
+                source_node_id,
+                target_node_id,
+                target_aliases,
+                predicate,
+                multiplicity,
+                is_default,
+                priority,
+                source_fanout,
+            )| {
+                kogwistar_runtime::RuntimeStaticRoute {
+                    edge_id,
+                    source_node_id,
+                    join_mask: mask(&target_node_id),
+                    target_node_id,
+                    aliases: target_aliases,
+                    predicate,
+                    multiplicity,
+                    is_default,
+                    priority,
+                    source_fanout,
+                }
+            },
+        )
+        .collect();
+    Some(RuntimeGraphPlan {
+        start_join_mask: mask(&start_node_id),
+        start_node_id,
+        join_node_ids,
+        routes,
+        node_ops,
+        node_versions,
+        node_environment_ids,
+        node_worker_identities,
+        node_executor_targets,
+    })
+}
+
+fn exact_runtime_graph_plan(
+    projection: Option<NamedProjection>,
+    snapshot: Option<WorkflowDesignSnapshot>,
+) -> Option<RuntimeGraphPlan> {
+    let projection = projection?;
+    let snapshot = snapshot?;
+    if !matches!(
+        projection.materialization_status.as_str(),
+        "ready" | "rust_event_only"
+    ) || projection.payload["current_version"].as_i64()? != snapshot.version
+        || projection.payload["snapshot_schema_version"]
+            .as_i64()
+            .is_some_and(|version| version != snapshot.schema_version)
+    {
+        return None;
+    }
+    runtime_graph_plan_from_snapshot(&snapshot.payload_json)
+}
+
+fn runtime_snapshot_declares_worker_identity(snapshot: Option<&WorkflowDesignSnapshot>) -> bool {
+    let Some(snapshot) = snapshot else {
+        return false;
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(&snapshot.payload_json) else {
+        return false;
+    };
+    payload["nodes"].as_array().is_some_and(|nodes| {
+        nodes
+            .iter()
+            .any(|node| !node["metadata"]["wf_worker_identity"].is_null())
+    })
+}

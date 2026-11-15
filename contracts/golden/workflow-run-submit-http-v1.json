@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "success_status": 202,
+  "required_common_fields": [
+    "run_id",
+    "conversation_id",
+    "workflow_id",
+    "turn_node_id",
+    "status",
+    "priority_class",
+    "token_budget",
+    "time_budget_ms",
+    "admission"
+  ],
+  "expected_common_values": {
+    "status": "queued",
+    "priority_class": "foreground",
+    "token_budget": null,
+    "time_budget_ms": null,
+    "admission": "accepted"
+  },
+  "rust_additive_fields": ["lane_message_id"]
+}

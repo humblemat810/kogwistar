@@ -1,17 +1,35 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import json
 import sqlite3
+import threading
 import time
 import uuid
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import fields
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
-from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
-from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine_postgres_meta import (
+    EnginePostgresMetaStore,
+    IndexJob as PostgresIndexJob,
+)
+from kogwistar.engine_core.engine_sqlite import EngineSQLite, IndexJobRow
+from kogwistar.engine_core.indexing import IndexingSubsystem
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.workers.async_index_job_worker import (
+    AsyncIndexJobWorker,
+    AsyncWorkerTickMetrics,
+)
+from kogwistar.workers.index_job_worker import IndexJobWorker, WorkerTickMetrics
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -38,12 +56,45 @@ def _job(job_id: str, namespace: str = "ns", op: str = "UPSERT", **extra: Any) -
     }
 
 
+def test_python_queue_row_models_expose_the_same_fields() -> None:
+    sqlite_fields = {field.name for field in fields(IndexJobRow)}
+    postgres_fields = {field.name for field in fields(PostgresIndexJob)}
+
+    assert sqlite_fields == postgres_fields
+
+
+def test_index_reconciliation_does_not_claim_jobs_under_rust_authority(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Metadata:
+        def claim_index_jobs(self, **_: object) -> list[object]:
+            raise AssertionError("Rust-owned index jobs must remain unclaimed")
+
+    engine = SimpleNamespace(
+        metadata=Metadata(),
+        namespace="rust-authority",
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=(
+            ("KOGWISTAR_IMPL_MODE", "rust"),
+            ("KOGWISTAR_IMPL_META_STORE", "rust"),
+            ("KOGWISTAR_IMPL_GRAPH_STORE", "rust"),
+            ("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust"),
+        ),
+    )
+    reconciler = IndexingSubsystem(cast(GraphKnowledgeEngine, engine))
+
+    assert reconciler.reconcile_indexes(max_jobs=10) == 0
+    assert "leaving index jobs pending" in caplog.text
+
+
 def test_sqlite_python_to_rust_and_rust_to_python_queue_contract(tmp_path: Path) -> None:
     python = EngineSQLite(tmp_path)
     python.ensure_initialized()
     assert python.enqueue_index_job(job_id="python", namespace="ns", entity_kind="node", entity_id="n", index_kind="doc", op="UPSERT") == "python"
     row = _sqlite(python.db_path, {"kind": "list_index_jobs", "namespace": "ns"})[0]
     assert row["job_id"] == "python" and isinstance(row["created_at"], int)
+    assert set(row) == {field.name for field in fields(IndexJobRow)}
 
     assert _sqlite(python.db_path, _job("rust", namespace="other", payload_json='{"from":"rust"}')) == "rust"
     rows = python.list_index_jobs(namespace="other")
@@ -78,6 +129,167 @@ def test_sqlite_python_to_rust_and_rust_to_python_queue_contract(tmp_path: Path)
     )
 
 
+def test_sqlite_python_rust_claim_and_ack_handoff_is_interoperable(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    database = python.db_path
+
+    python.enqueue_index_job(
+        job_id="python-enqueued",
+        namespace="handoff",
+        entity_kind="node",
+        entity_id="python-node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    rust_claim = _sqlite(
+        database,
+        {
+            "kind": "claim_index_jobs",
+            "namespace": "handoff",
+            "limit": 1,
+            "lease_seconds": 30,
+        },
+    )[0]
+    assert rust_claim["job_id"] == "python-enqueued"
+    assert rust_claim["claim_token"]
+    python_view = python.list_index_jobs(namespace="handoff")[0]
+    assert python_view.status == "DOING"
+    assert python_view.claim_token == rust_claim["claim_token"]
+    assert python_view.claim_attempts == 0
+    assert (
+        python.mark_index_job_done(
+            rust_claim["job_id"], claim_token="stale-python-token"
+        )
+        is False
+    )
+    assert (
+        _sqlite(
+            database,
+            {
+                "kind": "mark_index_job_done",
+                "job_id": rust_claim["job_id"],
+                "claim_token": rust_claim["claim_token"],
+            },
+        )
+        is True
+    )
+    assert python.list_index_jobs(namespace="handoff")[0].status == "DONE"
+
+    python.enqueue_index_job(
+        job_id="rust-acknowledged",
+        namespace="handoff",
+        entity_kind="node",
+        entity_id="rust-node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    python_claim = python.claim_index_jobs(
+        limit=1, lease_seconds=30, namespace="handoff"
+    )[0]
+    assert python_claim.job_id == "rust-acknowledged"
+    assert python_claim.claim_token
+    assert (
+        _sqlite(
+            database,
+            {
+                "kind": "mark_index_job_done",
+                "job_id": python_claim.job_id,
+                "claim_token": "stale-rust-token",
+            },
+        )
+        is False
+    )
+    assert (
+        _sqlite(
+            database,
+            {
+                "kind": "mark_index_job_done",
+                "job_id": python_claim.job_id,
+                "claim_token": python_claim.claim_token,
+            },
+        )
+        is True
+    )
+    rust_view = _sqlite(
+        database,
+        {"kind": "list_index_jobs", "namespace": "handoff"},
+    )
+    assert {row["job_id"]: row["status"] for row in rust_view} == {
+        "python-enqueued": "DONE",
+        "rust-acknowledged": "DONE",
+    }
+
+
+@pytest.mark.parametrize("worker_kind", ["sync", "async"])
+def test_python_worker_renews_rust_sqlite_queue_lease(
+    tmp_path: Path, worker_kind: str
+) -> None:
+    metadata = RustEngineSQLite(tmp_path)
+    metadata.ensure_initialized()
+    metadata.enqueue_index_job(
+        job_id=f"rust-queue-{worker_kind}",
+        namespace="handoff",
+        entity_kind="node",
+        entity_id="slow-node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    started = threading.Event()
+
+    class SlowIndexing:
+        def apply_index_job(self, **_: object) -> None:
+            started.set()
+            time.sleep(1.5)
+
+    engine = SimpleNamespace(
+        meta_sqlite=metadata,
+        namespace="handoff",
+        indexing=SlowIndexing(),
+        _implementation_selection_snapshot=None,
+    )
+    if worker_kind == "sync":
+        worker = IndexJobWorker(
+            engine=cast(GraphKnowledgeEngine, engine), lease_seconds=1, batch_size=1
+        )
+        sync_results: list[WorkerTickMetrics] = []
+        thread = threading.Thread(target=lambda: sync_results.append(worker.tick()))
+        thread.start()
+        assert started.wait(timeout=2)
+        time.sleep(1.2)
+        competing_claim = metadata.claim_index_jobs(
+            limit=1, lease_seconds=1, namespace="handoff"
+        )
+        thread.join(timeout=3)
+        assert not thread.is_alive()
+        assert sync_results[0].done == 1
+    else:
+        worker = AsyncIndexJobWorker(
+            engine=cast(GraphKnowledgeEngine, engine), lease_seconds=1, batch_size=1
+        )
+
+        async def run() -> tuple[AsyncWorkerTickMetrics, list[IndexJobRow]]:
+            task = asyncio.create_task(worker.tick())
+            assert await asyncio.to_thread(started.wait, 2)
+            await asyncio.sleep(1.2)
+            claimed = await asyncio.to_thread(
+                lambda: metadata.claim_index_jobs(
+                    limit=1, lease_seconds=1, namespace="handoff"
+                )
+            )
+            return await task, claimed
+
+        async_result, competing_claim = asyncio.run(run())
+        assert async_result.done == 1
+
+    assert competing_claim == []
+    completed = metadata.list_index_jobs(namespace="handoff")
+    assert len(completed) == 1
+    assert completed[0].status == "DONE"
+
+
 def test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     assert _sqlite(path, _job("one", payload_json='{"old":true}')) == "one"
@@ -103,6 +315,295 @@ def test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback(tmp_path
     assert not any(row["job_id"] == "rolled" for row in _sqlite(path, {"kind": "list_index_jobs", "namespace": "ns"}))
 
 
+def test_sqlite_rust_result_admission_is_immutable_to_python_retries(tmp_path: Path) -> None:
+    python = EngineSQLite(tmp_path / "result.db")
+    python.ensure_initialized()
+    python.enqueue_index_job(
+        job_id="result-job",
+        namespace="ns",
+        entity_kind="node",
+        entity_id="node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace="ns")[0]
+    token = claim.claim_token or ""
+
+    accepted = _sqlite(
+        python.db_path,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": claim.job_id,
+            "claim_token": token,
+            "result_json": '{"winner":"rust"}',
+            "result_sha256": "rust-digest",
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    retry = python.accept_index_job_result(
+        claim.job_id,
+        claim_token="stale-python-worker",
+        result_json='{"winner":"python"}',
+        result_sha256="python-digest",
+    )
+    assert retry["status"] == "existing"
+    assert retry["result_json"] == '{"winner":"rust"}'
+    assert retry["result_sha256"] == "rust-digest"
+
+
+def test_python_worker_replays_rust_admitted_projection_after_lease_expiry(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    python.enqueue_index_job(
+        job_id="rust-to-python-projection",
+        namespace="workspace",
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace="workspace")[0]
+
+    action = {
+        "version": 1,
+        "job_id": claim.job_id,
+        "namespace": "workspace",
+        "entity_kind": "node",
+        "entity_id": "node-1",
+        "index_kind": "node_embedding",
+        "operation": "UPSERT",
+        "record": {
+            "id": "node-1",
+            "document": "admitted by Rust, projected by Python",
+            "metadata": {"kind": "node"},
+            "embedding": [0.25, 0.75],
+        },
+    }
+    action_json = json.dumps(action, separators=(",", ":"))
+    accepted = _sqlite(
+        python.db_path,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": claim.job_id,
+            "claim_token": claim.claim_token,
+            "result_json": action_json,
+            "result_sha256": hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    # Simulate Rust persisting the action and crashing before Chroma apply/ack.
+    with closing(sqlite3.connect(python.db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
+            (claim.job_id,),
+        )
+
+    reopened = EngineSQLite(tmp_path)
+    reopened.ensure_initialized()
+
+    class ProjectionStore:
+        def __init__(self) -> None:
+            self.upserts: list[tuple[str, object]] = []
+
+        def upsert_graph_record(self, namespace: str, record: object) -> None:
+            self.upserts.append((namespace, record))
+
+        def delete_graph_record(self, namespace: str, entity_id: str) -> None:
+            raise AssertionError("UPSERT recovery must not delete graph records")
+
+    projection = ProjectionStore()
+    worker = IndexJobWorker(
+        engine=SimpleNamespace(
+            meta_sqlite=reopened,
+            namespace="workspace",
+            indexing=SimpleNamespace(
+                apply_index_job=lambda **_: (_ for _ in ()).throw(
+                    AssertionError("accepted action must not rerun provider/index logic")
+                )
+            ),
+            _implementation_selection_snapshot=None,
+        ),
+        namespace="workspace",
+        projection_store=projection,
+    )
+
+    metrics = worker.tick()
+
+    assert metrics.claimed == 1
+    assert metrics.done == 1
+    assert metrics.failed == 0
+    assert len(projection.upserts) == 1
+    assert projection.upserts[0][0] == "workspace"
+    record = projection.upserts[0][1]
+    assert getattr(record, "id") == "node-1"
+    assert getattr(record, "document") == "admitted by Rust, projected by Python"
+    assert getattr(record, "embedding") == (0.25, 0.75)
+    completed = reopened.list_index_jobs(namespace="workspace")[0]
+    assert completed.status == "DONE"
+    assert completed.accepted_result_json == action_json
+
+
+def test_async_python_worker_replays_rust_admitted_projection_after_lease_expiry(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    python.enqueue_index_job(
+        job_id="rust-to-async-python-projection",
+        namespace="workspace",
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace="workspace")[0]
+
+    action = {
+        "version": 1,
+        "job_id": claim.job_id,
+        "namespace": "workspace",
+        "entity_kind": "node",
+        "entity_id": "node-1",
+        "index_kind": "node_embedding",
+        "operation": "UPSERT",
+        "record": {
+            "id": "node-1",
+            "document": "admitted by Rust, projected by async Python",
+            "metadata": {"kind": "node"},
+            "embedding": [0.25, 0.75],
+        },
+    }
+    action_json = json.dumps(action, separators=(",", ":"))
+    accepted = _sqlite(
+        python.db_path,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": claim.job_id,
+            "claim_token": claim.claim_token,
+            "result_json": action_json,
+            "result_sha256": hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    with closing(sqlite3.connect(python.db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
+            (claim.job_id,),
+        )
+
+    reopened = EngineSQLite(tmp_path)
+    reopened.ensure_initialized()
+
+    class AsyncProjectionStore:
+        def __init__(self) -> None:
+            self.upserts: list[tuple[str, object]] = []
+
+        async def upsert_graph_record(self, namespace: str, record: object) -> None:
+            self.upserts.append((namespace, record))
+
+        async def delete_graph_record(self, namespace: str, entity_id: str) -> None:
+            raise AssertionError("UPSERT recovery must not delete graph records")
+
+    projection = AsyncProjectionStore()
+    worker = AsyncIndexJobWorker(
+        engine=SimpleNamespace(
+            meta_sqlite=reopened,
+            namespace="workspace",
+            indexing=SimpleNamespace(
+                apply_index_job=lambda **_: (_ for _ in ()).throw(
+                    AssertionError("accepted action must not rerun provider/index logic")
+                )
+            ),
+            _implementation_selection_snapshot=None,
+        ),
+        namespace="workspace",
+        projection_store=projection,
+    )
+
+    metrics = asyncio.run(worker.tick())
+
+    assert metrics.claimed == 1
+    assert metrics.done == 1
+    assert metrics.failed == 0
+    assert len(projection.upserts) == 1
+    assert projection.upserts[0][0] == "workspace"
+    record = projection.upserts[0][1]
+    assert getattr(record, "id") == "node-1"
+    assert getattr(record, "document") == "admitted by Rust, projected by async Python"
+    assert getattr(record, "embedding") == (0.25, 0.75)
+    completed = reopened.list_index_jobs(namespace="workspace")[0]
+    assert completed.status == "DONE"
+    assert completed.accepted_result_json == action_json
+
+
+def test_sqlite_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
+    tmp_path: Path,
+) -> None:
+    python = EngineSQLite(tmp_path)
+    python.ensure_initialized()
+    python.enqueue_index_job(
+        job_id="ack-lost",
+        namespace="ns",
+        entity_kind="node",
+        entity_id="node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace="ns")[0]
+
+    admitted = _sqlite(
+        python.db_path,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": claim.job_id,
+            "claim_token": claim.claim_token,
+            "result_json": '{"embedding":[0.25,0.75]}',
+            "result_sha256": "durable-result",
+        },
+    )
+    assert admitted["status"] == "accepted"
+
+    # Model a worker crash after durable result admission but before its ack.
+    with closing(sqlite3.connect(python.db_path)) as conn, conn:
+        conn.execute(
+            "UPDATE index_jobs SET lease_until=0 WHERE job_id=?",
+            (claim.job_id,),
+        )
+
+    reopened = EngineSQLite(tmp_path)
+    reopened.ensure_initialized()
+    persisted = reopened.list_index_jobs(namespace="ns")[0]
+    assert persisted.status == "DOING"
+    assert persisted.accepted_result_json == '{"embedding":[0.25,0.75]}'
+
+    engine = SimpleNamespace(
+        metadata=reopened,
+        namespace="ns",
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=None,
+    )
+    reconciler = IndexingSubsystem(cast(GraphKnowledgeEngine, engine))
+    projection_calls = 0
+
+    def apply_index_job(**_: object) -> None:
+        nonlocal projection_calls
+        projection_calls += 1
+
+    reconciler.apply_index_job = apply_index_job  # type: ignore[method-assign]
+
+    assert reconciler.reconcile_indexes(max_jobs=1) == 1
+    assert projection_calls == 0
+    completed = reopened.list_index_jobs(namespace="ns")[0]
+    assert completed.status == "DONE"
+    assert completed.accepted_result_json == '{"embedding":[0.25,0.75]}'
+
+
 def test_sqlite_concurrent_same_key_enqueue_and_claim_are_exclusive(tmp_path: Path) -> None:
     path = tmp_path / "engine.db"
     with ThreadPoolExecutor(max_workers=8) as pool:
@@ -124,7 +625,7 @@ def test_sqlite_retry_terminal_unknown_fields_and_raw_durable_effect(tmp_path: P
     final_claim = _sqlite(path, {"kind": "claim_index_jobs", "namespace": "ns", "limit": 10, "lease_seconds": 30})
     final = next(item for item in final_claim if item["job_id"] == "final")
     assert _sqlite(path, {"kind": "mark_index_job_failed", "job_id": "final", "error": "final-error", "final": True, "claim_token": final["claim_token"]}) is None
-    with sqlite3.connect(path) as conn:
+    with closing(sqlite3.connect(path)) as conn, conn:
         raw = conn.execute("SELECT status, last_error, claim_token FROM index_jobs WHERE job_id='final'").fetchone()
         columns = {row[1] for row in conn.execute("PRAGMA table_info(index_jobs)")}
     assert raw == ("FAILED", "final-error", None)
@@ -141,6 +642,7 @@ def _pg(dsn: str, schema: str, operation: dict[str, Any]) -> Any:
 def _require_pg(pg_dsn: str | None, pg_schema: str | None) -> tuple[str, str]:
     if not pg_dsn or not pg_schema:
         pytest.skip("PostgreSQL fixture/DSN unavailable")
+    assert pg_dsn is not None and pg_schema is not None
     return pg_dsn, pg_schema
 
 
@@ -166,6 +668,295 @@ def test_postgres_python_rust_queue_differential_live(sa_engine, pg_dsn: str | N
     with pytest.raises(RustParityError) as invalid:
         _pg(dsn, schema, {"kind": "list_index_jobs", "namespace": "queue", "unexpected": True})
     assert invalid.value.code == "KOGWISTAR_STORE_INVALID_PAYLOAD"
+
+
+def test_postgres_reconciler_recovers_admitted_result_after_restart_and_lost_ack(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    namespace = f"ack-lost-{uuid.uuid4().hex}"
+    job_id = f"ack-lost-{uuid.uuid4().hex}"
+    python.enqueue_index_job(
+        job_id=job_id,
+        namespace=namespace,
+        entity_kind="node",
+        entity_id="node",
+        index_kind="doc",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(
+        limit=1, lease_seconds=30, namespace=namespace
+    )[0]
+
+    admitted = _pg(
+        dsn,
+        schema,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": job_id,
+            "claim_token": claim.claim_token,
+            "result_json": '{"embedding":[0.25,0.75]}',
+            "result_sha256": "durable-result",
+        },
+    )
+    assert admitted["status"] == "accepted"
+
+    # Model a worker crash after durable result admission but before its ack.
+    with sa_engine.begin() as conn:
+        conn.exec_driver_sql(
+            f"UPDATE \"{schema}\".index_jobs SET lease_until=TIMESTAMPTZ 'epoch' WHERE job_id=%s",
+            (job_id,),
+        )
+
+    reopened = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    reopened.ensure_initialized()
+    persisted = reopened.list_index_jobs(namespace=namespace)[0]
+    rust_persisted = _pg(
+        dsn,
+        schema,
+        {"kind": "list_index_jobs", "namespace": namespace},
+    )[0]
+    assert set(rust_persisted) == {field.name for field in fields(IndexJobRow)}
+    assert rust_persisted["accepted_result_json"] == '{"embedding":[0.25,0.75]}'
+    assert persisted.status == "DOING"
+    assert persisted.claim_token == claim.claim_token
+    assert persisted.claim_attempts == 0
+    assert persisted.created_at is not None
+    assert persisted.updated_at is not None
+    assert persisted.accepted_result_json == '{"embedding":[0.25,0.75]}'
+    assert persisted.accepted_result_sha256 == "durable-result"
+    assert persisted.accepted_at is not None
+
+    engine = SimpleNamespace(
+        metadata=reopened,
+        namespace=namespace,
+        _phase1_enable_index_jobs=True,
+        _phase1_enable_validation_cache=False,
+        _implementation_selection_snapshot=None,
+    )
+    reconciler = IndexingSubsystem(cast(GraphKnowledgeEngine, engine))
+    projection_calls = 0
+
+    def apply_index_job(**_: object) -> None:
+        nonlocal projection_calls
+        projection_calls += 1
+
+    reconciler.apply_index_job = apply_index_job  # type: ignore[method-assign]
+
+    assert reconciler.reconcile_indexes(max_jobs=1) == 1
+    assert projection_calls == 0
+    completed = reopened.list_index_jobs(namespace=namespace)[0]
+    assert completed.status == "DONE"
+    assert completed.accepted_result_json == '{"embedding":[0.25,0.75]}'
+
+
+def test_python_worker_replays_rust_admitted_projection_after_pg_lease_expiry(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    namespace = f"projection-recovery-{uuid.uuid4().hex}"
+    job_id = f"rust-to-python-{uuid.uuid4().hex}"
+    python.enqueue_index_job(
+        job_id=job_id,
+        namespace=namespace,
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace=namespace)[0]
+
+    action = {
+        "version": 1,
+        "job_id": job_id,
+        "namespace": namespace,
+        "entity_kind": "node",
+        "entity_id": "node-1",
+        "index_kind": "node_embedding",
+        "operation": "UPSERT",
+        "record": {
+            "id": "node-1",
+            "document": "admitted by Rust, projected by Python on PostgreSQL",
+            "metadata": {"kind": "node"},
+            "embedding": [0.25, 0.75],
+        },
+    }
+    action_json = json.dumps(action, separators=(",", ":"))
+    accepted = _pg(
+        dsn,
+        schema,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": job_id,
+            "claim_token": claim.claim_token,
+            "result_json": action_json,
+            "result_sha256": hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    # Model a worker crash after Rust admission but before graph projection/ack.
+    with sa_engine.begin() as conn:
+        conn.exec_driver_sql(
+            f'UPDATE "{schema}".index_jobs SET lease_until=TIMESTAMPTZ \'epoch\' WHERE job_id=%s',
+            (job_id,),
+        )
+
+    reopened = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    reopened.ensure_initialized()
+
+    class ProjectionStore:
+        def __init__(self) -> None:
+            self.upserts: list[tuple[str, object]] = []
+
+        def upsert_graph_record(self, namespace: str, record: object) -> None:
+            self.upserts.append((namespace, record))
+
+        def delete_graph_record(self, namespace: str, entity_id: str) -> None:
+            raise AssertionError("UPSERT recovery must not delete graph records")
+
+    projection = ProjectionStore()
+    worker = IndexJobWorker(
+        engine=SimpleNamespace(
+            meta_sqlite=reopened,
+            namespace=namespace,
+            indexing=SimpleNamespace(
+                apply_index_job=lambda **_: (_ for _ in ()).throw(
+                    AssertionError("accepted action must not rerun provider/index logic")
+                )
+            ),
+            _implementation_selection_snapshot=None,
+        ),
+        namespace=namespace,
+        projection_store=projection,
+    )
+
+    metrics = worker.tick()
+
+    assert metrics.claimed == 1
+    assert metrics.done == 1
+    assert metrics.failed == 0
+    assert len(projection.upserts) == 1
+    assert projection.upserts[0][0] == namespace
+    record = projection.upserts[0][1]
+    assert getattr(record, "id") == "node-1"
+    assert getattr(record, "document") == "admitted by Rust, projected by Python on PostgreSQL"
+    assert getattr(record, "embedding") == (0.25, 0.75)
+    completed = _pg(
+        dsn,
+        schema,
+        {"kind": "list_index_jobs", "namespace": namespace},
+    )
+    assert len(completed) == 1
+    assert completed[0]["status"] == "DONE"
+    assert completed[0]["accepted_result_json"] == action_json
+
+
+def test_async_python_worker_replays_rust_admitted_projection_after_pg_lease_expiry(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    namespace = f"async-projection-recovery-{uuid.uuid4().hex}"
+    job_id = f"rust-to-async-python-{uuid.uuid4().hex}"
+    python.enqueue_index_job(
+        job_id=job_id,
+        namespace=namespace,
+        entity_kind="node",
+        entity_id="node-1",
+        index_kind="node_embedding",
+        op="UPSERT",
+    )
+    claim = python.claim_index_jobs(limit=1, lease_seconds=30, namespace=namespace)[0]
+
+    action = {
+        "version": 1,
+        "job_id": job_id,
+        "namespace": namespace,
+        "entity_kind": "node",
+        "entity_id": "node-1",
+        "index_kind": "node_embedding",
+        "operation": "UPSERT",
+        "record": {
+            "id": "node-1",
+            "document": "admitted by Rust, projected by async Python on PostgreSQL",
+            "metadata": {"kind": "node"},
+            "embedding": [0.25, 0.75],
+        },
+    }
+    action_json = json.dumps(action, separators=(",", ":"))
+    accepted = _pg(
+        dsn,
+        schema,
+        {
+            "kind": "accept_index_job_result",
+            "job_id": job_id,
+            "claim_token": claim.claim_token,
+            "result_json": action_json,
+            "result_sha256": hashlib.sha256(action_json.encode("utf-8")).hexdigest(),
+        },
+    )
+    assert accepted["status"] == "accepted"
+
+    with sa_engine.begin() as conn:
+        conn.exec_driver_sql(
+            f'UPDATE "{schema}".index_jobs SET lease_until=TIMESTAMPTZ \'epoch\' WHERE job_id=%s',
+            (job_id,),
+        )
+
+    reopened = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    reopened.ensure_initialized()
+
+    class AsyncProjectionStore:
+        def __init__(self) -> None:
+            self.upserts: list[tuple[str, object]] = []
+
+        async def upsert_graph_record(self, namespace: str, record: object) -> None:
+            self.upserts.append((namespace, record))
+
+        async def delete_graph_record(self, namespace: str, entity_id: str) -> None:
+            raise AssertionError("UPSERT recovery must not delete graph records")
+
+    projection = AsyncProjectionStore()
+    worker = AsyncIndexJobWorker(
+        engine=SimpleNamespace(
+            meta_sqlite=reopened,
+            namespace=namespace,
+            indexing=SimpleNamespace(
+                apply_index_job=lambda **_: (_ for _ in ()).throw(
+                    AssertionError("accepted action must not rerun provider/index logic")
+                )
+            ),
+            _implementation_selection_snapshot=None,
+        ),
+        namespace=namespace,
+        projection_store=projection,
+    )
+
+    metrics = asyncio.run(worker.tick())
+
+    assert metrics.claimed == 1
+    assert metrics.done == 1
+    assert metrics.failed == 0
+    assert len(projection.upserts) == 1
+    assert projection.upserts[0][0] == namespace
+    record = projection.upserts[0][1]
+    assert getattr(record, "id") == "node-1"
+    assert getattr(record, "document") == "admitted by Rust, projected by async Python on PostgreSQL"
+    assert getattr(record, "embedding") == (0.25, 0.75)
+    completed = _pg(
+        dsn,
+        schema,
+        {"kind": "list_index_jobs", "namespace": namespace},
+    )
+    assert len(completed) == 1
+    assert completed[0]["status"] == "DONE"
+    assert completed[0]["accepted_result_json"] == action_json
 
 
 def test_postgres_queue_concurrency_reclaim_and_terminal_retry_live(

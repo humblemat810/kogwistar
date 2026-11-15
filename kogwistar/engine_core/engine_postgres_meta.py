@@ -20,11 +20,16 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
+from ..implementation_selection import assert_no_python_transaction_during_rust_scope
 from ..messaging.models import ProjectedLaneMessageRow
 from ..typing_interfaces import SqlAlchemyConnectionLike, SqlAlchemyResultLike
 from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
-from .postgres_backend import _set_active_conn, get_active_conn
+from .postgres_backend import (
+    _guard_sqlalchemy_transaction_entry,
+    _set_active_conn,
+    get_active_conn,
+)
 
 _SCHEMA_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # All processes must serialize the startup DDL batch.  This is deliberately a
@@ -185,7 +190,7 @@ def _make_runner() -> asyncio.Runner:
 
 @dataclass
 class IndexJob:
-    """Typed view of an index job (matches EngineSQLite.IndexJobRow)."""
+    """Typed PostgreSQL view with the same fields as the SQLite job row."""
 
     job_id: str
     namespace: str
@@ -206,6 +211,8 @@ class IndexJob:
     accepted_result_json: str | None = None
     accepted_result_sha256: str | None = None
     accepted_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 @dataclass
@@ -260,6 +267,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     def __post_init__(self) -> None:
         if not _SCHEMA_RE.match(self.schema):
             raise ValueError(f"invalid schema: {self.schema!r}")
+        _guard_sqlalchemy_transaction_entry(self.engine)
         self._is_async_engine = isinstance(self.engine, AsyncEngine)
 
     # ----------------------------
@@ -316,10 +324,6 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     accepted_at TIMESTAMPTZ NULL
                 )
             """,
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)",
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)",
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)",
-            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS namespace TEXT NOT NULL DEFAULT 'default'",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS coalesce_key TEXT NOT NULL DEFAULT ''",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS next_run_at TIMESTAMPTZ NULL",
@@ -329,6 +333,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_json TEXT NULL",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_result_sha256 TEXT NULL",
             f"ALTER TABLE {ij} ADD COLUMN IF NOT EXISTS accepted_at TIMESTAMPTZ NULL",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_lease ON {ij}(status, lease_until)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_status_next_run ON {ij}(status, next_run_at)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON {ij}(entity_kind, entity_id, index_kind)",
+            f"CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON {ij}(namespace)",
             f"CREATE UNIQUE INDEX IF NOT EXISTS uq_index_jobs_pending_ns_ck ON {ij}(namespace, coalesce_key) WHERE status='PENDING'",
             f"""
                 CREATE TABLE IF NOT EXISTS {ias} (
@@ -482,6 +490,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
             """,
             f"CREATE INDEX IF NOT EXISTS idx_server_runs_status ON {schema}.server_runs(status, updated_at_ms)",
             f"CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON {schema}.server_run_events(run_id, seq)",
+            f"CREATE UNIQUE INDEX IF NOT EXISTS idx_server_run_events_recorded_transition_id "
+            f"ON {schema}.server_run_events ((payload_json::jsonb->>'transition_id')) "
+            "WHERE event_type='workflow.recorded_transition.v1'",
         ]
 
     def _run_bootstrap(self, conn: SqlAlchemyConnectionLike) -> None:
@@ -514,6 +525,10 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
     # ----------------------------
     @contextmanager
     def transaction(self) -> Iterator[SqlAlchemyConnectionLike]:
+        # PostgreSQL begin-event enforcement makes external Python observation
+        # read-only under Rust selection; nested work inside a Rust UoW is still
+        # rejected before a second SQLAlchemy transaction can start.
+        assert_no_python_transaction_during_rust_scope()
         existing = get_active_conn()
         if existing is not None:
             if isinstance(existing, _AsyncConnectionAdapter):
@@ -822,6 +837,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     WHERE j.job_id = c.job_id
                     RETURNING j.job_id, j.namespace, j.entity_kind, j.entity_id, j.index_kind, j.coalesce_key, j.op, j.status,
                               j.lease_until, j.next_run_at, j.max_retries, j.retry_count, j.last_error, j.payload_json, j.claim_token, j.claim_attempts,
+                              j.created_at, j.updated_at,
                               j.accepted_result_json, j.accepted_result_sha256, j.accepted_at
                     """
                 ),
@@ -874,6 +890,8 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     ),
                     claim_token=(str(r.get("claim_token")) if r.get("claim_token") is not None else None),
                     claim_attempts=_int_or_default(r.get("claim_attempts")),
+                    created_at=(str(r.get("created_at")) if r.get("created_at") is not None else None),
+                    updated_at=(str(r.get("updated_at")) if r.get("updated_at") is not None else None),
                     accepted_result_json=(str(r.get("accepted_result_json")) if r.get("accepted_result_json") is not None else None),
                     accepted_result_sha256=(str(r.get("accepted_result_sha256")) if r.get("accepted_result_sha256") is not None else None),
                     accepted_at=(str(r.get("accepted_at")) if r.get("accepted_at") is not None else None),
@@ -890,7 +908,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         with self.transaction() as conn:
             result = conn.execute(
                 sa.text(
-                    f"UPDATE {ij} SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=NOW() WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))"
+                    f"UPDATE {ij} SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=NOW() WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))"
                 ),
                 {"job_id": job_id, "claim_token": claim_token},
             )
@@ -975,7 +993,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         claim_token=NULL,
                         last_error=:err,
                         updated_at=NOW()
-                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))
+                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))
                     """
                 ),
                 {"job_id": job_id, "err": (error or "")[:2000], "final": bool(final), "claim_token": claim_token},
@@ -1015,7 +1033,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                             ELSE NOW() + (:delay || ' seconds')::interval
                         END,
                         updated_at = NOW()
-                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))
+                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))
                     """
                 ),
                 {"job_id": job_id, "err": (error or "")[:2000], "delay": delay, "claim_token": claim_token},
@@ -1046,7 +1064,7 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         payload_json=:payload_json,
                         created_at=(SELECT COALESCE(MAX(created_at), NOW()) + INTERVAL '1 microsecond' FROM {ij}),
                         updated_at=NOW()
-                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR claim_token=CAST(:claim_token AS TEXT))
+                    WHERE job_id=:job_id AND status='DOING' AND (CAST(:claim_token AS TEXT) IS NULL OR (claim_token=CAST(:claim_token AS TEXT) AND lease_until IS NOT NULL AND lease_until>=NOW()))
                     """
                 ),
                 {
@@ -1093,7 +1111,9 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
         sql = sa.text(
             f"""
             SELECT job_id, namespace, entity_kind, entity_id, index_kind, coalesce_key, op, status,
-                   lease_until, next_run_at, max_retries, retry_count, last_error, payload_json
+                   lease_until, next_run_at, max_retries, retry_count, last_error, payload_json,
+                   created_at, updated_at, claim_token, claim_attempts, accepted_result_json,
+                   accepted_result_sha256, accepted_at
             FROM {ij}
             {where_sql}
             ORDER BY created_at ASC
@@ -1134,6 +1154,37 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     payload_json=(
                         str(r.get("payload_json"))
                         if r.get("payload_json") is not None
+                        else None
+                    ),
+                    claim_token=(
+                        str(r.get("claim_token"))
+                        if r.get("claim_token") is not None
+                        else None
+                    ),
+                    claim_attempts=_int_or_default(r.get("claim_attempts")),
+                    created_at=(
+                        str(r.get("created_at"))
+                        if r.get("created_at") is not None
+                        else None
+                    ),
+                    updated_at=(
+                        str(r.get("updated_at"))
+                        if r.get("updated_at") is not None
+                        else None
+                    ),
+                    accepted_result_json=(
+                        str(r.get("accepted_result_json"))
+                        if r.get("accepted_result_json") is not None
+                        else None
+                    ),
+                    accepted_result_sha256=(
+                        str(r.get("accepted_result_sha256"))
+                        if r.get("accepted_result_sha256") is not None
+                        else None
+                    ),
+                    accepted_at=(
+                        str(r.get("accepted_at"))
+                        if r.get("accepted_at") is not None
                         else None
                     ),
                 )
@@ -1358,7 +1409,11 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                     UPDATE {table}
                     SET status = 'completed', claimed_by = NULL, lease_until = NULL
                     WHERE message_id = :message_id
-                      AND (claimed_by IS NULL OR claimed_by = :claimed_by)
+                      AND (
+                        claimed_by IS NULL OR
+                        (status = 'claimed' AND claimed_by = :claimed_by
+                         AND lease_until >= NOW())
+                      )
                     """
                 ),
                 {"message_id": str(message_id), "claimed_by": str(claimed_by)},
@@ -1385,13 +1440,48 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                         available_at = EXTRACT(EPOCH FROM (NOW() + (:delay_seconds || ' seconds')::interval))::BIGINT,
                         error_json = COALESCE(:error_json, error_json)
                     WHERE message_id = :message_id
-                      AND (claimed_by IS NULL OR claimed_by = :claimed_by)
+                      AND (
+                        claimed_by IS NULL OR
+                        (status = 'claimed' AND claimed_by = :claimed_by
+                         AND lease_until >= NOW())
+                      )
                     """
                 ),
                 {
                     "message_id": str(message_id),
                     "claimed_by": str(claimed_by),
                     "delay_seconds": int(delay_seconds),
+                    "error_json": error_json,
+                },
+            )
+
+    def dead_letter_projected_lane_message(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error_json: str | None = None,
+    ) -> None:
+        table = f"{self.schema}.projected_lane_messages"
+        with self.transaction() as conn:
+            conn.execute(
+                sa.text(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'dead-letter', claimed_by = NULL, lease_until = NULL,
+                        error_json = COALESCE(:error_json, error_json)
+                    WHERE message_id = :message_id
+                      AND status NOT IN ('completed', 'failed', 'cancelled', 'dead-letter')
+                      AND (
+                        claimed_by IS NULL OR
+                        (status = 'claimed' AND claimed_by = :claimed_by
+                         AND lease_until >= NOW())
+                      )
+                    """
+                ),
+                {
+                    "message_id": str(message_id),
+                    "claimed_by": str(claimed_by),
                     "error_json": error_json,
                 },
             )
@@ -1641,6 +1731,90 @@ class EnginePostgresMetaStore(LaneMessageMetaStoreMixin):
                 },
             )
         return seq
+
+    async def append_entity_event_async(
+        self,
+        *,
+        namespace: str,
+        event_id: str,
+        entity_kind: str,
+        entity_id: str,
+        op: str,
+        payload_json: str,
+    ) -> int:
+        """Append an entity event on the current async PostgreSQL transaction."""
+        import asyncio
+
+        if not self._is_async_engine:
+            return await asyncio.to_thread(
+                self.append_entity_event,
+                namespace=namespace,
+                event_id=event_id,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                op=op,
+                payload_json=payload_json,
+            )
+
+        async def _append(conn: AsyncConnection) -> int:
+            existing = await conn.execute(
+                sa.text(
+                    f"SELECT namespace, seq FROM {self.schema}.entity_events "
+                    "WHERE event_id = :eid"
+                ),
+                {"eid": event_id},
+            )
+            row = existing.fetchone()
+            if row is not None:
+                if str(row[0]) != str(namespace):
+                    raise ValueError(
+                        f"event_id already belongs to namespace {row[0]!r}"
+                    )
+                return int(row[1])
+
+            sequence = await conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {self.schema}.namespace_seq(namespace, next_seq)
+                    VALUES (:ns, 2)
+                    ON CONFLICT(namespace)
+                    DO UPDATE SET next_seq = {self.schema}.namespace_seq.next_seq + 1
+                    RETURNING next_seq - 1
+                    """
+                ),
+                {"ns": namespace},
+            )
+            sequence_row = sequence.fetchone()
+            if sequence_row is None:
+                raise RuntimeError(
+                    f"failed to allocate entity event seq for namespace {namespace!r}"
+                )
+            seq = int(sequence_row[0])
+            await conn.execute(
+                sa.text(
+                    f"""
+                    INSERT INTO {self.schema}.entity_events(
+                        namespace, seq, event_id, entity_kind, entity_id, op, payload_json
+                    ) VALUES (:ns, :seq, :eid, :ek, :id, :op, :payload)
+                    """
+                ),
+                {
+                    "ns": namespace,
+                    "seq": seq,
+                    "eid": event_id,
+                    "ek": entity_kind,
+                    "id": entity_id,
+                    "op": op,
+                    "payload": payload_json,
+                },
+            )
+            return seq
+
+        active = get_active_conn()
+        if isinstance(active, AsyncConnection):
+            return await _append(active)
+        async with cast(AsyncEngine, self.engine).begin() as conn:
+            return await _append(conn)
 
     def iter_entity_events(
         self,

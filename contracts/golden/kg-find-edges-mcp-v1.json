@@ -1,0 +1,10 @@
+{
+  "contract_version": 1,
+  "operation": "kg_find_edges",
+  "arguments": {
+    "doc_id": "doc-a"
+  },
+  "expected_structured_content": {
+    "edges": ["e1"]
+  }
+}

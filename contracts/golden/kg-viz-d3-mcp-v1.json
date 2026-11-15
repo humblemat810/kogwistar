@@ -1,0 +1,13 @@
+{
+  "contract_version": 1,
+  "operation": "kg_viz_d3_json",
+  "arguments": {
+    "doc_id": "doc-a",
+    "mode": "reify"
+  },
+  "expected_node_ids": ["e1", "n1", "n2"],
+  "expected_links": [
+    {"source": "e1", "target": "n2", "role": "tgt"},
+    {"source": "n1", "target": "e1", "role": "src"}
+  ]
+}

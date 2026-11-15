@@ -1,0 +1,16 @@
+{
+  "contract_version": 1,
+  "method": "GET",
+  "path_and_query": "/viz/cytoscape?doc_id=doc-1&mode=graph&insertion_method=parser",
+  "success_status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "required_fragments": [
+    "<title>Cytoscape viz</title>",
+    "<b>doc_id</b>=<code>doc-1</code>",
+    "<b>mode</b>=<code>graph</code>",
+    "<b>insertion_method</b>=<code>parser</code>",
+    "const insertionMethod = \"parser\";",
+    "/api/viz/cytoscape.json?"
+  ],
+  "forbidden_fragments": ["{{", "{%"]
+}

@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import contextlib
 import shutil
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 pytestmark = pytest.mark.ci
 
+import kogwistar.engine_core.engine as engine_module
 from kogwistar.engine_core.engine import (
     _SHIM_METHOD_MAP,
     GraphKnowledgeEngine,
@@ -114,6 +117,70 @@ def test_scoped_namespace_rebinds_engine_views():
     assert engine.write._e.namespace == original_namespace
     assert engine.indexing.engine.namespace == original_namespace
     _cleanup_engine(engine, test_db_dir)
+
+
+def test_scoped_namespace_serializes_concurrent_engine_scopes(monkeypatch):
+    test_db_dir = Path.cwd() / ".tmp_shim_tests" / str(uuid.uuid4())
+    test_db_dir.mkdir(parents=True, exist_ok=True)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(test_db_dir),
+        backend_factory=build_fake_backend,
+    )
+
+    original_namespace = engine.namespace
+    first_entered = threading.Event()
+    second_attempted = threading.Event()
+    second_entered = threading.Event()
+    first_thread_id: list[int] = []
+    engine_lock = engine_module._get_engine_ns_lock(engine)
+
+    class _ObservedLock:
+        def __enter__(self):
+            if first_thread_id and threading.get_ident() != first_thread_id[0]:
+                second_attempted.set()
+            engine_lock.acquire()
+            return self
+
+        def __exit__(self, *_exc_info):
+            engine_lock.release()
+
+    monkeypatch.setattr(
+        engine_module,
+        "_get_engine_ns_lock",
+        lambda candidate: _ObservedLock()
+        if candidate is engine
+        else engine_lock,
+    )
+
+    def first_scope() -> tuple[bool, str]:
+        first_thread_id.append(threading.get_ident())
+        with scoped_namespace(engine, "namespace:first"):
+            first_entered.set()
+            assert second_attempted.wait(timeout=2)
+            entered_while_first_active = second_entered.wait(timeout=0.1)
+            observed_namespace = engine.write._e.namespace
+            return entered_while_first_active, observed_namespace
+
+    def second_scope() -> str:
+        assert first_entered.wait(timeout=2)
+        with scoped_namespace(engine, "namespace:second"):
+            second_entered.set()
+            return engine.write._e.namespace
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(first_scope)
+            second = executor.submit(second_scope)
+            first_result = first.result(timeout=3)
+            second_namespace = second.result(timeout=3)
+
+        assert first_result == (False, "namespace:first")
+        assert second_namespace == "namespace:second"
+        assert engine.namespace == original_namespace
+        assert engine.write._e.namespace == original_namespace
+        assert engine.indexing.engine.namespace == original_namespace
+    finally:
+        _cleanup_engine(engine, test_db_dir)
 
 
 def test_engine_close_closes_owned_resources_once():

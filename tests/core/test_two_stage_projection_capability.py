@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+import json
+
 import pytest
 
+from kogwistar.engine_core import subsystems as engine_subsystems
 from kogwistar.engine_core.chroma_backend import (
     ChromaBackend,
     _chroma_safe_kwargs,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.storage_backend import (
     TwoStageProjectionCapability,
     get_async_two_stage_projection_adapter,
@@ -14,8 +19,170 @@ from kogwistar.engine_core.storage_backend import (
     get_two_stage_projection_capability,
 )
 from tests._helpers.fake_backend import build_fake_backend
-from tests._helpers.graph_builders import build_entity_node
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests.core.two_stage_case_catalog import two_stage_case
+
+
+def test_postgres_stage1_row_lock_requires_active_sync_uow(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.get_active_conn", lambda: None
+    )
+    backend = object.__new__(PgVectorBackend)
+
+    with pytest.raises(RuntimeError, match="active PostgreSQL UoW"):
+        backend.stage1_projection_get(
+            namespace="default",
+            entity_kind="node",
+            entity_id="n1",
+            for_update=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_postgres_stage1_row_lock_requires_active_async_uow(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.get_active_conn", lambda: None
+    )
+    backend = object.__new__(PgVectorBackend)
+
+    with pytest.raises(RuntimeError, match="active async PostgreSQL UoW"):
+        await backend.stage1_projection_get_async(
+            namespace="default",
+            entity_kind="node",
+            entity_id="n1",
+            for_update=True,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("op", "revision_state"),
+    [("DELETE", "active"), ("UPSERT", None), ("UPSERT", "active")],
+)
+async def test_async_postgres_projection_worker_fails_closed_without_transaction_uow(
+    monkeypatch, op: str, revision_state: str | None
+) -> None:
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.two_stage_async import (
+        AsyncPostgresTwoStageProjectionAdapter,
+    )
+
+    mutations: list[str] = []
+
+    class Collection:
+        async def delete(self, **_kwargs: object) -> None:
+            mutations.append("stage2_delete")
+
+    class Backend:
+        _is_async_engine = True
+        _nodes_c = Collection()
+
+        async def stage1_projection_get_async(self, **_kwargs: object):
+            return {
+                "document": "node text",
+                "metadata": {},
+                "source_fingerprint": "fingerprint",
+                "revision": 1,
+            }
+
+        async def stage1_projection_delete_async(self, **_kwargs: object) -> None:
+            mutations.append("stage1_delete")
+
+        async def _upsert_async(self, *_args: object, **_kwargs: object) -> None:
+            mutations.append("stage2_upsert")
+
+    class Indexing:
+        engine = SimpleNamespace(namespace="default")
+
+        def canonical_entity_revision(self, **_kwargs: object):
+            if revision_state is None:
+                return None
+            return SimpleNamespace(state=revision_state)
+
+        def canonical_revision_payload(self, **_kwargs: object) -> str:
+            return json.dumps({"source_fingerprint": "fingerprint"})
+
+    async def fake_embed(_provider: object, documents: list[str]):
+        return [[1.0, 0.0] for _ in documents]
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.two_stage_async._embed", fake_embed
+    )
+    engine = SimpleNamespace(
+        backend=Backend(),
+        indexing=Indexing(),
+        namespace="default",
+        _ef=object(),
+        _async_backend_uow=None,
+    )
+    adapter = AsyncPostgresTwoStageProjectionAdapter(engine)
+
+    with pytest.raises(RuntimeError, match="requires a transactional backend UoW"):
+        await adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="n1",
+            op=op,
+            payload_json=None,
+        )
+
+    assert mutations == []
+
+
+@pytest.mark.asyncio
+async def test_async_postgres_reconciliation_fails_closed_without_transaction_uow() -> None:
+    from types import SimpleNamespace
+
+    from kogwistar.engine_core.two_stage_async import (
+        AsyncPostgresTwoStageProjectionAdapter,
+    )
+
+    mutations: list[str] = []
+
+    class Collection:
+        async def delete(self, **_kwargs: object) -> None:
+            mutations.append("stage2_delete")
+
+    class Backend:
+        _is_async_engine = True
+        _nodes_c = Collection()
+        _edges_c = Collection()
+
+        async def stage1_projection_query_async(
+            self, *, entity_kind: str, **_kwargs: object
+        ):
+            if entity_kind != "node":
+                return []
+            return [{
+                "entity_kind": "node",
+                "entity_id": "orphan",
+                "document": "orphaned stage one",
+                "metadata": {},
+                "source_fingerprint": "old",
+            }]
+
+        async def stage1_projection_delete_async(self, **_kwargs: object) -> None:
+            mutations.append("stage1_delete")
+
+    class Indexing:
+        engine = SimpleNamespace(namespace="default")
+
+        def canonical_entity_revision(self, **_kwargs: object):
+            return None
+
+    adapter = AsyncPostgresTwoStageProjectionAdapter(
+        SimpleNamespace(
+            backend=Backend(),
+            indexing=Indexing(),
+            namespace="default",
+            _async_backend_uow=None,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="requires a transactional backend UoW"):
+        await adapter.reconcile_projection()
+
+    assert mutations == []
 
 
 def test_chroma_safe_kwargs_drops_null_metadata_and_preserves_supported_values() -> None:
@@ -382,6 +549,100 @@ def test_two_stage_dispatches_to_executable_adapter_without_sync_fallback(tmp_pa
     assert adapter.calls == [("node", node, "node-doc")]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_two_stage_contract_rejection_precedes_durable_effects(
+    tmp_path, monkeypatch, entity_kind: str
+) -> None:
+    adapter_calls: list[str] = []
+
+    class _AsyncAdapter:
+        async def add_node(self, node, *, doc_id=None):
+            adapter_calls.append("node")
+
+        async def add_edge(self, edge, *, doc_id=None):
+            adapter_calls.append("edge")
+
+        async def apply_embedding_job(self, **kwargs):
+            del kwargs
+
+        async def stage1_query(self, **kwargs):
+            del kwargs
+            return []
+
+        async def remove_stage1(self, **kwargs):
+            del kwargs
+
+        async def promote_stage2(self, **kwargs):
+            del kwargs
+
+        async def remove_stage2_or_invalidate(self, **kwargs):
+            del kwargs
+
+        async def reconcile_projection(self, **kwargs):
+            del kwargs
+            return 0
+
+    adapter = _AsyncAdapter()
+
+    def factory(*args, **kwargs):
+        backend = build_fake_backend(*args, **kwargs)
+        backend.two_stage_projection_capability = _complete_capability()
+        backend.async_two_stage_projection_adapter = adapter
+        return backend
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=factory,
+        persistence_mode="two_stage",
+    )
+    validation_calls: list[object] = []
+    event_calls: list[dict[str, object]] = []
+
+    def reject_contract(entity):
+        validation_calls.append(entity)
+        raise ValueError("contract rejected")
+
+    def record_event(**kwargs):
+        event_calls.append(kwargs)
+
+    monkeypatch.setattr(
+        engine_subsystems.write, "_validate_graph_model_contract", reject_contract
+    )
+    monkeypatch.setattr(engine, "_append_event_for_entity", record_event)
+
+    if entity_kind == "node":
+        entity = build_entity_node(node_id="async-node", doc_id="doc", embedding=None)
+        write = engine.write.add_node_async(entity)
+    else:
+        entity = build_relationship_edge(
+            edge_id="async-edge",
+            src="source",
+            tgt="target",
+            doc_id="doc",
+            embedding=None,
+        )
+
+        monkeypatch.setattr(
+            engine.adjudicate,
+            "split_endpoints",
+            lambda source_ids, target_ids: (source_ids or [], [], target_ids or [], []),
+        )
+
+        async def endpoints_exist(edge):
+            del edge
+
+        monkeypatch.setattr(engine.persist, "assert_endpoints_exist_async", endpoints_exist)
+        write = engine.write.add_edge_async(entity)
+
+    with pytest.raises(ValueError, match="contract rejected"):
+        await write
+
+    assert validation_calls == [entity]
+    assert event_calls == []
+    assert adapter_calls == []
+
+
 @two_stage_case("pending_visibility")
 @two_stage_case("promotion_handoff")
 def test_in_memory_two_stage_promotes_pending_node_via_index_job(tmp_path) -> None:
@@ -459,6 +720,71 @@ def test_in_memory_two_stage_uses_existing_index_job_worker(tmp_path) -> None:
 
 
 @two_stage_case("recovery_reconciliation")
+def test_sync_worker_schedules_bounded_repair_for_two_stage(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    try:
+        with pytest.raises(ValueError, match="repair namespace must match"):
+            engine.indexing.repair_missing_two_stage_embedding_jobs(namespace="other")
+        engine.write.add_node(
+            build_entity_node(node_id="worker-repair", doc_id="d1", embedding=None)
+        )
+        for job in engine.meta_sqlite.claim_index_jobs(
+            limit=10, lease_seconds=60, namespace="default"
+        ):
+            engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+
+        default_metrics = engine.indexing.make_index_job_worker(max_jobs_per_tick=10).tick()
+        assert default_metrics.repaired == 0
+        assert engine.backend.node_get(ids=["worker-repair"])["embeddings"][0] is None
+
+        metrics = engine.indexing.make_index_job_worker(
+            max_jobs_per_tick=10, repair_scan_interval_s=30
+        ).tick()
+
+        assert metrics.repaired == 1
+        assert metrics.repair_scan_failures == 0
+        assert metrics.done == 1
+        assert engine.backend.node_get(ids=["worker-repair"])["embeddings"][0] is not None
+    finally:
+        engine.close()
+
+
+@two_stage_case("recovery_reconciliation")
+def test_worker_scan_failure_does_not_block_queue_and_respects_interval(
+    tmp_path, monkeypatch
+) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    try:
+        engine.write.add_node(
+            build_entity_node(node_id="scan-failure", doc_id="d1", embedding=None)
+        )
+
+        def fail_scan(**kwargs: object) -> int:
+            raise RuntimeError("repair unavailable")
+
+        monkeypatch.setattr(engine.indexing, "repair_missing_two_stage_embedding_jobs", fail_scan)
+        worker = engine.indexing.make_index_job_worker(
+            max_jobs_per_tick=10, repair_scan_interval_s=3600
+        )
+        first = worker.tick()
+        second = worker.tick()
+        assert first.repair_scan_failures == 1
+        assert first.done >= 1
+        assert engine.backend.node_get(ids=["scan-failure"])["embeddings"][0] is not None
+        assert second.repair_scan_failures == 0
+    finally:
+        engine.close()
+
+
+@two_stage_case("recovery_reconciliation")
 def test_two_stage_repair_recreates_missing_embedding_job(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -467,6 +793,15 @@ def test_two_stage_repair_recreates_missing_embedding_job(tmp_path) -> None:
     )
     engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
     engine.indexing.reconcile_indexes(max_jobs=10)
+    healthy_before_repair = engine.backend.node_get(
+        ids=["n1"], include=["embeddings"]
+    )["embeddings"][0]
+    assert healthy_before_repair is not None
+    assert engine.indexing.repair_missing_two_stage_embedding_jobs() == 0
+    assert engine.backend.node_get(
+        ids=["n1"], include=["embeddings"]
+    )["embeddings"][0] == healthy_before_repair
+
     engine.backend.node_clear_embeddings(ids=["n1"])
 
     repaired = engine.indexing.repair_missing_two_stage_embedding_jobs()
@@ -481,6 +816,159 @@ def test_two_stage_repair_recreates_missing_embedding_job(tmp_path) -> None:
     )
     assert engine.indexing.reconcile_indexes(max_jobs=10) == 1
     assert engine.backend.node_get(ids=["n1"], include=["embeddings"])["embeddings"][0] is not None
+
+
+def test_two_stage_checkpointed_repair_scans_bounded_pages_across_calls(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    entity_ids = ["repair-a", "repair-b", "repair-c"]
+    for entity_id in entity_ids:
+        engine.write.add_node(build_entity_node(node_id=entity_id, doc_id="d1"))
+    engine.indexing.reconcile_indexes(max_jobs=20)
+    engine.backend.node_clear_embeddings(ids=entity_ids)
+
+    meta = engine.meta_sqlite
+    original_iter = meta.iter_entity_events
+    event_ranges: list[tuple[int, int, int]] = []
+
+    def tracked_iter_entity_events(**kwargs: object):
+        if "to_seq" in kwargs:
+            event_ranges.append(
+                (
+                    int(kwargs["from_seq"]),
+                    int(kwargs["to_seq"]),
+                    int(kwargs["batch_size"]),
+                )
+            )
+        return original_iter(**kwargs)
+
+    meta.iter_entity_events = tracked_iter_entity_events
+    try:
+        repaired_total = 0
+        for _ in range(30):
+            repaired_total += engine.indexing.repair_missing_two_stage_embedding_jobs(
+                max_entities=1,
+                max_event_window=1,
+            )
+            pending_ids = {
+                job.entity_id
+                for job in meta.list_index_jobs(namespace="default", status="PENDING")
+                if job.index_kind == "node_embedding"
+            }
+            if set(entity_ids).issubset(pending_ids):
+                break
+
+        assert set(entity_ids).issubset(pending_ids)
+        assert repaired_total == len(entity_ids)
+        assert event_ranges
+        assert all(to_seq == from_seq and batch_size == 1 for from_seq, to_seq, batch_size in event_ranges)
+    finally:
+        engine.close()
+
+
+def test_two_stage_checkpointed_repair_uses_current_state_not_old_event_op(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    engine.reconcile_indexes = lambda **kwargs: 0
+    assert engine.lifecycle.tombstone_node("n1") is True
+
+    # Retire the lifecycle-generated job so the bounded scan must reconstruct
+    # the operation from current canonical state, not the older UPSERT event.
+    for job in engine.meta_sqlite.claim_index_jobs(
+        limit=10, lease_seconds=60, namespace="default"
+    ):
+        engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+
+    events = list(engine.meta_sqlite.iter_entity_events(namespace="default", from_seq=1))
+    node_upsert_seq = next(
+        int(event[0])
+        for event in events
+        if event[1] == "node"
+        and event[2] == "n1"
+        and str(event[3]).upper() in {"ADD", "UPSERT", "REPLACE"}
+    )
+    consumer = "kogwistar.two_stage_embedding_repair.v1"
+    engine.meta_sqlite.cursor_set(
+        namespace="default", consumer=consumer, last_seq=node_upsert_seq - 1
+    )
+
+    try:
+        repaired = engine.indexing.repair_missing_two_stage_embedding_jobs(
+            max_entities=1,
+            max_event_window=1,
+        )
+
+        assert repaired == 1
+        pending = engine.meta_sqlite.list_index_jobs(
+            namespace="default", entity_kind="node", entity_id="n1", status="PENDING"
+        )
+        assert [job.op for job in pending if job.index_kind == "node_embedding"] == [
+            "DELETE"
+        ]
+    finally:
+        engine.close()
+
+
+def test_two_stage_checkpointed_repair_uses_rust_sqlite_metadata(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    try:
+        assert engine.metadata.sqlite_implementation == "rust"
+        engine.write.add_node(
+            build_entity_node(node_id="rust-bounded-repair", doc_id="d1", embedding=None)
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="rust-bounded-tail", doc_id="d1", embedding=None)
+        )
+
+        for job in engine.meta_sqlite.claim_index_jobs(
+            limit=10, lease_seconds=60, namespace="default"
+        ):
+            engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+
+        entity_seq = next(
+            int(event[0])
+            for event in engine.meta_sqlite.iter_entity_events(
+                namespace="default", from_seq=1
+            )
+            if event[1] == "node"
+            and event[2] == "rust-bounded-repair"
+            and str(event[3]).upper() in {"ADD", "UPSERT", "REPLACE"}
+        )
+        consumer = "kogwistar.two_stage_embedding_repair.v1"
+        engine.meta_sqlite.cursor_set(
+            namespace="default", consumer=consumer, last_seq=entity_seq - 1
+        )
+
+        repaired = engine.indexing.repair_missing_two_stage_embedding_jobs(
+            max_entities=1,
+            max_event_window=1,
+        )
+
+        assert repaired == 1
+        assert engine.meta_sqlite.cursor_get(namespace="default", consumer=consumer) == entity_seq
+        pending = engine.meta_sqlite.list_index_jobs(
+            namespace="default",
+            entity_kind="node",
+            entity_id="rust-bounded-repair",
+            status="PENDING",
+        )
+        assert [job.op for job in pending if job.index_kind == "node_embedding"] == [
+            "UPSERT"
+        ]
+    finally:
+        engine.close()
 
 
 def test_two_stage_repair_recreates_lost_delete_job(tmp_path) -> None:
@@ -604,6 +1092,115 @@ def test_in_memory_two_stage_rejects_old_job_after_delete(tmp_path) -> None:
     )["ids"] == [[]]
 
 
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+def test_in_memory_two_stage_rejects_stale_delete_after_resurrection(
+    tmp_path, entity_kind
+) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    entity_id = f"restored-{entity_kind}"
+
+    def write_current() -> None:
+        if entity_kind == "node":
+            engine.write.add_node(build_entity_node(node_id=entity_id, doc_id="d1"))
+        else:
+            engine.write.add_node(build_entity_node(node_id="source", doc_id="d1"))
+            engine.write.add_node(build_entity_node(node_id="target", doc_id="d1"))
+            engine.write.add_edge(
+                build_relationship_edge(
+                    edge_id=entity_id, src="source", tgt="target", doc_id="d1"
+                )
+            )
+
+    try:
+        write_current()
+        tombstone = getattr(engine.lifecycle, f"tombstone_{entity_kind}")
+        assert tombstone(entity_id) is True
+        stale_delete = next(
+            job
+            for job in engine.meta_sqlite.list_index_jobs(namespace="default")
+            if job.entity_kind == entity_kind
+            and job.entity_id == entity_id
+            and job.index_kind == "node_embedding"
+            and job.op == "DELETE"
+        )
+
+        write_current()
+        current_revision = engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        assert current_revision is not None and current_revision.state == "active"
+        engine.two_stage_projection_adapter.apply_embedding_job(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            op=stale_delete.op,
+            payload_json=stale_delete.payload_json,
+        )
+
+        current = getattr(engine.backend, f"{entity_kind}_get")(ids=[entity_id])
+        assert current["ids"] == [entity_id]
+        assert current["embeddings"] == [None]
+    finally:
+        engine.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("meta_impl", ["python", "rust"])
+async def test_async_in_memory_write_does_not_project_superseded_event(
+    tmp_path, monkeypatch, meta_impl
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", meta_impl)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    old_appended = asyncio.Event()
+    release_old = asyncio.Event()
+    append = engine._append_event_for_entity_async
+
+    async def pause_after_old_event(**kwargs: object) -> None:
+        await append(**kwargs)
+        payload = kwargs.get("payload")
+        if isinstance(payload, dict) and payload.get("summary") == "old":
+            old_appended.set()
+            await release_old.wait()
+
+    old = build_entity_node(node_id="shared", doc_id="d1", embedding=None)
+    old.summary = "old"
+    current = build_entity_node(node_id="shared", doc_id="d1", embedding=None)
+    current.summary = "current"
+
+    try:
+        if meta_impl == "python":
+            monkeypatch.setattr(
+                engine, "_append_event_for_entity_async", pause_after_old_event
+            )
+            old_write = asyncio.create_task(engine.async_add_node(old))
+            await old_appended.wait()
+            await engine.async_add_node(current)
+            release_old.set()
+            await old_write
+        else:
+            await asyncio.gather(
+                asyncio.to_thread(engine.write.add_node, old),
+                engine.async_add_node(current),
+            )
+
+        revision = engine.indexing.canonical_entity_revision(
+            entity_kind="node", entity_id="shared", namespace="default"
+        )
+        assert revision is not None and revision.state == "active"
+        row = engine.backend.node_get(ids=["shared"], include=["documents"])
+        assert json.loads(row["documents"][0])["summary"] == revision.payload["summary"]
+    finally:
+        release_old.set()
+        engine.close()
+
+
 def test_in_memory_two_stage_delete_hides_ready_projection(tmp_path) -> None:
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -621,6 +1218,54 @@ def test_in_memory_two_stage_delete_hides_ready_projection(tmp_path) -> None:
     assert engine.backend.node_query(
         query_embeddings=[ready], n_results=10
     )["ids"] == [[]]
+
+
+def test_derived_delete_rejects_active_canonical_entity(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1", embedding=None))
+
+    with pytest.raises(ValueError, match="canonical tombstone"):
+        engine.indexing.apply_index_job(
+            job_id="manual-delete",
+            entity_kind="node",
+            entity_id="n1",
+            index_kind="node_docs",
+            op="DELETE",
+            namespace="default",
+        )
+
+
+def test_derived_edge_delete_rejects_active_canonical_edge(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
+    )
+    engine.write.add_node(build_entity_node(node_id="source", doc_id="d1", embedding=None))
+    engine.write.add_node(build_entity_node(node_id="target", doc_id="d1", embedding=None))
+    engine.write.add_edge(
+        build_relationship_edge(
+            edge_id="e1",
+            src="source",
+            tgt="target",
+            doc_id="d1",
+            embedding=None,
+        )
+    )
+
+    with pytest.raises(ValueError, match="canonical tombstone"):
+        engine.indexing.apply_index_job(
+            job_id="manual-edge-delete",
+            entity_kind="edge",
+            entity_id="e1",
+            index_kind="edge_refs",
+            op="DELETE",
+            namespace="default",
+        )
 
 
 def test_two_stage_does_not_dispatch_before_canonical_event(tmp_path) -> None:
@@ -693,6 +1338,7 @@ def test_rust_sqlite_meta_authority_runs_two_stage_in_memory_profile(
         persistence_mode="two_stage",
     )
     try:
+        assert engine.metadata.sqlite_implementation == "rust"
         engine.write.add_node(
             build_entity_node(node_id="rust-sqlite-n1", doc_id="d1", embedding=None)
         )
@@ -736,11 +1382,13 @@ def test_rust_sqlite_meta_authority_runs_two_stage_in_memory_profile(
         engine.write.add_node(
             build_entity_node(node_id="rust-sqlite-delete", doc_id="d1", embedding=None)
         )
+        assert engine.lifecycle.tombstone_node("rust-sqlite-delete") is True
         delete_job = next(
             job for job in engine.meta_sqlite.list_index_jobs(namespace="default")
-            if job.entity_id == "rust-sqlite-delete" and job.index_kind == "node_embedding"
+            if job.entity_id == "rust-sqlite-delete"
+            and job.index_kind == "node_embedding"
+            and job.op == "DELETE"
         )
-        assert engine.lifecycle.tombstone_node("rust-sqlite-delete") is True
         engine.two_stage_projection_adapter.apply_embedding_job(
             entity_kind=delete_job.entity_kind,
             entity_id=delete_job.entity_id,

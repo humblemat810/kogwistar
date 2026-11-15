@@ -1,0 +1,21 @@
+{
+  "contract_version": 1,
+  "method": "GET",
+  "path_and_query": "/viz/d3?doc_id=doc-1&mode=graph&insertion_method=parser",
+  "success_status": 200,
+  "content_type": "text/html; charset=utf-8",
+  "required_fragments": [
+    "<title>D3 graph viewer</title>",
+    "<b>doc_id</b>=<code>doc-1</code>",
+    "<b>mode</b>=<code>graph</code>",
+    "<b>insertion_method</b>=<code>parser</code>",
+    "const insertionMethod = \"parser\";",
+    "window.__EMBEDDED_DATA__ = null;",
+    "window.__BUNDLE_META__ = null;",
+    "window.__BUNDLE_GRAPH_TYPE__ = null;",
+    "window.__CDC_ENABLED__ = false;",
+    "window.__CDC_WS_URL__ = null;",
+    "/api/viz/d3.json?"
+  ],
+  "forbidden_fragments": ["{{", "{%"]
+}

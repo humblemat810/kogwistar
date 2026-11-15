@@ -10,10 +10,37 @@ pytestmark = [pytest.mark.ci, pytest.mark.core]
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "ci.yml"
+PYPI_WORKFLOW = ROOT / ".github" / "workflows" / "pypi-release.yml"
 PYPI_REQUIREMENTS = ROOT / "requirements-pypy-3.11-experimental.txt"
 CONSTRAINTS = ROOT / "constraints-pypy-3.12.txt"
 ABI_AUDIT = ROOT / "scripts" / "pypy_ffi_symbol_audit.py"
 DLOPEN_PROBE = ROOT / "scripts" / "pypy_native_extension_dlopen.py"
+
+
+def test_pypy_local_runner_installs_dependencies_into_requested_venv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import run_pypy311_ci as runner
+
+    calls: list[list[str]] = []
+
+    def check_call(command: list[str], **_: object) -> None:
+        calls.append(command)
+
+    monkeypatch.setattr(runner.subprocess, "check_call", check_call)
+    monkeypatch.setattr(runner.subprocess, "call", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(
+        runner.sys,
+        "argv",
+        [str(ROOT / "scripts" / "run_pypy311_ci.py"), "--venv", str(tmp_path / "pypy")],
+    )
+    monkeypatch.delenv("KOGWISTAR_PYPY_VENV_ACTIVE", raising=False)
+
+    assert runner.main() == 0
+    assert calls[0][1:3] == ["-m", "venv"]
+    assert calls[1][1:5] == ["-m", "pip", "install", "--upgrade"]
+    assert calls[2][1:5] == ["-m", "pip", "install", "-r"]
+    assert calls[2][-1] == str(ROOT / "requirements-pypy-3.11-experimental.txt")
 
 
 def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
@@ -21,7 +48,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
 
     assert "pypy-beta-best-effort:" in workflow
     assert "continue-on-error: true" in workflow
-    assert "pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz" in workflow
+    assert "pypy3.12-v8.0.1-linux64.tar.gz" in workflow
     assert 'sha256sum "$archive"' in workflow
     assert 'stat --format=' in workflow
     assert 'test -x "$pypy_home/bin/pypy3"' in workflow
@@ -57,7 +84,7 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "::error title=Kogwistar PyPy ABI::" in workflow
     assert "PYPY_SHA256" in workflow
     assert "actual_sha256" in workflow
-    assert "pypy-c-jit-171509-4db12e5e6f4d-linux64.tar.gz" in workflow
+    assert "pypy3.12-v8.0.1-linux64.tar.gz" in workflow
     assert "--extension" in workflow
     assert "scripts/pypy_native_extension_dlopen.py" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
@@ -110,6 +137,41 @@ def test_pypy311_profile_pins_the_supported_mcp_contract() -> None:
 
     assert "mcp>=2.2.0,<3" in requirements
     assert "mcp<2" not in requirements
+
+
+def test_pypy_windows_base_dependencies_omit_unsupported_native_extras() -> None:
+    import tomllib
+    from packaging.requirements import Requirement
+
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    dependencies = metadata["project"]["dependencies"]
+    server_dependencies = metadata["project"]["optional-dependencies"]["server"]
+
+    requirements = [Requirement(item) for item in dependencies]
+    mcp = next(requirement for requirement in requirements if requirement.name == "mcp")
+    jose = [requirement for requirement in requirements if requirement.name == "python-jose"]
+    assert mcp.marker is not None
+    assert all(requirement.marker is not None for requirement in jose)
+
+    windows_pypy = {"implementation_name": "pypy", "sys_platform": "win32"}
+    linux_pypy = {"implementation_name": "pypy", "sys_platform": "linux"}
+    windows_cpython = {"implementation_name": "cpython", "sys_platform": "win32"}
+    assert not mcp.marker.evaluate(windows_pypy)
+    assert mcp.marker.evaluate(linux_pypy)
+    assert mcp.marker.evaluate(windows_cpython)
+    assert sum(requirement.marker.evaluate(windows_pypy) for requirement in jose) == 1
+    assert not any("cryptography" in requirement.extras for requirement in jose if requirement.marker.evaluate(windows_pypy))
+    assert sum(requirement.marker.evaluate(linux_pypy) for requirement in jose) == 1
+    assert any("cryptography" in requirement.extras for requirement in jose if requirement.marker.evaluate(linux_pypy))
+    assert sum(requirement.marker.evaluate(windows_cpython) for requirement in jose) == 1
+    assert any("cryptography" in requirement.extras for requirement in jose if requirement.marker.evaluate(windows_cpython))
+    assert "mcp>=2.2.0,<3" in server_dependencies
+
+
+def test_pypy311_profile_includes_event_agent_schema_validation_dependency() -> None:
+    requirements = PYPI_REQUIREMENTS.read_text(encoding="utf-8")
+
+    assert "jsonschema>=4.21,<5" in requirements
 
 
 def test_first_party_typed_dicts_use_pypy_compatible_typing_extensions() -> None:
@@ -243,3 +305,82 @@ def test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes() -> None:
     assert "uses: actions/setup-python@v7" in workflow
     assert "Install PyPy 3.11 Python-authority dependencies" in workflow
     assert "Run PyPy 3.11 CI tests" in workflow
+
+
+def test_pypi_release_builds_and_audits_pypy311_pure_wheel() -> None:
+    workflow = PYPI_WORKFLOW.read_text(encoding="utf-8")
+    smoke = (ROOT / "scripts" / "pypy311_pure_wheel_smoke.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "pypy-wheel:" in workflow
+    assert "needs: verify-release" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "python setup.py bdist_wheel --dist-dir dist" in workflow
+    assert "kogwistar-*-py3-none-any.whl" in workflow
+    assert "name: wheel-pypy311-pure" in workflow
+    assert "needs: [wheels, sdist, pypy-wheel]" in workflow
+    assert workflow.count("scripts/audit_pypi_release_artifacts.py") == 2
+    assert "scripts/pypy311_pure_wheel_smoke.py" in workflow
+    assert "platform.python_implementation() != \"PyPy\"" in smoke
+    assert "sys.version_info[:2] != (3, 11)" in smoke
+    assert "importlib.metadata.version(\"kogwistar\")" in smoke
+    assert "site-packages" in smoke
+
+
+def test_pypi_release_artifact_audit_requires_pypy_wheel_and_native_matrix(
+    tmp_path: Path,
+) -> None:
+    from io import BytesIO
+    from tarfile import TarInfo, open as tar_open
+    from zipfile import ZipFile
+
+    from scripts.audit_pypi_release_artifacts import audit_release_artifacts
+
+    version = "0.6.99"
+    metadata = (
+        "Metadata-Version: 2.1\n"
+        "Name: kogwistar\n"
+        f"Version: {version}\n"
+        "Requires-Python: >=3.11\n\n"
+    )
+    wheel_names = [
+        f"kogwistar-{version}-py3-none-any.whl",
+        f"kogwistar-{version}-cp312-abi3-manylinux_2_28_x86_64.whl",
+        f"kogwistar-{version}-cp312-abi3-win_amd64.whl",
+        f"kogwistar-{version}-cp312-abi3-macosx_14_0_x86_64.whl",
+        f"kogwistar-{version}-cp312-abi3-macosx_14_0_arm64.whl",
+    ]
+    for filename in wheel_names:
+        with ZipFile(tmp_path / filename, "w") as archive:
+            archive.writestr(f"kogwistar-{version}.dist-info/METADATA", metadata)
+
+    sdist = tmp_path / f"kogwistar-{version}.tar.gz"
+    payload = b"source"
+    with tar_open(sdist, "w:gz") as archive:
+        info = TarInfo(f"kogwistar-{version}/README.md")
+        info.size = len(payload)
+        archive.addfile(info, BytesIO(payload))
+
+    assert audit_release_artifacts(tmp_path, version) == {
+        "sdists": 1,
+        "native_wheels": 4,
+        "pure_wheels": 1,
+    }
+
+    (tmp_path / wheel_names[0]).unlink()
+    with pytest.raises(ValueError, match="PyPy-compatible pure wheel"):
+        audit_release_artifacts(tmp_path, version)
+
+
+def test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+
+    assert "Set up PyPy 3.11 for mixed-worker interoperability" in workflow
+    assert "Verify PyPy worker with Rust-native server execution" in workflow
+    assert "tests/runtime/test_rust_runtime_authority.py" in workflow
+    assert (
+        '-k "python_worker_and_rust_native_step_interoperate_over_real_server"'
+    ) in workflow
+    assert 'report="$RUNNER_TEMP/pypy-rust-worker-interop.xml"' in workflow
+    assert "if tests != 3 or skipped:" in workflow

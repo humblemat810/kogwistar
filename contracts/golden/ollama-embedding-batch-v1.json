@@ -1,0 +1,14 @@
+{
+  "contract_version": 1,
+  "route": "/api/embed",
+  "model": "all-minilm:l6-v2",
+  "inputs": ["three-four", "zero"],
+  "request": {
+    "model": "all-minilm:l6-v2",
+    "input": ["three-four", "zero"]
+  },
+  "response": {
+    "embeddings": [[3.0, 4.0], [0.0, 0.0]]
+  },
+  "normalized_embeddings": [[0.6, 0.8], [0.0, 0.0]]
+}

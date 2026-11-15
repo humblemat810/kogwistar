@@ -3,12 +3,14 @@ from __future__ import annotations
 import pytest
 
 from kogwistar._rust_bridge import (
+    RustExtensionUnavailableError,
     api_authorize,
     api_cli_health,
     api_health,
     api_mcp_result,
     api_sse_frame,
 )
+import kogwistar.server_mcp_with_admin as server
 
 pytestmark = [pytest.mark.ci]
 
@@ -33,6 +35,96 @@ def test_rust_api_health_preserves_python_contract(monkeypatch, mode: str) -> No
     python_value = {"ok": True, **payload}
 
     assert api_health(payload=payload, python_value=python_value) == python_value
+
+
+def test_python_health_handler_keeps_legacy_default_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The request-level Python server path must not require Rust."""
+
+    for name in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    def native_must_not_load() -> object:
+        raise AssertionError("legacy Python server route loaded the Rust extension")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_must_not_load)
+
+    body = server.health()
+    assert body["ok"] is True
+    assert "backend" in body
+
+
+def test_rust_health_route_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    def native_unavailable() -> object:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        server.health()
+
+
+def test_sse_frame_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    def native_unavailable() -> object:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        api_sse_frame(event="run", data={"ok": True}, event_id="7")
+
+
+def test_mcp_result_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    def native_unavailable() -> object:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        api_mcp_result(request_id="request-1", result={"ok": True})
+
+
+def test_cli_health_fails_closed_without_native_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    def native_unavailable() -> object:
+        raise RustExtensionUnavailableError("extension intentionally unavailable")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", native_unavailable)
+
+    with pytest.raises(RustExtensionUnavailableError, match="intentionally unavailable"):
+        api_cli_health(payload={"backend": "sqlite"})
+
+
+@pytest.mark.requires_rust
+def test_cli_health_rejects_unsupported_backend() -> None:
+    payload = {
+        "backend": "chroma",
+        "persist_directory": "root",
+        "conversation_persist_directory": "conversation",
+        "workflow_persist_directory": "workflow",
+        "wisdom_persist_directory": "wisdom",
+    }
+    with pytest.raises(ValueError, match="KOGWISTAR_BACKEND must be pg, sqlite, or in_memory"):
+        api_cli_health(payload=payload)
 
 
 @pytest.mark.requires_rust

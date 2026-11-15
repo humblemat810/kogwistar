@@ -11,7 +11,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import IO, Any, cast
+from typing import IO, Any, Literal, cast
 
 try:
     from dotenv import load_dotenv
@@ -40,6 +40,9 @@ from kogwistar.engine_core.models import (
     Node,
 )
 from kogwistar.engine_core.search_index.models import AddIndexEntriesInput
+from kogwistar.engine_core.graph_extraction_contract import (
+    validate_graph_extraction_request,
+)
 from kogwistar.engine_core.types import PersistedDocumentGraphResult
 from kogwistar.runtime.models import (
     WorkflowEdgeMetadata,
@@ -378,6 +381,11 @@ class DevTokenInp(BaseModel):
 
 @app.post("/auth/dev-token")
 async def dev_token(request: Request) -> object:
+    auth_mode = str(
+        getattr(request.app.state, "auth_mode", None) or os.getenv("AUTH_MODE") or "oidc"
+    ).strip().lower()
+    if auth_mode != "dev":
+        raise HTTPException(status_code=404, detail="Dev token endpoint is disabled")
     inp = DevTokenInp.model_validate((await request.json()))
     if inp.role not in ROLE_ORDER:
         raise HTTPException(400, f"role must be one of {list(ROLE_ORDER)}")
@@ -627,65 +635,21 @@ def admin_delete_doc(doc_id: str) -> object:
     require_role("rw")
     eng = engine.get()
     try:
-        node_ids = eng.read.node_ids_by_doc(doc_id)
-        edge_ids = eng.read.edge_ids_by_doc(doc_id)
+        result = eng.rollback.rollback_document(doc_id)
     except Exception as exc:
-        logger.exception("Failed to enumerate graph rows for admin delete: doc_id=%s", doc_id)
+        logger.exception("Failed to roll back document: doc_id=%s", doc_id)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to inspect document {doc_id!r} before deletion",
+            detail=f"Failed to roll back document {doc_id!r}",
         ) from exc
-
-    def _delete_step(step_name: str, fn: Callable[[], object]) -> None:
-        try:
-            fn()
-        except Exception as exc:
-            logger.exception(
-                "Admin document delete failed at step '%s': doc_id=%s",
-                step_name,
-                doc_id,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to delete document {doc_id!r} during {step_name}",
-            ) from exc
-
-    _delete_step(
-        "edge_endpoints_delete",
-        lambda: eng.backend.edge_endpoints_delete(where={"doc_id": doc_id}),
-    )
-    _delete_step(
-        "node_docs_delete",
-        lambda: eng.backend.node_docs_delete(where={"doc_id": doc_id}),
-    )
-
-    if edge_ids:
-        _delete_step("edge_refs_delete", lambda: eng.backend.edge_refs_delete(ids=edge_ids))
-        _delete_step("edge_delete", lambda: eng.backend.edge_delete(ids=edge_ids))
-    else:
-        _delete_step(
-            "edge_delete",
-            lambda: eng.backend.edge_delete(where={"doc_id": doc_id}),
-        )
-
-    if node_ids:
-        _delete_step("node_refs_delete", lambda: eng.backend.node_refs_delete(ids=node_ids))
-        _delete_step("node_delete", lambda: eng.backend.node_delete(ids=node_ids))
-    else:
-        _delete_step(
-            "node_delete",
-            lambda: eng.backend.node_delete(where={"doc_id": doc_id}),
-        )
-
-    _delete_step(
-        "document_delete",
-        lambda: eng.backend.document_delete(where={"doc_id": doc_id}),
-    )
 
     return {
         "ok": True,
         "doc_id": doc_id,
-        "deleted": {"nodes": len(node_ids), "edges": len(edge_ids)},
+        "deleted": {
+            "nodes": len(result["tombstoned_node_ids"]),
+            "edges": len(result["tombstoned_edge_ids"]),
+        },
     }
 
 # http://localhost:28110/api/viz/d3.json?doc_id=pytest-doc-upsert-1&mode=reify
@@ -733,6 +697,23 @@ def viz_d3_bundle(
         use_engine, doc_id=doc_id, mode=mode, insertion_method=insertion_method
     )
 
+    # Match Rust's bundle boundary: omit transport attestations and escape
+    # JSON before embedding it in an HTML script element.
+    for field in (
+        "implementation_authority",
+        "seam_attestation_version",
+        "seam_crossings",
+    ):
+        payload.pop(field, None)
+
+    def inline_json(value: object) -> str:
+        return (
+            json.dumps(value)
+            .replace("&", "\\u0026")
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+        )
+
     # Optional bundle meta (single bundle won't know peer paths; pair bundling is handled by CLI/debugger)
     bundle_meta = {
         "graph_type": gt,
@@ -748,8 +729,8 @@ def viz_d3_bundle(
             "doc_id": doc_id,
             "mode": mode,
             "insertion_method": insertion_method,
-            "embedded_data": json.dumps(payload),
-            "bundle_meta": json.dumps(bundle_meta),
+            "embedded_data": inline_json(payload),
+            "bundle_meta": inline_json(bundle_meta),
             "is_bundle": True,
         },
     )
@@ -847,6 +828,9 @@ class GraphUpsertLLMIn(BaseModel):
     - references may use document alias token ::DOC:: in URLs; we’ll de-alias to doc_id.
     """
 
+    contract_version: Literal[1] = Field(
+        1, description="Version of the graph extraction request contract"
+    )
     doc_id: str = Field(..., description="Document id to scope persistence")
     content: str | None = Field(
         None, description="If provided and doc is new, store this as document content"
@@ -884,13 +868,44 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
     """
     require_role("rw")
     eng = engine.get()
+    # Normalize through the shared Python/Rust wire contract before any writes.
+    request = validate_graph_extraction_request(inp.model_dump())
+
+    # Validate entity shapes before creating a document placeholder so malformed
+    # extraction payloads cannot leave a partial write behind.
+    try:
+        parsed = LLMGraphExtraction.FromLLMSlice(
+            {
+                "nodes": request.nodes,
+                "edges": request.edges,
+            },
+            insertion_method=request.insertion_method,
+        )
+    except (TypeError, ValueError, ValidationError):
+        try:
+            llm_like = LLMGraphExtraction.model_validate(
+                {
+                    "nodes": request.nodes,
+                    "edges": request.edges,
+                }
+            )
+
+            # Preserve provenance injection used by the existing extractor path.
+            parsed = LLMGraphExtraction.FromLLMSlice(
+                llm_like, insertion_method=request.insertion_method
+            )
+        except (TypeError, ValueError, ValidationError) as exc:
+            raise HTTPException(
+                status_code=422, detail="invalid graph extraction entities"
+            ) from exc
+
     # 1) Ensure the document row exists (idempotent) but metadata are all missing if created in this fun
-    if inp.content is not None:
+    if request.content is not None:
         eng.write.add_document(
             Document(
-                id=inp.doc_id,
-                content=inp.content,
-                type=inp.doc_type,
+                id=request.doc_id,
+                content=request.content,
+                type=request.doc_type,
                 metadata={},  # if you want
                 embeddings=None,  # REQUIRED by Pydantic because Field(...)
                 source_map=None,  # REQUIRED by Pydantic because Field(...)
@@ -900,12 +915,12 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
         )
     else:
         # create a placeholder if completely missing so refs can anchor to doc_id
-        if not eng.extract.fetch_document_text(inp.doc_id):
+        if not eng.extract.fetch_document_text(request.doc_id):
             eng.write.add_document(
                 Document(
-                    id=inp.doc_id,
-                    content=inp.content or "",
-                    type=inp.doc_type,
+                    id=request.doc_id,
+                    content=request.content or "",
+                    type=request.doc_type,
                     metadata={},  # if you want
                     embeddings=None,  # REQUIRED by Pydantic because Field(...)
                     source_map=None,  # REQUIRED by Pydantic because Field(...)
@@ -914,36 +929,12 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
                 )
             )
 
-    # 2) Validate to your LLM models (references REQUIRED by GraphEntityBase)
-    #    This matches your extractor path which later calls FromLLMSlice.
-    try:
-        parsed = LLMGraphExtraction.FromLLMSlice(
-            {
-                "nodes": inp.nodes,
-                "edges": inp.edges,
-            },
-            insertion_method=inp.insertion_method,
-        )
-    except Exception as _e:
-        llm_like = LLMGraphExtraction.model_validate(
-            {
-                "nodes": inp.nodes,
-                "edges": inp.edges,
-            }
-        )
-
-        # 3) Copy insertion_method into every ReferenceSession (backend-only field),
-        #    exactly like kg_extract does, so refs carry provenance.
-        parsed = LLMGraphExtraction.FromLLMSlice(
-            llm_like, insertion_method=inp.insertion_method
-        )
-
     # 4) Persist using your first-class persistence path (allocates nn:/ne:, topo-sorts, enforces endpoints)
     persisted = cast(Mapping[str, object], eng.persist.persist_graph_extraction(
         document=Document(
-            id=inp.doc_id,
-            content=inp.content or eng.extract.fetch_document_text(inp.doc_id) or "",
-            type=inp.doc_type,
+            id=request.doc_id,
+            content=request.content or eng.extract.fetch_document_text(request.doc_id) or "",
+            type=request.doc_type,
             embeddings=None,
             source_map=None,
             metadata=None,
@@ -955,7 +946,7 @@ def api_graph_upsert_llm(inp: GraphUpsertLLMIn) -> object:
     ))
 
     return DocumentGraphUpsertOut(
-        document_id=str(persisted.get("document_id") or inp.doc_id),
+        document_id=str(persisted.get("document_id") or request.doc_id),
         node_ids=_string_list(persisted.get("node_ids")),
         edge_ids=_string_list(persisted.get("edge_ids")),
         nodes_added=_int_value(persisted.get("nodes_added")),
@@ -988,6 +979,7 @@ class DocumentUpsertResult(BaseModel):
 def document_upsert(
     inp: DocumentUpsert, response_model: type[BaseModel] = DocumentUpsertResult
 ) -> object:
+    require_role("rw")
     try:
         eng = engine.get()
         if inp.doc_type == "text":
@@ -1043,6 +1035,7 @@ def document_upsert_tree(payload: DocumentGraphUpsert) -> object:
     - The canonical ingestion table lives in
       `kogwistar/docs/ARD-postgresql-inclusive.md`.
     """
+    require_role("rw")
     eng = engine.get()
     try:
         res = eng.persist_document_graph_extraction(
@@ -1130,6 +1123,7 @@ class IndexingItem(BaseModel):
 
 @app.post("/api/add_index_entries")
 def add_index_entries(payload: AddIndexEntriesInput) -> object:
+    require_role("rw")
     engine.get().search_index.upsert_entries(payload.index)
     return {"ok": True}
 

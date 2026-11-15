@@ -44,6 +44,16 @@ def test_custom_embedder(tmp_path, backend_kind):
         source="test_custom_embedder",
     )
     eng.write.add_document(doc)
+    document_result = eng.backend.document_get(
+        ids=[doc.id], include=["documents", "embeddings"]
+    )
+    document_embedding = document_result["embeddings"][0]
+    expected_document_embedding = eng._embed_one(document_result["documents"][0])
+    assert len(document_embedding) == len(expected_document_embedding)
+    assert all(
+        abs(actual - expected) < 1e-9
+        for actual, expected in zip(document_embedding, expected_document_embedding)
+    )
     node = Node(
         label="X",
         type="entity",

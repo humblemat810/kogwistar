@@ -19,7 +19,10 @@ def _module():
 
 def test_persistent_benchmark_compares_equivalent_python_and_rust_state(tmp_path: Path) -> None:
     pytest.importorskip("kogwistar._rust")
-    report = _module().run_benchmark(tmp_path, items=3, read_cycles=1, samples=2)
-    assert report["dataset"] == "rust-port-persistent-sqlite-v1"
+    benchmark = _module()
+    report = benchmark.run_benchmark(tmp_path, items=3, read_cycles=1, samples=2)
+    assert report["dataset"] == benchmark.DATASET
     assert report["modes"]["python"]["state_digest"] == report["modes"]["rust"]["state_digest"]
-    assert set(report["ratios"]) == set(report["modes"]["python"]["metrics"])
+    assert set(report["ratios"]) == set(report["modes"]) - {"python"}
+    expected_workloads = set(report["modes"]["python"]["metrics"])
+    assert all(set(ratios) == expected_workloads for ratios in report["ratios"].values())

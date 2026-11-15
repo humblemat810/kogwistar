@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AbstractContextManager,
+    asynccontextmanager,
+    nullcontext,
+)
 from typing import TYPE_CHECKING, Protocol, cast
 
+from ..implementation_selection import (
+    transaction_authority_for_selection,
+    transaction_authority_scope,
+)
 from ..json_types import JsonObject
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .edge_endpoint_rows import edge_endpoint_rows
 from .models import Edge, Node
 from .storage_backend import TwoStageProjectionCapability
+from .two_stage_namespace import active_graph_namespace
 from .two_stage_rust_postgres import (
     RustPostgresTwoStageProjectionAdapter,
     _RustProjectionEngine,
@@ -26,10 +36,19 @@ if TYPE_CHECKING:
 class _RevisionLike(Protocol):
     state: str
     revision: int
+    payload: JsonObject
 
 
 class _IndexingLike(Protocol):
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str: ...
+
+    def canonical_revision_payloads(
+        self,
+        *,
+        entity_kind: str,
+        entity_ids: Iterable[str],
+        namespace: str | None = None,
+    ) -> Mapping[str, str]: ...
 
     def canonical_entity_revision(
         self, *, entity_kind: str, entity_id: str
@@ -84,7 +103,7 @@ class _TwoStageEngineLike(Protocol):
     backend: _AsyncBackendLike
     indexing: _IndexingLike
     write: "WriteLike"
-    meta_sqlite: _MetaStoreLike
+    metadata: _MetaStoreLike
     namespace: str
     _ef: EmbeddingProvider
 
@@ -105,6 +124,10 @@ def _optional_row_mapping(value: object) -> dict[str, object] | None:
     if value is None:
         return None
     return _row_mapping(value)
+
+
+def _sequence_number(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 def _payload_text(value: object) -> str | None:
@@ -153,19 +176,29 @@ class AsyncPostgresTwoStageProjectionAdapter:
         return self.engine.backend
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
+
+    def _transaction_authority_scope(self) -> AbstractContextManager[None]:
+        snapshot = getattr(self.engine, "_implementation_selection_snapshot", None)
+        if snapshot is None:
+            return nullcontext()
+        return transaction_authority_scope(
+            transaction_authority_for_selection(snapshot)
+        )
 
     @asynccontextmanager
     async def _backend_transaction(self) -> AsyncIterator[None]:
-        """Join the configured async SQL UOW when one exists."""
+        """Join the async SQL UOW; projection mutations require atomic ownership."""
         uow = getattr(self.engine, "_async_backend_uow", None)
         transaction = getattr(uow, "transaction", None)
-        if callable(transaction):
-            context = cast(AbstractAsyncContextManager[None], transaction())
+        if not callable(transaction):
+            raise RuntimeError(
+                "async PostgreSQL projection mutation requires a transactional backend UoW"
+            )
+        context = cast(AbstractAsyncContextManager[None], transaction())
+        with self._transaction_authority_scope():
             async with context:
                 yield
-        else:
-            yield
 
     async def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
@@ -230,7 +263,19 @@ class AsyncPostgresTwoStageProjectionAdapter:
             ids=kwargs.get("ids"), metadata=kwargs.get("metadata"),
             limit=kwargs.get("limit", 200),
         )
-        return [dict(row) for row in rows]
+        return [
+            {
+                "key": f"{row['entity_kind']}:{row['entity_id']}",
+                "payload": {
+                    "id": row["entity_id"],
+                    "entity_kind": row["entity_kind"],
+                    "document": row["document"],
+                    "metadata": _row_mapping(row.get("metadata")),
+                    "source_fingerprint": row["source_fingerprint"],
+                },
+            }
+            for row in rows
+        ]
 
     async def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
         await self._backend().stage1_projection_delete_async(
@@ -277,9 +322,26 @@ class AsyncPostgresTwoStageProjectionAdapter:
     ) -> None:
         current = await self._current(entity_kind, entity_id)
         expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
-        if op.upper() == "DELETE" or current is None or current.state != "active":
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+        if op.upper() == "DELETE":
+            if (
+                expected
+                and current is not None
+                and current.state == "active"
+                and expected != await self._fingerprint(entity_kind, entity_id)
+            ):
+                return
+            async with self._backend_transaction():
+                await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                await self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            return
+        if current is None or current.state != "active":
+            async with self._backend_transaction():
+                await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                await self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
             return
         if expected and expected != await self._fingerprint(entity_kind, entity_id):
             return
@@ -292,17 +354,23 @@ class AsyncPostgresTwoStageProjectionAdapter:
         embedding = normalize_embedding_vector(
             list((await _embed(self.engine._ef, [document]))[0]), allow_none=False
         )
-        current = await self._current(entity_kind, entity_id)
-        if current is None or current.state != "active":
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
-            return
-        if expected and expected != await self._fingerprint(entity_kind, entity_id):
-            return
-        metadata = _row_mapping(row.get("metadata"))
-        metadata["_kogwistar_stage2_ready"] = True
-        metadata["_kogwistar_source_fingerprint"] = expected
         async with self._backend_transaction():
+            locked_row = await self._backend().stage1_projection_get_async(
+                namespace=self._namespace(), entity_kind=entity_kind,
+                entity_id=entity_id, for_update=True,
+            )
+            if locked_row is None or any(
+                row.get(field) != locked_row.get(field)
+                for field in ("document", "metadata", "source_fingerprint", "revision")
+            ):
+                return
+            staged_fingerprint = str(locked_row.get("source_fingerprint") or "")
+            if expected and expected != staged_fingerprint:
+                return
+            document = str(locked_row["document"])
+            metadata = _row_mapping(locked_row.get("metadata"))
+            metadata["_kogwistar_stage2_ready"] = True
+            metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
             await self._backend()._upsert_async(
                 getattr(self._backend(), f"{entity_kind}s"), ids=[entity_id],
                 documents=[document], metadatas=[metadata], embeddings=[embedding],
@@ -323,7 +391,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
     async def apply_embedding_jobs_batch(
         self, jobs: list[object]
     ) -> dict[str, BaseException | None]:
-        prepared: list[tuple[str, str, str, dict[str, object]]] = []
+        prepared: list[tuple[str, str, str, dict[str, object], str]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
             job_id = str(_job_value(job, "job_id") or "")
@@ -349,7 +417,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
                 )
                 if row is None:
                     raise RuntimeError("current PostgreSQL Stage-1 projection is missing")
-                prepared.append((job_id, kind, entity_id, _row_mapping(row)))
+                prepared.append((job_id, kind, entity_id, _row_mapping(row), expected))
             except BaseException as exc:
                 outcomes[job_id] = exc
         if not prepared:
@@ -357,7 +425,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
         try:
             embeddings = await _embed(
                 self.engine._ef,
-                [str(row.get("document") or "") for *_, row in prepared],
+                [str(row.get("document") or "") for _, _, _, row, _ in prepared],
             )
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
@@ -365,25 +433,34 @@ class AsyncPostgresTwoStageProjectionAdapter:
             for job_id, *_ in prepared:
                 outcomes[job_id] = exc
             return outcomes
-        for (job_id, kind, entity_id, row), embedding in zip(prepared, embeddings):
+        for (job_id, kind, entity_id, row, expected), embedding in zip(prepared, embeddings):
             try:
-                current = await self._current(kind, entity_id)
-                if current is None or current.state != "active":
-                    continue
-                source_fingerprint = str(row.get("source_fingerprint") or "")
-                if source_fingerprint and source_fingerprint != await self._fingerprint(kind, entity_id):
-                    continue
-                metadata = _row_mapping(row.get("metadata"))
-                metadata["_kogwistar_stage2_ready"] = True
-                metadata["_kogwistar_source_fingerprint"] = source_fingerprint
                 async with self._backend_transaction():
+                    locked_row = await self._backend().stage1_projection_get_async(
+                        namespace=self._namespace(), entity_kind=kind,
+                        entity_id=entity_id, for_update=True,
+                    )
+                    if locked_row is None or any(
+                        row.get(field) != locked_row.get(field)
+                        for field in ("document", "metadata", "source_fingerprint", "revision")
+                    ):
+                        outcomes[job_id] = None
+                        continue
+                    source_fingerprint = str(locked_row.get("source_fingerprint") or "")
+                    if expected and expected != source_fingerprint:
+                        outcomes[job_id] = None
+                        continue
+                    document = str(locked_row["document"])
+                    metadata = _row_mapping(locked_row.get("metadata"))
+                    metadata["_kogwistar_stage2_ready"] = True
+                    metadata["_kogwistar_source_fingerprint"] = source_fingerprint
                     await self._backend()._upsert_async(
                         getattr(self._backend(), f"{kind}s"), ids=[entity_id],
-                        documents=[str(row["document"])], metadatas=[metadata],
+                        documents=[document], metadatas=[metadata],
                         embeddings=[normalize_embedding_vector(embedding, allow_none=False)],
                     )
                     if kind == "edge":
-                        await self._promote_edge_endpoints(str(row["document"]))
+                        await self._promote_edge_endpoints(document)
                     await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 outcomes[job_id] = None
             except BaseException as exc:
@@ -400,12 +477,18 @@ class AsyncPostgresTwoStageProjectionAdapter:
     async def reconcile_projection(self, **_: object) -> int:
         removed = 0
         for row in await self.stage1_query(entity_kind="node") + await self.stage1_query(entity_kind="edge"):
-            entity_kind = str(row["entity_kind"])
-            entity_id = str(row["entity_id"])
+            payload = _row_mapping(row.get("payload"))
+            entity_kind = str(payload.get("entity_kind") or "node")
+            entity_id = str(payload.get("id") or "")
+            if not entity_id:
+                continue
             current = await self._current(entity_kind, entity_id)
             if current is None or current.state != "active":
-                await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+                async with self._backend_transaction():
+                    await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                    await self.remove_stage2_or_invalidate(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
                 removed += 1
                 continue
             stage2 = await self._backend()._get_flat_async(
@@ -419,7 +502,7 @@ class AsyncPostgresTwoStageProjectionAdapter:
                 _object_list(stage2.get("ids"))
                 and isinstance(stage2_metadata, dict)
                 and stage2_metadata.get("_kogwistar_source_fingerprint")
-                == row.get("source_fingerprint")
+                == payload.get("source_fingerprint")
             ):
                 if entity_kind == "edge":
                     documents = _object_list(stage2.get("documents"))
@@ -431,9 +514,15 @@ class AsyncPostgresTwoStageProjectionAdapter:
                                 entity_kind=entity_kind, entity_id=entity_id
                             )
                     else:
-                        await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                        async with self._backend_transaction():
+                            await self.remove_stage1(
+                                entity_kind=entity_kind, entity_id=entity_id
+                            )
                 else:
-                    await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                    async with self._backend_transaction():
+                        await self.remove_stage1(
+                            entity_kind=entity_kind, entity_id=entity_id
+                        )
                 removed += 1
         return removed
 
@@ -445,14 +534,14 @@ class AsyncChromaTwoStageProjectionAdapter:
         self.engine = cast(_TwoStageEngineLike, engine)
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
 
     def _key(self, entity_kind: str, entity_id: str) -> str:
         return f"{entity_kind}:{entity_id}"
 
     async def _meta(self, method: str, *args: object, **kwargs: object) -> object:
         import asyncio
-        return await asyncio.to_thread(getattr(self.engine.meta_sqlite, method), *args, **kwargs)
+        return await asyncio.to_thread(getattr(self.engine.metadata, method), *args, **kwargs)
 
     async def _current(self, entity_kind: str, entity_id: str) -> _RevisionLike | None:
         import asyncio
@@ -508,8 +597,116 @@ class AsyncChromaTwoStageProjectionAdapter:
         rows = await self._meta("query_stage1_node_projections", self._namespace(), **kwargs)
         return [dict(row) for row in cast(Sequence[Mapping[str, object]], rows)]
 
-    async def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
-        await self._meta("clear_stage1_node_projection", self._namespace(), self._key(entity_kind, entity_id))
+    async def remove_stage1(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        expected_last_authoritative_seq: int | None = None,
+        **_: object,
+    ) -> bool | None:
+        if expected_last_authoritative_seq is not None:
+            return bool(
+                await self._meta(
+                    "clear_stage1_node_projection_if_current",
+                    self._namespace(),
+                    self._key(entity_kind, entity_id),
+                    int(expected_last_authoritative_seq),
+                )
+            )
+        await self._meta(
+            "clear_stage1_node_projection",
+            self._namespace(),
+            self._key(entity_kind, entity_id),
+        )
+        return None
+
+    async def restore_stage1_from_canonical_event(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        """Re-stage the latest event revision after a stale Chroma write."""
+        import asyncio
+
+        revision = await self._current(entity_kind, entity_id)
+        if revision is None or revision.state != "active":
+            return False
+        if entity_kind == "node":
+            entity: Node | Edge = Node.model_validate(revision.payload)
+            document, metadata = self.engine.write.node_doc_and_meta(entity)
+        elif entity_kind == "edge":
+            entity = Edge.model_validate(revision.payload)
+            document = entity.model_dump_json(
+                field_mode="backend", exclude=["embedding"]
+            )
+            metadata = self.engine.write.enrich_edge_meta(entity)
+        else:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+
+        payload_json = await asyncio.to_thread(
+            self.engine.indexing.canonical_revision_payload,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+        )
+        revision_payload = json.loads(payload_json)
+        await self._meta(
+            "replace_stage1_node_projection",
+            self._namespace(),
+            self._key(entity_kind, entity_id),
+            {
+                "id": entity_id,
+                "entity_kind": entity_kind,
+                "document": str(document),
+                "metadata": dict(metadata or {}),
+                "source_fingerprint": str(
+                    revision_payload.get("source_fingerprint") or ""
+                ),
+            },
+            last_authoritative_seq=int(revision.revision),
+            last_materialized_seq=int(revision.revision),
+            projection_schema_version=1,
+            materialization_status="pending",
+        )
+        latest = await self._current(entity_kind, entity_id)
+        if latest is None or latest.revision != revision.revision:
+            await self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=int(revision.revision),
+            )
+            return False
+        await asyncio.to_thread(
+            self.engine.indexing.enqueue_index_job,
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            index_kind="node_embedding",
+            op="UPSERT",
+            payload_json=payload_json,
+        )
+        return True
+
+    async def _restore_current_stage1(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        """Make stale async job replay schedule the current canonical projection."""
+        current = await self._current(entity_kind, entity_id)
+        if current is None or current.state != "active":
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return False
+        if not await self.restore_stage1_from_canonical_event(
+            entity_kind=entity_kind, entity_id=entity_id
+        ):
+            latest = await self._current(entity_kind, entity_id)
+            if latest is not None and latest.state == "active":
+                raise RuntimeError(
+                    "current async Chroma revision changed during Stage-1 recovery"
+                )
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return False
+        return True
 
     async def remove_stage2_or_invalidate(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
         await self.engine.backend.async_call(entity_kind, "delete", ids=[entity_id])
@@ -517,6 +714,36 @@ class AsyncChromaTwoStageProjectionAdapter:
             await self.engine.backend.async_call(
                 "edge_endpoints", "delete", where={"edge_id": entity_id}
             )
+
+    async def _delete_projection_and_restore_if_active(
+        self, *, entity_kind: str, entity_id: str
+    ) -> None:
+        row = _optional_row_mapping(
+            await self._meta(
+                "get_stage1_node_projection",
+                self._namespace(),
+                self._key(entity_kind, entity_id),
+            )
+        )
+        if row is not None:
+            raw_sequence = row.get("last_authoritative_seq")
+            sequence = raw_sequence if isinstance(raw_sequence, int) else 0
+            await self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=sequence,
+            )
+        await self.remove_stage2_or_invalidate(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        latest = await self._current(entity_kind, entity_id)
+        if latest is not None and latest.state == "active":
+            if not await self.restore_stage1_from_canonical_event(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                raise RuntimeError(
+                    "async Chroma delete raced with resurrection and could not restore Stage-1"
+                )
 
     async def _promote_edge_endpoints(
         self, document: str, embedding: list[float] | None = None
@@ -545,9 +772,31 @@ class AsyncChromaTwoStageProjectionAdapter:
     async def apply_embedding_job(self, *, entity_kind: str, entity_id: str, op: str, payload_json: str | None) -> None:
         current = await self._current(entity_kind, entity_id)
         expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
-        if op.upper() == "DELETE" or current is None or current.state != "active":
-            await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            await self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+        if op.upper() == "DELETE":
+            if (
+                expected
+                and current is not None
+                and current.state == "active"
+                and expected != await self._fingerprint(entity_kind, entity_id)
+            ):
+                await self._restore_current_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                return
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
+        if current is None or current.state != "active":
+            await self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
+        current_fingerprint = await self._fingerprint(entity_kind, entity_id)
+        if expected and expected != current_fingerprint:
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         row = _optional_row_mapping(
             await self._meta(
@@ -556,13 +805,30 @@ class AsyncChromaTwoStageProjectionAdapter:
             )
         )
         if not row:
-            raise RuntimeError("current Chroma Stage-1 projection is missing")
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
         staged = _row_mapping(row.get("payload"))
+        staged_seq = _sequence_number(row.get("last_authoritative_seq"))
+        staged_fingerprint = str(staged.get("source_fingerprint") or "")
+        if not staged_fingerprint:
+            raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+        if (expected and staged_fingerprint != expected) or (
+            staged_fingerprint != current_fingerprint
+        ):
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
         embedding = (await _embed(self.engine._ef, [str(staged.get("document") or "")]))[0]
         current = await self._current(entity_kind, entity_id)
         if current is None or current.state != "active":
             return
-        if expected and expected != await self._fingerprint(entity_kind, entity_id):
+        if staged_fingerprint != await self._fingerprint(entity_kind, entity_id):
+            await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         collection_key = entity_kind
         await self.engine.backend.async_call(
@@ -571,15 +837,38 @@ class AsyncChromaTwoStageProjectionAdapter:
             metadatas=[{
                 **_row_mapping(staged.get("metadata")),
                 "_kogwistar_stage2_ready": True,
-                "_kogwistar_source_fingerprint": expected,
+                "_kogwistar_source_fingerprint": staged_fingerprint,
+                "_kogwistar_source_revision": staged_seq,
             }],
             embeddings=[list(embedding)],
         )
+        latest = await self._current(entity_kind, entity_id)
+        if latest is None or latest.state != "active":
+            await self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=staged_seq,
+            )
+            await self.remove_stage2_or_invalidate(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
+        latest_fingerprint = await self._fingerprint(entity_kind, entity_id)
+        if latest_fingerprint != staged_fingerprint:
+            if not await self.restore_stage1_from_canonical_event(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                raise RuntimeError("async Chroma promotion could not restore Stage-1")
+            return
         if entity_kind == "edge":
             await self._promote_edge_endpoints(
                 str(staged.get("document") or ""), list(embedding)
             )
-        await self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+        await self.remove_stage1(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            expected_last_authoritative_seq=staged_seq,
+        )
 
     async def promote_stage2(
         self, *, entity_kind: str, entity_id: str, op: str,
@@ -608,6 +897,12 @@ class AsyncChromaTwoStageProjectionAdapter:
                     await self.apply_embedding_job(entity_kind=kind, entity_id=entity_id, op=op, payload_json=payload_json)
                     outcomes[job_id] = None
                     continue
+                if expected and expected != await self._fingerprint(kind, entity_id):
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
                 row = _optional_row_mapping(
                     await self._meta(
                         "get_stage1_node_projection", self._namespace(),
@@ -615,12 +910,36 @@ class AsyncChromaTwoStageProjectionAdapter:
                     )
                 )
                 if not row:
-                    raise RuntimeError("current Chroma Stage-1 projection is missing")
-                staged = _row_mapping(row.get("payload"))
-                if expected and str(staged.get("source_fingerprint") or "") != expected:
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
-                prepared.append((job_id, kind, entity_id, {**staged, "_expected": expected}))
+                staged = _row_mapping(row.get("payload"))
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if not staged_fingerprint:
+                    raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+                if (expected and staged_fingerprint != expected) or (
+                    staged_fingerprint != await self._fingerprint(kind, entity_id)
+                ):
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
+                prepared.append(
+                    (
+                        job_id,
+                        kind,
+                        entity_id,
+                        {
+                            **staged,
+                            "_stage1_authoritative_seq": _sequence_number(
+                                row.get("last_authoritative_seq")
+                            ),
+                        },
+                    )
+                )
             except BaseException as exc:
                 outcomes[job_id] = exc
         if not prepared:
@@ -641,23 +960,129 @@ class AsyncChromaTwoStageProjectionAdapter:
                 current = await self._current(kind, entity_id)
                 if current is None or current.state != "active":
                     continue
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if staged_fingerprint != await self._fingerprint(kind, entity_id):
+                    await self._restore_current_stage1(
+                        entity_kind=kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
                 await self.engine.backend.async_call(
                     kind, "upsert", ids=[entity_id],
                     documents=[str(staged.get("document") or "")],
-                    metadatas=[{**_row_mapping(staged.get("metadata")), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": str(staged.get("_expected") or staged.get("source_fingerprint") or "")}],
+                    metadatas=[{**_row_mapping(staged.get("metadata")), "_kogwistar_stage2_ready": True, "_kogwistar_source_fingerprint": staged_fingerprint, "_kogwistar_source_revision": _sequence_number(staged.get("_stage1_authoritative_seq"))}],
                     embeddings=[embedding],
                 )
+                latest = await self._current(kind, entity_id)
+                if latest is None or latest.state != "active":
+                    await self.remove_stage1(
+                        entity_kind=kind,
+                        entity_id=entity_id,
+                        expected_last_authoritative_seq=_sequence_number(
+                            staged.get("_stage1_authoritative_seq")
+                        ),
+                    )
+                    await self.remove_stage2_or_invalidate(
+                        entity_kind=kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
+                if staged_fingerprint != await self._fingerprint(kind, entity_id):
+                    if not await self.restore_stage1_from_canonical_event(
+                        entity_kind=kind, entity_id=entity_id
+                    ):
+                        raise RuntimeError("async Chroma batch promotion could not restore Stage-1")
+                    outcomes[job_id] = None
+                    continue
                 if kind == "edge":
                     await self._promote_edge_endpoints(
                         str(staged.get("document") or ""), list(embedding)
                     )
-                await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
+                await self.remove_stage1(
+                    entity_kind=kind,
+                    entity_id=entity_id,
+                    expected_last_authoritative_seq=_sequence_number(
+                        staged.get("_stage1_authoritative_seq")
+                    ),
+                )
                 outcomes[job_id] = None
             except BaseException as exc:
                 outcomes[job_id] = exc
         return outcomes
 
+    async def backfill_stage2_source_revisions(
+        self, *, entity_kind: str, limit: int = 100, offset: int = 0
+    ) -> tuple[int, int]:
+        """Stamp verified legacy rows without changing vectors.
+
+        This operator migration requires the normal Chroma projection writer
+        to be quiesced. Unverifiable rows remain untouched and hidden.
+        """
+        import asyncio
+
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+        if not 1 <= limit <= 1000 or offset < 0:
+            raise ValueError("limit must be in [1, 1000] and offset must be non-negative")
+        page = _row_mapping(
+            await self.engine.backend.async_call(
+                entity_kind,
+                "get",
+                limit=limit,
+                offset=offset,
+                include=["metadatas"],
+            )
+        )
+        ids = [str(value) for value in _object_list(page.get("ids"))]
+        if not ids:
+            return 0, 0
+        metadatas = _object_list(page.get("metadatas"))
+        revisions = await asyncio.to_thread(
+            self.engine.indexing.canonical_revision_payloads,
+            entity_kind=entity_kind,
+            entity_ids=ids,
+        )
+        updates: list[tuple[str, dict[str, object]]] = []
+        for index, entity_id in enumerate(ids):
+            raw_metadata = metadatas[index] if index < len(metadatas) else None
+            metadata = _row_mapping(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
+            if metadata.get("_kogwistar_stage2_ready") is not True:
+                continue
+            stored_revision = metadata.get("_kogwistar_source_revision")
+            try:
+                current = json.loads(revisions[entity_id])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            revision = current.get("canonical_revision")
+            if (
+                current.get("source_state") != "active"
+                or current.get("source_fingerprint")
+                != metadata.get("_kogwistar_source_fingerprint")
+                or not isinstance(revision, int)
+                or isinstance(revision, bool)
+                or revision <= 0
+            ):
+                continue
+            if (
+                isinstance(stored_revision, int)
+                and not isinstance(stored_revision, bool)
+                and stored_revision == revision
+            ):
+                continue
+            metadata["_kogwistar_source_revision"] = revision
+            updates.append((entity_id, metadata))
+        if updates:
+            await self.engine.backend.async_call(
+                entity_kind,
+                "update",
+                ids=[row[0] for row in updates],
+                metadatas=[row[1] for row in updates],
+            )
+        return len(ids), len(updates)
+
     async def reconcile_projection(self, **_: object) -> int:
+        import asyncio
+
         removed = 0
         for row in await self.stage1_query(entity_kind="node") + await self.stage1_query(entity_kind="edge"):
             kind = str(row.get("entity_kind") or "node")
@@ -665,21 +1090,32 @@ class AsyncChromaTwoStageProjectionAdapter:
             entity_id = str(payload.get("id") or row.get("id") or row.get("key") or "")
             if ":" in entity_id and entity_id.startswith(("node:", "edge:")):
                 entity_id = entity_id.split(":", 1)[1]
+            staged_seq = _sequence_number(row.get("last_authoritative_seq"))
             current = await self._current(kind, entity_id)
             source_fingerprint = str(
                 payload.get("source_fingerprint") or row.get("source_fingerprint") or ""
             )
             if current is None or current.state != "active":
-                await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
-                await self.remove_stage2_or_invalidate(entity_kind=kind, entity_id=entity_id)
-                removed += 1
+                if await self.remove_stage1(
+                    entity_kind=kind,
+                    entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    await self.remove_stage2_or_invalidate(
+                        entity_kind=kind, entity_id=entity_id
+                    )
+                    removed += 1
                 continue
-            if source_fingerprint and source_fingerprint != await self._fingerprint(kind, entity_id):
-                await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
-                removed += 1
+            current_fingerprint = await self._fingerprint(kind, entity_id)
+            if source_fingerprint != current_fingerprint:
+                if await self.restore_stage1_from_canonical_event(
+                    entity_kind=kind, entity_id=entity_id
+                ):
+                    removed += 1
                 continue
             ready = _row_mapping(await self.engine.backend.async_call(
                 kind, "get", ids=[entity_id],
+                where={"namespace": self._namespace()},
                 include=["documents", "metadatas", "embeddings"]
             ))
             metadatas = _object_list(ready.get("metadatas"))
@@ -687,7 +1123,11 @@ class AsyncChromaTwoStageProjectionAdapter:
             if (
                 _object_list(ready.get("ids"))
                 and isinstance(metadata, dict)
-                and metadata.get("_kogwistar_source_fingerprint") == source_fingerprint
+                and metadata.get("_kogwistar_stage2_ready") is True
+                and metadata.get("_kogwistar_source_fingerprint") == current_fingerprint
+                and metadata.get("_kogwistar_source_revision") == int(
+                    getattr(current, "revision", 0)
+                )
             ):
                 if kind == "edge":
                     documents = _object_list(ready.get("documents"))
@@ -700,8 +1140,138 @@ class AsyncChromaTwoStageProjectionAdapter:
                             if embeddings and embeddings[0] is not None
                             and isinstance(embeddings[0], Sequence) else None,
                         )
-                await self.remove_stage1(entity_kind=kind, entity_id=entity_id)
+                if await self.remove_stage1(
+                    entity_kind=kind,
+                    entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    removed += 1
+
+        # Chroma is an eventual projection. Reconcile scoped pages against
+        # canonical event revisions, and defer physical deletes so offsets stay
+        # stable for the duration of each scan.
+        orphaned: list[tuple[str, str, int, str]] = []
+        stale_active: list[tuple[str, str]] = []
+        for entity_kind in ("node", "edge"):
+            observed: list[tuple[str, int, str]] = []
+            offset = 0
+            while True:
+                page = _row_mapping(await self.engine.backend.async_call(
+                    entity_kind,
+                    "get",
+                    limit=500,
+                    offset=offset,
+                    where={"namespace": self._namespace()},
+                    include=["metadatas"],
+                ))
+                ids = [str(value) for value in _object_list(page.get("ids"))]
+                if not ids:
+                    break
+                metadatas = _object_list(page.get("metadatas"))
+                for index, entity_id in enumerate(ids):
+                    metadata = (
+                        _row_mapping(metadatas[index])
+                        if index < len(metadatas)
+                        else {}
+                    )
+                    if metadata.get("_kogwistar_stage2_ready") is not True:
+                        continue
+                    revision = metadata.get("_kogwistar_source_revision")
+                    fingerprint = metadata.get("_kogwistar_source_fingerprint")
+                    if (
+                        not isinstance(revision, int)
+                        or isinstance(revision, bool)
+                        or revision <= 0
+                        or not isinstance(fingerprint, str)
+                        or not fingerprint
+                    ):
+                        continue
+                    observed.append((entity_id, revision, fingerprint))
+                offset += len(ids)
+                if len(ids) < 500:
+                    break
+
+            revisions = await asyncio.to_thread(
+                self.engine.indexing.canonical_revision_payloads,
+                entity_kind=entity_kind,
+                entity_ids=(entity_id for entity_id, _, _ in observed),
+                namespace=self._namespace(),
+            )
+            for entity_id, stored_revision, stored_fingerprint in observed:
+                try:
+                    current = json.loads(revisions[entity_id])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if current.get("source_state") != "active":
+                    orphaned.append(
+                        (entity_kind, entity_id, stored_revision, stored_fingerprint)
+                    )
+                elif (
+                    current.get("canonical_revision") != stored_revision
+                    or current.get("source_fingerprint") != stored_fingerprint
+                ):
+                    stale_active.append((entity_kind, entity_id))
+
+        for entity_kind, entity_id in stale_active:
+            current = await self._current(entity_kind, entity_id)
+            current_fingerprint = await self._fingerprint(entity_kind, entity_id)
+            staged = _optional_row_mapping(
+                await self._meta(
+                    "get_stage1_node_projection",
+                    self._namespace(),
+                    self._key(entity_kind, entity_id),
+                )
+            )
+            staged_payload = _row_mapping(staged.get("payload")) if staged else {}
+            if (
+                current is not None
+                and current.state == "active"
+                and staged is not None
+                and _sequence_number(staged.get("last_authoritative_seq"))
+                == current.revision
+                and staged_payload.get("source_fingerprint") == current_fingerprint
+            ):
+                continue
+            if await self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
                 removed += 1
+
+        for entity_kind, entity_id, revision, fingerprint in orphaned:
+            await self.engine.backend.async_call(
+                entity_kind,
+                "delete",
+                ids=[entity_id],
+                where={
+                    "$and": [
+                        {"namespace": self._namespace()},
+                        {"_kogwistar_stage2_ready": True},
+                        {"_kogwistar_source_revision": revision},
+                        {"_kogwistar_source_fingerprint": fingerprint},
+                    ]
+                },
+            )
+            remaining = _row_mapping(await self.engine.backend.async_call(
+                entity_kind,
+                "get",
+                ids=[entity_id],
+                where={"namespace": self._namespace()},
+                include=["metadatas"],
+            ))
+            if _object_list(remaining.get("ids")):
+                continue
+            if entity_kind == "edge":
+                await self.engine.backend.async_call(
+                    "edge_endpoints",
+                    "delete",
+                    where={
+                        "$and": [
+                            {"edge_id": entity_id},
+                            {"namespace": self._namespace()},
+                        ]
+                    },
+                )
+            removed += 1
         return removed
 
 
@@ -779,14 +1349,27 @@ class AsyncRustPostgresTwoStageProjectionAdapter:
             return
         if not callable(provider):
             raise RuntimeError("async Rust two-stage projection requires an embedding provider")
+        expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
+        if op.upper() == "DELETE":
+            await asyncio.to_thread(
+                self._sync_adapter._clear_embedding_projection,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
+            return
         async_provider = cast(EmbeddingProvider, provider)
         current = await asyncio.to_thread(
             self.engine.indexing.canonical_entity_revision,
             entity_kind=entity_kind,
             entity_id=entity_id,
         )
-        expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
-        if op.upper() == "DELETE" or current is None or current.state != "active":
+        if current is None or current.state != "active":
+            await asyncio.to_thread(
+                self._sync_adapter._clear_embedding_projection,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                only_if_inactive=True,
+            )
             return
         actual = await asyncio.to_thread(
             self.engine.indexing.canonical_revision_payload,
@@ -846,16 +1429,27 @@ class AsyncRustPostgresTwoStageProjectionAdapter:
             entity_id = str(_job_value(job, "entity_id") or "")
             op = str(_job_value(job, "op") or "UPSERT")
             try:
-                if op.upper() == "DELETE":
-                    outcomes[job_id] = None
-                    continue
                 payload_json = _payload_text(_job_value(job, "payload_json"))
                 expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
+                if op.upper() == "DELETE":
+                    await asyncio.to_thread(
+                        self._sync_adapter._clear_embedding_projection,
+                        entity_kind=kind,
+                        entity_id=entity_id,
+                    )
+                    outcomes[job_id] = None
+                    continue
                 current = await asyncio.to_thread(
                     self.engine.indexing.canonical_entity_revision,
                     entity_kind=kind, entity_id=entity_id,
                 )
                 if current is None or current.state != "active":
+                    await asyncio.to_thread(
+                        self._sync_adapter._clear_embedding_projection,
+                        entity_kind=kind,
+                        entity_id=entity_id,
+                        only_if_inactive=True,
+                    )
                     outcomes[job_id] = None
                     continue
                 actual = await asyncio.to_thread(

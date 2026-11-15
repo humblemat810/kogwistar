@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "model_class": "edge",
+  "source_fixture_kind": "edge",
+  "input_lifecycle_status": "deleted",
+  "expected_lifecycle_status": "tombstoned",
+  "redirect_to_id": "replacement-edge-42"
+}

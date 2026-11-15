@@ -1,0 +1,370 @@
+from __future__ import annotations
+
+import ast
+import json
+import re
+import textwrap
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+RUST_ROOT = ROOT / "rust" / "crates"
+ANNOTATION_PREFIX = "// PYTHON_PARITY_V1: "
+pytestmark = [pytest.mark.ci, pytest.mark.core]
+ANNOTATION_REQUIRED_FIELDS = {
+    "rust",
+    "python",
+    "fixture",
+}
+ANNOTATION_TEST_FIELDS = {
+    "rust_test",
+    "python_test",
+}
+ANNOTATION_SERVICE_FIELDS = {"python_service"}
+
+
+def _parse_target(target: str) -> tuple[Path, str]:
+    path_text, symbol = target.split("#", maxsplit=1)
+    return ROOT / path_text, symbol
+
+
+def _rust_target_identity(path: Path, symbol: str) -> str:
+    return f"{path.relative_to(ROOT).as_posix()}#{symbol}"
+
+
+def _rust_symbol_source(
+    path: Path, symbol: str, visited: set[Path] | None = None
+) -> str | None:
+    visited = visited or set()
+    resolved_path = path.resolve()
+    if resolved_path in visited:
+        return None
+    visited.add(resolved_path)
+    source = path.read_text(encoding="utf-8")
+    if re.search(
+        rf"\b(?:pub\s+)?(?:async\s+)?fn {re.escape(symbol)}(?:\s*<[^>]*>)?\s*\(",
+        source,
+    ):
+        return source
+    for included_path in re.findall(r'include!\("([^"]+)"\)', source):
+        included_file = path.parent / included_path
+        if included_file.is_file():
+            included_source = _rust_symbol_source(included_file, symbol, visited)
+            if included_source is not None:
+                return included_source
+    return None
+
+
+def _python_symbol_exists(source: str, symbol: str) -> bool:
+    tree = ast.parse(source)
+    parts = symbol.split(".")
+    if len(parts) == 1:
+        return any(
+            (
+                isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == parts[0]
+            )
+            or (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == parts[0]
+            )
+            or (
+                isinstance(node, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == parts[0]
+                    for target in node.targets
+                )
+            )
+            for node in ast.walk(tree)
+        )
+    if len(parts) == 2:
+        owner, member = parts
+        for node in tree.body:
+            if not isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name != owner:
+                continue
+            return any(
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name == member
+                for item in node.body
+            )
+    return False
+
+
+def _python_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> bool:
+    tree = ast.parse(source)
+    function = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == symbol
+        ),
+        None,
+    )
+    if function is None:
+        return False
+    fixture_setup_nodes = [
+        node
+        for node in [*tree.body, *ast.walk(function)]
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        and fixture_name in (ast.get_source_segment(source, node.value) or "")
+    ]
+    fixture_variables = {
+        target.id
+        for node in fixture_setup_nodes
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        if isinstance(target, ast.Name)
+    }
+    calls = [
+        node
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+    ]
+    fixture_read_calls = {
+        call
+        for call in calls
+        if isinstance(call.func, ast.Attribute)
+        and call.func.attr == "read_text"
+        and (
+            fixture_name in (ast.get_source_segment(source, call) or "")
+            or (
+                isinstance(call.func.value, ast.Name)
+                and call.func.value.id in fixture_variables
+            )
+        )
+    }
+    return any(
+        isinstance(call.func, ast.Attribute)
+        and call.func.attr == "loads"
+        and isinstance(call.func.value, ast.Name)
+        and call.func.value.id == "json"
+        and any(child in fixture_read_calls for child in ast.walk(call))
+        for call in calls
+    )
+
+
+def _rust_test_consumes_fixture(source: str, symbol: str, fixture_name: str) -> bool:
+    match = re.search(rf"\bfn {re.escape(symbol)}\s*\(", source)
+    if match is None:
+        return False
+    next_test = re.search(
+        r"^\s*#\[(?:tokio::)?test\b",
+        source[match.end() :],
+        re.MULTILINE,
+    )
+    body_source = source[
+        match.start() : match.end() + next_test.start()
+        if next_test is not None
+        else len(source)
+    ]
+    for include_match in re.finditer(r"include_str!\s*\(", body_source):
+        depth = 0
+        in_string = False
+        escaped = False
+        end = None
+        for index in range(include_match.end() - 1, len(body_source)):
+            char = body_source[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_string = False
+                continue
+            if char == '"':
+                in_string = True
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    end = index + 1
+                    break
+        if end is None:
+            continue
+        macro_source = body_source[include_match.start() : end]
+        string_literals = re.findall(r'"(?:\\.|[^"\\])*"', macro_source)
+        if any(fixture_name in literal for literal in string_literals):
+            return True
+    fixture_path_variables = re.findall(
+        rf"\blet\s+(\w+)\s*=\s*[^;]*?\.join\s*\(\s*"
+        rf"\"[^\"]*{re.escape(fixture_name)}\"",
+        body_source,
+        re.DOTALL,
+    )
+    return any(
+        re.search(rf"\b(?:std::fs::)?(?:read|read_to_string)\s*\(\s*{name}\b", body_source)
+        for name in fixture_path_variables
+    )
+
+
+def _fixture_versions(value: object) -> list[object]:
+    if isinstance(value, dict):
+        versions = [
+            item
+            for key, item in value.items()
+            if key in {"schema_version", "contract_version"}
+        ]
+        for item in value.values():
+            versions.extend(_fixture_versions(item))
+        return versions
+    if isinstance(value, list):
+        return [version for item in value for version in _fixture_versions(item)]
+    return []
+
+
+def _has_v1_schema_version(value: object) -> bool:
+    return (type(value) is int and value == 1) or (
+        isinstance(value, str) and value.endswith("/v1")
+    )
+
+
+def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts() -> None:
+    annotations: list[tuple[Path, dict[str, str]]] = []
+    for rust_file in sorted(RUST_ROOT.rglob("*.rs")):
+        source = rust_file.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            if ANNOTATION_PREFIX not in line:
+                continue
+            payload = line.split(ANNOTATION_PREFIX, maxsplit=1)[1]
+            if not payload.split(";", maxsplit=1)[0].strip().startswith("rust="):
+                continue
+            fields = dict(
+                part.strip().split("=", maxsplit=1)
+                for part in payload.split(";")
+                if "=" in part
+            )
+            field_names = set(fields)
+            assert ANNOTATION_REQUIRED_FIELDS <= field_names, rust_file
+            assert field_names <= (
+                ANNOTATION_REQUIRED_FIELDS
+                | ANNOTATION_TEST_FIELDS
+                | ANNOTATION_SERVICE_FIELDS
+            ), rust_file
+            annotations.append((rust_file, fields))
+
+    assert annotations, "Rust/Python parity annotations must be verified"
+    seen_contracts: set[tuple[str, str, str, str | None, str | None]] = set()
+    for rust_file, fields in annotations:
+        rust_target_path, rust_symbol = _parse_target(fields["rust"])
+        assert rust_target_path.is_file()
+        rust_identity = _rust_target_identity(rust_target_path, rust_symbol)
+        contract_identity = (
+            rust_identity,
+            fields["python"],
+            fields["fixture"],
+            fields.get("rust_test"),
+            fields.get("python_test"),
+        )
+        assert contract_identity not in seen_contracts
+        seen_contracts.add(contract_identity)
+        assert _rust_symbol_source(rust_target_path, rust_symbol) is not None
+
+        python_path, python_symbol = _parse_target(fields["python"])
+        python_source = python_path.read_text(encoding="utf-8-sig")
+        assert _python_symbol_exists(python_source, python_symbol)
+        if "python_service" in fields:
+            service_path, service_symbol = _parse_target(fields["python_service"])
+            service_source = service_path.read_text(encoding="utf-8-sig")
+            assert _python_symbol_exists(service_source, service_symbol)
+
+        fixture_path = ROOT / fields["fixture"]
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        if "schema_version" in fixture:
+            assert _has_v1_schema_version(fixture["schema_version"])
+        else:
+            assert fixture_path.stem.endswith("-v1")
+        if "rust_test" in fields:
+            rust_test_path, rust_test_symbol = _parse_target(fields["rust_test"])
+            rust_test_source = _rust_symbol_source(rust_test_path, rust_test_symbol)
+            assert rust_test_source is not None, fields["rust_test"]
+            assert re.search(
+                rf"\bfn {re.escape(rust_test_symbol)}\s*\(", rust_test_source
+            )
+            assert _rust_test_consumes_fixture(
+                rust_test_source, rust_test_symbol, fixture_path.name
+            ), rust_test_path
+        if "python_test" in fields:
+            python_test_path, python_test_symbol = _parse_target(fields["python_test"])
+            python_test_source = python_test_path.read_text(encoding="utf-8-sig")
+            assert _python_symbol_exists(python_test_source, python_test_symbol)
+            assert _python_test_consumes_fixture(
+                python_test_source, python_test_symbol, fixture_path.name
+            ), python_test_path
+
+
+def test_parity_fixture_verifier_requires_test_scoped_loading() -> None:
+    assert 1 in _fixture_versions({"contract_version": 1})
+    assert _has_v1_schema_version(1)
+    assert _has_v1_schema_version("workflow-designer-capabilities/v1")
+    assert not _has_v1_schema_version(True)
+    assert not _has_v1_schema_version("workflow-designer-capabilities/v2")
+
+    python_type_alias = textwrap.dedent("""
+    from typing import TypeAlias
+    ProviderEvent: TypeAlias = Started | Completed
+    """)
+    assert _python_symbol_exists(python_type_alias, "ProviderEvent")
+
+    rust_body = textwrap.dedent("""
+    #[test]
+    fn parity_test() {
+        let data = include_str!(\"contracts/golden/shared.json\");
+        assert!(!data.is_empty());
+    }
+    """)
+    python_body = textwrap.dedent("""
+    def parity_test():
+        fixture = json.loads((ROOT / \"shared.json\").read_text())
+        assert fixture
+    """)
+    assert _rust_test_consumes_fixture(rust_body, "parity_test", "shared.json")
+    assert _python_test_consumes_fixture(python_body, "parity_test", "shared.json")
+
+    rust_comment_only = textwrap.dedent("""
+    #[test]
+    fn parity_test() {
+        // contracts/golden/shared.json
+        assert!(true);
+    }
+    """)
+    python_comment_only = textwrap.dedent("""
+    def parity_test():
+        # shared.json
+        json.loads((ROOT / \"other.json\").read_text())
+    """)
+    rust_other_fixture = textwrap.dedent("""
+    #[test]
+    fn parity_test() {
+        // \"shared.json\"
+        let _data = include_str!(\"other.json\");
+    }
+    """)
+    assert not _rust_test_consumes_fixture(
+        rust_comment_only, "parity_test", "shared.json"
+    )
+    assert not _python_test_consumes_fixture(
+        python_comment_only, "parity_test", "shared.json"
+    )
+    assert not _rust_test_consumes_fixture(
+        rust_other_fixture, "parity_test", "shared.json"
+    )
+
+
+def test_parity_targets_allow_same_symbol_in_distinct_backend_modules() -> None:
+    symbol = "upsert_node_index"
+    chroma = ROOT / "rust/crates/kogwistar-store-chroma/src/store.rs"
+    postgres = ROOT / "rust/crates/kogwistar-store-postgres/src/store/node_index.rs"
+    assert _rust_target_identity(chroma, symbol) != _rust_target_identity(
+        postgres, symbol
+    )
+    assert _rust_target_identity(chroma, symbol) == _rust_target_identity(
+        chroma, symbol
+    )

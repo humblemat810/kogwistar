@@ -8,6 +8,7 @@ from os import PathLike
 from typing import Any, Callable, Protocol, cast
 
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.models import (
     WorkflowRunNode,
@@ -161,6 +162,7 @@ class CheckpointRuntimeMixin:
             materialization_status=materialization_status,
         )
 
+    @implementation_selection_bound
     def resume_from_latest_checkpoint(
         self: CheckpointRuntimeHost,
         *,
@@ -354,11 +356,13 @@ class CheckpointRuntimeMixin:
         )
         validated = WorkflowCheckpointMetadata.model_validate(checkpoint_metadata)
         if validated.run_id != str(run_id):
-            raise ValueError("durable checkpoint projection run_id does not match lookup")
+            raise ValueError(
+                "durable checkpoint projection run_id does not match lookup"
+            )
         projected_conversation_id = checkpoint_metadata.get("conversation_id")
-        if projected_conversation_id is not None and str(projected_conversation_id) != str(
-            conversation_id
-        ):
+        if projected_conversation_id is not None and str(
+            projected_conversation_id
+        ) != str(conversation_id):
             raise ValueError(
                 "durable checkpoint projection conversation_id does not match lookup"
             )
@@ -394,6 +398,7 @@ class CheckpointRuntimeMixin:
         conversation_id: str,
         workflow_id: str,
         run_id: str,
+        owner_id: str | None = None,
         allow_resume_takeover: bool = False,
     ) -> RunOwnership | None:
         metadata = self._runtime_metadata_store()
@@ -406,6 +411,7 @@ class CheckpointRuntimeMixin:
                 run_id=run_id,
                 workflow_id=workflow_id,
                 conversation_id=conversation_id,
+                owner_id=owner_id,
                 allow_resume_takeover=allow_resume_takeover,
                 lease_ms=self.run_ownership_lease_ms,
             )

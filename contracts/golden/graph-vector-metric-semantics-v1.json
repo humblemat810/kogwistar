@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "query_embedding": [1.0, 0.0],
+  "vectors": [
+    { "id": "large-aligned", "embedding": [2.0, 0.0] },
+    { "id": "unit-angled", "embedding": [0.8, 0.6] },
+    { "id": "short-orthogonal", "embedding": [0.0, 0.5] }
+  ],
+  "cases": [
+    {
+      "metric": "cosine",
+      "python_distance_kind": "distance",
+      "expected_ids": ["large-aligned", "unit-angled", "short-orthogonal"],
+      "expected_distances": [0.0, 0.2, 1.0],
+      "expected_similarities": [1.0, 0.8, 0.0]
+    },
+    {
+      "metric": "l2",
+      "python_distance_kind": "distance",
+      "expected_ids": ["unit-angled", "large-aligned", "short-orthogonal"],
+      "expected_distances": [0.6324555320336759, 1.0, 1.118033988749895],
+      "expected_similarities": [0.6125741132772069, 0.5, 0.4721359549995794]
+    },
+    {
+      "metric": "ip",
+      "python_distance_kind": "negative_inner_product",
+      "expected_ids": ["large-aligned", "unit-angled", "short-orthogonal"],
+      "expected_distances": [-2.0, -0.8, 0.0],
+      "expected_similarities": [2.0, 0.8, 0.0]
+    }
+  ]
+}

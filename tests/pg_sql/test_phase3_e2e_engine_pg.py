@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -94,3 +95,180 @@ def test_phase3_e2e_engine_edges_by_doc_pg(
 
     got = eng.edges_by_doc(doc_id)
     assert e.safe_get_id() in set(got)
+
+
+def test_incident_edge_lookup_is_canonical_and_joins_postgres_transaction(
+    tmp_path: Path, sa_engine, pg_schema, monkeypatch
+) -> None:
+    import json
+
+    from sqlalchemy import text
+
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+    dim = 8
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=dim, schema=pg_schema)
+    backend.ensure_schema()
+    eng = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "incident_edges_pg"),
+        embedding_function=_dummy_embed(dim),
+        backend=backend,
+    )
+    eng._backend_uow = PostgresUnitOfWork(engine=sa_engine)
+
+    left = _make_node(summary="left", label="left", doc_id="incident-doc")
+    middle = _make_node(summary="middle", label="middle", doc_id="incident-doc")
+    right = _make_node(summary="right", label="right", doc_id="incident-doc")
+    eng.write.add_node(left)
+    eng.write.add_node(middle)
+    eng.write.add_node(right)
+
+    ordinary = _make_edge(
+        src=left.safe_get_id(),
+        tgt=middle.safe_get_id(),
+        relation="ordinary",
+        doc_id="incident-doc",
+    )
+    single_endpoint = _make_edge(
+        src=left.safe_get_id(),
+        tgt=middle.safe_get_id(),
+        relation="single_endpoint",
+        doc_id="incident-doc",
+    )
+    single_endpoint.target_ids = []
+    eng.write.add_edge(ordinary)
+    eng.write.add_edge(single_endpoint)
+
+    hyperedge = _make_edge(
+        src=middle.safe_get_id(),
+        tgt=right.safe_get_id(),
+        relation="hyperedge",
+        doc_id="incident-doc",
+    )
+    hyperedge.source_edge_ids = [ordinary.safe_get_id()]
+    hyperedge.target_edge_ids = [ordinary.safe_get_id()]
+    eng.write.add_edge(hyperedge)
+
+    raw_incident = backend.edge_get_by_endpoint(
+        endpoint_id=left.safe_get_id(), endpoint_type="node"
+    )
+    assert ordinary.safe_get_id() in raw_incident["ids"], raw_incident
+    edge_table = backend.edges.name
+    explain_sql = text(
+        f"""EXPLAIN SELECT id FROM "{pg_schema}"."{edge_table}"
+        WHERE ((metadata ->> 'source_ids')::jsonb) @> CAST(:endpoint AS jsonb)
+           OR ((metadata ->> 'target_ids')::jsonb) @> CAST(:endpoint AS jsonb)"""
+    )
+    with sa_engine.begin() as connection:
+        connection.execute(text("SET LOCAL enable_seqscan = off"))
+        plan = connection.execute(
+            explain_sql, {"endpoint": json.dumps([left.safe_get_id()])}
+        ).scalars().all()
+    assert any(
+        f"idx_{edge_table}_source_ids_gin" in str(line)
+        or f"idx_{edge_table}_target_ids_gin" in str(line)
+        for line in plan
+    ), plan
+    backend.edge_endpoints_delete(where={"edge_id": ordinary.safe_get_id()})
+    by_left = eng.read.get_incident_edges(left.safe_get_id())
+    assert {edge.safe_get_id() for edge in by_left} == {
+        ordinary.safe_get_id(),
+        single_endpoint.safe_get_id(),
+    }
+    by_edge = eng.read.get_incident_edges(
+        ordinary.safe_get_id(), endpoint_type="edge"
+    )
+    assert [edge.safe_get_id() for edge in by_edge] == [hyperedge.safe_get_id()]
+
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
+
+    class NoPythonReadFallback:
+        def edge_endpoints_get(self, **_values):
+            raise AssertionError("Rust-selected read crossed into Python backend")
+
+        def edge_get_by_endpoint(self, **_values):
+            raise AssertionError("Rust-selected read crossed into Python backend")
+
+    no_python_backend = NoPythonReadFallback()
+    no_python_backend.edge_endpoints = backend.edge_endpoints
+    with monkeypatch.context() as rust_selectors:
+        rust_selectors.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+        rust_metadata = RustEnginePostgresMetaStore(
+            dsn=sa_engine.url.render_as_string(hide_password=False), schema=pg_schema
+        )
+        rust_reader = ReadSubsystem(
+            SimpleNamespace(
+                metadata=rust_metadata,
+                backend=no_python_backend,
+                namespace="default",
+                kg_graph_type="knowledge",
+                _resolve_redirect_chain=lambda *, initial_items, **_values: initial_items,
+                _filter_items_by_resolve_mode=lambda items, _mode: items,
+            )
+        )
+        python_endpoint_rows = backend.edge_endpoints_get(
+            where={"doc_id": "incident-doc"},
+            include=["documents", "metadatas"],
+            limit=100,
+        )
+        rust_endpoint_rows = rust_reader.get_edge_endpoints(
+            where={"doc_id": "incident-doc"},
+            include=["documents", "metadatas"],
+            limit=100,
+        )
+        assert set(rust_endpoint_rows["ids"]) == set(python_endpoint_rows["ids"])
+        assert sorted(rust_endpoint_rows["documents"]) == sorted(
+            python_endpoint_rows["documents"]
+        )
+        assert sorted(
+            json.dumps(metadata, sort_keys=True)
+            for metadata in rust_endpoint_rows["metadatas"]
+        ) == sorted(
+            json.dumps(metadata, sort_keys=True)
+            for metadata in python_endpoint_rows["metadatas"]
+        )
+        other_namespace_reader = ReadSubsystem(
+            SimpleNamespace(
+                metadata=rust_metadata,
+                backend=no_python_backend,
+                namespace="other-namespace",
+                kg_graph_type="knowledge",
+            )
+        )
+        assert other_namespace_reader.get_edge_endpoints(
+            where={"doc_id": "incident-doc"},
+            include=["documents", "metadatas"],
+            limit=100,
+        )["ids"] == []
+        rust_by_left = rust_reader.get_incident_edges(left.safe_get_id())
+        assert {edge.safe_get_id() for edge in rust_by_left} == {
+            ordinary.safe_get_id(),
+            single_endpoint.safe_get_id(),
+        }
+        rust_by_edge = rust_reader.get_incident_edges(
+            ordinary.safe_get_id(), endpoint_type="edge"
+        )
+        assert [edge.safe_get_id() for edge in rust_by_edge] == [
+            hyperedge.safe_get_id()
+        ]
+
+    transient = _make_edge(
+        src=left.safe_get_id(),
+        tgt=right.safe_get_id(),
+        relation="transaction-local",
+        doc_id="incident-doc",
+    )
+    with pytest.raises(RuntimeError, match="rollback probe"):
+        with eng.uow():
+            eng.write.add_edge(transient)
+            inside_transaction = eng.read.get_incident_edges(right.safe_get_id())
+            assert transient.safe_get_id() in {
+                edge.safe_get_id() for edge in inside_transaction
+            }
+            raise RuntimeError("rollback probe")
+
+    after_rollback = eng.read.get_incident_edges(right.safe_get_id())
+    assert transient.safe_get_id() not in {
+        edge.safe_get_id() for edge in after_rollback
+    }

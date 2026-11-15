@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import contextvars
+import threading
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator, Sequence
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import fields
 from pathlib import Path
 from typing import Any, NoReturn, Protocol, TYPE_CHECKING, TypeVar, cast
 
 from kogwistar._rust_bridge import store_sqlite
-from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
+from kogwistar.engine_core.engine_sqlite import (
+    IndexJobRow,
+    ProjectedLaneMessageSqlRow,
+    _stage1_equality_filter,
+)
 from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.implementation_selection import assert_transaction_entry_allowed
 
 from .event_envelope import EntityEventEnvelope
 
@@ -41,8 +48,9 @@ class _TransactionToken(Protocol):
 
 
 class _RustTransactionToken:
-    def __init__(self, value: str) -> None:
+    def __init__(self, value: str, owner_id: str) -> None:
         self.value = value
+        self.owner_id = owner_id
 
     def execute(self, *args: object, **kwargs: object) -> NoReturn:
         raise RustSQLiteConnectionUnavailable(
@@ -59,9 +67,14 @@ class RustEngineSQLite:
     def __init__(self, persistent_directory: Path, filename: str = "engine.db") -> None:
         self.persistent_directory = Path(persistent_directory)
         self.db_path = self.persistent_directory / filename
+        self._authority_id = uuid.uuid4().hex
         self._transaction_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
             f"kogwistar_rust_sqlite_transaction_{id(self)}", default=None
         )
+        self._session_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+            f"kogwistar_rust_sqlite_session_depth_{id(self)}", default=0
+        )
+        self._transaction_lock = threading.Lock()
 
     def _call(self, kind: str, **values: JsonValue) -> _RustResultT:  # pyright: ignore[reportInvalidTypeVarUse]
         """Call the Rust JSON boundary with an explicit caller result type.
@@ -74,12 +87,46 @@ class RustEngineSQLite:
         return cast(
             _RustResultT,
             store_sqlite(
-            path=self.db_path,
-            operation={"kind": kind, **values},
-            transaction_id=self._transaction_id.get(),
-            reuse_session=self._transaction_id.get() is not None,
+                path=self.db_path,
+                operation={"kind": kind, **values},
+                transaction_id=self._transaction_id.get(),
+                reuse_session=(
+                    self._transaction_id.get() is not None
+                    or self._session_depth.get() > 0
+                ),
             ),
         )
+
+    @property
+    def transaction_active(self) -> bool:
+        """Whether this facade currently owns an explicit native transaction."""
+        return self._transaction_id.get() is not None
+
+    def execute_batch(
+        self, operations: Sequence[JsonObject], *, abort: bool = False
+    ) -> list[JsonValue]:
+        """Execute several compatible store operations across one native seam.
+
+        The Rust store owns one immediate transaction for the batch. Existing
+        one-operation methods remain unchanged; callers opt into this path only
+        when the operations are intentionally atomic and do not require an
+        externally visible commit between individual items.
+        """
+        if not operations:
+            return []
+        if self.transaction_active:
+            raise RuntimeError(
+                "Rust store batches cannot be nested inside an active transaction; "
+                "use individual operations or make the batch the transaction owner"
+            )
+        result = self._call(
+            "batch",
+            operations=[dict(operation) for operation in operations],
+            abort=abort,
+        )
+        if not isinstance(result, list):
+            raise RuntimeError("Rust SQLite batch returned a non-list result")
+        return cast(list[JsonValue], result)
 
     def ensure_initialized(self) -> None:
         self.persistent_directory.mkdir(parents=True, exist_ok=True)
@@ -89,6 +136,33 @@ class RustEngineSQLite:
         """Release the native cached SQLite handle for this facade path."""
         self._call("close")
 
+    @contextmanager
+    def session(self) -> Iterator[RustEngineSQLite]:
+        """Reuse one Rust-owned SQLite connection for this execution context.
+
+        A session is useful for a request or worker performing several
+        operations. It avoids reopening the database and rerunning schema
+        initialization for every read. Nested sessions share the outer
+        connection; a transaction inside a session retains it after commit.
+        """
+        from .sqlite_context import sqlite_execution_context
+
+        with sqlite_execution_context("rust"):
+            depth = self._session_depth.get()
+            token = self._session_depth.set(depth + 1)
+            initialized = False
+            try:
+                if depth == 0:
+                    self.ensure_initialized()
+                    initialized = True
+                yield self
+            finally:
+                try:
+                    if depth == 0 and initialized:
+                        self.close()
+                finally:
+                    self._session_depth.reset(token)
+
     def connect(self) -> None:
         raise RustSQLiteConnectionUnavailable(
             "raw Python SQLite connection would create a second writer while "
@@ -97,20 +171,64 @@ class RustEngineSQLite:
 
     @contextmanager
     def transaction(self, *, immediate: bool = True) -> Iterator[_TransactionToken]:
+        if self._transaction_id.get() is not None:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+            return
+        with self._transaction_lock:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+
+    def lock_entity_identity(
+        self, *, namespace: str, entity_kind: str, entity_id: str
+    ) -> None:
+        """Use the active native ``BEGIN IMMEDIATE`` transaction as identity lock."""
+        del namespace, entity_kind, entity_id
+        if not self.transaction_active:
+            raise RustSQLiteConnectionUnavailable(
+                "identity locks require an active Rust SQLite transaction"
+            )
+
+    @asynccontextmanager
+    async def async_transaction(
+        self, *, immediate: bool = True
+    ) -> AsyncIterator[_TransactionToken]:
+        """Serialize async UoWs with sync callers of this Rust SQLite facade."""
+        if self._transaction_id.get() is not None:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+            return
+
+        acquire = asyncio.create_task(asyncio.to_thread(self._transaction_lock.acquire))
+        try:
+            await asyncio.shield(acquire)
+        except asyncio.CancelledError:
+            await acquire
+            self._transaction_lock.release()
+            raise
+        try:
+            with self._transaction_scope(immediate=immediate) as token:
+                yield token
+        finally:
+            self._transaction_lock.release()
+
+    @contextmanager
+    def _transaction_scope(self, *, immediate: bool) -> Iterator[_TransactionToken]:
         from .sqlite_context import sqlite_execution_context
 
+        assert_transaction_entry_allowed()
         del immediate
         with sqlite_execution_context("rust"):
             current = self._transaction_id.get()
             if current is not None:
-                yield _RustTransactionToken(current)
+                yield _RustTransactionToken(current, self._authority_id)
                 return
             transaction_id = uuid.uuid4().hex
             token = self._transaction_id.set(transaction_id)
             try:
                 self._call("begin_transaction")
                 try:
-                    yield _RustTransactionToken(transaction_id)
+                    yield _RustTransactionToken(transaction_id, self._authority_id)
                 except BaseException:
                     self._call("rollback_transaction")
                     raise
@@ -118,7 +236,8 @@ class RustEngineSQLite:
                     self._call("commit_transaction")
             finally:
                 try:
-                    self._call("close")
+                    if self._session_depth.get() == 0:
+                        self._call("close")
                 finally:
                     self._transaction_id.reset(token)
 
@@ -162,7 +281,11 @@ class RustEngineSQLite:
 
     def _require_token(self, conn: _TransactionToken) -> None:
         active = self._transaction_id.get()
-        if not isinstance(conn, _RustTransactionToken) or conn.value != active:
+        if (
+            not isinstance(conn, _RustTransactionToken)
+            or conn.value != active
+            or conn.owner_id != self._authority_id
+        ):
             raise RustSQLiteConnectionUnavailable("stale Rust SQLite transaction token")
 
     def enqueue_index_job(self, **values: JsonValue) -> str:
@@ -458,8 +581,13 @@ class RustEngineSQLite:
     def get_stage1_node_projection(
         self, namespace: str, node_id: str
     ) -> dict[str, Any] | None:
-        return self._call(
+        row = self._call(
             "get_stage1_node_projection", namespace=namespace, key=node_id
+        )
+        if row is not None:
+            return row
+        return self._call(
+            "get_stage1_node_projection", namespace=namespace, key=f"node:{node_id}"
         )
 
     def list_stage1_node_projections(self, namespace: str) -> list[dict[str, Any]]:
@@ -486,6 +614,22 @@ class RustEngineSQLite:
         self._call(
             "clear_stage1_node_projection", namespace=namespace, key=node_id
         )
+        if not node_id.startswith(("node:", "edge:")):
+            self._call(
+                "clear_stage1_node_projection", namespace=namespace, key=f"node:{node_id}"
+            )
+
+    def clear_stage1_node_projection_if_current(
+        self, namespace: str, node_id: str, expected_last_authoritative_seq: int
+    ) -> bool:
+        return bool(
+            self._call(
+                "clear_stage1_node_projection_if_current",
+                namespace=namespace,
+                key=node_id,
+                expected_last_authoritative_seq=int(expected_last_authoritative_seq),
+            )
+        )
 
     def query_stage1_node_projections(
         self,
@@ -496,17 +640,12 @@ class RustEngineSQLite:
         metadata: dict[str, Any] | None = None,
         limit: int | None = 200,
     ) -> list[dict[str, Any]]:
-        if metadata is not None and not isinstance(metadata, dict):
-            raise TypeError("metadata must be a dict or None")
-        if any(
-            str(key).startswith("$") or isinstance(value, dict)
-            for key, value in (metadata or {}).items()
-        ):
-            raise ValueError("Stage-1 metadata query supports flat equality only")
+        wanted_metadata, impossible_filter = _stage1_equality_filter(metadata)
+        if impossible_filter:
+            return []
         if limit is not None and int(limit) <= 0:
             return []
         wanted_ids = {str(value) for value in ids} if ids is not None else None
-        wanted_metadata = dict(metadata or {})
         result: list[dict[str, Any]] = []
         for row in self.list_stage1_node_projections(namespace):
             payload = row.get("payload")

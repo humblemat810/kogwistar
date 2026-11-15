@@ -1,0 +1,14 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "required_fields": [
+    "elements",
+    "mode",
+    "doc_id"
+  ],
+  "array_fields": [
+    "elements"
+  ],
+  "mode": "reify",
+  "doc_id_query_echo": true
+}

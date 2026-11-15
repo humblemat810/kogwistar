@@ -1,0 +1,9 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "run_id": "missing",
+  "response_body": {
+    "run_id": "missing",
+    "replayed": false
+  }
+}

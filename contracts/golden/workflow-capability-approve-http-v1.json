@@ -1,0 +1,32 @@
+{
+  "http_status": 202,
+  "request": {
+    "action": "spawn_process",
+    "capabilities": [
+      "spawn_process",
+      "workflow.run.write"
+    ],
+    "subject": "admin-1"
+  },
+  "required_body_fields": [
+    "specs",
+    "approvals",
+    "revoked",
+    "audit_log",
+    "current_subject",
+    "effective_capabilities"
+  ],
+  "expected_subject": "admin-1",
+  "expected_approval": {
+    "subject": "admin-1",
+    "action": "spawn_process",
+    "capabilities": [
+      "spawn_process",
+      "workflow.run.write"
+    ]
+  },
+  "effective_capabilities_include": [
+    "spawn_process",
+    "workflow.run.write"
+  ]
+}

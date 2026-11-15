@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "lexical_hits": [
+    {
+      "index_key": "a",
+      "node_id": "node-a",
+      "canonical_title": "Alpha",
+      "provision": "section 1",
+      "document_id": "doc-a",
+      "bm25_score": -1.0
+    },
+    {
+      "index_key": "b",
+      "node_id": "node-b",
+      "canonical_title": "Beta",
+      "provision": "section 2",
+      "document_id": null,
+      "bm25_score": -0.1
+    }
+  ],
+  "vector_hits": [
+    {
+      "id": "idx:a",
+      "metadata": {
+        "index_key": "a",
+        "target_node_id": "node-a",
+        "canonical_title": "Alpha",
+        "provision": "section 1",
+        "doc_id": "doc-a"
+      },
+      "distance": 0.2
+    },
+    {
+      "id": "idx:c",
+      "metadata": {
+        "target_node_id": "node-c",
+        "canonical_title": "Gamma",
+        "provision": "section 1",
+        "doc_id": "doc-c"
+      },
+      "distance": 0.8
+    }
+  ],
+  "expected": [
+    {
+      "index_key": "a",
+      "node_id": "node-a",
+      "fts_score": 1.0,
+      "vec_score": 1.0,
+      "hybrid_score": 1.0,
+      "document_id": "doc-a"
+    },
+    {
+      "index_key": "b",
+      "node_id": "node-b",
+      "fts_score": 0.0,
+      "vec_score": 0.0,
+      "hybrid_score": 0.0,
+      "document_id": null
+    },
+    {
+      "index_key": "node-c|Gamma|section 1",
+      "node_id": "node-c",
+      "fts_score": 0.0,
+      "vec_score": 0.0,
+      "hybrid_score": 0.0,
+      "document_id": "doc-c"
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "route": "GET /api/runs/{run_id}/events",
+  "success_status": 200,
+  "media_type": "text/event-stream",
+  "event_name": "run.started",
+  "required_data_fields": ["run_id", "event_type", "created_at_ms"]
+}

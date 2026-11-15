@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "ok": true,
+  "required_fields": [
+    "ok",
+    "backend",
+    "persist_directory",
+    "conversation_persist_directory",
+    "workflow_persist_directory",
+    "wisdom_persist_directory",
+    "pg_schema_base"
+  ]
+}

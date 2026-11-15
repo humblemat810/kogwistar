@@ -117,6 +117,112 @@ def _edge(
     )
 
 
+def test_node_query_result_parses_when_embeddings_are_not_included(tmp_path):
+    engine = _engine(tmp_path)
+    node = _node(
+        node_id="query-without-embedding-node",
+        doc_id="query-without-embedding-doc",
+        label="Node without returned embedding",
+        summary="The backend omitted embeddings from this read.",
+        entity_type="knowledge_node",
+        embedding=[1.0, 0.0],
+        metadata={},
+    )
+    document, metadata = engine.write.node_doc_and_meta(node)
+
+    result = engine.read.nodes_from_query_result(
+        {
+            "ids": [[node.id]],
+            "documents": [[document]],
+            "metadatas": [[metadata]],
+        }
+    )
+
+    assert [[item.safe_get_id() for item in batch] for batch in result] == [[node.id]]
+    assert result[0][0].embedding is None
+
+
+def test_edge_query_result_parses_when_embeddings_are_not_included(tmp_path):
+    engine = _engine(tmp_path)
+    edge = _edge(
+        edge_id="query-without-embedding-edge",
+        src="query-source",
+        tgt="query-target",
+        doc_id="query-without-embedding-doc",
+        label="Edge without returned embedding",
+        summary="The backend omitted embeddings from this read.",
+        relation="references",
+        entity_type="knowledge_edge",
+        embedding=[1.0, 0.0],
+        metadata={},
+    )
+    document, metadata = engine.write.edge_doc_and_meta(edge)
+
+    result = engine.read.edges_from_query_result(
+        {
+            "ids": [[edge.id]],
+            "documents": [[document]],
+            "metadatas": [[metadata]],
+        }
+    )
+
+    assert [[item.safe_get_id() for item in batch] for batch in result] == [[edge.id]]
+    assert result[0][0].embedding is None
+
+
+def test_graph_reads_use_explicit_backend_model_mode(tmp_path, monkeypatch):
+    engine = _engine(tmp_path)
+    node = _node(
+        node_id="read-mode-node",
+        doc_id="read-mode-doc",
+        label="Read mode node",
+        summary="A node used to verify backend deserialization mode.",
+        entity_type="concept",
+        embedding=[0.1, 0.2],
+        metadata={},
+    )
+    edge = _edge(
+        edge_id="read-mode-edge",
+        src=node.id,
+        tgt="read-mode-target",
+        doc_id="read-mode-doc",
+        label="Read mode edge",
+        summary="An edge used to verify backend deserialization mode.",
+        relation="related_to",
+        entity_type="relation",
+        embedding=[0.2, 0.3],
+        metadata={},
+    )
+    target = _node(
+        node_id="read-mode-target",
+        doc_id="read-mode-doc",
+        label="Read mode target",
+        summary="The edge endpoint used by the read-mode test.",
+        entity_type="concept",
+        embedding=[0.3, 0.4],
+        metadata={},
+    )
+    engine.write.add_node(node)
+    engine.write.add_node(target)
+    engine.write.add_edge(edge)
+
+    def reject_stack_detection(**_kwargs):
+        raise AssertionError("backend reads must not inspect the caller stack")
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            "pydantic_extension.model_slicing.mixin._infer_mode_from_stack",
+            reject_stack_detection,
+        )
+        read_nodes = engine.read.get_nodes(ids=[node.id])
+        read_edges = engine.read.get_edges(ids=[edge.id])
+
+    assert len(read_nodes) == 1
+    assert read_nodes[0].label == node.label
+    assert len(read_edges) == 1
+    assert read_edges[0].relation == edge.relation
+
+
 def test_probe_reads_work_without_embeddings(tmp_path, monkeypatch):
     engine = _engine(tmp_path)
 

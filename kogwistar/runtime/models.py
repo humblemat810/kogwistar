@@ -1,9 +1,18 @@
 from typing import ClassVar, Literal, TypeAlias
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 from ..engine_core.models import Edge, Node
 from ..json_types import JsonValue
+
+WorkflowExecutorTarget: TypeAlias = Literal["python-worker", "rust-native"]
 
 
 class WorkflowNodeMetadata(BaseModel):
@@ -16,22 +25,38 @@ class WorkflowNodeMetadata(BaseModel):
       - wf_op (unless wf_terminal=True)
 
     Optional:
-      - wf_version: used for replay compatibility + future cache invalidation
+      - wf_version: version of the wf_op implementation selected by the resolver;
+        the exact version is part of the frozen execution/replay contract
+      - wf_environment_id: required worker/runtime dependency environment
+      - wf_executor_target: optional per-node worker implementation; omitted
+        preserves legacy operation-prefix routing and Python-worker defaults
       - wf_fanout: allow multiple outgoing edges to fire in parallel
       - wf_start: marks the start node in this workflow_id
       - wf_terminal: marks terminal node
+
+    This is distinct from ``WorkflowDesignArtifact.workflow_version``, which
+    versions the workflow design as a whole and does not select step handlers.
     """
 
     entity_type: str = Field("workflow_node", description='Must be "workflow_node"')
     workflow_id: str
     wf_op: str = "noop"
-    wf_version: str = "v1"
+    wf_version: StrictStr = "v1"
+    wf_environment_id: str | None = None
+    wf_executor_target: WorkflowExecutorTarget | None = None
     wf_start: bool = False
     wf_terminal: bool = False
     wf_fanout: bool = False
     wf_join: bool = False  # barrier/join node
 
     model_config = ConfigDict(extra="allow")
+
+    @field_validator("wf_version")
+    @classmethod
+    def _validate_wf_version(cls, value: str) -> str:
+        if not value or value != value.strip():
+            raise ValueError("wf_version must be a non-empty canonical string")
+        return value
 
     @model_validator(mode="after")
     def _validate(self) -> "WorkflowNodeMetadata":
@@ -41,6 +66,20 @@ class WorkflowNodeMetadata(BaseModel):
             self.wf_op is None or str(self.wf_op).strip() == ""
         ):
             raise ValueError("wf_op is required unless wf_terminal=True")
+        if self.wf_environment_id is not None and (
+            not self.wf_environment_id.strip()
+            or self.wf_environment_id != self.wf_environment_id.strip()
+        ):
+            raise ValueError("wf_environment_id must be non-empty and canonical")
+        if self.wf_executor_target not in {None, "python-worker", "rust-native"}:
+            raise ValueError("wf_executor_target must be python-worker or rust-native")
+        if (
+            self.wf_executor_target == "python-worker"
+            and self.wf_op.startswith("rust-native/")
+        ):
+            raise ValueError(
+                "rust-native operation names cannot target the Python worker"
+            )
         return self
 
 
@@ -90,7 +129,12 @@ class WorkflowNode(Node):
 
     @field_validator("metadata")
     def check_metadataWFN(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        v2 = WorkflowNodeMetadata.model_validate(v).model_dump()
+        metadata = WorkflowNodeMetadata.model_validate(v)
+        v2 = metadata.model_dump()
+        if metadata.wf_environment_id is None:
+            v2.pop("wf_environment_id", None)
+        if metadata.wf_executor_target is None:
+            v2.pop("wf_executor_target", None)
         v.update(v2)
         return v
 

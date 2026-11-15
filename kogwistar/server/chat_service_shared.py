@@ -19,6 +19,7 @@ from typing import ClassVar, Protocol, cast, runtime_checkable
 from kogwistar.conversation.models import ConversationNode, MetaFromLastSummary
 from kogwistar.conversation.service import ConversationService
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.implementation_selection import ImplementationSelectionSnapshot
 from kogwistar.json_types import JsonValue
 from kogwistar.server.auth_middleware import claims_ctx
 
@@ -212,6 +213,13 @@ class _BaseComponent:
 
     def __init__(self, owner: ChatRunServiceOwner) -> None:
         self._owner = owner
+
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        """Use the conversation engine snapshot that owns server run records."""
+        return getattr(
+            self._owner._conversation_engine(), "_implementation_selection_snapshot", None
+        )
 
     @property
     def run_registry(self) -> RunRegistry:

@@ -1,15 +1,21 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from kogwistar.engine_core.chroma_backend import ChromaBackend
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.lifecycle import LifecycleSubsystem
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
+from kogwistar.engine_core.storage_backend import get_atomic_mutation_capability
 from kogwistar.engine_core.two_stage_chroma import (
     SQLiteChromaTwoStageProjectionAdapter,
+    _sequence_number,
     chroma_two_stage_capability,
 )
 from kogwistar.graph_query import GraphQuery
@@ -18,24 +24,62 @@ from tests._helpers.graph_builders import build_entity_node, build_relationship_
 from tests.core.two_stage_case_catalog import two_stage_case
 
 
+@pytest.mark.parametrize(("value", "expected"), [(7, 7), (True, 0), (False, 0), ("7", 0)])
+def test_sync_sequence_number_rejects_non_integer_and_boolean_values(value, expected):
+    assert _sequence_number(value) == expected
+
+
 class _Backend:
     def __init__(self) -> None:
         self.rows: dict[str, dict] = {}
         self.endpoint_rows: dict[str, dict] = {}
 
+    @staticmethod
+    def _matches_where(metadata, where):
+        if not isinstance(where, dict) or not where:
+            return True
+        if "$and" in where:
+            clauses = where["$and"]
+            return isinstance(clauses, list) and all(
+                _Backend._matches_where(metadata, clause) for clause in clauses
+            )
+        return all(
+            metadata.get(key)
+            == (value.get("$eq") if isinstance(value, dict) else value)
+            for key, value in where.items()
+        )
+
     def node_get(self, **kwargs):
         ids = [str(value) for value in kwargs.get("ids") or []]
-        rows = [self.rows[value] for value in ids if value in self.rows]
-        return {
+        where = kwargs.get("where")
+        rows = (
+            [self.rows[value] for value in ids if value in self.rows]
+            if ids else list(self.rows.values())
+        )
+        rows = [
+            row
+            for row in rows
+            if self._matches_where(row["metadata"], where)
+        ]
+        if not ids:
+            offset = int(kwargs.get("offset") or 0)
+            limit = int(kwargs.get("limit") or len(rows))
+            rows = rows[offset : offset + limit]
+        result = {
             "ids": [row["id"] for row in rows],
             "documents": [row["document"] for row in rows],
             "metadatas": [row["metadata"] for row in rows],
-            "embeddings": [row.get("embedding") for row in rows],
         }
+        if "embeddings" in kwargs.get("include", []):
+            result["embeddings"] = [row.get("embedding") for row in rows]
+        return result
 
     def node_upsert(self, **kwargs):
         for node_id, document, metadata, embedding in zip(
-            kwargs["ids"], kwargs["documents"], kwargs["metadatas"], kwargs["embeddings"]
+            kwargs["ids"],
+            kwargs["documents"],
+            kwargs["metadatas"],
+            kwargs["embeddings"],
         ):
             self.rows[str(node_id)] = {
                 "id": str(node_id),
@@ -44,13 +88,39 @@ class _Backend:
                 "embedding": embedding,
             }
 
+    def node_update(self, *, ids, metadatas, **kwargs):
+        del kwargs
+        for node_id, metadata in zip(ids, metadatas):
+            if str(node_id) in self.rows:
+                self.rows[str(node_id)]["metadata"] = metadata
+
     def node_delete(self, **kwargs):
-        for node_id in kwargs.get("ids") or []:
-            self.rows.pop(str(node_id), None)
+        ids = kwargs.get("ids") or []
+        where = kwargs.get("where")
+        for node_id in ids:
+            row = self.rows.get(str(node_id))
+            if row is not None and self._matches_where(row["metadata"], where):
+                self.rows.pop(str(node_id), None)
+
+    def node_query(self, **kwargs):
+        rows = list(self.rows.values())
+        count = int(kwargs.get("n_results", len(rows)))
+        rows = rows[:count]
+        result = {
+            "ids": [[row["id"] for row in rows]],
+            "documents": [[row["document"] for row in rows]],
+            "metadatas": [[row["metadata"] for row in rows]],
+        }
+        if "embeddings" in kwargs.get("include", []):
+            result["embeddings"] = [[row.get("embedding") for row in rows]]
+        if "distances" in kwargs.get("include", []):
+            result["distances"] = [[float(index) for index, _ in enumerate(rows)]]
+        return result
 
     edge_get = node_get
     edge_upsert = node_upsert
     edge_delete = node_delete
+    edge_query = node_query
 
     def edge_endpoints_get(self, **kwargs):
         ids = [str(value) for value in kwargs.get("ids") or []]
@@ -63,10 +133,7 @@ class _Backend:
             if not isinstance(clause, dict):
                 continue
             for key, value in clause.items():
-                rows = [
-                    row for row in rows
-                    if row["metadata"].get(key) == value
-                ]
+                rows = [row for row in rows if row["metadata"].get(key) == value]
         return {
             "ids": [row["id"] for row in rows],
             "documents": [row["document"] for row in rows],
@@ -78,7 +145,9 @@ class _Backend:
             kwargs["ids"], kwargs["documents"], kwargs["metadatas"]
         ):
             self.endpoint_rows[str(endpoint_id)] = {
-                "id": str(endpoint_id), "document": document, "metadata": metadata
+                "id": str(endpoint_id),
+                "document": document,
+                "metadata": metadata,
             }
 
     def edge_endpoints_delete(self, **kwargs):
@@ -86,7 +155,9 @@ class _Backend:
         where = kwargs.get("where") or {}
         edge_id = where.get("edge_id")
         for endpoint_id, row in list(self.endpoint_rows.items()):
-            if endpoint_id in ids or (edge_id is not None and row["metadata"].get("edge_id") == edge_id):
+            if endpoint_id in ids or (
+                edge_id is not None and row["metadata"].get("edge_id") == edge_id
+            ):
                 self.endpoint_rows.pop(endpoint_id, None)
 
 
@@ -94,6 +165,7 @@ class _Indexing:
     def __init__(self) -> None:
         self.fingerprint = "fp-1"
         self.state = "active"
+        self.payload: dict[str, object] = {}
         self.jobs: list[dict] = []
 
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str:
@@ -105,8 +177,23 @@ class _Indexing:
             }
         )
 
+    def canonical_revision_payloads(self, *, entity_kind: str, entity_ids, namespace=None):
+        del namespace
+        return {
+            entity_id: self.canonical_revision_payload(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            for entity_id in entity_ids
+        }
+
     def canonical_entity_revision(self, *, entity_kind: str, entity_id: str):
-        return SimpleNamespace(revision=1, state=self.state)
+        return SimpleNamespace(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            revision=1 if self.fingerprint == "fp-1" else 2,
+            state=self.state,
+            payload=self.payload,
+        )
 
     def enqueue_index_job(self, **kwargs) -> None:
         self.jobs.append(kwargs)
@@ -116,27 +203,65 @@ def _engine(tmp_path: Path):
     meta = EngineSQLite(tmp_path, filename="meta.sqlite")
     meta.ensure_initialized()
     backend = _Backend()
+
+    def node_doc_and_meta(node):
+        engine.indexing.payload = node.model_dump(
+            dump_format="json", field_mode="backend", exclude=["embedding"]
+        )
+        return (
+            node.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            {
+                "node_id": node.safe_get_id(),
+                "kind": "entity",
+                "_class_name": type(node).__name__,
+            },
+        )
+
+    def enrich_edge_meta(edge):
+        engine.indexing.payload = edge.model_dump(
+            dump_format="json", field_mode="backend", exclude=["embedding"]
+        )
+        return {
+            "edge_id": edge.safe_get_id(),
+            "_class_name": type(edge).__name__,
+        }
+
     engine = SimpleNamespace(
         namespace="tenant-a",
+        kg_graph_type="knowledge",
         meta_sqlite=meta,
+        metadata=meta,
         backend=backend,
         indexing=_Indexing(),
+        _phase1_enable_index_jobs=True,
         write=SimpleNamespace(
-            node_doc_and_meta=lambda node: (
-                f"document:{node.safe_get_id()}",
-                {"node_id": node.safe_get_id(), "kind": "entity"},
-            ),
-            enrich_edge_meta=lambda edge: {"edge_id": edge.safe_get_id()},
+            node_doc_and_meta=node_doc_and_meta,
+            enrich_edge_meta=enrich_edge_meta,
         ),
         embed=SimpleNamespace(
             iterative_defensive_emb=lambda document: [float(len(document)), 1.0]
         ),
         persistence_mode="two_stage",
     )
+    engine._resolve_redirect_chain = lambda *, initial_items, **_: initial_items
+    engine._filter_items_by_resolve_mode = lambda items, _: items
     adapter = SQLiteChromaTwoStageProjectionAdapter(engine)
     engine.two_stage_projection_adapter = adapter
     engine.read = ReadSubsystem(engine)
     return engine, adapter
+
+
+def _async_chroma_adapter(engine):
+    from kogwistar.engine_core.two_stage_async import AsyncChromaTwoStageProjectionAdapter
+
+    store = engine.backend
+    store.edge_get = lambda **kwargs: {"ids": [], "metadatas": []}
+
+    async def async_call(entity_kind: str, method: str, **kwargs):
+        return getattr(store, f"{entity_kind}_{method}")(**kwargs)
+
+    engine.backend = SimpleNamespace(async_call=async_call)
+    return AsyncChromaTwoStageProjectionAdapter(engine), store
 
 
 @two_stage_case("pending_visibility")
@@ -146,7 +271,13 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
     node = build_entity_node(node_id="n1", doc_id="d1")
 
     adapter.add_node(node)
-    pending = ReadSubsystem(engine)._node_get_raw(ids=["n1"], where=None, limit=10, include=["documents", "metadatas", "embeddings"])
+    adapter.enqueue_embedding_job(entity_kind="node", entity_id="n1", op="UPSERT")
+    pending = ReadSubsystem(engine)._node_get_raw(
+        ids=["n1"],
+        where=None,
+        limit=10,
+        include=["documents", "metadatas", "embeddings"],
+    )
     assert pending["ids"] == ["n1"]
     assert pending["embeddings"] == [None]
     assert not engine.backend.rows
@@ -160,8 +291,92 @@ def test_chroma_arrangement_hands_off_sqlite_stage1_to_explicit_vector_stage2(tm
             entity_kind="node", entity_id="n1"
         ),
     )
-    assert engine.backend.rows["n1"]["embedding"] == [len("document:n1"), 1.0]
+    expected_document = node.model_dump_json(
+        field_mode="backend", exclude=["embedding"]
+    )
+    assert engine.backend.rows["n1"]["embedding"] == [len(expected_document), 1.0]
+    assert engine.backend.rows["n1"]["metadata"][
+        "_kogwistar_source_revision"
+    ] == engine.indexing.canonical_entity_revision(
+        entity_kind="node", entity_id="n1"
+    ).revision
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
+
+
+def test_chroma_backfills_only_legacy_stage2_rows_matching_active_source(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    engine.backend.rows.update(
+        {
+            "current": {
+                "id": "current",
+                "document": "current document",
+                "metadata": {
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": "fp-1",
+                },
+                "embedding": [0.1, 0.2],
+            },
+            "stale": {
+                "id": "stale",
+                "document": "stale document",
+                "metadata": {
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": "old-fingerprint",
+                },
+                "embedding": [0.3, 0.4],
+            },
+            "outdated-revision": {
+                "id": "outdated-revision",
+                "document": "same current document",
+                "metadata": {
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": "fp-1",
+                    "_kogwistar_source_revision": 99,
+                },
+                "embedding": [0.5, 0.6],
+            },
+            "boolean-revision": {
+                "id": "boolean-revision",
+                "document": "same current document",
+                "metadata": {
+                    "_kogwistar_stage2_ready": True,
+                    "_kogwistar_source_fingerprint": "fp-1",
+                    "_kogwistar_source_revision": True,
+                },
+                "embedding": [0.7, 0.8],
+            },
+        }
+    )
+    original_vector = list(engine.backend.rows["current"]["embedding"])
+    original_document = engine.backend.rows["current"]["document"]
+
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=0
+    ) == (1, 1)
+    assert engine.backend.rows["current"]["metadata"][
+        "_kogwistar_source_revision"
+    ] == 1
+    assert engine.backend.rows["current"]["embedding"] == original_vector
+    assert engine.backend.rows["current"]["document"] == original_document
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=1
+    ) == (1, 0)
+    assert "_kogwistar_source_revision" not in engine.backend.rows["stale"]["metadata"]
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=2
+    ) == (1, 1)
+    assert engine.backend.rows["outdated-revision"]["metadata"][
+        "_kogwistar_source_revision"
+    ] == 1
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=3
+    ) == (1, 1)
+    assert engine.backend.rows["boolean-revision"]["metadata"][
+        "_kogwistar_source_revision"
+    ] == 1
+    assert adapter.backfill_stage2_source_revisions(
+        entity_kind="node", limit=1, offset=0
+    ) == (1, 0)
 
 
 @two_stage_case("batch_embedding")
@@ -175,7 +390,9 @@ def test_chroma_batch_embedding_uses_one_provider_call_per_batch(tmp_path):
 
     engine._ef = batch_embed
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    adapter.enqueue_embedding_job(entity_kind="node", entity_id="n1", op="UPSERT")
     adapter.add_node(build_entity_node(node_id="n2", doc_id="d2"))
+    adapter.enqueue_embedding_job(entity_kind="node", entity_id="n2", op="UPSERT")
 
     jobs = [
         SimpleNamespace(job_id=f"job-{index}", **job)
@@ -185,9 +402,24 @@ def test_chroma_batch_embedding_uses_one_provider_call_per_batch(tmp_path):
 
     assert set(outcomes) == {"job-1", "job-2"}
     assert all(error is None for error in outcomes.values())
-    assert calls == [["document:n1", "document:n2"]]
+    documents = [
+        build_entity_node(node_id=node_id, doc_id=f"d{index}").model_dump_json(
+            field_mode="backend", exclude=["embedding"]
+        )
+        for index, node_id in enumerate(("n1", "n2"), 1)
+    ]
+    assert calls == [documents]
     assert engine.backend.rows["n1"]["embedding"] == [1.0, 1.0]
     assert engine.backend.rows["n2"]["embedding"] == [2.0, 1.0]
+    assert [
+        engine.backend.rows[node_id]["metadata"]["_kogwistar_source_revision"]
+        for node_id in ("n1", "n2")
+    ] == [
+        engine.indexing.canonical_entity_revision(
+            entity_kind="node", entity_id=node_id
+        ).revision
+        for node_id in ("n1", "n2")
+    ]
     assert engine.meta_sqlite.list_stage1_node_projections("tenant-a") == []
 
 
@@ -208,7 +440,9 @@ def test_chroma_stage1_edge_remains_traversable_by_id_and_neighbors(tmp_path):
     assert graph.neighbors("e1")["nodes"] == {"n1", "n2"}
 
 
-def test_graph_query_hides_deleted_stage1_edge_before_reconciliation(tmp_path: Path) -> None:
+def test_graph_query_hides_deleted_stage1_edge_before_reconciliation(
+    tmp_path: Path,
+) -> None:
     engine, adapter = _engine(tmp_path)
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
     adapter.add_node(build_entity_node(node_id="n2", doc_id="d2"))
@@ -247,7 +481,9 @@ def test_stage1_fallback_hides_tombstoned_entity_before_reconciliation(
     assert read(ids=[entity_id]) is False
 
 
-def test_stage1_fallback_hides_stale_revision_before_reconciliation(tmp_path: Path) -> None:
+def test_stage1_fallback_hides_stale_revision_before_reconciliation(
+    tmp_path: Path,
+) -> None:
     engine, adapter = _engine(tmp_path)
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
 
@@ -282,7 +518,9 @@ def test_chroma_endpoint_promotion_reuses_edge_vector_not_provider(tmp_path):
     )
     adapter.add_edge(edge)
     adapter.apply_embedding_job(
-        entity_kind="edge", entity_id="e1", op="UPSERT",
+        entity_kind="edge",
+        entity_id="e1",
+        op="UPSERT",
         payload_json=engine.indexing.canonical_revision_payload(
             entity_kind="edge", entity_id="e1"
         ),
@@ -331,6 +569,427 @@ def test_chroma_arrangement_rejects_stale_promotion_and_deletes_stage1(tmp_path)
     assert not engine.backend.rows
 
 
+def test_chroma_arrangement_rejects_stale_delete_for_newer_active_revision(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    node = build_entity_node(node_id="n1", doc_id="d1")
+    adapter.add_node(node)
+
+    engine.indexing.fingerprint = "fp-2"
+    adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="n1",
+        op="DELETE",
+        payload_json=json.dumps({"source_fingerprint": "fp-1"}),
+    )
+
+    assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("op", ["UPSERT", "DELETE"])
+@two_stage_case("stale_revision")
+def test_chroma_stale_job_replay_restores_and_requeues_current_revision(
+    tmp_path, monkeypatch, batched, op
+):
+    engine, adapter = _engine(tmp_path)
+    current_node = build_entity_node(node_id="n1", doc_id="current")
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="old"))
+    stale_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="n1"
+    )
+
+    engine.indexing.fingerprint = "fp-2"
+    engine.meta_sqlite.clear_stage1_node_projection("tenant-a", "n1")
+    stale_metadata = {
+        "node_id": "n1",
+        "_kogwistar_stage2_ready": True,
+        "_kogwistar_source_fingerprint": "fp-1",
+    }
+    engine.backend.node_upsert(
+        ids=["n1"],
+        documents=[build_entity_node(node_id="n1", doc_id="old").model_dump_json(
+            field_mode="backend", exclude=["embedding"]
+        )],
+        metadatas=[stale_metadata],
+        embeddings=[[1.0, 1.0]],
+    )
+
+    def restore_current(*, entity_kind: str, entity_id: str) -> bool:
+        assert (entity_kind, entity_id) == ("node", "n1")
+        engine.meta_sqlite.replace_stage1_node_projection(
+            "tenant-a",
+            "n1",
+            {
+                "id": "n1",
+                "entity_kind": "node",
+                "document": current_node.model_dump_json(
+                    field_mode="backend", exclude=["embedding"]
+                ),
+                "metadata": {"node_id": "n1"},
+                "source_fingerprint": "fp-2",
+            },
+            last_authoritative_seq=2,
+            last_materialized_seq=2,
+            projection_schema_version=1,
+            materialization_status="pending",
+        )
+        return True
+
+    monkeypatch.setattr(adapter, "restore_stage1_from_canonical_event", restore_current)
+    stale_job = SimpleNamespace(
+        job_id="stale-job",
+        entity_kind="node",
+        entity_id="n1",
+        op=op,
+        payload_json=stale_payload,
+    )
+    if batched:
+        assert adapter.apply_embedding_jobs_batch([stale_job]) == {"stale-job": None}
+    else:
+        adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="n1",
+            op=op,
+            payload_json=stale_payload,
+        )
+
+    stage1 = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert stage1 is not None
+    assert stage1["payload"]["source_fingerprint"] == "fp-2"
+    assert engine.indexing.jobs[-1]["op"] == "UPSERT"
+    assert json.loads(engine.indexing.jobs[-1]["payload_json"])[
+        "source_fingerprint"
+    ] == "fp-2"
+
+
+@pytest.mark.ci
+@two_stage_case("stale_revision")
+def test_chroma_late_promotion_write_restages_and_requeues_new_revision(
+    tmp_path, monkeypatch
+):
+    """A newer canonical write between validation and Chroma upsert converges."""
+    from kogwistar.engine_core.canonical_events import canonical_revision_job_payload
+
+    engine, adapter = _engine(tmp_path)
+
+    def canonical_payload(*, entity_kind: str, entity_id: str) -> str:
+        revision = engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        return canonical_revision_job_payload(revision)
+
+    monkeypatch.setattr(engine.indexing, "canonical_revision_payload", canonical_payload)
+    old_node = build_entity_node(node_id="n1", doc_id="old")
+    new_node = build_entity_node(node_id="n1", doc_id="new")
+    adapter.add_node(old_node)
+    old_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="n1"
+    )
+    original_upsert = engine.backend.node_upsert
+    interleaved = False
+
+    def commit_new_revision_then_write_stale(**kwargs):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            engine.indexing.fingerprint = "fp-2"
+            adapter.add_node(new_node)
+        original_upsert(**kwargs)
+
+    monkeypatch.setattr(engine.backend, "node_upsert", commit_new_revision_then_write_stale)
+    adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="n1",
+        op="UPSERT",
+        payload_json=old_payload,
+    )
+
+    stage1 = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert stage1 is not None
+    current_fingerprint = canonical_payload(entity_kind="node", entity_id="n1")
+    assert stage1["payload"]["source_fingerprint"] == json.loads(
+        current_fingerprint
+    )["source_fingerprint"]
+    assert "new" in stage1["payload"]["document"]
+    assert engine.backend.rows["n1"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == json.loads(old_payload)["source_fingerprint"]
+    assert engine.indexing.jobs[-1]["op"] == "UPSERT"
+    assert engine.indexing.jobs[-1]["payload_json"] == current_fingerprint
+
+    adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="n1",
+        op="UPSERT",
+        payload_json=engine.indexing.jobs[-1]["payload_json"],
+    )
+    assert engine.backend.rows["n1"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == json.loads(current_fingerprint)["source_fingerprint"]
+    assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is None
+
+
+@pytest.mark.parametrize("kind", ["node", "edge"])
+@pytest.mark.ci
+def test_chroma_late_delete_after_resurrection_restages_current_revision(
+    tmp_path, kind
+):
+    engine, adapter = _engine(tmp_path)
+
+    def entity(doc_id: str):
+        if kind == "node":
+            return build_entity_node(node_id="shared-delete", doc_id=doc_id)
+        return build_relationship_edge(
+            edge_id="shared-delete", src="source", tgt="target", doc_id=doc_id
+        )
+
+    getattr(adapter, f"add_{kind}")(entity("old"))
+    engine.indexing.state = "deleted"
+    engine.indexing.fingerprint = "fp-delete"
+    delete_payload = engine.indexing.canonical_revision_payload(
+        entity_kind=kind, entity_id="shared-delete"
+    )
+    delete_name = f"{kind}_delete"
+    original_delete = getattr(engine.backend, delete_name)
+    interleaved = False
+
+    def resurrect_and_delete_late(**kwargs):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            engine.backend.__dict__[delete_name] = original_delete
+            engine.indexing.state = "active"
+            engine.indexing.fingerprint = "fp-new"
+            getattr(adapter, f"add_{kind}")(entity("new"))
+            adapter.apply_embedding_job(
+                entity_kind=kind,
+                entity_id="shared-delete",
+                op="UPSERT",
+                payload_json=engine.indexing.canonical_revision_payload(
+                    entity_kind=kind, entity_id="shared-delete"
+                ),
+            )
+            engine.backend.__dict__[delete_name] = resurrect_and_delete_late
+        original_delete(**kwargs)
+
+    engine.backend.__dict__[delete_name] = resurrect_and_delete_late
+
+    def restore_current_stage1(*, entity_kind: str, entity_id: str) -> bool:
+        assert entity_kind == kind
+        assert entity_id == "shared-delete"
+        assert engine.indexing.state == "active"
+        adapter._stage1_upsert(entity_kind=kind, entity=entity("new"))
+        return True
+
+    adapter.restore_stage1_from_canonical_event = restore_current_stage1
+    adapter.apply_embedding_job(
+        entity_kind=kind,
+        entity_id="shared-delete",
+        op="DELETE",
+        payload_json=delete_payload,
+    )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", adapter._stage1_key(kind, "shared-delete")
+    )
+    assert staged is not None
+    assert staged["payload"]["source_fingerprint"] == "fp-new"
+    assert "shared-delete" not in engine.backend.rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.ci
+async def test_async_chroma_late_delete_after_resurrection_restages_current_revision(
+    tmp_path,
+):
+    from kogwistar.engine_core.two_stage_async import AsyncChromaTwoStageProjectionAdapter
+
+    engine, _ = _engine(tmp_path)
+    store = engine.backend
+
+    async def async_call(entity_kind: str, method: str, **kwargs):
+        return getattr(store, f"{entity_kind}_{method}")(**kwargs)
+
+    backend = SimpleNamespace(async_call=async_call)
+    engine.backend = backend
+    latest_entity = build_entity_node(node_id="async-delete", doc_id="old")
+    original_revision = engine.indexing.canonical_entity_revision
+
+    def revision_with_payload(*, entity_kind: str, entity_id: str):
+        revision = original_revision(entity_kind=entity_kind, entity_id=entity_id)
+        return SimpleNamespace(
+            revision=revision.revision,
+            state=revision.state,
+            payload=latest_entity.model_dump(field_mode="backend"),
+        )
+
+    engine.indexing.canonical_entity_revision = revision_with_payload
+    engine._ef = lambda documents: [[1.0, 0.0] for _ in documents]
+    adapter = AsyncChromaTwoStageProjectionAdapter(engine)
+    await adapter.add_node(latest_entity)
+
+    engine.indexing.state = "deleted"
+    engine.indexing.fingerprint = "fp-delete"
+    delete_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="async-delete"
+    )
+    original_async_call = backend.async_call
+    interleaved = False
+
+    async def resurrect_and_delete_late(entity_kind: str, method: str, **kwargs):
+        nonlocal interleaved, latest_entity
+        if method == "delete" and not interleaved:
+            interleaved = True
+            backend.async_call = original_async_call
+            engine.indexing.state = "active"
+            engine.indexing.fingerprint = "fp-new"
+            latest_entity = build_entity_node(node_id="async-delete", doc_id="new")
+            await adapter.add_node(latest_entity)
+            await adapter.apply_embedding_job(
+                entity_kind="node",
+                entity_id="async-delete",
+                op="UPSERT",
+                payload_json=engine.indexing.canonical_revision_payload(
+                    entity_kind="node", entity_id="async-delete"
+                ),
+            )
+            backend.async_call = resurrect_and_delete_late
+        return await original_async_call(entity_kind, method, **kwargs)
+
+    backend.async_call = resurrect_and_delete_late
+    await adapter.apply_embedding_job(
+        entity_kind="node",
+        entity_id="async-delete",
+        op="DELETE",
+        payload_json=delete_payload,
+    )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-delete"
+    )
+    assert staged is not None
+    assert staged["payload"]["source_fingerprint"] == "fp-new"
+    assert "async-delete" not in store.rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.ci
+@two_stage_case("recovery_reconciliation")
+@pytest.mark.parametrize("canonical_state", ["missing", "deleted"])
+async def test_async_chroma_reconcile_removes_orphaned_stage2_by_namespace(
+    tmp_path, canonical_state
+):
+    engine, _ = _engine(tmp_path)
+    adapter, store = _async_chroma_adapter(engine)
+    await adapter.add_node(build_entity_node(node_id="async-orphan", doc_id="d1"))
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-orphan"
+    )
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    store.node_upsert(
+        ids=["async-orphan"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    await adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="async-orphan",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    store.node_upsert(
+        ids=["other-tenant"],
+        documents=["must remain"],
+        metadatas=[{"namespace": "tenant-b", "_kogwistar_stage2_ready": True}],
+        embeddings=[[1.0, 0.0]],
+    )
+    engine.indexing.state = canonical_state
+
+    assert await adapter.reconcile_projection() == 1
+    assert "async-orphan" not in store.rows
+    assert store.rows["other-tenant"]["document"] == "must remain"
+
+
+@pytest.mark.asyncio
+@pytest.mark.ci
+@two_stage_case("recovery_reconciliation")
+async def test_async_chroma_reconcile_restages_stale_stage2_idempotently(tmp_path):
+    engine, _ = _engine(tmp_path)
+    adapter, store = _async_chroma_adapter(engine)
+    await adapter.add_node(build_entity_node(node_id="async-stale", doc_id="d1"))
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stale"
+    )
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    store.node_upsert(
+        ids=["async-stale"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    await adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="async-stale",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    engine.indexing.fingerprint = "fp-2"
+
+    assert await adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stale"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] == "fp-2"
+    job_count = len(engine.indexing.jobs)
+    assert await adapter.reconcile_projection() == 0
+    assert len(engine.indexing.jobs) == job_count
+    assert store.rows["async-stale"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == payload["source_fingerprint"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.ci
+@two_stage_case("recovery_reconciliation")
+async def test_async_chroma_reconcile_restores_stale_stage1_without_stage2(tmp_path):
+    engine, _ = _engine(tmp_path)
+    adapter, store = _async_chroma_adapter(engine)
+    await adapter.add_node(build_entity_node(node_id="async-stage1-only", doc_id="d1"))
+    original = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stage1-only"
+    )
+    original_fingerprint = original["payload"]["source_fingerprint"]
+    engine.indexing.fingerprint = "fp-2"
+
+    assert await adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "node:async-stage1-only"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] != original_fingerprint
+    assert engine.indexing.jobs[-1]["entity_id"] == "async-stage1-only"
+    assert "async-stage1-only" not in store.rows
+
+
 def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
     engine, adapter = _engine(tmp_path)
     node = build_entity_node(node_id="n1", doc_id="d1")
@@ -349,6 +1008,147 @@ def test_chroma_new_stage1_revision_removes_old_stage2_visibility(tmp_path):
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d2"))
     assert "n1" not in engine.backend.rows
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_chroma_old_promotion_cannot_clear_newer_stage1_revision(
+    tmp_path, batched, monkeypatch
+):
+    engine, adapter = _engine(tmp_path)
+    first = build_entity_node(node_id="n1", doc_id="d1")
+    adapter.add_node(first)
+    old_payload = engine.indexing.canonical_revision_payload(
+        entity_kind="node", entity_id="n1"
+    )
+    original_upsert = engine.backend.node_upsert
+
+    def upsert_then_stage_new_revision(**kwargs):
+        original_upsert(**kwargs)
+        engine.indexing.fingerprint = "fp-2"
+        adapter.add_node(build_entity_node(node_id="n1", doc_id="d2"))
+
+    monkeypatch.setattr(
+        adapter,
+        "restore_stage1_from_canonical_event",
+        lambda **_: engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+        is not None,
+    )
+    engine.backend.node_upsert = upsert_then_stage_new_revision
+    if batched:
+        from types import SimpleNamespace
+
+        engine._ef = lambda documents: [[1.0, 0.0] for _ in documents]
+        result = adapter.apply_embedding_jobs_batch(
+            [
+                SimpleNamespace(
+                    job_id="old-batch-job",
+                    entity_kind="node",
+                    entity_id="n1",
+                    op="UPSERT",
+                    payload_json=old_payload,
+                )
+            ]
+        )
+        assert result == {"old-batch-job": None}
+    else:
+        adapter.apply_embedding_job(
+            entity_kind="node",
+            entity_id="n1",
+            op="UPSERT",
+            payload_json=old_payload,
+        )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert staged is not None
+    assert staged["last_authoritative_seq"] == 2
+    assert staged["payload"]["source_fingerprint"] == "fp-2"
+    assert "n1" not in engine.backend.rows
+
+
+@pytest.mark.parametrize("kind", ["node", "edge"])
+@pytest.mark.parametrize("batched", [False, True])
+@pytest.mark.parametrize("legacy_payload", [False, True])
+def test_chroma_late_old_promotion_restages_newer_revision(
+    tmp_path, kind, batched, legacy_payload
+):
+    engine, adapter = _engine(tmp_path)
+
+    def entity(doc_id: str):
+        if kind == "node":
+            return build_entity_node(node_id="shared", doc_id=doc_id)
+        return build_relationship_edge(
+            edge_id="shared", src="source", tgt="target", doc_id=doc_id
+        )
+
+    getattr(adapter, f"add_{kind}")(entity("old"))
+    old_payload = engine.indexing.canonical_revision_payload(
+        entity_kind=kind, entity_id="shared"
+    )
+    upsert_name = f"{kind}_upsert"
+    original_upsert = getattr(engine.backend, upsert_name)
+    interleaved = False
+
+    def newer_promotion_then_late_old_upsert(**kwargs):
+        nonlocal interleaved
+        if not interleaved:
+            interleaved = True
+            engine.indexing.fingerprint = "fp-2"
+            getattr(adapter, f"add_{kind}")(entity("new"))
+            new_payload = engine.indexing.canonical_revision_payload(
+                entity_kind=kind, entity_id="shared"
+            )
+            setattr(engine.backend, upsert_name, original_upsert)
+            adapter.apply_embedding_job(
+                entity_kind=kind,
+                entity_id="shared",
+                op="UPSERT",
+                payload_json=new_payload,
+            )
+            setattr(engine.backend, upsert_name, newer_promotion_then_late_old_upsert)
+        original_upsert(**kwargs)
+
+    setattr(engine.backend, upsert_name, newer_promotion_then_late_old_upsert)
+
+    def restore_current_stage1(*, entity_kind: str, entity_id: str) -> bool:
+        assert entity_kind == kind
+        assert entity_id == "shared"
+        assert engine.indexing.fingerprint == "fp-2"
+        adapter._stage1_upsert(entity_kind=kind, entity=entity("new"))
+        return True
+
+    adapter.restore_stage1_from_canonical_event = restore_current_stage1
+    if batched:
+        from types import SimpleNamespace
+
+        engine._ef = lambda documents: [[1.0, 0.0] for _ in documents]
+        result = adapter.apply_embedding_jobs_batch(
+            [
+                SimpleNamespace(
+                    job_id="late-old-job",
+                    entity_kind=kind,
+                    entity_id="shared",
+                    op="UPSERT",
+                    payload_json=None if legacy_payload else old_payload,
+                )
+            ]
+        )
+        assert result == {"late-old-job": None}
+    else:
+        adapter.apply_embedding_job(
+            entity_kind=kind,
+            entity_id="shared",
+            op="UPSERT",
+            payload_json=None if legacy_payload else old_payload,
+        )
+
+    staged = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", adapter._stage1_key(kind, "shared")
+    )
+    assert staged is not None
+    assert staged["payload"]["source_fingerprint"] == "fp-2"
+    assert engine.backend.rows["shared"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == "fp-1"
 
 
 @two_stage_case("recovery_reconciliation")
@@ -375,6 +1175,256 @@ def test_chroma_reconciles_stage1_after_stage2_write_before_cleanup(tmp_path):
 
 
 @two_stage_case("recovery_reconciliation")
+@pytest.mark.parametrize("canonical_state", ["missing", "tombstoned"])
+def test_chroma_reconcile_removes_orphaned_stage2_rows_by_namespace(
+    tmp_path, canonical_state
+):
+    engine, adapter = _engine(tmp_path)
+    engine.backend.edge_get = lambda **kwargs: {"ids": [], "metadatas": []}
+    node = build_entity_node(node_id="orphan", doc_id="d1")
+    adapter.add_node(node)
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "orphan")
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    engine.backend.node_upsert(
+        ids=["orphan"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="orphan",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    engine.indexing.state = canonical_state
+
+    # The same ID in another namespace is not in this scoped collection scan.
+    engine.backend.node_upsert(
+        ids=["other-tenant"],
+        documents=["must remain"],
+        metadatas=[{"namespace": "tenant-b", "_kogwistar_stage2_ready": True}],
+        embeddings=[[1.0, 0.0]],
+    )
+
+    assert adapter.reconcile_projection() == 1
+    assert "orphan" not in engine.backend.rows
+    assert engine.backend.rows["other-tenant"]["document"] == "must remain"
+
+
+@two_stage_case("recovery_reconciliation")
+def test_chroma_reconcile_restages_active_stale_stage2_rows(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    engine.backend.edge_get = lambda **kwargs: {"ids": [], "metadatas": []}
+    node = build_entity_node(node_id="stale-active", doc_id="d1")
+    adapter.add_node(node)
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "stale-active")
+    payload = staged["payload"]
+    metadata = dict(payload["metadata"])
+    metadata.update(
+        {
+            "namespace": "tenant-a",
+            "_kogwistar_stage2_ready": True,
+            "_kogwistar_source_revision": staged["last_authoritative_seq"],
+            "_kogwistar_source_fingerprint": payload["source_fingerprint"],
+        }
+    )
+    engine.backend.node_upsert(
+        ids=["stale-active"],
+        documents=[payload["document"]],
+        metadatas=[metadata],
+        embeddings=[[1.0, 0.0]],
+    )
+    adapter.remove_stage1(
+        entity_kind="node",
+        entity_id="stale-active",
+        expected_last_authoritative_seq=staged["last_authoritative_seq"],
+    )
+    engine.indexing.fingerprint = "fp-2"
+
+    assert adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "stale-active"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] != payload["source_fingerprint"]
+    assert engine.indexing.jobs[-1]["entity_id"] == "stale-active"
+    # The stale semantic row is left for the revision-fenced worker to replace.
+    assert engine.backend.rows["stale-active"]["metadata"][
+        "_kogwistar_source_fingerprint"
+    ] == "fp-1"
+    job_count = len(engine.indexing.jobs)
+    canonical_payload = engine.indexing.canonical_revision_payload
+
+    def canonical_payload_with_restored_fingerprint(*, entity_kind, entity_id):
+        result = json.loads(
+            canonical_payload(entity_kind=entity_kind, entity_id=entity_id)
+        )
+        current_stage1 = engine.meta_sqlite.get_stage1_node_projection(
+            "tenant-a", f"{entity_kind}:{entity_id}"
+        )
+        if current_stage1 is not None:
+            result["source_fingerprint"] = current_stage1["payload"][
+                "source_fingerprint"
+            ]
+        return json.dumps(result)
+
+    engine.indexing.canonical_revision_payload = (
+        canonical_payload_with_restored_fingerprint
+    )
+    assert adapter.reconcile_projection() == 0
+    assert len(engine.indexing.jobs) == job_count
+
+
+@two_stage_case("recovery_reconciliation")
+def test_chroma_reconcile_restores_active_stale_stage1_without_stage2(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    node = build_entity_node(node_id="stage1-only", doc_id="d1")
+    adapter.add_node(node)
+    original = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "stage1-only"
+    )
+    assert original is not None
+    original_fingerprint = original["payload"]["source_fingerprint"]
+    engine.indexing.fingerprint = "fp-2"
+
+    assert adapter.reconcile_projection() == 1
+    recovered = engine.meta_sqlite.get_stage1_node_projection(
+        "tenant-a", "stage1-only"
+    )
+    assert recovered is not None
+    assert recovered["payload"]["source_fingerprint"] != original_fingerprint
+    assert engine.indexing.jobs[-1]["entity_id"] == "stage1-only"
+    assert engine.indexing.jobs[-1]["op"] == "UPSERT"
+    assert "stage1-only" not in engine.backend.rows
+
+
+@pytest.mark.parametrize("case", ["inactive", "stale", "promoted"])
+@pytest.mark.parametrize("rust_metadata", [False, True])
+def test_reconcile_does_not_clear_newer_staged_revision(tmp_path, case, rust_metadata, monkeypatch):
+    engine, adapter = _engine(tmp_path)
+    if rust_metadata:
+        meta = RustEngineSQLite(tmp_path, filename="rust-meta.sqlite")
+        meta.ensure_initialized()
+        engine.metadata = engine.meta_sqlite = meta
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="old"))
+    if case == "inactive":
+        engine.indexing.state = "tombstoned"
+    elif case == "stale":
+        engine.indexing.fingerprint = "fp-2"
+    else:
+        staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+        payload = staged["payload"]
+        engine.backend.node_upsert(
+            ids=["n1"], documents=[payload["document"]],
+            metadatas=[{**payload["metadata"], "_kogwistar_source_fingerprint": "fp-1"}],
+            embeddings=[[1.0, 0.0]],
+        )
+
+    original_clear = adapter.remove_stage1
+
+    def replace_before_clear(**kwargs):
+        engine.indexing.state = "active"
+        engine.indexing.fingerprint = "fp-2"
+        adapter._stage1_upsert(
+            entity_kind="node", entity=build_entity_node(node_id="n1", doc_id="new")
+        )
+        if case == "inactive":
+            engine.backend.node_upsert(
+                ids=["n1"], documents=["new"], metadatas=[{}], embeddings=[[1.0, 0.0]]
+            )
+        return original_clear(**kwargs)
+
+    monkeypatch.setattr(adapter, "remove_stage1", replace_before_clear)
+    assert adapter.reconcile_projection() == 0
+    staged = engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1")
+    assert staged is not None
+    assert staged["last_authoritative_seq"] == 2
+    assert staged["payload"]["source_fingerprint"] == "fp-2"
+    if case == "inactive":
+        assert engine.backend.rows["n1"]["document"] == "new"
+
+
+@pytest.mark.parametrize("kind", ["node", "edge"])
+def test_current_stage1_wins_over_stale_chroma_row_on_get(tmp_path, kind):
+    engine, adapter = _engine(tmp_path)
+    def entity(doc_id):
+        if kind == "node":
+            return build_entity_node(node_id="n1", doc_id=doc_id)
+        return build_relationship_edge(edge_id="n1", src="a", tgt="b", doc_id=doc_id)
+
+    getattr(adapter, f"add_{kind}")(entity("old"))
+    key = "n1" if kind == "node" else "edge:n1"
+    old = engine.meta_sqlite.get_stage1_node_projection("tenant-a", key)["payload"]
+    engine.indexing.fingerprint = "fp-2"
+    getattr(adapter, f"add_{kind}")(entity("new"))
+    getattr(engine.backend, f"{kind}_upsert")(
+        ids=["n1"], documents=[old["document"]],
+        metadatas=[{**old["metadata"], "_kogwistar_source_fingerprint": "fp-1"}],
+        embeddings=[[1.0, 0.0]],
+    )
+    result = getattr(engine.read, f"_{kind}_get_raw")(ids=["n1"])
+    assert json.loads(result["documents"][0])["doc_id"] == "new"
+    assert result["embeddings"] == [None]
+
+
+@pytest.mark.parametrize("kind", ["node", "edge"])
+def test_vector_query_drops_stale_or_unversioned_chroma_records(tmp_path, kind):
+    engine, _ = _engine(tmp_path)
+    current = (
+        build_entity_node(node_id="current", doc_id="d1")
+        if kind == "node"
+        else build_relationship_edge(edge_id="current", src="a", tgt="b", doc_id="d1")
+    )
+    stale = (
+        build_entity_node(node_id="stale", doc_id="d1")
+        if kind == "node"
+        else build_relationship_edge(edge_id="stale", src="a", tgt="b", doc_id="d1")
+    )
+    unversioned = (
+        build_entity_node(node_id="legacy", doc_id="d1")
+        if kind == "node"
+        else build_relationship_edge(edge_id="legacy", src="a", tgt="b", doc_id="d1")
+    )
+    upsert = getattr(engine.backend, f"{kind}_upsert")
+    upsert(
+        ids=[current.safe_get_id(), stale.safe_get_id(), unversioned.safe_get_id()],
+        documents=[
+            current.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            stale.model_dump_json(field_mode="backend", exclude=["embedding"]),
+            unversioned.model_dump_json(field_mode="backend", exclude=["embedding"]),
+        ],
+        metadatas=[
+            {"_kogwistar_source_fingerprint": "fp-1"},
+            {"_kogwistar_source_fingerprint": "old-fp"},
+            {},
+        ],
+        embeddings=[[1.0, 0.0]] * 3,
+    )
+    queried = getattr(engine.backend, f"{kind}_query")(
+        query_embeddings=[[1.0, 0.0]], include=["documents", "metadatas", "embeddings"]
+    )
+    assert queried["ids"][0]
+    parsed = getattr(engine.read, f"{kind}s_from_query_result")(queried)
+    assert parsed and parsed[0], (queried, parsed)
+    assert parsed[0][0].metadata.get("_kogwistar_source_fingerprint") == "fp-1"
+    query = getattr(engine.read, f"query_{kind}s")
+    result = query(
+        query_embeddings=[1.0, 0.0],
+        include=["documents", "metadatas", "embeddings"],
+    )
+    assert [[item.safe_get_id() for item in batch] for batch in result] == [["current"]]
+
+
+@two_stage_case("recovery_reconciliation")
 def test_chroma_reconciles_missing_edge_endpoints_before_stage1_cleanup(tmp_path):
     engine, adapter = _engine(tmp_path)
     adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
@@ -398,15 +1448,30 @@ def test_chroma_reconciles_missing_edge_endpoints_before_stage1_cleanup(tmp_path
     assert adapter.reconcile_projection() == 1
     assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "edge:e1") is None
     assert engine.backend.endpoint_rows
-    assert GraphQuery(engine).neighbors("n1") == {
-        "nodes": {"n2"}, "edges": {"e1"}
-    }
+    assert GraphQuery(engine).neighbors("n1") == {"nodes": {"n2"}, "edges": {"e1"}}
 
 
 def test_chroma_capability_requires_eventual_reconciliation():
     capability = chroma_two_stage_capability()
+    mutation_capability = get_atomic_mutation_capability(ChromaBackend)
+
     assert capability.atomic_promotion == "eventual_reconcile"
     assert capability.is_complete()
+    assert mutation_capability.mode == "eventual"
+    assert mutation_capability.supports_atomic_mutation is False
+
+
+def test_chroma_lifecycle_does_not_assume_atomic_stage1_cleanup(tmp_path):
+    engine, adapter = _engine(tmp_path)
+    adapter.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+    engine.two_stage_projection_capability = chroma_two_stage_capability()
+
+    removed = LifecycleSubsystem(engine)._cleanup_pending_two_stage(
+        entity_kind="node", entity_id="n1"
+    )
+
+    assert removed is False
+    assert engine.meta_sqlite.get_stage1_node_projection("tenant-a", "n1") is not None
 
 
 @pytest.mark.integration
@@ -423,13 +1488,14 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
         node = build_entity_node(node_id="n1", doc_id="d1")
         engine.write.add_node(node)
         pending = engine.read._node_get_raw(
-            ids=["n1"], where=None, limit=10, include=["documents", "metadatas", "embeddings"]
+            ids=["n1"],
+            where=None,
+            limit=10,
+            include=["documents", "metadatas", "embeddings"],
         )
         assert pending["ids"] == ["n1"]
         assert pending["embeddings"] == [None]
-        assert not engine.read.query_nodes(
-            query_embeddings=[[0.1, 0.2]], n_results=10
-        )
+        assert not engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
 
         jobs = engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
         job = next(job for job in jobs if job.index_kind == "node_embedding")
@@ -443,7 +1509,10 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
             payload_json=job.payload_json,
         )
         ready = engine.read._node_get_raw(
-            ids=["n1"], where=None, limit=10, include=["documents", "metadatas", "embeddings"]
+            ids=["n1"],
+            where=None,
+            limit=10,
+            include=["documents", "metadatas", "embeddings"],
         )
         assert ready["ids"] == ["n1"]
         assert ready["embeddings"][0] is not None
@@ -451,16 +1520,39 @@ def test_real_chroma_engine_uses_sqlite_stage1_then_promotes(tmp_path):
             query_embeddings=[[0.1, 0.2]], n_results=10
         )
         assert [[node.id for node in row] for row in ready_hits] == [["n1"]]
-        assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1") is None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
     finally:
         engine.close()
 
 
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path):
+def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path, monkeypatch):
     """Exercise the public worker path, not only direct adapter application."""
+    from kogwistar._rust_bridge import RustExtensionUnavailableError
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    selectors = (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    )
+    for selector in selectors:
+        monkeypatch.setenv(selector, "python")
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise RustExtensionUnavailableError("Python-only Chroma retrieval loaded Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
 
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path),
@@ -477,16 +1569,114 @@ def test_real_chroma_engine_promotes_through_index_job_worker(tmp_path):
         assert metrics.claimed >= 1
         assert metrics.done >= 1
         assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
-        assert engine.meta_sqlite.get_stage1_node_projection(
-            engine.namespace, "n1"
-        ) is None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
     finally:
         engine.close()
 
 
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(tmp_path):
+def test_real_chroma_legacy_stage2_backfill_updates_metadata_only(tmp_path):
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="legacy-node", doc_id="d1"))
+        worker = engine.indexing.make_index_job_worker(max_jobs_per_tick=8)
+        assert worker.tick().done >= 1
+        before = engine.backend.node_get(
+            ids=["legacy-node"], include=["documents", "metadatas", "embeddings"]
+        )
+        metadata = dict(before["metadatas"][0])
+        metadata.pop("_kogwistar_source_revision")
+        engine.backend.node_delete(ids=["legacy-node"])
+        engine.backend.node_upsert(
+            ids=["legacy-node"],
+            documents=before["documents"],
+            metadatas=[metadata],
+            embeddings=[list(map(float, before["embeddings"][0]))],
+        )
+        current = json.loads(
+            engine.indexing.canonical_revision_payload(
+                entity_kind="node", entity_id="legacy-node"
+            )
+        )
+        assert metadata["_kogwistar_source_fingerprint"] == current["source_fingerprint"]
+        page = engine.two_stage_projection_adapter._collection_call(
+            "node", "get", limit=10, offset=0, include=["metadatas"]
+        )
+        assert page["ids"] == ["legacy-node"]
+        assert page["metadatas"][0]["_kogwistar_stage2_ready"] is True
+        assert page["metadatas"][0]["_kogwistar_source_fingerprint"] == current[
+            "source_fingerprint"
+        ]
+        assert "_kogwistar_source_revision" not in page["metadatas"][0]
+
+        assert engine.two_stage_projection_adapter.backfill_stage2_source_revisions(
+            entity_kind="node", limit=10
+        ) == (1, 1)
+        after = engine.backend.node_get(
+            ids=["legacy-node"], include=["documents", "metadatas", "embeddings"]
+        )
+        assert after["metadatas"][0]["_kogwistar_source_revision"] == current[
+            "canonical_revision"
+        ]
+        assert after["documents"] == before["documents"]
+        assert list(map(float, after["embeddings"][0])) == list(
+            map(float, before["embeddings"][0])
+        )
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+@pytest.mark.parametrize("drop_stage1", [False, True])
+def test_real_chroma_designated_worker_repairs_lost_embedding_job(tmp_path, drop_stage1):
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        namespace="repair-ns",
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="repair-node", doc_id="d1"))
+        for job in engine.meta_sqlite.claim_index_jobs(
+            limit=20, lease_seconds=60, namespace=engine.namespace
+        ):
+            engine.meta_sqlite.mark_index_job_done(job.job_id, claim_token=job.claim_token)
+        if drop_stage1:
+            engine.two_stage_projection_adapter.remove_stage1(
+                entity_kind="node", entity_id="repair-node"
+            )
+
+        metrics = engine.indexing.make_index_job_worker(
+            max_jobs_per_tick=20, repair_scan_interval_s=30
+        ).tick()
+
+        assert metrics.repaired == 1
+        assert metrics.repair_scan_failures == 0
+        assert metrics.done >= 1
+        hits = engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+        assert [[node.id for node in row] for row in hits] == [["repair-node"]]
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(
+    tmp_path,
+):
     """A restart leaves Stage 1 recoverable; the worker completes promotion."""
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -511,16 +1701,135 @@ def test_real_chroma_stage1_pending_survives_engine_restart_and_worker_recovery(
         metrics = worker.tick()
         assert metrics.done >= 1
         assert restarted.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
-        assert restarted.meta_sqlite.get_stage1_node_projection(
-            restarted.namespace, "n1"
-        ) is None
+        assert (
+            restarted.meta_sqlite.get_stage1_node_projection(restarted.namespace, "n1")
+            is None
+        )
     finally:
         restarted.close()
 
 
 @pytest.mark.integration
 @pytest.mark.e2e
-def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(tmp_path, monkeypatch):
+def test_real_chroma_rust_metadata_hands_stage1_to_python_worker(
+    tmp_path, monkeypatch
+):
+    """A closed Rust metadata owner can hand durable Stage 1 to Python."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    node_id = "rust-python-stage1-handoff"
+    namespace = "rust-python-handoff"
+
+    def open_engine() -> GraphKnowledgeEngine:
+        return GraphKnowledgeEngine(
+            persist_directory=str(tmp_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_function=build_test_embedding_function("constant", dim=2),
+        )
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    rust_producer = open_engine()
+    try:
+        rust_producer.write.add_node(build_entity_node(node_id=node_id, doc_id="handoff-doc"))
+        staged = rust_producer.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        )
+        assert staged is not None
+        assert rust_producer.meta_sqlite.list_index_jobs(
+            namespace=namespace, entity_kind="node", entity_id=node_id
+        )
+    finally:
+        rust_producer.close()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    python_worker_engine = open_engine()
+    try:
+        assert python_worker_engine.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        ) is not None
+        worker = python_worker_engine.indexing.make_index_job_worker(
+            batch_size=8, max_inflight=1, max_jobs_per_tick=8
+        )
+        assert worker.tick().done >= 1
+        assert python_worker_engine.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        ) is None
+        projected = python_worker_engine.backend.node_get(
+            ids=[node_id], include=["documents", "metadatas"]
+        )
+        assert projected["ids"] == [node_id]
+        assert projected["metadatas"][0]["_kogwistar_stage2_ready"] is True
+    finally:
+        python_worker_engine.close()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    rust_reader = open_engine()
+    try:
+        assert rust_reader.meta_sqlite.get_stage1_node_projection(
+            namespace, node_id
+        ) is None
+        hits = rust_reader.read.query_nodes(
+            query_embeddings=[[0.1, 0.2]], n_results=10
+        )
+        assert [[node.id for node in batch] for batch in hits] == [[node_id]]
+    finally:
+        rust_reader.close()
+
+
+def test_real_chroma_provider_failure_keeps_stage1_retryable(tmp_path, monkeypatch):
+    """A provider failure must not acknowledge or lose the staged projection."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(build_entity_node(node_id="n1", doc_id="d1"))
+        original = engine.embed.iterative_defensive_emb
+
+        def fail_provider(document):
+            raise RuntimeError(f"provider unavailable for {document}")
+
+        monkeypatch.setattr(engine.embed, "iterative_defensive_emb", fail_provider)
+        worker = engine.indexing.make_index_job_worker(
+            batch_size=1, max_inflight=1, max_jobs_per_tick=1
+        )
+        failed = worker.tick()
+        assert failed.claimed == 1
+        assert failed.done == 0
+        assert failed.retried == 1
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is not None
+        )
+        assert any(
+            item.status == "PENDING"
+            for item in engine.meta_sqlite.list_index_jobs(
+                namespace=engine.namespace, entity_kind="node", entity_id="n1"
+            )
+        )
+
+        monkeypatch.setattr(engine.embed, "iterative_defensive_emb", original)
+        time.sleep(1.1)
+        recovered = worker.tick()
+        assert recovered.done == 1
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
+        assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(
+    tmp_path, monkeypatch
+):
     """A promotion crash converges without leaving dual projection visibility."""
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
@@ -541,7 +1850,9 @@ def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(tmp_pat
         def fail_cleanup(**kwargs):
             raise RuntimeError("simulated crash after Stage-2 write")
 
-        monkeypatch.setattr(engine.two_stage_projection_adapter, "remove_stage1", fail_cleanup)
+        monkeypatch.setattr(
+            engine.two_stage_projection_adapter, "remove_stage1", fail_cleanup
+        )
         with pytest.raises(RuntimeError, match="after Stage-2"):
             engine.two_stage_projection_adapter.apply_embedding_job(
                 entity_kind="node",
@@ -552,9 +1863,14 @@ def test_real_chroma_reconciles_after_stage2_write_before_stage1_cleanup(tmp_pat
         assert engine.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
         assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
 
-        monkeypatch.setattr(engine.two_stage_projection_adapter, "remove_stage1", original)
+        monkeypatch.setattr(
+            engine.two_stage_projection_adapter, "remove_stage1", original
+        )
         assert engine.two_stage_projection_adapter.reconcile_projection() == 1
-        assert engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1") is None
+        assert (
+            engine.meta_sqlite.get_stage1_node_projection(engine.namespace, "n1")
+            is None
+        )
     finally:
         engine.close()
 
@@ -590,11 +1906,180 @@ def test_real_chroma_rebuilds_lost_embedding_job_after_restart(tmp_path):
         )
         assert worker.tick().done >= 1
         assert restarted.read.query_nodes(query_embeddings=[[0.1, 0.2]], n_results=10)
-        assert restarted.meta_sqlite.get_stage1_node_projection(
-            restarted.namespace, "n1"
-        ) is None
+        assert (
+            restarted.meta_sqlite.get_stage1_node_projection(restarted.namespace, "n1")
+            is None
+        )
     finally:
         restarted.close()
+
+
+def test_stage1_recovery_document_v2_matches_shared_python_rust_golden(tmp_path):
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+    from kogwistar.engine_core.models import Edge, Node
+
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "stage1-recovery-document-v2.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    source_cases = json.loads(
+        (fixture_path.parent / fixture["source_fixture"]).read_text(encoding="utf-8")
+    )["cases"]
+    node_payload = next(
+        case["payload"]
+        for case in source_cases
+        if case["kind"] == fixture["case_kind"]
+    )
+    node_payload["id"] = fixture["entity_id"]
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    try:
+        engine.write.add_node(Node.model_validate(node_payload))
+        engine.meta_sqlite.clear_stage1_node_projection(
+            engine.namespace, f"node:{fixture['entity_id']}"
+        )
+
+        assert engine.two_stage_projection_adapter.restore_stage1_from_canonical_event(
+            entity_kind="node", entity_id=fixture["entity_id"]
+        )
+        restored = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, f"node:{fixture['entity_id']}"
+        )
+        assert restored is not None
+        assert restored["projection_schema_version"] == 2
+        assert restored["payload"]["document"] == fixture["expected_document"]
+        assert restored["payload"]["metadata"]["namespace"] == engine.namespace
+        assert restored["payload"]["metadata"]["properties"] == (
+            '{"attributes":["unicode-雪","nested-payload"]}'
+        )
+        assert "redirect_to_id" not in restored["payload"]["metadata"]
+
+        edge_payload = next(
+            case["payload"] for case in source_cases if case["kind"] == "edge"
+        )
+        edge_payload["id"] = fixture["edge_entity_id"]
+        engine.write.add_node(
+            build_entity_node(node_id="external:target", doc_id="doc:rust-python-parity")
+        )
+        engine.write.add_edge(Edge.model_validate(edge_payload))
+        engine.meta_sqlite.clear_stage1_node_projection(
+            engine.namespace, f"edge:{fixture['edge_entity_id']}"
+        )
+        assert engine.two_stage_projection_adapter.restore_stage1_from_canonical_event(
+            entity_kind="edge", entity_id=fixture["edge_entity_id"]
+        )
+        restored_edge = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, f"edge:{fixture['edge_entity_id']}"
+        )
+        assert restored_edge is not None
+        assert restored_edge["projection_schema_version"] == 2
+        assert restored_edge["payload"]["document"] == fixture["edge_expected_document"]
+        edge_metadata = restored_edge["payload"]["metadata"]
+        assert edge_metadata["namespace"] == engine.namespace
+        assert edge_metadata["source_ids"] == '["parity-node"]'
+        assert edge_metadata["node_endpoint_count"] == 2
+    finally:
+        engine.close()
+
+
+@pytest.mark.integration
+@pytest.mark.e2e
+@pytest.mark.parametrize("kind", ["node", "edge"])
+@pytest.mark.parametrize("rust_metadata", [False, True])
+def test_real_chroma_repairs_late_stale_write_after_stage1_cleanup(
+    tmp_path, kind, rust_metadata
+):
+    """A late external write is hidden, then repaired from the canonical event."""
+    from kogwistar.engine_core.engine import GraphKnowledgeEngine
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        persistence_mode="two_stage",
+        embedding_function=build_test_embedding_function("constant", dim=2),
+    )
+    if rust_metadata:
+        metadata = RustEngineSQLite(tmp_path, filename="rust-meta.sqlite")
+        metadata.ensure_initialized()
+        engine.metadata = engine.meta_sqlite = metadata
+
+    def entity(doc_id: str):
+        if kind == "node":
+            return build_entity_node(node_id="shared", doc_id=doc_id)
+        return build_relationship_edge(
+            edge_id="shared", src="source", tgt="target", doc_id=doc_id
+        )
+
+    def write(value) -> None:
+        getattr(engine.write, f"add_{kind}")(value)
+
+    try:
+        if kind == "edge":
+            engine.write.add_node(build_entity_node(node_id="source", doc_id="d1"))
+            engine.write.add_node(build_entity_node(node_id="target", doc_id="d1"))
+            worker = engine.make_index_job_worker(batch_size=8, max_inflight=1)
+            assert worker.tick().done >= 2
+        write(entity("old"))
+        stage1_key = "shared" if kind == "node" else "edge:shared"
+        old_stage1 = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        )
+        old_payload = old_stage1["payload"]
+        worker = engine.make_index_job_worker(batch_size=8, max_inflight=1)
+        assert worker.tick().done >= 1
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        ) is None
+
+        write(entity("new"))
+        assert worker.tick().done >= 1
+        assert engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        ) is None
+
+        stale_metadata = dict(old_payload["metadata"])
+        stale_metadata["_kogwistar_stage2_ready"] = True
+        stale_metadata["_kogwistar_source_fingerprint"] = old_payload[
+            "source_fingerprint"
+        ]
+        getattr(engine.backend, f"{kind}_upsert")(
+            ids=["shared"],
+            documents=[old_payload["document"]],
+            metadatas=[stale_metadata],
+            embeddings=[[0.1, 0.2]],
+        )
+        stale_query = getattr(engine.read, f"query_{kind}s")(
+            query_embeddings=[0.1, 0.2],
+            n_results=10,
+            include=["documents", "metadatas", "embeddings"],
+        )
+        assert not [item for batch in stale_query for item in batch]
+
+        assert engine.indexing.repair_missing_two_stage_embedding_jobs() == 1
+        restored = engine.meta_sqlite.get_stage1_node_projection(
+            engine.namespace, stage1_key
+        )
+        assert restored is not None
+        assert json.loads(restored["payload"]["document"])["doc_id"] == "new"
+        assert worker.tick().done >= 1
+
+        query = getattr(engine.read, f"query_{kind}s")
+        results = query(
+            query_embeddings=[0.1, 0.2],
+            n_results=10,
+            include=["documents", "metadatas", "embeddings"],
+        )
+        assert [item.safe_get_id() for batch in results for item in batch] == [
+            "shared"
+        ]
+        assert results[0][0].doc_id == "new"
+    finally:
+        engine.close()
 
 
 @pytest.mark.integration

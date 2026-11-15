@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.service_heartbeat",
+  "arguments": {
+    "service_id": "svc-contract",
+    "instance_id": "worker-contract",
+    "payload": {
+      "sequence": 7
+    }
+  },
+  "python_service_arguments": {
+    "service_id": "svc-contract",
+    "instance_id": "worker-contract",
+    "payload": {
+      "sequence": 7
+    }
+  },
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/services/svc-contract/heartbeat",
+    "body": {
+      "instance_id": "worker-contract",
+      "payload": {
+        "sequence": 7
+      }
+    }
+  },
+  "result": {
+    "service_id": "svc-contract",
+    "instance_id": "worker-contract",
+    "health_status": "healthy"
+  }
+}

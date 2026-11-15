@@ -1,0 +1,12 @@
+{
+  "limit": 1,
+  "http_status": 200,
+  "required_body_fields": [
+    "services"
+  ],
+  "expected_first_service": {
+    "service_id": "svc-a",
+    "enabled": false,
+    "health_status": "stopped"
+  }
+}

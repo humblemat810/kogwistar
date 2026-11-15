@@ -1,0 +1,20 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "response_body": {
+    "version": "v1",
+    "ops": [
+      "spawn_process",
+      "terminate_process",
+      "create_conversation",
+      "send_message",
+      "receive_message",
+      "mount_memory",
+      "project_view",
+      "invoke_tool",
+      "checkpoint",
+      "resume",
+      "request_approval"
+    ]
+  }
+}

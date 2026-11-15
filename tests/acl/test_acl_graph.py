@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import threading
+from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from kogwistar.acl.graph import ACLGraph, ACLRecord, ACLTarget
 from kogwistar.conversation.agentic_answering import _engine_get_nodes
@@ -44,7 +46,7 @@ def _mk_node(*, node_id: str, doc_id: str) -> Node:
     )
 
 
-def _mk_edge(*, edge_id: str, src: str, tgt: str, doc_id: str) -> Edge:
+def _mk_edge(*, edge_id: str, src: str | int, tgt: str, doc_id: str) -> Edge:
     return Edge(
         id=edge_id,
         label=edge_id,
@@ -328,6 +330,100 @@ def test_acceptance_scope_isolation_and_user_specific_visible_sets(tmp_path):
     }
 
 
+def test_document_id_enumeration_applies_acl_visibility(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    doc_id = "doc::enumeration::shared"
+    visible = _mk_node(node_id="enumeration-visible", doc_id=doc_id)
+    visible.metadata.update({"visibility": "public"})
+    visible.mentions[0].spans[0].insertion_method = "test"
+    hidden = _mk_node(node_id="enumeration-hidden", doc_id=doc_id)
+    hidden.metadata.update({"visibility": "private", "owner_agent_id": "owner-b"})
+    hidden.mentions[0].spans[0].insertion_method = "test"
+    visible_edge = _mk_edge(
+        edge_id="enumeration-visible-edge",
+        src=visible.id,
+        tgt=visible.id,
+        doc_id=doc_id,
+    )
+    visible_edge.metadata.update({"visibility": "public"})
+    visible_edge.mentions[0].spans[0].insertion_method = "test"
+    hidden_edge = _mk_edge(
+        edge_id="enumeration-hidden-edge",
+        src=visible.id,
+        tgt=visible.id,
+        doc_id=doc_id,
+    )
+    hidden_edge.metadata.update({"visibility": "private", "owner_agent_id": "owner-b"})
+    hidden_edge.mentions[0].spans[0].insertion_method = "test"
+
+    writer = claims_ctx.set({"agent_id": "owner-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(visible)
+        engine.write.add_node(hidden)
+        engine.write.add_edge(visible_edge)
+        engine.write.add_edge(hidden_edge)
+    finally:
+        claims_ctx.reset(writer)
+
+    reader = claims_ctx.set({"agent_id": "reader", "ns": "knowledge"})
+    try:
+        assert engine.read.node_ids_by_doc(doc_id) == [visible.id]
+        assert engine.read.edge_ids_by_doc(doc_id) == [visible_edge.id]
+        assert engine.read.nodes_by_doc(doc_id) == [visible.id]
+        assert engine.read.edges_by_doc(doc_id) == [visible_edge.id]
+        assert engine.read.node_ids_by_doc(doc_id, insertion_method="test") == [visible.id]
+        assert engine.read.edge_ids_by_doc(doc_id, insertion_method="test") == [visible_edge.id]
+        assert engine.read.node_ids_by_doc("missing-document") == []
+        assert engine.read.edge_ids_by_doc("missing-document") == []
+    finally:
+        claims_ctx.reset(reader)
+
+
+def test_normal_acl_read_uses_authenticated_group_claims(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    group_node = _mk_node(node_id="accept-group-visible", doc_id="doc::group::visible")
+    group_node.metadata.update(
+        {
+            "visibility": "group",
+            "owner_agent_id": "agent-a",
+            "shared_with_groups": ["reviewers"],
+        }
+    )
+    owner_token = claims_ctx.set(
+        {"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"}
+    )
+    try:
+        engine.write.add_node(group_node)
+    finally:
+        claims_ctx.reset(owner_token)
+
+    reviewer_token = claims_ctx.set(
+        {
+            "agent_id": "agent-b",
+            "groups": ["Reviewers"],
+            "security_scope": "tenant-a",
+            "ns": "knowledge",
+        }
+    )
+    try:
+        assert group_node.id in {node.id for node in engine.read.get_nodes(node_type=Node)}
+    finally:
+        claims_ctx.reset(reviewer_token)
+
+    unrelated_token = claims_ctx.set(
+        {
+            "agent_id": "agent-b",
+            "groups": ["guests"],
+            "security_scope": "tenant-a",
+            "ns": "knowledge",
+        }
+    )
+    try:
+        assert group_node.id not in {node.id for node in engine.read.get_nodes(node_type=Node)}
+    finally:
+        claims_ctx.reset(unrelated_token)
+
+
 def test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking(tmp_path):
     engine = _mk_acl_fake_engine(tmp_path)
     visible = _mk_node(node_id="accept-topology-visible", doc_id="doc::topology::visible")
@@ -364,6 +460,145 @@ def test_acceptance_hidden_nodes_do_not_leak_topology_paths_or_ranking(tmp_path)
     assert hidden.id not in ranked_ids
     assert topology == []
     assert path_summaries == []
+
+
+def test_numeric_endpoint_is_rejected_before_acl_projection():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-acl-malformed-endpoint-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert fixture["expected_edge_visible"] is False
+    with pytest.raises(ValidationError):
+        _mk_edge(
+            edge_id="malformed-endpoint-edge",
+            src=fixture["source_endpoint_value"],
+            tgt="endpoint-target",
+            doc_id="doc::malformed-endpoint::edge",
+        )
+
+
+def test_private_edge_span_hides_edge_even_when_endpoints_are_visible(tmp_path):
+    engine = _mk_acl_fake_engine(tmp_path)
+    source = _mk_node(node_id="edge-span-source", doc_id="doc::edge-span::source")
+    target = _mk_node(node_id="edge-span-target", doc_id="doc::edge-span::target")
+    edge = _mk_edge(
+        edge_id="edge-private-span",
+        src=source.id,
+        tgt=target.id,
+        doc_id="doc::edge-span::evidence",
+    )
+    for entity in (source, target, edge):
+        entity.metadata.update(
+            {
+                "visibility": "shared",
+                "owner_agent_id": "agent-a",
+                "shared_with_agents": ["agent-b"],
+            }
+        )
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(source)
+        engine.write.add_node(target)
+        engine.write.add_edge(edge)
+        engine.record_acl(
+            grain="span",
+            truth_graph="knowledge",
+            entity_id=edge.id,
+            target_item_id=f"{edge.id}::mention::0::span::0",
+            version=1,
+            mode="private",
+            owner_id="agent-a",
+        )
+    finally:
+        claims_ctx.reset(token)
+
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        visible_edges = engine.read.get_edges(ids=[edge.id], edge_type=Edge)
+    finally:
+        claims_ctx.reset(token)
+
+    assert engine.decide_acl(
+        grain="edge",
+        truth_graph="knowledge",
+        entity_id=edge.id,
+        principal_id="agent-b",
+        security_scope="tenant-a",
+    ).visible
+    assert visible_edges == []
+
+
+def test_edge_reference_does_not_disclose_private_or_unresolved_edge(
+    tmp_path, monkeypatch
+):
+    engine = _mk_acl_fake_engine(tmp_path)
+    source = _mk_node(node_id="edge-reference-source", doc_id="doc::edge-ref::source")
+    target = _mk_node(node_id="edge-reference-target", doc_id="doc::edge-ref::target")
+    private_edge = _mk_edge(
+        edge_id="edge-private-reference",
+        src=source.id,
+        tgt=target.id,
+        doc_id="doc::edge-ref::private",
+    )
+    parent_edge = _mk_edge(
+        edge_id="edge-visible-parent",
+        src=source.id,
+        tgt=target.id,
+        doc_id="doc::edge-ref::parent",
+    )
+    private_edge.metadata.update(
+        {"visibility": "private", "owner_agent_id": "agent-a"}
+    )
+    parent_edge.metadata.update(
+        {
+            "visibility": "shared",
+            "owner_agent_id": "agent-a",
+            "shared_with_agents": ["agent-b"],
+        }
+    )
+    parent_edge.source_edge_ids = [private_edge.id]
+
+    token = claims_ctx.set({"agent_id": "agent-a", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        engine.write.add_node(source)
+        engine.write.add_node(target)
+        engine.write.add_edge(private_edge)
+        engine.write.add_edge(parent_edge)
+    finally:
+        claims_ctx.reset(token)
+
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        visible_edges = engine.read.get_edges(edge_type=Edge)
+    finally:
+        claims_ctx.reset(token)
+
+    assert engine.decide_acl(
+        grain="edge",
+        truth_graph="knowledge",
+        entity_id=parent_edge.id,
+        principal_id="agent-b",
+        security_scope="tenant-a",
+    ).visible
+    assert visible_edges == []
+
+    raw_read = engine.read._raw
+    original_get_edges = raw_read.get_edges
+
+    def omit_referenced_edge(ids=None, **kwargs):
+        if ids is not None and private_edge.id in ids:
+            return []
+        return original_get_edges(ids=ids, **kwargs)
+
+    monkeypatch.setattr(raw_read, "get_edges", omit_referenced_edge)
+    token = claims_ctx.set({"agent_id": "agent-b", "security_scope": "tenant-a", "ns": "knowledge"})
+    try:
+        assert engine.read.get_edges(ids=[parent_edge.id], edge_type=Edge) == []
+    finally:
+        claims_ctx.reset(token)
 
 
 def test_acceptance_answer_assembly_uses_visible_sources_only(tmp_path):
@@ -1894,6 +2129,15 @@ def test_acl_smoke_across_fake_chroma_and_pg_backends(
     try:
         visible_nodes = kg_engine.read.get_nodes(ids=[node.id])
         assert [row.id for row in visible_nodes] == [node.id]
+        vector_nodes = kg_engine.read.query_nodes(
+            query="ACL smoke retrieval", n_results=20
+        )
+        assert node.id in {row.id for batch in vector_nodes for row in batch}
+        assert all(
+            str((row.metadata or {}).get("entity_type") or "") != "acl_record"
+            for batch in vector_nodes
+            for row in batch
+        )
         assert kg_engine.decide_acl_node_read(
             item_grain="span",
             truth_graph="knowledge",
@@ -1911,6 +2155,9 @@ def test_acl_smoke_across_fake_chroma_and_pg_backends(
     )
     try:
         assert kg_engine.read.get_nodes(ids=[node.id]) == []
+        assert kg_engine.read.query_nodes(
+            query="ACL smoke retrieval", n_results=20
+        ) == [[]]
         assert (
             kg_engine.decide_acl_node_read(
                 item_grain="span",

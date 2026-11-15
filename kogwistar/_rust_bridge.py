@@ -4,11 +4,20 @@ import json
 import math
 import os
 import sys
+import threading
 import uuid
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from importlib import import_module
 from typing import Any, Protocol, TypeVar, cast
 
 from kogwistar.json_types import JsonObject, JsonValue
+from kogwistar.implementation_selection import (
+    assert_transaction_entry_allowed,
+    implementation_env,
+)
+from kogwistar.runtime.strict_json import normalize_json_value
 
 
 class RustExtensionLike(Protocol):
@@ -44,6 +53,14 @@ class RustExtensionLike(Protocol):
     def runtime_scheduler_tick(self, payload: str) -> str: ...
     def canonical_entity_event(self, payload: str) -> str: ...
     def replay_entity_events(self, payload: str) -> str: ...
+    def validate_graph_model_family(self, payload: str) -> None: ...
+    def round_trip_raw_graph_model_envelope(self, payload: str) -> str: ...
+    def graph_model_level_from_root(self, payload: str) -> str | None: ...
+    def decode_persistent_graph_model_v2(self, payload: str) -> str: ...
+    def project_graph_model_slice(self, payload: str) -> str: ...
+    def project_graph_model_slices(self, payload: str) -> str: ...
+
+    def graph_model_capability_profiles(self) -> str: ...
 
 
 _T = TypeVar("_T")
@@ -61,9 +78,185 @@ class RustParityError(RuntimeError):
         self.code = code
 
 
+class RustBridgeTrace:
+    """Request-local counts of actual Python-to-extension calls, never payloads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.ffi_calls = 0
+        self.input_bytes = 0
+        self.output_bytes = 0
+        self.transaction_active_calls = 0
+        self.transaction_boundary_calls = 0
+        self.calls_by_method: dict[str, int] = {}
+        self.calls_by_operation: dict[str, int] = {}
+
+    def record_call(
+        self, method: str, args: tuple[object, ...], kwargs: Mapping[str, object]
+    ) -> None:
+        input_bytes = sum(
+            len(value.encode("utf-8"))
+            for value in (*args, *kwargs.values())
+            if isinstance(value, str)
+        )
+        active = False
+        boundary = False
+        operation_kind: str | None = None
+        request_payload = (
+            args[0]
+            if args and isinstance(args[0], str)
+            else kwargs.get("payload")
+        )
+        if method in {"store_sqlite_json", "store_postgres_json"} and isinstance(
+            request_payload, str
+        ):
+            try:
+                request = json.loads(request_payload)
+            except (TypeError, ValueError):
+                request = None
+            if isinstance(request, dict):
+                active = request.get("transaction_id") is not None
+                operation = request.get("operation")
+                if isinstance(operation, dict):
+                    kind = operation.get("kind")
+                    if isinstance(kind, str):
+                        operation_kind = kind
+                        boundary = kind in {
+                            "begin_transaction",
+                            "commit_transaction",
+                            "rollback_transaction",
+                        }
+        with self._lock:
+            self.ffi_calls += 1
+            self.input_bytes += input_bytes
+            self.transaction_active_calls += int(active)
+            self.transaction_boundary_calls += int(boundary)
+            self.calls_by_method[method] = self.calls_by_method.get(method, 0) + 1
+            if operation_kind is not None:
+                self.calls_by_operation[operation_kind] = (
+                    self.calls_by_operation.get(operation_kind, 0) + 1
+                )
+
+    def record_result(self, result: object) -> None:
+        if isinstance(result, str):
+            with self._lock:
+                self.output_bytes += len(result.encode("utf-8"))
+
+    def snapshot(self) -> JsonObject:
+        with self._lock:
+            return {
+                "ffi_calls": self.ffi_calls,
+                "input_bytes": self.input_bytes,
+                "output_bytes": self.output_bytes,
+                "transaction_active_calls": self.transaction_active_calls,
+                "transaction_boundary_calls": self.transaction_boundary_calls,
+                "calls_by_method": dict(self.calls_by_method),
+                "calls_by_operation": dict(self.calls_by_operation),
+            }
+
+
+_active_bridge_traces: ContextVar[tuple[RustBridgeTrace, ...]] = ContextVar(
+    "kogwistar_rust_bridge_traces", default=()
+)
+
+
+@contextmanager
+def capture_rust_bridge_calls() -> Iterator[RustBridgeTrace]:
+    """Measure a bridge scope and include its calls in enclosing captures."""
+    trace = RustBridgeTrace()
+    active = _active_bridge_traces.get()
+    token = _active_bridge_traces.set((*active, trace))
+    try:
+        yield trace
+    finally:
+        _active_bridge_traces.reset(token)
+
+
+class _TracingRustExtension:
+    def __init__(
+        self, extension: RustExtensionLike, traces: tuple[RustBridgeTrace, ...]
+    ) -> None:
+        self._extension = extension
+        self._traces = traces
+
+    def __getattr__(self, name: str) -> Any:
+        member = getattr(self._extension, name)
+        if not callable(member):
+            return member
+
+        def traced(*args: Any, **kwargs: Any) -> Any:
+            for trace in self._traces:
+                trace.record_call(name, args, kwargs)
+            result = member(*args, **kwargs)
+            for trace in self._traces:
+                trace.record_result(result)
+            return result
+
+        return traced
+
+
+def _rust_json_payload(
+    value: object,
+    *,
+    ensure_ascii: bool = True,
+    separators: tuple[str, str] | None = None,
+) -> str:
+    """Validate the shared JSON value contract before crossing the PyO3 ABI."""
+    try:
+        normalized = normalize_json_value(value, field="Rust bridge payload")
+    except (TypeError, ValueError) as exc:
+        raise RustParityError(f"Rust bridge payload violates strict JSON: {exc}") from exc
+    return json.dumps(
+        normalized,
+        ensure_ascii=ensure_ascii,
+        separators=separators,
+        allow_nan=False,
+    )
+
+
+def _lossless_graph_json_payload(value: JsonObject) -> str:
+    """Serialize graph contract envelopes without narrowing Python integers."""
+
+    try:
+        normalized = normalize_json_value(
+            value,
+            field="Rust graph contract payload",
+            allow_unbounded_integers=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise RustParityError(f"Rust graph payload violates strict JSON: {exc}") from exc
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+_LOSSLESS_POSTGRES_GRAPH_OPERATIONS = frozenset(
+    {
+        "graph_mutation",
+        "graph_metadata_patch_mutation",
+        "graph_delete_mutation",
+        "upsert_graph_projection",
+        "patch_graph_projection_metadata",
+        "graph_projection_records",
+        "graph_projection_vector_query",
+        "graph_projection_vector_query_batch",
+    }
+)
+
+
 def _exception_code(exc: BaseException) -> str | None:
     code = getattr(exc, "code", None)
     return code if isinstance(code, str) else None
+
+
+def _implementation_setting(name: str, *, fallback: str | None = None) -> str:
+    value = implementation_env(name)
+    if value is None and fallback is not None:
+        value = implementation_env(fallback)
+    return "python" if value is None else value
 
 
 def store_sqlite(
@@ -82,6 +275,7 @@ def store_sqlite(
     Rust callers keep its default so every call observes the latest external
     SQLite commit.
     """
+    assert_transaction_entry_allowed()
     engine_sqlite = sys.modules.get("kogwistar.engine_core.engine_sqlite")
     active_connection = (
         getattr(engine_sqlite, "get_active_sqlite_conn", lambda: None)()
@@ -108,7 +302,7 @@ def store_sqlite(
         extension = _load_extension()
         return json.loads(
             extension.store_sqlite_json(
-                json.dumps(
+                _rust_json_payload(
                     {
                         "path": os.fspath(path),
                         "transaction_id": transaction_id,
@@ -151,6 +345,7 @@ def store_postgres(
     dsn: str | None = None,
     schema: str,
     operation: JsonObject,
+    context_id: str | None = None,
     transaction_id: str | None = None,
 ) -> JsonValue:
     """Execute Phase-3 PostgreSQL JSON ABI through native Tokio/Postgres store.
@@ -159,20 +354,31 @@ def store_postgres(
     route Python's public Postgres backend. SQLAlchemy DSNs are normalized in
     memory only; errors intentionally do not echo connection credentials.
     """
+    assert_transaction_entry_allowed()
     try:
         extension = _load_extension()
+        payload = {
+            "dsn": _postgres_dsn_for_rust(dsn),
+            "schema": schema,
+            "context_id": context_id,
+            "transaction_id": transaction_id,
+            "operation": operation,
+        }
+        # Graph records and metadata filters preserve Python's arbitrary-
+        # precision integers. Other store operations retain the bounded shared
+        # Rust JSON contract.
+        payload_json = (
+            _lossless_graph_json_payload(payload)
+            if operation.get("kind") in _LOSSLESS_POSTGRES_GRAPH_OPERATIONS
+            else _rust_json_payload(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
         return json.loads(
             extension.store_postgres_json(
-                json.dumps(
-                    {
-                        "dsn": _postgres_dsn_for_rust(dsn),
-                        "schema": schema,
-                        "transaction_id": transaction_id,
-                        "operation": operation,
-                    },
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                )
+                payload_json
             )
         )
     except Exception as exc:
@@ -187,8 +393,8 @@ _MISSING_PYTHON_RESULT = object()
 
 
 def contract_implementation_mode() -> str:
-    mode = os.getenv(
-        "KOGWISTAR_IMPL_CONTRACTS", os.getenv("KOGWISTAR_IMPL_MODE", "python")
+    mode = _implementation_setting(
+        "KOGWISTAR_IMPL_CONTRACTS", fallback="KOGWISTAR_IMPL_MODE"
     ).strip().lower()
     if mode not in {"python", "shadow", "rust"}:
         raise ValueError(
@@ -199,8 +405,8 @@ def contract_implementation_mode() -> str:
 
 
 def runtime_implementation_mode() -> str:
-    mode = os.getenv(
-        "KOGWISTAR_IMPL_RUNTIME", os.getenv("KOGWISTAR_IMPL_MODE", "python")
+    mode = _implementation_setting(
+        "KOGWISTAR_IMPL_RUNTIME", fallback="KOGWISTAR_IMPL_MODE"
     ).strip().lower()
     if mode not in {"python", "shadow", "rust"}:
         raise ValueError(
@@ -211,7 +417,7 @@ def runtime_implementation_mode() -> str:
 
 
 def _store_implementation_mode(*, env_name: str) -> str:
-    mode = os.getenv(env_name, os.getenv("KOGWISTAR_IMPL_MODE", "python")).strip().lower()
+    mode = _implementation_setting(env_name, fallback="KOGWISTAR_IMPL_MODE").strip().lower()
     if mode not in {"python", "shadow", "rust"}:
         raise ValueError(
             f"{env_name} must be one of: python, shadow, rust; got {mode!r}"
@@ -231,7 +437,7 @@ def meta_store_implementation_mode() -> str:
 
 def postgres_authority_implementation_mode() -> str:
     """Select coordinated PostgreSQL authority independently from SQLite meta."""
-    mode = os.getenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python").strip().lower()
+    mode = _implementation_setting("KOGWISTAR_IMPL_POSTGRES_AUTHORITY").strip().lower()
     if mode not in {"python", "rust"}:
         raise ValueError(
             "KOGWISTAR_IMPL_POSTGRES_AUTHORITY must be one of: python, rust; "
@@ -241,8 +447,8 @@ def postgres_authority_implementation_mode() -> str:
 
 
 def server_implementation_mode() -> str:
-    mode = os.getenv(
-        "KOGWISTAR_IMPL_SERVER", os.getenv("KOGWISTAR_IMPL_MODE", "python")
+    mode = _implementation_setting(
+        "KOGWISTAR_IMPL_SERVER", fallback="KOGWISTAR_IMPL_MODE"
     ).strip().lower()
     if mode not in {"python", "rust"}:
         raise ValueError(
@@ -252,6 +458,139 @@ def server_implementation_mode() -> str:
     return mode
 
 
+def validate_graph_model_family(payload: JsonObject) -> None:
+    """Validate a graph-model envelope at the selected contract seam.
+
+    Python mode deliberately does nothing: Pydantic remains authoritative and
+    the legacy path has no additional serialization or native-extension cost.
+    Shadow and Rust modes require the native validator and fail closed before
+    the caller performs an effect.
+    """
+
+    if contract_implementation_mode() == "python":
+        return
+    extension = _load_extension()
+    try:
+        extension.validate_graph_model_family(
+            _lossless_graph_json_payload(payload)
+        )
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust graph-model contract validation failed: {exc}"
+        ) from exc
+
+
+def round_trip_raw_graph_model_envelope(payload_json: str) -> str:
+    """Validate and forward a graph envelope without materializing JSON values.
+
+    This narrow raw-string path preserves Python arbitrary-precision integer
+    tokens. It is intentionally separate from object-based bridge calls, whose
+    strict JSON domain remains bounded to Rust's native JSON number range.
+    """
+
+    if not isinstance(payload_json, str):
+        raise TypeError("raw graph envelope must be supplied as a JSON string")
+    extension = _load_extension()
+    try:
+        return extension.round_trip_raw_graph_model_envelope(payload_json)
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust raw graph-envelope round trip failed: {exc}"
+        ) from exc
+
+
+def graph_model_level_from_root(payload_json: str) -> str | None:
+    """Read the exact Python integer level from a raw graph envelope."""
+
+    if not isinstance(payload_json, str):
+        raise TypeError("raw graph envelope must be supplied as a JSON string")
+    extension = _load_extension()
+    try:
+        level = extension.graph_model_level_from_root(payload_json)
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust graph-model level extraction failed: {exc}"
+        ) from exc
+    if level is not None and not isinstance(level, str):
+        raise RustParityError("native graph-model level extraction returned an invalid type")
+    return level
+
+
+def decode_persistent_graph_model_v2(payload_json: str) -> JsonObject:
+    """Decode a persistent graph entity with lossless hierarchy-level output."""
+
+    if not isinstance(payload_json, str):
+        raise TypeError("raw graph envelope must be supplied as a JSON string")
+    extension = _load_extension()
+    try:
+        decoded = json.loads(extension.decode_persistent_graph_model_v2(payload_json))
+    except Exception as exc:
+        raise RustParityError(
+            f"Rust persistent graph-model V2 decode failed: {exc}"
+        ) from exc
+    if (
+        not isinstance(decoded, dict)
+        or decoded.get("schema_version") != 2
+        or not isinstance(decoded.get("model_class"), str)
+        or not isinstance(decoded.get("entity"), dict)
+        or decoded.get("level_from_root") is not None
+        and not isinstance(decoded.get("level_from_root"), str)
+    ):
+        raise RustParityError("native persistent graph-model V2 decode returned an invalid shape")
+    return cast(JsonObject, decoded)
+
+
+def project_graph_model_slice(payload: JsonObject) -> JsonObject:
+    """Apply an explicit Python-exported slice through the Rust ABI."""
+
+    extension = _load_extension()
+    try:
+        projected = json.loads(
+            extension.project_graph_model_slice(
+                _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
+            )
+        )
+    except Exception as exc:
+        raise RustParityError(f"Rust graph-model slice projection failed: {exc}") from exc
+    if not isinstance(projected, dict):
+        raise RustParityError("native graph-model slice projection returned non-object JSON")
+    return cast(JsonObject, projected)
+
+
+def graph_model_capability_profiles() -> list[JsonObject]:
+    """Return the native graph capability report for seam diagnostics."""
+
+    extension = _load_extension()
+    try:
+        profiles = json.loads(extension.graph_model_capability_profiles())
+    except Exception as exc:
+        raise RustParityError(
+            f"native graph capability profile report failed: {exc}"
+        ) from exc
+    if not isinstance(profiles, list) or not all(
+        isinstance(profile, dict) for profile in profiles
+    ):
+        raise RustParityError("native graph capability profile report must be a list")
+    return cast(list[JsonObject], profiles)
+
+
+def project_graph_model_slices(payloads: list[JsonObject]) -> list[JsonObject]:
+    """Project multiple graph envelopes in one native boundary crossing."""
+
+    extension = _load_extension()
+    try:
+        projected = json.loads(
+            extension.project_graph_model_slices(
+                _rust_json_payload(payloads, ensure_ascii=False, separators=(",", ":"))
+            )
+        )
+    except Exception as exc:
+        raise RustParityError(f"native graph-model slice batch failed: {exc}") from exc
+    if not isinstance(projected, list) or not all(isinstance(item, dict) for item in projected):
+        raise RustParityError("native graph-model slice batch returned non-object items")
+    return cast(list[JsonObject], projected)
+
+
 def api_health(*, payload: JsonObject, python_value: JsonObject) -> JsonObject:
     """Select Rust health contract while Python transport remains compatible."""
     if server_implementation_mode() == "python":
@@ -259,7 +598,7 @@ def api_health(*, payload: JsonObject, python_value: JsonObject) -> JsonObject:
     extension = _load_extension()
     rust_value = json.loads(
         extension.api_health(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -271,7 +610,7 @@ def api_authorize(*, roles: list[str], required_roles: list[str]) -> bool:
     extension = _load_extension()
     value = json.loads(
         extension.api_authorize(
-            json.dumps(
+            _rust_json_payload(
                 {"roles": roles, "required_roles": required_roles},
                 separators=(",", ":"),
             )
@@ -286,7 +625,7 @@ def api_sse_frame(
     extension = _load_extension()
     return str(
         extension.api_sse_frame(
-            json.dumps(
+            _rust_json_payload(
                 {"event": event, "data": data, "id": event_id},
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -299,7 +638,7 @@ def api_mcp_result(*, request_id: JsonValue, result: JsonValue) -> JsonObject:
     extension = _load_extension()
     value = json.loads(
         extension.api_mcp_result(
-            json.dumps(
+            _rust_json_payload(
                 {"id": request_id, "result": result},
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -315,31 +654,38 @@ def api_cli_health(*, payload: JsonObject) -> str:
     extension = _load_extension()
     return str(
         extension.api_cli_health(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
 
 
 def _load_extension() -> RustExtensionLike:
     try:
-        return cast(RustExtensionLike, import_module("kogwistar._rust"))
+        extension = cast(RustExtensionLike, import_module("kogwistar._rust"))
     except ImportError as exc:
         raise RustExtensionUnavailableError(
             "Rust contract mode requires the kogwistar._rust extension. "
             "Install the 'rust' extra and run 'maturin develop'."
         ) from exc
+    traces = _active_bridge_traces.get()
+    if not traces:
+        return extension
+    return cast(RustExtensionLike, _TracingRustExtension(extension, traces))
 
 
 def _select(
-    *, operation: str, python_value: _T, rust_value: _T, mode: str
+    *, operation: str, python_value: _T | Callable[[], _T], rust_value: _T, mode: str
 ) -> _T:
     if mode == "shadow":
-        if rust_value != python_value:
+        python_result = cast(
+            _T, python_value() if callable(python_value) else python_value
+        )
+        if rust_value != python_result:
             raise RustParityError(
                 f"Rust parity mismatch for {operation}: "
-                f"python={python_value!r}, rust={rust_value!r}"
+                f"python={python_result!r}, rust={rust_value!r}"
             )
-        return python_value
+        return python_result
     return rust_value
 
 
@@ -387,7 +733,7 @@ def store_memory_read(
     extension = _load_extension()
     rust_value = json.loads(
         extension.store_memory_read_json(
-            json.dumps(
+            _rust_json_payload(
                 {"snapshot": snapshot, "operation": operation},
                 ensure_ascii=False,
                 separators=(",", ":"),
@@ -424,13 +770,16 @@ def metadata_filter_json_contract_compatible(value: object) -> bool:
 
 
 def contract_stable_id(
-    *, kind: str, parts: tuple[JsonValue, ...], python_value: uuid.UUID
+    *,
+    kind: str,
+    parts: tuple[JsonValue, ...],
+    python_value: uuid.UUID | Callable[[], uuid.UUID],
 ) -> uuid.UUID:
     mode = contract_implementation_mode()
     if mode == "python":
-        return python_value
+        return python_value() if callable(python_value) else python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         [kind, *parts], ensure_ascii=False, separators=(",", ":")
     )
     rust_value = uuid.UUID(str(extension.stable_id_json(payload_json)))
@@ -447,7 +796,7 @@ def contract_canonical_json(*, value: JsonValue, python_value: str) -> str:
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    payload_json = _rust_json_payload(value, ensure_ascii=False, separators=(",", ":"))
     rust_value = str(extension.canonical_json(payload_json))
     return _select(
         operation="canonical_json",
@@ -464,11 +813,10 @@ def contract_evidence_pack_digest_hash(
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         value,
         ensure_ascii=False,
         separators=(",", ":"),
-        default=str,
     )
     rust_value = str(extension.evidence_pack_digest_hash(payload_json))
     return _select(
@@ -493,7 +841,7 @@ def contract_metadata_filter_matches(
             raise RuntimeError("Python metadata-filter mode requires Python result")
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         {"metadata": metadata, "where": where},
         ensure_ascii=False,
         separators=(",", ":"),
@@ -526,7 +874,7 @@ def short_id_transform(
     extension = _load_extension()
     rust_value = json.loads(
         extension.short_id_transform(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if mode == "rust":
@@ -551,7 +899,7 @@ def runtime_apply_state_update(
     extension = _load_extension()
     rust_value = json.loads(
         extension.apply_state_update(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if mode == "rust":
@@ -578,7 +926,7 @@ def runtime_workflow_may_reach_join(
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         {"node_ids": node_ids, "edges": edges, "join_ids": join_ids},
         ensure_ascii=False,
         separators=(",", ":"),
@@ -613,7 +961,7 @@ def runtime_workflow_terminal_reachable(
     if mode == "python":
         return python_value
     extension = _load_extension()
-    payload_json = json.dumps(
+    payload_json = _rust_json_payload(
         {
             "node_ids": node_ids,
             "edges": edges,
@@ -642,7 +990,7 @@ def runtime_select_route(*, payload: dict[str, Any]) -> dict[str, Any]:
     extension = _load_extension()
     value = json.loads(
         extension.runtime_select_route(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(value, dict):
@@ -662,7 +1010,7 @@ def runtime_plan_successors(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_plan_successors(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -695,7 +1043,7 @@ def runtime_apply_join_arrival(*, payload: JsonObject) -> JsonObject:
     extension = _load_extension()
     value = json.loads(
         extension.runtime_apply_join_arrival(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(value, dict):
@@ -713,7 +1061,7 @@ def runtime_decide_retry(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_decide_retry(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -736,7 +1084,7 @@ def runtime_plan_nested_invocation(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_plan_nested_invocation(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -759,7 +1107,7 @@ def runtime_decide_dispatch(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_decide_dispatch(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -782,7 +1130,7 @@ def runtime_decide_budget_suspend(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_decide_budget_suspend(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):
@@ -805,7 +1153,7 @@ def runtime_scheduler_tick(
     extension = _load_extension()
     rust_value = json.loads(
         extension.runtime_scheduler_tick(
-            json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            _rust_json_payload(payload, ensure_ascii=False, separators=(",", ":"))
         )
     )
     if not isinstance(rust_value, dict):

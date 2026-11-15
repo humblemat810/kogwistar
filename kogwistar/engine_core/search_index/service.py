@@ -8,7 +8,12 @@ from contextlib import closing
 from typing import TYPE_CHECKING, Any
 
 from ...cdc.change_event import EntityRefModel
+from ...implementation_selection import (
+    assert_callback_side_effect_allowed,
+    implementation_selection_bound,
+)
 from ..subsystems.base import NamespaceProxy
+from ...utils.embedding_vectors import normalize_embedding_rows
 from .models import (
     IndexingItem,
     build_embedding_text,
@@ -43,6 +48,7 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             pass
         return conn
 
+    @implementation_selection_bound
     def ensure_initialized(self) -> None:
         conn = self._connect()
         try:
@@ -50,8 +56,19 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
         finally:
             conn.close()
 
-    def upsert_entries(self, items: list[IndexingItem]) -> None:
+    def _embed_one(self, text: str) -> list[float]:
+        rows = normalize_embedding_rows(
+            self._e.embedding_function([text]),
+            allow_empty=False,
+            allow_none_rows=False,
+        )
+        if len(rows) != 1 or rows[0] is None:
+            raise ValueError("embedding function must return exactly one vector")
+        return rows[0]
 
+    @implementation_selection_bound
+    def upsert_entries(self, items: list[IndexingItem]) -> None:
+        assert_callback_side_effect_allowed("Search index mutation")
         conn = self._connect()
         cur = conn.cursor()
         try:
@@ -59,6 +76,8 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
                 kw = " ".join(item.keywords) if item.keywords else ""
                 al = " ".join(item.aliases) if item.aliases else ""
                 index_key = make_index_key_for_item(item)
+                embedding_text = build_embedding_text(item)
+                embedding = self._embed_one(embedding_text)
 
                 cur.execute(
                     """
@@ -98,7 +117,8 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
                             "doc_id": item.doc_id,
                         }
                     ],
-                    documents=[build_embedding_text(item)],
+                    documents=[embedding_text],
+                    embeddings=[embedding],
                 )
 
                 payload = {
@@ -132,6 +152,7 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             cur.close()
             conn.close()
 
+    @implementation_selection_bound
     def search_hybrid(
         self, q: str, limit: int = 10, resolve_node: bool = False
     ) -> dict[str, Any]:
@@ -159,68 +180,16 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             fts_rows = cur.fetchall()
 
+            query_embedding = self._embed_one(q)
             vector_results = _result_mapping(
                 self._e.backend.node_index_query(
-                    query_texts=[q],
+                    query_embeddings=[query_embedding],
                     n_results=limit,
                 )
             )
 
-            fts_norm = self._normalize_fts_rows(fts_rows)
-            vec_norm = self._normalize_vector_results(vector_results)
-
-            combined: dict[str, dict[str, Any]] = {}
-
-            for r in fts_rows:
-                key = str(r["index_key"])
-                combined[key] = {
-                    "index_key": key,
-                    "node_id": str(r["node_id"]),
-                    "canonical_title": str(r["canonical_title"]),
-                    "provision": str(r["provision"]),
-                    "document_id": r["document_id"],
-                    "fts_score": fts_norm.get(key, 0.0),
-                    "vec_score": 0.0,
-                }
-
-            vec_ids = vector_results.get("ids") or [[]]
-            vec_metas = vector_results.get("metadatas") or [[]]
-
-            if vec_ids and vec_ids[0] and vec_metas and vec_metas[0]:
-                for idx, _ in enumerate(vec_ids[0]):
-                    meta = vec_metas[0][idx] or {}
-                    key = str(meta.get("index_key") or "")
-                    if not key:
-                        node_id = str(meta.get("target_node_id") or "")
-                        canonical_title = str(meta.get("canonical_title") or "")
-                        provision = str(meta.get("provision") or "")
-                        if not node_id or not canonical_title:
-                            continue
-                        key = make_index_key(node_id, canonical_title, provision)
-
-                    node_id = str(meta.get("target_node_id") or "")
-                    canonical_title = str(meta.get("canonical_title") or "")
-                    provision = str(meta.get("provision") or "")
-
-                    if key not in combined:
-                        combined[key] = {
-                            "index_key": key,
-                            "node_id": node_id,
-                            "canonical_title": canonical_title,
-                            "provision": provision,
-                            "document_id": meta.get("doc_id"),
-                            "fts_score": 0.0,
-                            "vec_score": vec_norm.get(key, 0.0),
-                        }
-                    else:
-                        combined[key]["vec_score"] = vec_norm.get(key, 0.0)
-
-            for row in combined.values():
-                row["hybrid_score"] = 0.6 * row["fts_score"] + 0.4 * row["vec_score"]
-
-            ranked = sorted(
-                combined.values(), key=lambda x: x["hybrid_score"], reverse=True
-            )
+            ranked = self._fuse_hybrid_rows(fts_rows, vector_results)
+            ranked = self._filter_acl_visible_entries(ranked)
 
             if resolve_node:
                 return self._resolve_nodes(ranked[:limit], q)
@@ -229,6 +198,91 @@ class SearchIndexService(NamespaceProxy["GraphKnowledgeEngine"]):
         finally:
             cur.close()
             conn.close()
+
+    def _fuse_hybrid_rows(
+        self, fts_rows: list[sqlite3.Row], vector_results: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Fuse ranked candidates before canonical graph ACL filtering."""
+        fts_norm = self._normalize_fts_rows(fts_rows)
+        vec_norm = self._normalize_vector_results(vector_results)
+        combined: dict[str, dict[str, Any]] = {}
+
+        for row in fts_rows:
+            key = str(row["index_key"])
+            combined[key] = {
+                "index_key": key,
+                "node_id": str(row["node_id"]),
+                "canonical_title": str(row["canonical_title"]),
+                "provision": str(row["provision"]),
+                "document_id": row["document_id"],
+                "fts_score": fts_norm.get(key, 0.0),
+                "vec_score": 0.0,
+            }
+
+        vec_ids = vector_results.get("ids") or [[]]
+        vec_metas = vector_results.get("metadatas") or [[]]
+        if vec_ids and vec_ids[0] and vec_metas and vec_metas[0]:
+            for index, _ in enumerate(vec_ids[0]):
+                metadata = vec_metas[0][index] or {}
+                key = str(metadata.get("index_key") or "")
+                if not key:
+                    node_id = str(metadata.get("target_node_id") or "")
+                    title = str(metadata.get("canonical_title") or "")
+                    provision = str(metadata.get("provision") or "")
+                    if not node_id or not title:
+                        continue
+                    key = make_index_key(node_id, title, provision)
+
+                node_id = str(metadata.get("target_node_id") or "")
+                title = str(metadata.get("canonical_title") or "")
+                provision = str(metadata.get("provision") or "")
+                if key not in combined:
+                    combined[key] = {
+                        "index_key": key,
+                        "node_id": node_id,
+                        "canonical_title": title,
+                        "provision": provision,
+                        "document_id": metadata.get("doc_id"),
+                        "fts_score": 0.0,
+                        "vec_score": vec_norm.get(key, 0.0),
+                    }
+                else:
+                    combined[key]["vec_score"] = vec_norm.get(key, 0.0)
+
+        for row in combined.values():
+            row["hybrid_score"] = 0.6 * row["fts_score"] + 0.4 * row["vec_score"]
+        return sorted(combined.values(), key=lambda row: row["hybrid_score"], reverse=True)
+
+    def _filter_acl_visible_entries(
+        self, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Filter derived-index hits through the canonical graph ACL surface."""
+        if not self._e.acl_enabled or not rows:
+            return rows
+
+        node_ids = list(
+            dict.fromkeys(
+                str(row.get("node_id") or "")
+                for row in rows
+                if str(row.get("node_id") or "")
+            )
+        )
+        if not node_ids:
+            return []
+
+        # Do not trust derived index metadata as authorization evidence. The
+        # ACL-aware facade is authoritative and fails closed if it cannot decide.
+        visible_nodes = self._e.read.get_nodes(
+            ids=node_ids,
+            include=None,
+            limit=len(node_ids),
+        )
+        visible_ids = {
+            str(node.safe_get_id())
+            for node in visible_nodes
+            if node.safe_get_id()
+        }
+        return [row for row in rows if str(row.get("node_id") or "") in visible_ids]
 
     def _normalize_fts_rows(self, rows: list[sqlite3.Row]) -> dict[str, float]:
         if not rows:

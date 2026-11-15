@@ -309,6 +309,14 @@ def _environment(
     env["PYTHONNOUSERSITE"] = "1"
     env["KOGWISTAR_IMPL_MODE"] = mode
     env.update(capability_modes)
+    # PostgreSQL graph and metadata stores share one transaction authority.
+    # Derive the coordination selector from this run instead of inheriting a
+    # stale value from the operator's shell.
+    meta_mode = capability_modes.get("KOGWISTAR_IMPL_META_STORE", "python")
+    graph_mode = capability_modes.get("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    env["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] = (
+        "rust" if meta_mode == graph_mode == "rust" else "python"
+    )
     env.setdefault("KOGWISTAR_LOG_LEVEL", "WARNING")
     env.setdefault("LOG_LEVEL", "WARNING")
     env.setdefault("UVICORN_LOG_LEVEL", "WARNING")

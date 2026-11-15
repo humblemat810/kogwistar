@@ -1,0 +1,37 @@
+{
+  "schema_version": "workflow-designer-capabilities/v1",
+  "node_metadata_schema": {
+    "additionalProperties": true,
+    "description": "Workflow *design* node metadata (stored in workflow_engine).\n\nRequired keys:\n  - entity_type=\"workflow_node\"\n  - workflow_id\n  - wf_op (unless wf_terminal=True)\n\nOptional:\n  - wf_version: version of the wf_op implementation selected by the resolver;\n    the exact version is part of the frozen execution/replay contract\n  - wf_environment_id: required worker/runtime dependency environment\n  - wf_executor_target: optional per-node worker implementation; omitted\n    preserves legacy operation-prefix routing and Python-worker defaults\n  - wf_fanout: allow multiple outgoing edges to fire in parallel\n  - wf_start: marks the start node in this workflow_id\n  - wf_terminal: marks terminal node\n\nThis is distinct from ``WorkflowDesignArtifact.workflow_version``, which\nversions the workflow design as a whole and does not select step handlers.",
+    "properties": {
+      "entity_type": {"default": "workflow_node", "description": "Must be \"workflow_node\"", "title": "Entity Type", "type": "string"},
+      "wf_environment_id": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Wf Environment Id"},
+      "wf_executor_target": {"anyOf": [{"enum": ["python-worker", "rust-native"], "type": "string"}, {"type": "null"}], "default": null, "title": "Wf Executor Target"},
+      "wf_fanout": {"default": false, "title": "Wf Fanout", "type": "boolean"},
+      "wf_join": {"default": false, "title": "Wf Join", "type": "boolean"},
+      "wf_op": {"default": "noop", "title": "Wf Op", "type": "string"},
+      "wf_start": {"default": false, "title": "Wf Start", "type": "boolean"},
+      "wf_terminal": {"default": false, "title": "Wf Terminal", "type": "boolean"},
+      "wf_version": {"default": "v1", "title": "Wf Version", "type": "string"},
+      "workflow_id": {"title": "Workflow Id", "type": "string"}
+    },
+    "required": ["workflow_id"],
+    "title": "WorkflowNodeMetadata",
+    "type": "object"
+  },
+  "edge_metadata_schema": {
+    "additionalProperties": true,
+    "description": "Workflow *design* edge metadata (stored in workflow_engine).\n\nKeys:\n  - entity_type=\"workflow_edge\"\n  - workflow_id\n  - wf_predicate: symbolic predicate name (None means unconditional)\n  - wf_priority: lower first\n  - wf_is_default: used if no predicate matches\n  - wf_multiplicity: \"one\"|\"many\"  (allows fanout)",
+    "properties": {
+      "entity_type": {"default": "workflow_edge", "description": "Must be \"workflow_edge\"", "title": "Entity Type", "type": "string"},
+      "wf_is_default": {"default": false, "title": "Wf Is Default", "type": "boolean"},
+      "wf_multiplicity": {"default": "one", "enum": ["one", "many"], "title": "Wf Multiplicity", "type": "string"},
+      "wf_predicate": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": null, "title": "Wf Predicate"},
+      "wf_priority": {"default": 100, "title": "Wf Priority", "type": "integer"},
+      "workflow_id": {"title": "Workflow Id", "type": "string"}
+    },
+    "required": ["workflow_id"],
+    "title": "WorkflowEdgeMetadata",
+    "type": "object"
+  }
+}

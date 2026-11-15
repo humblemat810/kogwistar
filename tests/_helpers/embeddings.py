@@ -52,6 +52,11 @@ class ConstantEmbeddingFunction(EmbeddingFunction):
         return [[0.01] * self._dim for _ in documents_or_texts]
 
 
+def build_default_test_embedding_function() -> ConstantEmbeddingFunction:
+    """Provide a zero-argument deterministic embedder for server subprocesses."""
+    return ConstantEmbeddingFunction()
+
+
 class LexicalHashEmbeddingFunction(EmbeddingFunction):
     """Deterministic lexical hash embedder used by tutorial-style tests."""
 

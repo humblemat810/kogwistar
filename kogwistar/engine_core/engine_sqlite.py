@@ -10,15 +10,50 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Literal, TypeAlias
+from typing import Callable, Literal, TypeAlias
 
 from ..json_types import JsonValue
+from ..implementation_selection import (
+    assert_callback_side_effect_allowed,
+    assert_python_transaction_entry_allowed,
+    callback_execution_active,
+)
 from ..messaging.models import ProjectedLaneMessageRow
 from .event_envelope import EntityEventEnvelope
 from .meta_lane_messages import LaneMessageMetaStoreMixin
 from .sqlite_context import SQLiteDatabaseLease, acquire_sqlite_database
 
 JsonObject: TypeAlias = dict[str, JsonValue]
+SQLITE_METADATA_SCHEMA_VERSION = 1
+
+
+def _stage1_equality_filter(
+    metadata: JsonObject | None,
+) -> tuple[dict[str, JsonValue], bool]:
+    """Flatten portable equality clauses used by ACL reads during Stage-1 fallback."""
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError("metadata must be a dict or None")
+    flattened: dict[str, JsonValue] = {}
+    pending: list[JsonObject] = [metadata or {}]
+    while pending:
+        clause = pending.pop()
+        for key, value in clause.items():
+            if key == "$and":
+                if not isinstance(value, list):
+                    raise ValueError("Stage-1 metadata query supports equality and $and only")
+                for item in value:
+                    if not isinstance(item, dict):
+                        raise ValueError(
+                            "Stage-1 metadata query supports equality and $and only"
+                        )
+                    pending.append(item)
+            elif key.startswith("$") or isinstance(value, dict):
+                raise ValueError("Stage-1 metadata query supports equality and $and only")
+            elif key in flattened and flattened[key] != value:
+                return flattened, True
+            else:
+                flattened[key] = value
+    return flattened, False
 
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
@@ -26,6 +61,69 @@ _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
 _active_sqlite_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
     "gke_sqlite_active_path", default=None
 )
+_SQLITE_MUTATION_ACTIONS = frozenset(
+    action
+    for name in (
+        "SQLITE_ALTER_TABLE",
+        "SQLITE_ANALYZE",
+        "SQLITE_ATTACH",
+        "SQLITE_CREATE_INDEX",
+        "SQLITE_CREATE_TABLE",
+        "SQLITE_CREATE_TEMP_INDEX",
+        "SQLITE_CREATE_TEMP_TABLE",
+        "SQLITE_CREATE_TEMP_TRIGGER",
+        "SQLITE_CREATE_TEMP_VIEW",
+        "SQLITE_CREATE_TRIGGER",
+        "SQLITE_CREATE_VIEW",
+        "SQLITE_CREATE_VTABLE",
+        "SQLITE_DELETE",
+        "SQLITE_DETACH",
+        "SQLITE_DROP_INDEX",
+        "SQLITE_DROP_TABLE",
+        "SQLITE_DROP_TEMP_INDEX",
+        "SQLITE_DROP_TEMP_TABLE",
+        "SQLITE_DROP_TEMP_TRIGGER",
+        "SQLITE_DROP_TEMP_VIEW",
+        "SQLITE_DROP_TRIGGER",
+        "SQLITE_DROP_VIEW",
+        "SQLITE_DROP_VTABLE",
+        "SQLITE_INSERT",
+        "SQLITE_PRAGMA",
+        "SQLITE_REINDEX",
+        "SQLITE_SAVEPOINT",
+        "SQLITE_TRANSACTION",
+        "SQLITE_UPDATE",
+        "SQLITE_VDELETE",
+        "SQLITE_VINSERT",
+        "SQLITE_VUPDATE",
+    )
+    if (action := getattr(sqlite3, name, None)) is not None
+)
+
+
+def _sqlite_callback_authorizer() -> Callable[
+    [int, str | None, str | None, str | None, str | None], int
+]:
+    callback_readonly = callback_execution_active()
+
+    def authorize(
+        action: int,
+        _arg1: str | None,
+        _arg2: str | None,
+        _database_name: str | None,
+        _trigger_name: str | None,
+    ) -> int:
+        if action not in _SQLITE_MUTATION_ACTIONS:
+            return sqlite3.SQLITE_OK
+        if callback_readonly:
+            return sqlite3.SQLITE_DENY
+        try:
+            assert_callback_side_effect_allowed("SQLite statement mutation")
+        except RuntimeError:
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    return authorize
 
 
 def _json_int(value: JsonValue | None, *, default: int = 0) -> int:
@@ -99,6 +197,7 @@ class IndexJobRow:
     accepted_result_json: str | None = None
     accepted_result_sha256: str | None = None
     accepted_at: int | None = None
+    claim_attempts: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,6 +382,14 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         self.persistent_directory.mkdir(parents=True, exist_ok=True)
 
         with self.connect() as conn:
+            schema_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            if schema_version > SQLITE_METADATA_SCHEMA_VERSION:
+                raise RuntimeError(
+                    "unsupported SQLite metadata schema version "
+                    f"{schema_version}; this implementation supports up to "
+                    f"{SQLITE_METADATA_SCHEMA_VERSION}"
+                )
+
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS global_seq (
@@ -334,9 +441,6 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_index_jobs_entity ON index_jobs(entity_kind, entity_id, index_kind)"
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace)"
             )
             columns = {row[1] for row in conn.execute("PRAGMA table_info(index_jobs)").fetchall()}
             for name, definition in (
@@ -397,6 +501,9 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 conn.execute(
                     "ALTER TABLE index_jobs ADD COLUMN namespace TEXT NOT NULL DEFAULT 'default'"
                 )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_index_jobs_namespace ON index_jobs(namespace)"
+            )
             # Phase 2: coalescing + fingerprints
             # Ensure legacy DBs have the new column(s).
             cols = [
@@ -577,6 +684,14 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_server_run_events_run_seq ON server_run_events(run_id, seq)"
             )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_server_run_events_recorded_transition_id "
+                "ON server_run_events(json_extract(payload_json, '$.transition_id')) "
+                "WHERE event_type='workflow.recorded_transition.v1'"
+            )
+            conn.execute(
+                f"PRAGMA user_version = {SQLITE_METADATA_SCHEMA_VERSION}"
+            )
 
     # ------------------------------------------------------------------
     # Connection / transaction helpers
@@ -586,6 +701,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         """
         Create a SQLite connection with sane defaults.
         """
+        assert_python_transaction_entry_allowed(allow_callback_readonly=True)
         lease = acquire_sqlite_database(self.db_path, "python")
         conn: _LeasedSQLiteConnection | None = None
         try:
@@ -603,8 +719,14 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 "PRAGMA journal_mode=WAL",
                 "PRAGMA synchronous=NORMAL",
             ):
+                if callback_execution_active() and statement in {
+                    "PRAGMA journal_mode=WAL",
+                    "PRAGMA synchronous=NORMAL",
+                }:
+                    continue
                 with closing(conn.execute(statement)):
                     pass
+            conn.set_authorizer(_sqlite_callback_authorizer())
             return conn
         except BaseException:
             if conn is not None:
@@ -626,6 +748,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         """
         from .sqlite_context import sqlite_execution_context
 
+        assert_python_transaction_entry_allowed()
         with sqlite_execution_context("python"):
             existing = get_active_sqlite_conn()
             if existing is not None and _active_sqlite_path.get() == self.db_path.resolve():
@@ -931,9 +1054,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 """
                 UPDATE index_jobs
                 SET status='DONE', lease_until=NULL, claim_token=NULL, updated_at=?
-                WHERE job_id=? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                WHERE job_id=? AND status='DOING'
+                  AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                (now, job_id, claim_token, claim_token),
+                (now, job_id, claim_token, claim_token, now),
             )
             return bool(result.rowcount)
 
@@ -1006,9 +1130,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     claim_token = NULL,
                     last_error = ?,
                     updated_at = ?
-                WHERE job_id = ? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                WHERE job_id = ? AND status='DOING'
+                  AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                (1 if final else 0, (error or "")[:2000], now, job_id, claim_token, claim_token),
+                (1 if final else 0, (error or "")[:2000], now, job_id, claim_token, claim_token, now),
             )
 
     def bump_retry_and_requeue(
@@ -1035,9 +1160,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     claim_token = NULL,
                     next_run_at = CASE WHEN (retry_count + 1) >= max_retries THEN NULL ELSE ? END,
                     updated_at = ?
-                WHERE job_id = ? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                WHERE job_id = ? AND status='DOING'
+                  AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                ((error or "")[:2000], next_run_at, now, job_id, claim_token, claim_token),
+                ((error or "")[:2000], next_run_at, now, job_id, claim_token, claim_token, now),
             )
 
     def renew_index_job_lease(self, job_id: str, *, claim_token: str, lease_seconds: int) -> bool:
@@ -1069,9 +1195,10 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 UPDATE index_jobs
                 SET status='PENDING', lease_until=NULL, claim_token=NULL, next_run_at=?,
                     payload_json=?, created_at=?, updated_at=?
-                WHERE job_id=? AND status='DOING' AND (? IS NULL OR claim_token=?)
+                    WHERE job_id=? AND status='DOING'
+                      AND (? IS NULL OR (claim_token=? AND lease_until IS NOT NULL AND lease_until>=?))
                 """,
-                (next_run_at, payload_json, tail_position, now, job_id, claim_token, claim_token),
+                    (next_run_at, payload_json, tail_position, now, job_id, claim_token, claim_token, now),
             )
 
     def list_index_jobs(
@@ -1382,9 +1509,12 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                 """
                 UPDATE projected_lane_messages
                 SET status = 'completed', claimed_by = NULL, lease_until = NULL
-                WHERE message_id = ? AND (claimed_by IS NULL OR claimed_by = ?)
+                WHERE message_id = ? AND (
+                    claimed_by IS NULL OR
+                    (status = 'claimed' AND claimed_by = ? AND lease_until >= ?)
+                )
                 """,
-                (str(message_id), str(claimed_by)),
+                (str(message_id), str(claimed_by), self._now_epoch()),
             )
 
     def requeue_projected_lane_message(
@@ -1406,14 +1536,42 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     retry_count = retry_count + 1,
                     available_at = ?,
                     error_json = COALESCE(?, error_json)
-                WHERE message_id = ? AND (claimed_by IS NULL OR claimed_by = ?)
+                WHERE message_id = ? AND (
+                    claimed_by IS NULL OR
+                    (status = 'claimed' AND claimed_by = ? AND lease_until >= ?)
+                )
                 """,
                 (
                     int(now + max(0, int(delay_seconds))),
                     error_json,
                     str(message_id),
                     str(claimed_by),
+                    int(now),
                 ),
+            )
+
+    def dead_letter_projected_lane_message(
+        self,
+        *,
+        message_id: str,
+        claimed_by: str,
+        error_json: str | None = None,
+    ) -> None:
+        now = self._now_epoch()
+        with self.transaction() as conn:
+            conn.execute(
+                """
+                UPDATE projected_lane_messages
+                SET status = 'dead-letter', claimed_by = NULL, lease_until = NULL,
+                    error_json = COALESCE(?, error_json)
+                WHERE message_id = ?
+                  AND status NOT IN ('completed', 'failed', 'cancelled', 'dead-letter')
+                  AND (
+                    claimed_by IS NULL OR
+                    (status = 'claimed' AND claimed_by = ? AND lease_until >= ?)
+                  )
+                """,
+                (error_json, str(message_id), str(claimed_by), int(now)),
             )
 
     def clear_projected_lane_messages(self, namespace: str) -> int:
@@ -1967,6 +2125,11 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         spec = self._projection_table_spec(table_name)
         updated_at_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
         payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        monotonic_stage1_guard = (
+            f" WHERE excluded.last_authoritative_seq >= {spec.table_name}.last_authoritative_seq"
+            if table_name == STAGE1_NODE_PROJECTION_TABLE.table_name
+            else ""
+        )
         with self.transaction() as conn:
             conn.execute(
                 f"""
@@ -1982,6 +2145,7 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
                     projection_schema_version = excluded.projection_schema_version,
                     materialization_status = excluded.materialization_status,
                     updated_at_ms = excluded.updated_at_ms
+                {monotonic_stage1_guard}
                 """,
                 (
                     str(namespace),
@@ -2230,20 +2394,15 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         Filtering is deliberately performed after JSON decoding. SQLite JSON
         operators are an implementation detail; this keeps the Stage-1 query
         contract portable to a separate staging file and other adapters.
-        Only flat metadata equality is supported in this first seam.
+        Flat equality and conjunctions of equality clauses are supported.
         """
-        if metadata is not None and not isinstance(metadata, dict):
-            raise TypeError("metadata must be a dict or None")
-        if any(
-            str(key).startswith("$") or isinstance(value, dict)
-            for key, value in (metadata or {}).items()
-        ):
-            raise ValueError("Stage-1 metadata query supports flat equality only")
+        wanted_metadata, impossible_filter = _stage1_equality_filter(metadata)
+        if impossible_filter:
+            return []
         if limit is not None and int(limit) <= 0:
             return []
         rows = self.list_stage1_node_projections(namespace)
         wanted_ids = {str(value) for value in ids} if ids is not None else None
-        wanted_metadata = dict(metadata or {})
         result: list[JsonObject] = []
         for row in rows:
             payload = row.get("payload")
@@ -2272,6 +2431,25 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
             self._clear_projection_rows(
                 STAGE1_NODE_PROJECTION_TABLE.table_name, namespace, f"node:{node_id}"
             )
+
+    def clear_stage1_node_projection_if_current(
+        self, namespace: str, node_id: str, expected_last_authoritative_seq: int
+    ) -> bool:
+        """Clear only the staged revision consumed by a completed promotion."""
+        table_name = self._projection_table_spec(
+            STAGE1_NODE_PROJECTION_TABLE.table_name
+        ).table_name
+        with self.transaction() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM {table_name} "
+                "WHERE namespace = ? AND key = ? AND last_authoritative_seq = ?",
+                (
+                    str(namespace),
+                    str(node_id),
+                    int(expected_last_authoritative_seq),
+                ),
+            )
+        return cursor.rowcount == 1
 
     def clear_stage1_node_namespace(self, namespace: str) -> None:
         self._clear_projection_rows(STAGE1_NODE_PROJECTION_TABLE.table_name, namespace)

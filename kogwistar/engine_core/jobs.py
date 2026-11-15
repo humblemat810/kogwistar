@@ -8,6 +8,11 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
+
 if TYPE_CHECKING:
     from .engine import GraphKnowledgeEngine
 
@@ -40,6 +45,12 @@ class JobQueueSubsystem:
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        """Expose the owning engine snapshot to queue operation boundaries."""
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def require_available(self, *, enqueue: bool = False, claim: bool = False) -> None:
         required: list[str] = []
         if enqueue:
@@ -52,7 +63,7 @@ class JobQueueSubsystem:
         missing = [
             name
             for name in required
-            if getattr(self.engine.meta_sqlite, name, None) is None
+            if getattr(self.engine.metadata, name, None) is None
         ]
         if missing:
             raise DurableQueueUnavailableError(
@@ -60,6 +71,7 @@ class JobQueueSubsystem:
                 + ", ".join(sorted(missing))
             )
 
+    @implementation_selection_bound
     def enqueue(
         self,
         *,
@@ -72,7 +84,7 @@ class JobQueueSubsystem:
         payload: dict[str, Any] | None = None,
         max_retries: int = 10,
     ) -> str:
-        enqueue = getattr(self.engine.meta_sqlite, "enqueue_index_job", None)
+        enqueue = getattr(self.engine.metadata, "enqueue_index_job", None)
         if enqueue is None:
             return ""
 
@@ -89,6 +101,7 @@ class JobQueueSubsystem:
         )
         return str(stored_job_id or chosen_job_id)
 
+    @implementation_selection_bound
     def claim(
         self,
         *,
@@ -96,7 +109,7 @@ class JobQueueSubsystem:
         limit: int = 50,
         lease_seconds: int = 60,
     ) -> list[JobQueueItem]:
-        claim = getattr(self.engine.meta_sqlite, "claim_index_jobs", None)
+        claim = getattr(self.engine.metadata, "claim_index_jobs", None)
         if claim is None:
             return []
         return [
@@ -104,20 +117,23 @@ class JobQueueSubsystem:
             for row in claim(limit=limit, lease_seconds=lease_seconds, namespace=namespace)
         ]
 
+    @implementation_selection_bound
     def mark_done(self, job_id: str, *, claim_token: str | None = None) -> bool:
-        mark_done = getattr(self.engine.meta_sqlite, "mark_index_job_done", None)
+        mark_done = getattr(self.engine.metadata, "mark_index_job_done", None)
         if mark_done is not None:
             if claim_token is None:
                 return bool(mark_done(str(job_id)))
             return bool(mark_done(str(job_id), claim_token=claim_token))
         return False
 
+    @implementation_selection_bound
     def renew_lease(self, job: JobQueueItem, *, lease_seconds: int) -> bool:
-        renew = getattr(self.engine.meta_sqlite, "renew_index_job_lease", None)
+        renew = getattr(self.engine.metadata, "renew_index_job_lease", None)
         if renew is None or job.claim_token is None:
             return False
         return bool(renew(job.job_id, claim_token=job.claim_token, lease_seconds=lease_seconds))
 
+    @implementation_selection_bound
     def accept_candidate(self, job: JobQueueItem, candidate: object) -> dict[str, object]:
         """Durably fence a candidate to the first live claimant.
 
@@ -126,7 +142,7 @@ class JobQueueSubsystem:
         """
         if job.claim_token is None:
             return {"status": "rejected", "reason": "claim_token_missing"}
-        accept = getattr(self.engine.meta_sqlite, "accept_index_job_result", None)
+        accept = getattr(self.engine.metadata, "accept_index_job_result", None)
         if accept is None:
             return {"status": "rejected", "reason": "claim_result_not_supported"}
         result_json = json.dumps(candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -139,8 +155,9 @@ class JobQueueSubsystem:
         )
         return result
 
+    @implementation_selection_bound
     def accepted_candidate(self, job: JobQueueItem) -> object | None:
-        result = getattr(self.engine.meta_sqlite, "get_index_job_result", lambda _job_id: None)(job.job_id)
+        result = getattr(self.engine.metadata, "get_index_job_result", lambda _job_id: None)(job.job_id)
         if not result or result.get("result_json") is None:
             return None
         try:
@@ -148,14 +165,16 @@ class JobQueueSubsystem:
         except (TypeError, ValueError):
             return None
 
+    @implementation_selection_bound
     def mark_failed(self, job_id: str, error: str, *, final: bool = True, claim_token: str | None = None) -> None:
-        mark_failed = getattr(self.engine.meta_sqlite, "mark_index_job_failed", None)
+        mark_failed = getattr(self.engine.metadata, "mark_index_job_failed", None)
         if mark_failed is not None:
             if claim_token is None:
                 mark_failed(str(job_id), str(error), final=final)
             else:
                 mark_failed(str(job_id), str(error), final=final, claim_token=claim_token)
 
+    @implementation_selection_bound
     def retry_or_fail(
         self,
         job: JobQueueItem,
@@ -166,7 +185,7 @@ class JobQueueSubsystem:
         err = f"{type(error).__name__}: {error}" if isinstance(error, Exception) else str(error)
         next_retry = int(job.retry_count) + 1
         if next_retry < int(job.max_retries):
-            bump = getattr(self.engine.meta_sqlite, "bump_retry_and_requeue", None)
+            bump = getattr(self.engine.metadata, "bump_retry_and_requeue", None)
             if bump is not None:
                 delay = min(int(max_delay_seconds), 2 ** max(int(job.retry_count), 0))
                 if job.claim_token is None:
@@ -176,6 +195,7 @@ class JobQueueSubsystem:
                 return
         self.mark_failed(job.job_id, err, final=True, claim_token=job.claim_token)
 
+    @implementation_selection_bound
     def requeue_at_tail(
         self,
         job: JobQueueItem,
@@ -189,7 +209,7 @@ class JobQueueSubsystem:
         may carry a durable workflow checkpoint so the next claim resumes the
         same job instead of restarting its work.
         """
-        requeue = getattr(self.engine.meta_sqlite, "requeue_index_job_at_tail", None)
+        requeue = getattr(self.engine.metadata, "requeue_index_job_at_tail", None)
         if requeue is None:
             raise RuntimeError("meta store does not support fair job requeue")
         kwargs = {
@@ -200,6 +220,7 @@ class JobQueueSubsystem:
             kwargs["claim_token"] = job.claim_token
         requeue(str(job.job_id), **kwargs)
 
+    @implementation_selection_bound
     def list(
         self,
         *,
@@ -207,7 +228,7 @@ class JobQueueSubsystem:
         status: str | None = None,
         limit: int = 1000,
     ) -> list[JobQueueItem]:
-        list_jobs = getattr(self.engine.meta_sqlite, "list_index_jobs", None)
+        list_jobs = getattr(self.engine.metadata, "list_index_jobs", None)
         if list_jobs is None:
             return []
         return [
@@ -215,6 +236,7 @@ class JobQueueSubsystem:
             for row in list_jobs(namespace=namespace, status=status, limit=limit)
         ]
 
+    @implementation_selection_bound
     def coerce(self, row: object) -> JobQueueItem:
         """Normalize a raw metastore row or return an existing job item."""
         if isinstance(row, JobQueueItem):

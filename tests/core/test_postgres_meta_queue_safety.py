@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 from contextlib import contextmanager
 
 import pytest
+import sqlalchemy as sa
 
 from kogwistar.engine_core.engine_postgres_meta import (
     POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY,
@@ -10,6 +12,15 @@ from kogwistar.engine_core.engine_postgres_meta import (
 )
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.postgres_backend import _set_active_conn
+
+
+@pytest.fixture
+def postgres_meta_engine() -> Iterator[sa.Engine]:
+    engine = sa.create_engine("sqlite://")
+    try:
+        yield engine
+    finally:
+        engine.dispose()
 
 
 class _Result:
@@ -37,9 +48,11 @@ class _Connection:
         return _Result()
 
 
-def test_enqueue_uses_atomic_pending_coalesce_upsert_inside_savepoint() -> None:
+def test_enqueue_uses_atomic_pending_coalesce_upsert_inside_savepoint(
+    postgres_meta_engine: sa.Engine,
+) -> None:
     connection = _Connection()
-    meta = EnginePostgresMetaStore(engine=object(), schema="public")
+    meta = EnginePostgresMetaStore(engine=postgres_meta_engine, schema="public")
 
     with _set_active_conn(connection):
         job_id = meta.enqueue_index_job(
@@ -58,9 +71,11 @@ def test_enqueue_uses_atomic_pending_coalesce_upsert_inside_savepoint() -> None:
     assert "FOR UPDATE" not in sql
 
 
-def test_postgres_bootstrap_serializes_startup_ddl_with_transaction_lock() -> None:
+def test_postgres_bootstrap_serializes_startup_ddl_with_transaction_lock(
+    postgres_meta_engine: sa.Engine,
+) -> None:
     connection = _Connection()
-    meta = EnginePostgresMetaStore(engine=object(), schema="public")
+    meta = EnginePostgresMetaStore(engine=postgres_meta_engine, schema="public")
 
     with _set_active_conn(connection):
         meta._run_bootstrap(connection)
@@ -70,9 +85,11 @@ def test_postgres_bootstrap_serializes_startup_ddl_with_transaction_lock() -> No
     assert connection.parameters[0] == {"lock_key": POSTGRES_BOOTSTRAP_ADVISORY_LOCK_KEY}
 
 
-def test_nested_metadata_failure_does_not_escape_as_outer_transaction_failure() -> None:
+def test_nested_metadata_failure_does_not_escape_as_outer_transaction_failure(
+    postgres_meta_engine: sa.Engine,
+) -> None:
     connection = _Connection()
-    meta = EnginePostgresMetaStore(engine=object(), schema="public")
+    meta = EnginePostgresMetaStore(engine=postgres_meta_engine, schema="public")
 
     with _set_active_conn(connection):
         try:
@@ -105,9 +122,11 @@ def test_stale_claim_cannot_complete_reclaimed_in_memory_job() -> None:
 
 
 @pytest.mark.core
-def test_postgres_claim_token_null_predicates_are_explicitly_typed() -> None:
+def test_postgres_claim_token_null_predicates_are_explicitly_typed(
+    postgres_meta_engine: sa.Engine,
+) -> None:
     """Guard PostgreSQL's inability to infer the type of a NULL bind value."""
-    meta = EnginePostgresMetaStore(engine=object(), schema="public")
+    meta = EnginePostgresMetaStore(engine=postgres_meta_engine, schema="public")
     connection = _Connection()
 
     with _set_active_conn(connection):

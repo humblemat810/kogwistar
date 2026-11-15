@@ -4,13 +4,16 @@ import json
 import os
 import queue
 import shutil
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from jose import jwt
 
 pytest.importorskip("fastapi")
 pytest.importorskip("mcp")
@@ -27,7 +30,7 @@ import kogwistar.server_mcp_with_admin as server
 from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_ID
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
     WorkflowCancelledNode,
@@ -44,12 +47,36 @@ from kogwistar.server.chat_service import (
     RunCancelledError,
     RuntimeRunRequest,
 )
+from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.run_registry import RunRegistry, RunRegistryLaneMessageEventSink
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.server_fixtures import build_engine_triplet
 from tests._helpers.server_http_helpers import token_header
 
 pytestmark = pytest.mark.ci_full
+
+
+def test_server_health_matches_shared_contract() -> None:
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2] / "contracts/golden/health-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        response = client.get("/health")
+    assert response.status_code == contract["success_status"]
+    payload = response.json()
+    assert payload["ok"] is contract["ok"]
+    assert all(field in payload for field in contract["required_fields"])
+    assert isinstance(payload["backend"], str)
+    assert isinstance(payload["persist_directory"], str)
+    assert isinstance(payload["conversation_persist_directory"], str)
+    assert isinstance(payload["workflow_persist_directory"], str)
+    assert isinstance(payload["wisdom_persist_directory"], str)
+    assert payload["pg_schema_base"] is None or isinstance(
+        payload["pg_schema_base"], str
+    )
+
 
 _token_header = token_header
 
@@ -160,6 +187,15 @@ def _collect_sse_events(
 def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     monkeypatch, engine_triplet
 ):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-upsert-tree-success-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    request = fixture["request"]
+    expected = fixture["expected"]
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
@@ -192,32 +228,222 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
         headers = token_header(client, role="rw", ns="docs,conversation,workflow")
         resp = client.post(
             "/api/document.upsert_tree",
-            json={
-                "doc_id": "doc::upsert_tree_dispatch",
-                "insertion_method": "pytest",
-                "nodes": [],
-                "edges": [],
-            },
+            json=request,
             headers=headers,
         )
 
-    resp.raise_for_status()
-    payload = resp.json()
-    assert payload["status"] == "ok"
-    assert payload["engine_result"] == {
-        "document_id": "doc::upsert_tree_dispatch",
-        "node_ids": [],
-        "edge_ids": [],
-        "nodes_added": 0,
-        "edges_added": 0,
-    }
+    assert resp.status_code == expected["status_code"]
+    assert resp.json() == expected["body"]
     assert captured == {
-        "doc_id": "doc::upsert_tree_dispatch",
+        "doc_id": request["doc_id"],
         "parsed_type": "GraphExtractionWithIDs",
         "mode": "append",
-        "node_count": 0,
-        "edge_count": 0,
+        "node_count": len(request["nodes"]),
+        "edge_count": len(request["edges"]),
     }
+
+
+def test_document_upsert_tree_accepts_nonempty_shared_graph_extraction(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "graph-extraction-v1.json"
+    )
+    extraction = json.loads(fixture_path.read_text(encoding="utf-8"))
+    request = {
+        key: extraction[key]
+        for key in ("doc_id", "insertion_method", "nodes", "edges")
+    }
+    for entity in (*request["nodes"], *request["edges"]):
+        local_id = entity.pop("local_id", None)
+        if "id" not in entity and local_id is not None:
+            entity["id"] = local_id
+        if "mentions" not in entity and "references" in entity:
+            spans = entity.pop("references")
+            entity["mentions"] = [{"spans": spans}]
+        for mention in entity.get("mentions", []):
+            for span in mention.get("spans", []):
+                span.setdefault("insertion_method", request["insertion_method"])
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    source_document = Document.from_text(
+        extraction["content"],
+        id=request["doc_id"],
+        metadata={"insertion_method": request["insertion_method"]},
+    )
+    engine.write.add_document(source_document)
+
+    with TestClient(server.app) as client:
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        response = client.post("/api/document.upsert_tree", json=request, headers=headers)
+
+    assert response.status_code == 200, response.text
+    result = response.json()
+    engine_result = result["engine_result"]
+    assert result["status"] == "ok"
+    assert result["inserted_nodes"] == 2
+    assert result["inserted_edges"] == 1
+    assert engine_result["document_id"] == request["doc_id"]
+    assert engine_result["nodes_added"] == 2
+    assert engine_result["edges_added"] == 1
+    assert len(engine_result["node_ids"]) == 2
+    assert len(engine_result["edge_ids"]) == 1
+    persisted_nodes = engine.backend.node_get(
+        ids=engine_result["node_ids"], include=["documents"]
+    )
+    persisted_edges = engine.backend.edge_get(
+        ids=engine_result["edge_ids"], include=["documents"]
+    )
+    assert persisted_nodes["ids"] == engine_result["node_ids"]
+    assert persisted_edges["ids"] == engine_result["edge_ids"]
+    stored_nodes = [Node.model_validate_json(item) for item in persisted_nodes["documents"]]
+    stored_edges = [Edge.model_validate_json(item) for item in persisted_edges["documents"]]
+    stored_node_ids = {node.id for node in stored_nodes}
+    assert all(
+        span.doc_id == request["doc_id"]
+        for node in stored_nodes
+        for grounding in node.mentions
+        for span in grounding.spans
+    )
+    assert all(
+        endpoint_id in stored_node_ids
+        for edge in stored_edges
+        for endpoint_id in edge.source_ids + edge.target_ids
+    )
+
+
+def test_document_validate_graph_matches_shared_success_contract(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-validate-graph-success-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+
+    with TestClient(server.app) as client:
+        response = client.post("/api/document.validate_graph", json=fixture["request"])
+
+    assert response.status_code == fixture["status"]
+    assert response.json() == fixture["response"]
+
+
+def test_document_upsert_tree_storage_error_matches_shared_fixture(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "persistence-error-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    monkeypatch.setenv("AUTH_MODE", "production")
+
+    def _fail_persistence(**_kwargs):
+        raise OSError(fixture["message"])
+
+    monkeypatch.setattr(
+        engine, "persist_document_graph_extraction", _fail_persistence, raising=True
+    )
+
+    with TestClient(server.app) as client:
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        response = client.post(
+            "/api/document.upsert_tree",
+            json={"doc_id": "doc::storage_error", "nodes": [], "edges": []},
+            headers=headers,
+        )
+
+    assert response.status_code == fixture["python"]["status"]
+    assert response.json()["detail"] == fixture["python"]["detail"]
+
+
+def test_document_upsert_tree_generic_store_error_matches_shared_fixture(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "persistence-error-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    error_contract = fixture["generic_store_error"]
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    monkeypatch.setenv("AUTH_MODE", "production")
+
+    def _fail_persistence(**_kwargs):
+        raise RuntimeError(error_contract["message"])
+
+    monkeypatch.setattr(
+        engine, "persist_document_graph_extraction", _fail_persistence, raising=True
+    )
+
+    with TestClient(server.app) as client:
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        response = client.post(
+            "/api/document.upsert_tree",
+            json={"doc_id": "doc::generic_storage_error", "nodes": [], "edges": []},
+            headers=headers,
+        )
+
+    assert response.status_code == error_contract["python"]["status"]
+    assert response.json()["detail"] == error_contract["python"]["detail"]
+
+
+def test_document_upsert_tree_transaction_abort_matches_comparison_fixture(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "transaction-abort-error-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    monkeypatch.setenv("AUTH_MODE", "production")
+
+    def _abort_transaction(**_kwargs):
+        raise RuntimeError(fixture["message"])
+
+    monkeypatch.setattr(
+        engine, "persist_document_graph_extraction", _abort_transaction, raising=True
+    )
+
+    with TestClient(server.app) as client:
+        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        response = client.post(
+            "/api/document.upsert_tree",
+            json={"doc_id": "doc::transaction_abort", "nodes": [], "edges": []},
+            headers=headers,
+        )
+
+    assert fixture["parity"] is False
+    assert response.status_code == fixture["python"]["status"]
+    assert response.json()["detail"] == fixture["python"]["detail"]
 
 
 def test_document_graph_upsert_result_serializes_persisted_result_shape():
@@ -251,6 +477,70 @@ def _visible_workflow_design_ids(
     )
     edge_ids = {str(edge.id) for edges in adj.values() for edge in edges}
     return str(start.id), {str(node_id) for node_id in nodes.keys()}, edge_ids
+
+
+def test_workflow_namespace_scope_isolated_across_concurrent_threads(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    original_namespace = workflow_engine.namespace
+    first_entered = threading.Event()
+    second_attempted = threading.Event()
+    second_entered = threading.Event()
+
+    def first_scope() -> tuple[bool, str]:
+        with service._workflow_namespace_scope("scope-first") as scoped:
+            first_namespace = service._workflow_namespace("scope-first")
+            assert scoped.write._e.namespace == first_namespace
+            assert workflow_engine.namespace == original_namespace
+            first_entered.set()
+            assert second_attempted.wait(timeout=2)
+            entered_concurrently = second_entered.wait(timeout=0.1)
+            observed_namespace = scoped.write._e.namespace
+            return entered_concurrently, observed_namespace
+
+    def second_scope() -> str:
+        assert first_entered.wait(timeout=2)
+        second_attempted.set()
+        with service._workflow_namespace_scope("scope-second") as scoped:
+            second_entered.set()
+            assert workflow_engine.namespace == original_namespace
+            return scoped.write._e.namespace
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_scope)
+        second = executor.submit(second_scope)
+        first_result = first.result(timeout=3)
+        second_namespace = second.result(timeout=3)
+
+    assert first_result == (False, service._workflow_namespace("scope-first"))
+    assert second_namespace == service._workflow_namespace("scope-second")
+    assert workflow_engine.namespace == original_namespace
+
+
+def _assert_workflow_design_entities_use_scoped_namespace(
+    service,
+    workflow_engine,
+    *,
+    workflow_id: str,
+    node_ids: set[str],
+    edge_ids: set[str],
+) -> None:
+    expected_namespace = service._workflow_namespace(workflow_id)
+    with service._workflow_namespace_scope(workflow_id) as scoped_engine:
+        nodes = scoped_engine.read.get_nodes(ids=sorted(node_ids)) if node_ids else []
+        edges = scoped_engine.read.get_edges(ids=sorted(edge_ids)) if edge_ids else []
+        assert {str(node.id) for node in nodes} == node_ids
+        assert {str(edge.id) for edge in edges} == edge_ids
+        assert all(
+            node.metadata.get("namespace") == expected_namespace for node in nodes
+        )
+        assert all(
+            edge.metadata.get("namespace") == expected_namespace for edge in edges
+        )
 
 
 def _success_runner(req: AnswerRunRequest) -> dict:
@@ -460,6 +750,24 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
     monkeypatch, engine_triplet
 ):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-submit-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    def assert_submit_contract(response, expected_conversation_id, expected_workflow_id, turn_node_id):
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert all(field in payload for field in contract["required_common_fields"])
+        assert isinstance(payload["run_id"], str) and payload["run_id"]
+        assert payload["conversation_id"] == expected_conversation_id
+        assert payload["workflow_id"] == expected_workflow_id
+        assert payload["turn_node_id"] == turn_node_id
+        for field, value in contract["expected_common_values"].items():
+            assert payload[field] == value
+
     captured: list[str] = []
 
     def _runtime_runner(req: RuntimeRunRequest) -> dict[str, object]:
@@ -493,12 +801,18 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
             json={
                 "workflow_id": "wf.runtime.kind.async",
                 "conversation_id": conversation_id,
+                "turn_node_id": "turn-contract-async",
                 "initial_state": {},
                 "runtime_kind": "async",
             },
             headers=headers,
         )
-        assert async_resp.status_code == 202, async_resp.text
+        assert_submit_contract(
+            async_resp,
+            conversation_id,
+            "wf.runtime.kind.async",
+            "turn-contract-async",
+        )
         async_run_id = str(async_resp.json()["run_id"])
         _wait_for_status(
             client,
@@ -513,11 +827,17 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
             json={
                 "workflow_id": "wf.runtime.kind.sync",
                 "conversation_id": conversation_id,
+                "turn_node_id": "turn-contract-default",
                 "initial_state": {},
             },
             headers=headers,
         )
-        assert default_resp.status_code == 202, default_resp.text
+        assert_submit_contract(
+            default_resp,
+            conversation_id,
+            "wf.runtime.kind.sync",
+            "turn-contract-default",
+        )
         default_run_id = str(default_resp.json()["run_id"])
         _wait_for_status(
             client,
@@ -529,6 +849,61 @@ def test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync(
 
     assert captured == ["async", "sync"]
     assert service is not None
+
+
+def test_workflow_run_submit_requires_both_admission_capabilities(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-submit-auth-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with TestClient(server.app) as client:
+        full_capability_headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow,conversation",
+            username="run-auth-owner",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
+        conversation = client.post(
+            "/api/conversations",
+            json={"user_id": "run-auth-owner"},
+            headers=full_capability_headers,
+        )
+        assert conversation.status_code == 200, conversation.text
+        conversation_id = conversation.json()["conversation_id"]
+
+        for missing_capability in contract["required_capabilities"]:
+            granted = [
+                capability
+                for capability in contract["required_capabilities"]
+                if capability != missing_capability
+            ]
+            headers = _token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username="run-auth-owner",
+                capabilities=",".join(granted),
+            )
+            response = client.post(
+                "/api/workflow/runs",
+                json={
+                    "workflow_id": "wf.run.auth.contract",
+                    "conversation_id": conversation_id,
+                    "initial_state": {},
+                },
+                headers=headers,
+            )
+            assert response.status_code == contract["denied_status"], response.text
 
 
 def test_default_runtime_runner_uses_async_or_sync_runtime_by_kind(
@@ -576,9 +951,7 @@ def test_default_runtime_runner_uses_async_or_sync_runtime_by_kind(
                 status="succeeded",
             )
 
-    monkeypatch.setattr(
-        "kogwistar.runtime.runtime.WorkflowRuntime", _FakeSyncRuntime
-    )
+    monkeypatch.setattr("kogwistar.runtime.runtime.WorkflowRuntime", _FakeSyncRuntime)
     monkeypatch.setattr(
         "kogwistar.runtime.async_runtime.AsyncWorkflowRuntime", _FakeAsyncRuntime
     )
@@ -667,7 +1040,18 @@ def _seed_step(
     step_seq: int,
     op: str,
     state_update: list,
+    result_fields: dict | None = None,
+    trace_context: dict | None = None,
 ):
+    result = {
+        "conversation_node_id": None,
+        "state_update": state_update,
+        "update": None,
+        "next_step_names": [],
+        "workflow_invocations": [],
+        "status": "success",
+    }
+    result.update(result_fields or {})
     node = WorkflowStepExecNode(
         id=f"wf_step|{run_id}|{step_seq}",
         label=f"Step {step_seq}",
@@ -685,20 +1069,22 @@ def _seed_step(
             "op": op,
             "status": "ok",
             "duration_ms": 1,
-            "result_json": json.dumps(
-                {
-                    "conversation_node_id": None,
-                    "state_update": state_update,
-                    "next_step_names": [],
-                    "status": "success",
-                }
-            ),
+            "result_json": json.dumps(result),
         },
         level_from_root=0,
         domain_id=None,
         canonical_entity_id=None,
         embedding=None,
     )
+    if trace_context is not None:
+        node.metadata.update(
+            {
+                "trace_id": trace_context["trace_id"],
+                "span_id": trace_context["span_id"],
+                "parent_span_id": trace_context["parent_span_id"],
+                "trace_attempt": trace_context["attempt"],
+            }
+        )
     conversation_engine.write.add_node(node)
 
 
@@ -785,6 +1171,23 @@ def _seed_knowledge_node(
 
 
 def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only answer submission attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -792,6 +1195,7 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
+        wrong_ns_headers = _token_header(client, role="ro", ns="wisdom")
 
         created = client.post(
             "/api/conversations", json={"user_id": "u-chat"}, headers=rw_headers
@@ -799,13 +1203,43 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         created.raise_for_status()
         conversation_id = created.json()["conversation_id"]
 
+        validation_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts"
+                / "golden"
+                / "conversation-answer-validation-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert validation_contract["schema_version"] == 1
+        for case in validation_contract["cases"]:
+            invalid = client.post(
+                f"/api/conversations/{conversation_id}/turns:answer",
+                json={"user_id": "u-chat", "text": case["text"]},
+                headers=rw_headers,
+            )
+            assert invalid.status_code == case["http_status"], case["name"]
+
         submit = client.post(
             f"/api/conversations/{conversation_id}/turns:answer",
             json={"user_id": "u-chat", "text": "hello world"},
             headers=rw_headers,
         )
         assert submit.status_code == 202
-        run_id = submit.json()["run_id"]
+        submit_body = submit.json()
+        assert set(submit_body) == {
+            "run_id",
+            "conversation_id",
+            "workflow_id",
+            "status",
+            "user_turn_node_id",
+        }
+        assert submit_body["conversation_id"] == conversation_id
+        assert submit_body["workflow_id"] == "debug.rag.v1"
+        assert submit_body["status"] == "queued"
+        run_id = submit_body["run_id"]
+        assert run_id
+        assert submit_body["user_turn_node_id"]
 
         final_run = _wait_for_status(client, run_id, ro_headers, {"succeeded"})
         assert final_run["assistant_turn_node_id"]
@@ -818,8 +1252,12 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         turns = client.get(
             f"/api/conversations/{conversation_id}/turns", headers=ro_headers
         )
+        assert turns.status_code == 200
         turns.raise_for_status()
-        transcript = turns.json()["turns"]
+        transcript_response = turns.json()
+        assert set(transcript_response) == {"conversation_id", "turns"}
+        assert transcript_response["conversation_id"] == conversation_id
+        transcript = transcript_response["turns"]
         assert [turn["role"] for turn in transcript] == ["user", "assistant"]
         assert transcript[1]["content"] == "Assistant reply: hello world"
 
@@ -833,14 +1271,1169 @@ def test_chat_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert "output.completed" in names
         assert names[-1] == "run.completed"
 
+        denied_stream = client.get(
+            f"/api/runs/{run_id}/events", headers=wrong_ns_headers
+        )
+        assert denied_stream.status_code == 403
+        assert run_id not in denied_stream.text
+
+        sse_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-events-sse-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        with client.stream(
+            "GET", f"/api/runs/{run_id}/events", headers=ro_headers
+        ) as response:
+            assert response.status_code == sse_contract["success_status"]
+            assert response.headers["content-type"].startswith(
+                sse_contract["media_type"]
+            )
+            sse_body = "".join(response.iter_text())
+        lines = sse_body.splitlines()
+        event_line = next(
+            index
+            for index, line in enumerate(lines)
+            if line == f"event: {sse_contract['event_name']}"
+        )
+        frame_start = (
+            event_line - 1
+            if event_line > 0 and lines[event_line - 1].startswith("id: ")
+            else event_line
+        )
+        frame_end = next(
+            (index for index in range(frame_start + 1, len(lines)) if not lines[index]),
+            len(lines),
+        )
+        frame_lines = lines[frame_start:frame_end]
+        event_id = next(line[4:] for line in frame_lines if line.startswith("id: "))
+        assert event_id.isdigit()
+        event_data = json.loads(
+            next(line[6:] for line in frame_lines if line.startswith("data: "))
+        )
+        assert set(sse_contract["required_data_fields"]).issubset(event_data)
+        assert event_data["run_id"] == run_id
+        assert event_data["event_type"] == sse_contract["event_name"]
+
         reopened = client.get(
             f"/api/conversations/{conversation_id}", headers=ro_headers
         )
+        assert reopened.status_code == 200
         reopened.raise_for_status()
-        assert reopened.json()["turn_count"] == 2
+        conversation_summary = reopened.json()
+        assert set(conversation_summary) == {
+            "conversation_id",
+            "user_id",
+            "status",
+            "start_node_id",
+            "tail_node_id",
+            "turn_count",
+        }
+        assert conversation_summary["conversation_id"] == conversation_id
+        assert conversation_summary["user_id"] == "u-chat"
+        assert conversation_summary["status"] == "active"
+        assert conversation_summary["start_node_id"]
+        assert conversation_summary["tail_node_id"]
+        assert conversation_summary["turn_count"] == 2
+
+
+def test_conversation_list_is_user_scoped_and_has_stable_response_shape(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only conversation list attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    now = int(time.time())
+
+    def headers(user_id: str, role: str) -> dict[str, str]:
+        token = jwt.encode(
+            {
+                "sub": user_id,
+                "user_id": user_id,
+                "role": role,
+                "ns": ["conversation"],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        rw_headers = headers("owner-a", "rw")
+        ro_headers = headers("owner-a", "ro")
+
+        created = client.post(
+            "/api/conversations",
+            json={"user_id": "untrusted-body-user", "conversation_id": "owned"},
+            headers=rw_headers,
+        )
+        assert created.status_code == 200, created.text
+        assert created.json()["user_id"] == "owner-a"
+        service._conversation_queries.create_conversation(
+            user_id="different-owner", conversation_id="not-visible"
+        )
+
+        listed = client.get("/api/conversations", headers=ro_headers)
+        assert listed.status_code == 200, listed.text
+        assert listed.json() == {
+            "conversations": [
+                {
+                    "id": "owned",
+                    "start_node_id": created.json()["start_node_id"],
+                    "status": "active",
+                    "turn_count": 0,
+                }
+            ]
+        }
+
+
+def test_conversation_create_uses_authenticated_owner_and_persists_start_node(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only conversation creation attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    now = int(time.time())
+    token = jwt.encode(
+        {
+            "sub": "owner-create",
+            "user_id": "owner-create",
+            "role": "rw",
+            "ns": ["conversation"],
+            "iat": now,
+            "exp": now + 3600,
+            "iss": "local",
+        },
+        TEST_JWT_SECRET,
+        algorithm=TEST_JWT_ALG,
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        created = client.post(
+            "/api/conversations",
+            json={
+                "user_id": "spoofed-owner",
+                "conversation_id": "created-by-owner",
+                "start_node_id": "created-start-node",
+            },
+            headers=headers,
+        )
+
+    assert created.status_code == 200, created.text
+    result = created.json()
+    assert result["conversation_id"] == "created-by-owner"
+    assert result["start_node_id"] == "created-start-node"
+    assert result["user_id"] == "owner-create"
+    assert result["turn_count"] == 0
+
+    nodes = conversation_engine.read.get_nodes(
+        where={"conversation_id": "created-by-owner"},
+        node_type=ConversationNode,
+        limit=10,
+    )
+    starts = [
+        node
+        for node in nodes
+        if node.metadata.get("entity_type") == "conversation_start"
+    ]
+    assert len(starts) == 1
+    assert starts[0].id == "created-start-node"
+    assert starts[0].user_id == "owner-create"
+
+
+def test_conversation_detail_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only conversation detail attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    service._conversation_queries.create_conversation(
+        user_id="owner-detail", conversation_id="conversation-detail"
+    )
+
+    now = int(time.time())
+
+    def headers(user_id: str, namespace: str) -> dict[str, str]:
+        token = jwt.encode(
+            {
+                "sub": user_id,
+                "user_id": user_id,
+                "role": "ro",
+                "ns": [namespace],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        response = client.get(
+            "/api/conversations/conversation-detail",
+            headers=headers("owner-detail", "conversation"),
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert set(payload) == {
+            "conversation_id",
+            "user_id",
+            "status",
+            "start_node_id",
+            "tail_node_id",
+            "turn_count",
+        }
+        assert payload["conversation_id"] == "conversation-detail"
+        assert payload["user_id"] == "owner-detail"
+        assert payload["status"] == "active"
+        assert payload["start_node_id"]
+        assert payload["tail_node_id"] == payload["start_node_id"]
+        assert payload["turn_count"] == 0
+
+        denied = client.get(
+            "/api/conversations/conversation-detail",
+            headers=headers("foreign-user", "wisdom"),
+        )
+        assert denied.status_code == 403
+        assert "owner-detail" not in denied.text
+        assert "start_node_id" not in denied.text
+
+
+def test_conversation_transcript_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only transcript read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    service._conversation_queries.create_conversation(
+        user_id="owner-transcript", conversation_id="conversation-transcript"
+    )
+
+    now = int(time.time())
+
+    def headers(user_id: str, namespace: str) -> dict[str, str]:
+        token = jwt.encode(
+            {
+                "sub": user_id,
+                "user_id": user_id,
+                "role": "ro",
+                "ns": [namespace],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        return {"Authorization": f"Bearer {token}"}
+
+    with TestClient(server.app) as client:
+        response = client.get(
+            "/api/conversations/conversation-transcript/turns",
+            headers=headers("owner-transcript", "conversation"),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "conversation_id": "conversation-transcript",
+            "turns": [],
+        }
+
+        denied = client.get(
+            "/api/conversations/conversation-transcript/turns",
+            headers=headers("foreign-user", "wisdom"),
+        )
+        assert denied.status_code == 403
+        assert "owner-transcript" not in denied.text
+        assert "conversation-transcript" not in denied.text
+
+
+def test_latest_snapshot_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only snapshot read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+
+    with TestClient(server.app) as client:
+        conv_headers = _token_header(client, role="rw", ns="conversation")
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        created = client.post(
+            "/api/conversations", json={"user_id": "snapshot-owner"}, headers=conv_headers
+        )
+        created.raise_for_status()
+        conversation_id = created.json()["conversation_id"]
+        start_node_id = created.json()["start_node_id"]
+
+        service = ConversationService.from_engine(
+            conversation_engine,
+            knowledge_engine=engine,
+            workflow_engine=workflow_engine,
+        )
+        snapshot_id = service.persist_context_snapshot(
+            conversation_id=conversation_id,
+            run_id="python-only-snapshot-run",
+            run_step_seq=0,
+            stage="draft_answer",
+            view=SimpleNamespace(
+                messages=[{"role": "user", "content": "snapshot fixture"}],
+                items=[SimpleNamespace(node_id=start_node_id)],
+                cost=None,
+                token_budget=32,
+            ),
+            model_name="fake-model",
+            budget_tokens=32,
+        )
+
+        response = client.get(
+            f"/api/conversations/{conversation_id}/snapshots/latest",
+            headers=workflow_headers,
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert set(payload) == {
+            "snapshot_node_id",
+            "conversation_id",
+            "metadata",
+            "properties",
+        }
+        assert payload["snapshot_node_id"] == snapshot_id
+        assert payload["conversation_id"] == conversation_id
+        assert isinstance(payload["metadata"], dict)
+        assert isinstance(payload["properties"], dict)
+
+        denied = client.get(
+            f"/api/conversations/{conversation_id}/snapshots/latest",
+            headers=denied_headers,
+        )
+        assert denied.status_code == 403
+        assert snapshot_id not in denied.text
+        assert conversation_id not in denied.text
+
+
+def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only checkpoint read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-checkpoint-run"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"counter": 7},
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoint-detail-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/checkpoints/0", headers=workflow_headers
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        assert payload["step_seq"] == 0
+        assert payload["state"] == {"counter": 7}
+
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/checkpoints/0", headers=workflow_headers
+        )
+        assert workflow_response.status_code == contract["success_status"]
+        assert workflow_response.json() == payload
+
+        denied = client.get(
+            f"/api/runs/{run_id}/checkpoints/0", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
+def test_checkpoint_list_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only checkpoint-list read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-checkpoint-list-run"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=3,
+        state={"cursor": "later"},
+    )
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"cursor": "start"},
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoints-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/checkpoints", headers=workflow_headers
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_envelope_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        checkpoints = payload["checkpoints"]
+        assert len(checkpoints) == 2
+        assert [item["step_seq"] for item in checkpoints] == [0, 3]
+        for checkpoint in checkpoints:
+            assert set(contract["required_checkpoint_fields"]).issubset(checkpoint)
+            assert checkpoint["workflow_id"] == "python-only-workflow"
+        assert checkpoints[0]["state"] == {"cursor": "start"}
+        assert checkpoints[1]["state"] == {"cursor": "later"}
+
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/checkpoints", headers=workflow_headers
+        )
+        assert workflow_response.status_code == contract["success_status"]
+        assert workflow_response.json() == payload
+
+        denied = client.get(
+            f"/api/runs/{run_id}/checkpoints", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
+def test_run_detail_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run-detail read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-run-detail"
+    expected_ids = {
+        "run_id": run_id,
+        "conversation_id": "python-only-conversation",
+        "workflow_id": "python-only-workflow",
+        "user_id": "python-only-user",
+        "user_turn_node_id": "python-only-turn",
+    }
+    registry.create_run(**expected_ids, status="succeeded")
+
+    with TestClient(server.app) as client:
+        conversation_headers = _token_header(client, role="ro", ns="conversation")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-status-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}", headers=conversation_headers
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert {key: payload[key] for key in expected_ids} == expected_ids
+        assert payload["status"] == "succeeded"
+        assert payload["terminal"] is True
+        assert payload["cancel_requested"] is False
+        assert payload["result"] is None
+        assert payload["error"] is None
+
+        denied = client.get(f"/api/runs/{run_id}", headers=denied_headers)
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
+def test_run_evidence_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run-evidence read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-run-evidence"
+    conversation_id = "python-only-evidence-conversation"
+
+    with TestClient(server.app) as client:
+        conversation_headers = _token_header(client, role="rw", ns="conversation")
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        created = client.post(
+            "/api/conversations",
+            json={"user_id": "python-only-user", "conversation_id": conversation_id},
+            headers=conversation_headers,
+        )
+        assert created.status_code == 200, created.text
+        start_node_id = created.json()["start_node_id"]
+        registry.create_run(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            workflow_id="python-only-workflow",
+            user_id="python-only-user",
+            user_turn_node_id=start_node_id,
+            status="succeeded",
+        )
+        conversation_service = ConversationService.from_engine(
+            conversation_engine,
+            knowledge_engine=engine,
+            workflow_engine=workflow_engine,
+        )
+        snapshot_id = conversation_service.persist_context_snapshot(
+            conversation_id=conversation_id,
+            run_id=run_id,
+            run_step_seq=0,
+            stage="answer",
+            view=SimpleNamespace(
+                messages=[{"role": "user", "content": "evidence test"}],
+                items=[SimpleNamespace(node_id=start_node_id)],
+                cost=None,
+                token_budget=32,
+            ),
+            model_name="test-model",
+            budget_tokens=32,
+            evidence_pack_digest={"fixture_items": 1},
+        )
+        persisted_snapshot_metadata = conversation_engine.read.get_node_metadatas(
+            ids=[snapshot_id], limit=1
+        )[0]
+        assert persisted_snapshot_metadata["used_node_ids"] == [start_node_id]
+
+        response = client.get(
+            f"/api/runs/{run_id}/evidence", headers=workflow_headers
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["version"] == "v1"
+        assert payload["run_id"] == run_id
+        assert payload["conversation_id"] == conversation_id
+        assert payload["snapshot_node_id"] == snapshot_id
+        assert payload["evidence_refs"] == [start_node_id]
+        assert payload["source_summary"] == {
+            "used_node_count": 1,
+            "evidence_pack_digest": {"fixture_items": 1},
+        }
+
+        denied = client.get(
+            f"/api/runs/{run_id}/evidence", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
+def test_resume_route_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    resume_result_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-resume-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run resume attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    captured_requests = []
+
+    def capture_resume_request(request):
+        captured_requests.append(request)
+        return {
+            "workflow_status": "succeeded",
+            "final_state": {"resumed_value": request.client_result["resumed_value"]},
+            "budget": {},
+        }
+
+    monkeypatch.setattr(
+        service._run_execution, "_default_resume_runner", capture_resume_request
+    )
+    request_body = {
+        "suspended_node_id": "approval-step",
+        "suspended_token_id": "approval-token",
+        "client_result": {"status": "success", "resumed_value": "approved"},
+        "workflow_id": "python-only-workflow",
+        "conversation_id": "python-only-conversation",
+        "turn_node_id": "python-only-turn",
+        "user_id": "python-only-user",
+    }
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="rw", ns="workflow")
+        denied_headers = _token_header(client, role="rw", ns="wisdom")
+        response = client.post(
+            "/api/runs/python-only-resume-run/resume",
+            json=request_body,
+            headers=workflow_headers,
+        )
+        assert response.status_code == 200, response.text
+        assert set(response.json()) == set(resume_result_contract["required_fields"])
+        assert response.json() == {
+            "workflow_status": "succeeded",
+            "final_state": {"resumed_value": "approved"},
+            "budget": {},
+        }
+        assert len(captured_requests) == 1
+        request = captured_requests[0]
+        assert request.run_id == "python-only-resume-run"
+        assert request.suspended_node_id == request_body["suspended_node_id"]
+        assert request.suspended_token_id == request_body["suspended_token_id"]
+        assert request.client_result == request_body["client_result"]
+        assert request.workflow_id == request_body["workflow_id"]
+        assert request.conversation_id == request_body["conversation_id"]
+        assert request.turn_node_id == request_body["turn_node_id"]
+        assert request.user_id == request_body["user_id"]
+
+        denied = client.post(
+            "/api/runs/python-only-resume-run/resume",
+            json=request_body,
+            headers=denied_headers,
+        )
+        assert denied.status_code == 403
+        assert "python-only-resume-run" not in denied.text
+        assert len(captured_requests) == 1
+
+
+def test_resume_route_preserves_response_contract_with_rust_runtime_selection(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_URL", "http://rust-runtime")
+
+    engine, conversation_engine, workflow_engine = build_engine_triplet(
+        root=tmp_path / "rust-selected-resume",
+        embedding_function=FakeEmbeddingFunction(),
+    )
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    monkeypatch.setattr(
+        "kogwistar.server.chat_service_run_execution.load_checkpoint",
+        lambda **_kwargs: {"budget": {}},
+    )
+    authority_calls = []
+
+    class _FakeRustRuntimeAuthority:
+        def __init__(self, *, runtime, base_url, cache_dir):
+            authority_calls.append(("init", base_url))
+
+        def resume(self, **kwargs):
+            authority_calls.append(("resume", kwargs))
+            return RunResult(
+                run_id=kwargs["run_id"],
+                final_state={"approved": True},
+                mq=queue.Queue(),
+                status="succeeded",
+            )
+
+        def close(self):
+            authority_calls.append(("close", None))
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.RustRuntimeAuthority",
+        _FakeRustRuntimeAuthority,
+    )
+    request_body = {
+        "suspended_node_id": "approval-step",
+        "suspended_token_id": "approval-token",
+        "client_result": {"status": "success", "state_update": []},
+        "workflow_id": "rust-selected-workflow",
+        "conversation_id": "rust-selected-conversation",
+        "turn_node_id": "rust-selected-turn",
+        "user_id": "not-an-authority-source",
+    }
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="rw", ns="workflow")
+        denied_headers = _token_header(client, role="rw", ns="wisdom")
+        response = client.post(
+            "/api/runs/rust-selected-resume-run/resume",
+            json=request_body,
+            headers=workflow_headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "workflow_status": "succeeded",
+            "final_state": {"approved": True},
+            "budget": {
+                "token_used": 0,
+                "time_used_ms": 0,
+                "cost_budget": 0.0,
+                "cost_used": 0.0,
+                "budget_kind": "token",
+                "budget_scope": "run",
+            },
+        }
+        assert [name for name, _value in authority_calls] == [
+            "init",
+            "resume",
+            "close",
+        ]
+        resumed = authority_calls[1][1]
+        assert resumed["run_id"] == "rust-selected-resume-run"
+        assert resumed["client_result"].model_dump()["status"] == "success"
+        assert resumed["workflow_id"] == request_body["workflow_id"]
+        assert resumed["conversation_id"] == request_body["conversation_id"]
+        assert resumed["turn_node_id"] == request_body["turn_node_id"]
+
+        denied = client.post(
+            "/api/runs/rust-selected-resume-run/resume",
+            json=request_body,
+            headers=denied_headers,
+        )
+        assert denied.status_code == 403
+        assert "rust-selected-resume-run" not in denied.text
+        assert [name for name, _value in authority_calls] == [
+            "init",
+            "resume",
+            "close",
+        ]
+
+
+def test_run_replay_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run replay attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-run-replay"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"counter": 1},
+    )
+    _seed_step(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=1,
+        op="increment",
+        state_update=[["u", {"counter": 2}]],
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-replay-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/replay?target_step_seq=1",
+            headers=workflow_headers,
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(contract["required_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        assert payload["target_step_seq"] == 1
+        assert payload["state"] == {"counter": 2}
+
+        denied = client.get(
+            f"/api/runs/{run_id}/replay?target_step_seq=1", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
+def test_resume_contract_uses_python_defaults_and_checks_namespace(
+    monkeypatch, engine_triplet
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only resume-contract read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-resume-contract-run"
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        state={"answer": "persisted"},
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-resume-contract-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(
+            f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
+        )
+        assert response.status_code == fixture["success_status"], response.text
+        payload = response.json()
+        assert set(fixture["required_fields"]).issubset(payload)
+        assert payload["run_id"] == run_id
+        assert payload["latest_checkpoint_step_seq"] == 0
+        assert payload["checkpoint_schema_version"] == 1
+        assert "checkpoint_schema_version" in payload["persisted_keys"]
+        assert payload["supported_wait_reasons"] == fixture[
+            "supported_wait_reasons"
+        ]
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/resume-contract",
+            headers=workflow_headers,
+        )
+        assert workflow_response.status_code == response.status_code
+        assert workflow_response.json() == payload
+
+        denied = client.get(
+            f"/api/runs/{run_id}/resume-contract", headers=denied_headers
+        )
+        assert denied.status_code == 403
+        assert run_id not in denied.text
+
+
+def test_run_steps_uses_python_defaults_and_checks_namespace(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only workflow-step read attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "python-only-workflow-steps-run"
+    _seed_step(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="python-only-workflow",
+        step_seq=0,
+        op="prepare",
+        state_update=[["u", {"answer": "persisted"}]],
+        result_fields={"answer": "persisted"},
+        trace_context={
+            "trace_id": "trace-seed",
+            "span_id": "span-step-0",
+            "parent_span_id": "span-parent",
+            "attempt": 2,
+        },
+    )
+
+    with TestClient(server.app) as client:
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        denied_headers = _token_header(client, role="ro", ns="wisdom")
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-inspection-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        trace_fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-trace-context-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+
+        response = client.get(f"/api/runs/{run_id}/steps", headers=workflow_headers)
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert payload["run_id"] == run_id
+        assert len(payload["steps"]) == 1
+        step = payload["steps"][0]
+        assert set(contract["required_step_fields"]).issubset(step)
+        assert step["step_seq"] == 0
+        assert step["workflow_id"] == "python-only-workflow"
+        assert step["op"] == "prepare"
+        assert step["status"] == contract["step_status"]
+        assert step["result"]["answer"] == "persisted"
+        assert step["trace_context"] == trace_fixture["trace_context"]
+        workflow_response = client.get(
+            f"/api/workflow/runs/{run_id}/steps", headers=workflow_headers
+        )
+        assert workflow_response.status_code == response.status_code
+        assert workflow_response.json() == payload
+
+        denied = client.get(f"/api/runs/{run_id}/steps", headers=denied_headers)
+        assert denied.status_code == 403
+        assert run_id not in denied.text
 
 
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run-event polling attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -869,17 +2462,29 @@ def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
             f"/api/runs/{run_id}/events/poll?after_seq=0&limit=10",
             headers=ro_headers,
         )
-        polled.raise_for_status()
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-events-poll-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert polled.status_code == contract["success_status"]
         payload = polled.json()
+        assert set(contract["required_fields"]).issubset(payload)
         assert payload["run_id"] == run_id
         assert payload["events"]
         assert len(payload["events"]) <= 10
         assert payload["events"][0]["event_type"] == "run.created"
+        assert set(contract["required_event_fields"]).issubset(payload["events"][0])
 
 
-def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(monkeypatch, engine_triplet):
+def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(monkeypatch, engine, conversation_engine, workflow_engine, _success_runner)
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
     with TestClient(server.app) as client:
         rw_headers = _token_header(client, role="rw", ns="conversation")
         ro_headers = _token_header(client, role="ro", ns="conversation")
@@ -922,7 +2527,9 @@ def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(monkeypatch, engine
         assert body == ""
 
 
-def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(monkeypatch, engine_triplet):
+def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
     _seed_knowledge_node(
         engine,
@@ -995,7 +2602,32 @@ def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(monkeypatch, engi
 
 
 def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only run cancellation attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
+    cancel_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "run-cancel-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _cancel_runner
     )
@@ -1017,7 +2649,15 @@ def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_tripl
         run_id = submit.json()["run_id"]
 
         cancel = client.post(f"/api/runs/{run_id}/cancel", headers=rw_headers)
-        assert cancel.status_code == 202
+        assert cancel.status_code == cancel_contract["accepted_status"]
+        cancel_payload = cancel.json()
+        assert set(cancel_contract["required_fields"]).issubset(cancel_payload)
+        assert cancel_payload["run_id"] == run_id
+        assert cancel_payload["cancel_requested"] is True
+        assert cancel_payload["status"] in cancel_contract["accepted_run_statuses"]
+        assert cancel_payload["terminal"] is (
+            cancel_payload["status"] in cancel_contract["terminal_statuses"]
+        )
         cancel_nodes = conversation_engine.get_nodes(
             where={
                 "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
@@ -1090,8 +2730,19 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
             f"/api/conversations/{conversation_id}/snapshots/latest",
             headers=workflow_headers,
         )
+        assert latest.status_code == 200
         latest.raise_for_status()
-        assert latest.json()["snapshot_node_id"] == snapshot_id
+        snapshot = latest.json()
+        assert set(snapshot) == {
+            "snapshot_node_id",
+            "conversation_id",
+            "metadata",
+            "properties",
+        }
+        assert snapshot["snapshot_node_id"] == snapshot_id
+        assert snapshot["conversation_id"] == conversation_id
+        assert isinstance(snapshot["metadata"], dict)
+        assert isinstance(snapshot["properties"], dict)
 
         run_id = "seed-run"
         workflow_id = "wf.test"
@@ -1108,7 +2759,14 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
             workflow_id=workflow_id,
             step_seq=0,
             op="prepare",
-            state_update=[["u", {"counter": 1}]],
+            state_update=[["u", {"answer": "worker"}]],
+            result_fields={"answer": "worker"},
+            trace_context={
+                "trace_id": "trace-seed",
+                "span_id": "span-step-0",
+                "parent_span_id": "span-parent",
+                "attempt": 2,
+            },
         )
         _seed_step(
             conversation_engine,
@@ -1121,31 +2779,120 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
 
         steps = client.get(f"/api/runs/{run_id}/steps", headers=workflow_headers)
         steps.raise_for_status()
-        assert [step["step_seq"] for step in steps.json()["steps"]] == [0, 1]
+        steps_payload = steps.json()
+        steps_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-inspection-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert steps.status_code == steps_contract["success_status"]
+        assert steps_payload["run_id"] == run_id
+        assert [step["step_seq"] for step in steps_payload["steps"]] == [0, 1]
+        for field in steps_contract["required_step_fields"]:
+            assert field in steps_payload["steps"][0]
+        assert steps_payload["steps"][0]["op"] == "prepare"
+        assert steps_payload["steps"][0]["status"] == steps_contract["step_status"]
+        assert (
+            steps_payload["steps"][0]["result"] == steps_contract["successful_result"]
+        )
+        assert isinstance(steps_payload["steps"][0]["duration_ms"], int)
+        trace_fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-step-trace-context-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert (
+            steps_payload["steps"][0]["trace_context"] == trace_fixture["trace_context"]
+        )
+        assert ("trace_context" not in steps_payload["steps"][1]) is steps_contract[
+            "legacy_step_omits_trace_context"
+        ]
 
         checkpoints = client.get(
             f"/api/runs/{run_id}/checkpoints", headers=workflow_headers
         )
-        checkpoints.raise_for_status()
-        assert checkpoints.json()["checkpoints"][0]["state"]["counter"] == 1
+        checkpoint_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoints-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert checkpoints.status_code == checkpoint_contract["success_status"]
+        checkpoints_payload = checkpoints.json()
+        assert set(checkpoint_contract["required_envelope_fields"]).issubset(
+            checkpoints_payload
+        )
+        checkpoint_items = checkpoints_payload["checkpoints"]
+        assert checkpoint_items
+        for checkpoint_item in checkpoint_items:
+            assert set(checkpoint_contract["required_checkpoint_fields"]).issubset(
+                checkpoint_item
+            )
+            assert isinstance(checkpoint_item["state"], dict)
+        assert checkpoint_items[0]["state"]["counter"] == 1
 
         checkpoint = client.get(
             f"/api/runs/{run_id}/checkpoints/0", headers=workflow_headers
         )
-        checkpoint.raise_for_status()
-        assert checkpoint.json()["state"]["counter"] == 1
+        checkpoint_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-checkpoint-detail-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert checkpoint.status_code == checkpoint_contract["success_status"]
+        checkpoint_payload = checkpoint.json()
+        assert set(checkpoint_contract["required_fields"]).issubset(checkpoint_payload)
+        assert checkpoint_payload["run_id"] == run_id
+        assert checkpoint_payload["step_seq"] == 0
+        assert checkpoint_payload["state"]["counter"] == 1
 
         replay = client.get(
             f"/api/runs/{run_id}/replay?target_step_seq=1", headers=workflow_headers
         )
-        replay.raise_for_status()
-        assert replay.json()["state"]["counter"] == 2
+        replay_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-replay-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert replay.status_code == replay_contract["success_status"]
+        replay_payload = replay.json()
+        assert set(replay_contract["required_fields"]).issubset(replay_payload)
+        assert replay_payload["run_id"] == run_id
+        assert replay_payload["target_step_seq"] == 1
+        assert replay_payload["state"]["counter"] == 2
+
+        resume_contract_fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/run-resume-contract-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        empty_resume = client.get(
+            "/api/runs/no-checkpoint-run/resume-contract",
+            headers=workflow_headers,
+        )
+        assert empty_resume.status_code == resume_contract_fixture["success_status"]
+        empty_resume_payload = empty_resume.json()
+        assert set(resume_contract_fixture["required_fields"]).issubset(
+            empty_resume_payload
+        )
+        for key, expected in resume_contract_fixture["no_checkpoint"].items():
+            assert empty_resume_payload[key] == expected
+        assert (
+            empty_resume_payload["supported_wait_reasons"]
+            == resume_contract_fixture["supported_wait_reasons"]
+        )
 
         resume_contract = client.get(
             f"/api/runs/{run_id}/resume-contract", headers=workflow_headers
         )
-        resume_contract.raise_for_status()
+        assert resume_contract.status_code == resume_contract_fixture["success_status"]
         contract = resume_contract.json()
+        assert set(resume_contract_fixture["required_fields"]).issubset(contract)
         assert contract["run_id"] == run_id
         assert contract["latest_checkpoint_step_seq"] == 0
         assert contract["checkpoint_schema_version"] == 1
@@ -1154,15 +2901,644 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         assert "approval" in contract["supported_wait_reasons"]
         assert "rate_window" in contract["supported_wait_reasons"]
 
-        viz = client.get("/api/viz/d3.json?graph_type=workflow")
-        viz.raise_for_status()
+        viz_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/graph-viz-d3-http-success-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        viz = client.get("/api/viz/d3.json?mode=reify")
+        assert viz.status_code == viz_contract["success_status"]
         payload = viz.json()
-        assert "nodes" in payload
-        assert "links" in payload
+        assert set(viz_contract["required_fields"]).issubset(payload)
+        for field in viz_contract["array_fields"]:
+            assert isinstance(payload[field], list)
+        assert payload["mode"] == viz_contract["mode"]
+        assert payload["doc_id"] is viz_contract["doc_id"]
+
+        cytoscape_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/graph-viz-cytoscape-http-success-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        cytoscape = client.get(
+            "/api/viz/cytoscape.json",
+            params={"mode": cytoscape_contract["mode"]},
+            headers=workflow_headers,
+        )
+        assert cytoscape.status_code == cytoscape_contract["success_status"]
+        cytoscape_payload = cytoscape.json()
+        assert set(cytoscape_contract["required_fields"]).issubset(cytoscape_payload)
+        for field in cytoscape_contract["array_fields"]:
+            assert isinstance(cytoscape_payload[field], list)
+        assert cytoscape_payload["mode"] == cytoscape_contract["mode"]
+        if cytoscape_contract["doc_id_query_echo"]:
+            assert cytoscape_payload["doc_id"] is None
+
+
+def test_workflow_catalog_ops_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-catalog-ops-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get("/api/workflow/catalog/ops", headers=headers)
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == contract["response_body"]
+
+
+def test_workflow_dead_letters_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-dead-letters-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get(
+            "/api/workflow/dead-letters",
+            params={"limit": contract["query_limit"]},
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == contract["response_body"]
+
+
+def test_workflow_dead_letter_replay_missing_run_matches_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-dead-letter-replay-missing-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client, role="rw", ns="workflow", capabilities="service.manage"
+        )
+        response = client.post(
+            f"/api/workflow/dead-letters/{contract['run_id']}/replay",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == contract["response_body"]
+
+
+def test_workflow_design_edge_upsert_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-edge-upsert-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        for node in (
+            {
+                "node_id": "start",
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            {
+                "node_id": "end",
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
+        ):
+            node_response = client.post(
+                f"/api/workflow/design/{contract['workflow_id']}/nodes",
+                json={"designer_id": contract["designer_id"], **node},
+                headers=headers,
+            )
+            assert node_response.status_code == 200, node_response.text
+        response = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/edges",
+            json={
+                "designer_id": contract["designer_id"],
+                "edge_id": contract["edge_id"],
+                "src": "start",
+                "dst": "end",
+                "is_default": True,
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    for field, expected in contract["fixed_response_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_response_fields"]:
+        assert isinstance(body[field], int)
+    for field in contract["absent_response_fields"]:
+        assert field not in body
+
+
+def test_workflow_design_edge_delete_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-edge-delete-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        for node in (
+            {
+                "node_id": "start",
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            {
+                "node_id": "end",
+                "label": "End",
+                "op": "end",
+                "terminal": True,
+            },
+        ):
+            node_response = client.post(
+                f"/api/workflow/design/{contract['workflow_id']}/nodes",
+                json={"designer_id": contract["designer_id"], **node},
+                headers=headers,
+            )
+            assert node_response.status_code == 200, node_response.text
+        edge_response = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/edges",
+            json={
+                "designer_id": contract["designer_id"],
+                "edge_id": contract["edge_id"],
+                "src": "start",
+                "dst": "end",
+                "is_default": True,
+            },
+            headers=headers,
+        )
+        assert edge_response.status_code == 200, edge_response.text
+        response = client.request(
+            "DELETE",
+            f"/api/workflow/design/{contract['workflow_id']}/edges/"
+            f"{contract['edge_id']}",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    for field, expected in contract["fixed_response_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_response_fields"]:
+        assert isinstance(body[field], int)
+    for field in contract["absent_response_fields"]:
+        assert field not in body
+
+
+def test_workflow_design_empty_graph_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-empty-graph-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get(
+            f"/api/workflow/design/{contract['workflow_id']}/graph",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == contract["response_body"]
+
+
+def test_workflow_design_empty_history_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-empty-history-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get(
+            f"/api/workflow/design/{contract['workflow_id']}/history",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == contract["response_body"]
+
+
+def test_workflow_design_node_upsert_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-node-upsert-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        response = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/nodes",
+            json={
+                "designer_id": contract["designer_id"],
+                "node_id": contract["node_id"],
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    for field, expected in contract["fixed_response_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_response_fields"]:
+        assert isinstance(body[field], int)
+    for field in contract["absent_response_fields"]:
+        assert field not in body
+
+
+def test_workflow_design_node_upsert_requires_write_graph_before_effect(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    calls = []
+    monkeypatch.setattr(
+        service._workflow_design,
+        "workflow_design_upsert_node",
+        lambda **kwargs: calls.append(kwargs) or {},
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username="alice",
+            capabilities="workflow.design.write",
+        )
+        response = client.post(
+            "/api/workflow/design/wf-node-upsert-denied/nodes",
+            json={"designer_id": "alice", "node_id": "node-denied", "label": "Denied"},
+            headers=headers,
+        )
+
+    assert response.status_code == 403
+    assert calls == []
+
+
+def test_workflow_design_node_delete_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-node-delete-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        created = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/nodes",
+            json={
+                "designer_id": contract["designer_id"],
+                "node_id": contract["node_id"],
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        response = client.request(
+            "DELETE",
+            f"/api/workflow/design/{contract['workflow_id']}/nodes/"
+            f"{contract['node_id']}",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    for field, expected in contract["fixed_response_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_response_fields"]:
+        assert isinstance(body[field], int)
+    for field in contract["absent_response_fields"]:
+        assert field not in body
+
+
+def test_workflow_design_redo_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-redo-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        created = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/nodes",
+            json={
+                "designer_id": contract["designer_id"],
+                "node_id": contract["node_id"],
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        undone = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/undo",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
+        assert undone.status_code == 200, undone.text
+        response = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/redo",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    for field, expected in contract["fixed_response_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_response_fields"]:
+        assert isinstance(body[field], int)
+    for field, expected_length in contract["array_lengths"].items():
+        assert len(body[field]) == expected_length
+    assert body["commits"]["1"]["action"] == contract["version_one_action"]
+    for field in contract["absent_response_fields"]:
+        assert field not in body
+
+
+def test_workflow_design_undo_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-undo-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        created = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/nodes",
+            json={
+                "designer_id": contract["designer_id"],
+                "node_id": contract["node_id"],
+                "label": "Start",
+                "op": "start",
+                "start": True,
+            },
+            headers=headers,
+        )
+        assert created.status_code == 200, created.text
+        response = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/undo",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    for field, expected in contract["fixed_response_fields"].items():
+        assert body[field] == expected
+    for field in contract["integer_response_fields"]:
+        assert isinstance(body[field], int)
+    for field, expected_length in contract["array_lengths"].items():
+        assert len(body[field]) == expected_length
+    assert body["commits"]["1"]["action"] == contract["version_one_action"]
+    for field in contract["absent_response_fields"]:
+        assert field not in body
+
+
+def test_workflow_lane_progress_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-lane-progress-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    registry.create_run(
+        run_id=contract["run_id"],
+        conversation_id="lane-progress-contract-conversation",
+        workflow_id="lane-progress-contract-workflow",
+        user_id="alice",
+        user_turn_node_id="lane-progress-contract-turn",
+        status="running",
+    )
+    registry.append_event(
+        contract["run_id"], contract["event_type"], contract["payload"]
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get(
+            f"/api/workflow/lane/progress?run_id={contract['run_id']}",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    assert body["total"] == contract["expected_total"]
+    assert len(body["items"]) == contract["expected_item_count"]
+    item = body["items"][0]
+    assert set(item) == set(contract["expected_item_keys"])
+    for field, expected in contract["expected_item_fields"].items():
+        assert item[field] == expected
+    assert isinstance(item["created_at_ms"], int)
+
+
+def test_workflow_repair_orphans_matches_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-repair-orphans-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    meta_store = conversation_engine.meta_sqlite
+    claims_token = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "role": "rw",
+            "storage_ns": "workflow",
+            "security_scope": "tenant/demo",
+        }
+    )
+    try:
+        for message_id, inbox_id in (
+            ("expired-orphan", contract["inbox_id"]),
+            (contract["active_message_id"], "repair-active"),
+        ):
+            meta_store.project_lane_message(
+                message_id=message_id,
+                namespace="workflow",
+                purpose="system",
+                inbox_id=inbox_id,
+                conversation_id="repair-contract-conversation",
+                recipient_id="python-worker",
+                sender_id="rust-scheduler",
+                msg_type="workflow.run.execute",
+                status="pending",
+                created_at=1,
+                available_at=0,
+                run_id=f"run-{message_id}",
+                step_id="start",
+                correlation_id=f"corr-{message_id}",
+                payload_json="{}",
+            )
+            claimed = meta_store.claim_projected_lane_messages(
+                namespace="workflow",
+                inbox_id=inbox_id,
+                claimed_by="repair-contract-worker",
+                limit=1,
+                lease_seconds=(
+                    -1 if message_id == "expired-orphan" else 60
+                ),
+                message_ids=[message_id],
+            )
+            assert [row.message_id for row in claimed] == [message_id]
+    finally:
+        claims_ctx.reset(claims_token)
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="rw", ns="workflow")
+        response = client.post(
+            "/api/workflow/messages/repair-orphans"
+            f"?inbox_id={contract['inbox_id']}&limit={contract['limit']}",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    assert response.json() == {
+        "repaired_message_ids": contract["expected_repaired_message_ids"]
+    }
+    active_rows = meta_store.list_projected_lane_messages(
+        namespace="workflow",
+        inbox_id="repair-active",
+        status="claimed",
+        limit=10,
+    )
+    assert [row.message_id for row in active_rows] == [
+        contract["active_message_id"]
+    ]
 
 
 def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-status-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     _configure_server(
         monkeypatch,
         engine,
@@ -1207,6 +3583,9 @@ def test_runtime_rest_submit_and_sse(monkeypatch, engine_triplet):
         assert final_run["result"]["workflow_status"] == "succeeded"
         assert "last_step_seq" not in final_run
         assert "step_count" not in final_run
+        assert contract["success_status"] == 200
+        assert set(contract["required_fields"]).issubset(final_run)
+        assert final_run["terminal"] is True
 
         events = _collect_sse_events(
             client,
@@ -1291,6 +3670,12 @@ def test_workflow_run_lane_message_lifecycle_streams_through_registry_sse(
 
 
 def test_runtime_resource_snapshot_reports_pressure(monkeypatch, engine_triplet):
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-resources-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch,
@@ -1301,17 +3686,30 @@ def test_runtime_resource_snapshot_reports_pressure(monkeypatch, engine_triplet)
         runtime_runner=_runtime_success_runner,
     )
     with TestClient(server.app) as client:
-        wf_ro = _token_header(client, role="ro", ns="workflow")
+        partial = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities="project_view",
+        )
+        denied = client.get("/api/workflow/resources", headers=partial)
+        assert denied.status_code == 403
+
+        wf_ro = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
         snapshot = client.get("/api/workflow/resources", headers=wf_ro)
-        snapshot.raise_for_status()
-        payload = snapshot.json()
-        assert "scheduler" in payload
-        assert "runs" in payload
-        assert "budget_model" in payload
-        assert "cost_ledger" in payload
-        assert "storage_usage_bytes" in payload
-        assert "policy_infra" in payload
-        assert payload["scheduler"]["max_active"] >= 1
+    assert snapshot.status_code == 200
+    payload = snapshot.json()
+    assert all(field in payload for field in contract["required_fields"])
+    for key, required_fields in contract["required_object_fields"].items():
+        assert all(field in payload[key] for field in required_fields), key
+    assert not set(contract["rust_additive_fields"]).intersection(payload)
+    assert isinstance(payload["storage_usage_bytes"], int)
+    assert payload["scheduler"]["max_active"] >= 1
 
 
 def test_runtime_rest_cancel(monkeypatch, engine_triplet):
@@ -1347,8 +3745,32 @@ def test_runtime_rest_cancel(monkeypatch, engine_triplet):
         assert submit.status_code == 202
         run_id = submit.json()["run_id"]
 
+        cancel_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts"
+                / "golden"
+                / "run-cancel-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert cancel_contract["workflow_route"] == "POST /api/workflow/runs/{run_id}/cancel"
+        denied = client.post(
+            f"/api/workflow/runs/{run_id}/cancel", headers=wf_ro
+        )
+        assert denied.status_code == 403
+        assert conversation_engine.get_nodes(
+            where={
+                "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]
+            },
+            limit=10,
+        ) == []
+
         cancel = client.post(f"/api/workflow/runs/{run_id}/cancel", headers=wf_rw)
-        assert cancel.status_code == 202
+        assert cancel.status_code == cancel_contract["accepted_status"]
+        cancel_body = cancel.json()
+        assert all(field in cancel_body for field in cancel_contract["required_fields"])
+        assert cancel_body["cancel_requested"] is True
+        assert cancel_body["status"] in cancel_contract["accepted_run_statuses"]
 
         final_run = _wait_for_status(
             client,
@@ -1396,19 +3818,19 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
     conversation_engine.write.add_node(
         ConversationNode(
             user_id="tester",
-            id="tool-call-1",
-            label="tool_call:list_transcript",
+            id="tool-call:1",
+            label="tool_call:kg_neighbors",
             type="entity",
-            doc_id="tool-call-1",
-            summary="Calling tool list_transcript",
+            doc_id="tool-call:1",
+            summary="Read adjacent graph nodes",
             role="assistant",
-            turn_index=1,
-            conversation_id="conv-tools",
+            turn_index=2,
+            conversation_id="conversation:demo",
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-            properties={"tool_name": "list_transcript"},
+            properties={"status": "requested"},
             metadata={
                 "entity_type": "tool_call",
-                "tool_name": "list_transcript",
+                "tool_name": "kg_neighbors",
                 "level_from_root": 0,
             },
             domain_id=None,
@@ -1418,19 +3840,19 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
     conversation_engine.write.add_node(
         ConversationNode(
             user_id="tester",
-            id="tool-result-1",
-            label="tool_result:list_transcript",
+            id="tool-result:1",
+            label="tool_result:kg_neighbors",
             type="entity",
-            doc_id="tool-result-1",
-            summary="[]",
+            doc_id="tool-result:1",
+            summary="Returned two visible neighbors",
             role="tool",
-            turn_index=1,
-            conversation_id="conv-tools",
+            turn_index=2,
+            conversation_id="conversation:demo",
             mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
-            properties={"tool_name": "list_transcript", "result_json": "[]"},
+            properties={"status": "completed", "count": 2},
             metadata={
                 "entity_type": "tool_result",
-                "tool_name": "list_transcript",
+                "tool_name": "kg_neighbors",
                 "level_from_root": 0,
             },
             domain_id=None,
@@ -1444,23 +3866,69 @@ def test_view_layer_hardening_endpoints(monkeypatch, engine_triplet):
         vis.raise_for_status()
         assert vis.json()["namespaces"]["execution_namespace"] == "workflow"
 
+        visibility_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-visibility-http-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        scoped_token = jwt.encode(
+            {
+                "sub": "reader-1",
+                "role": "ro",
+                "ns": ["workflow"],
+                "capabilities": ["project_view", "read_security_scope"],
+                "tenant": "tenant-a",
+                "workspace": "workspace-b",
+                "project": "project-c",
+                "iss": "local",
+                "exp": int(time.time()) + 300,
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        scoped_visibility = client.get(
+            "/api/workflow/visibility",
+            headers={"Authorization": f"Bearer {scoped_token}"},
+        )
+        assert scoped_visibility.status_code == visibility_contract["success_status"]
+        assert scoped_visibility.json() == visibility_contract["response"]
+
         budget = client.get("/api/workflow/budget/history", headers=wf_ro)
         budget.raise_for_status()
         assert budget.json()["cost_ledger"]["event_count"] == 2
         assert len(budget.json()["events"]) == 2
 
-        sched = client.get("/api/workflow/scheduler/timeline", headers=wf_ro)
-        sched.raise_for_status()
-        assert "events" in sched.json()
+        timeline_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-scheduler-timeline-empty-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        sched = client.get(
+            "/api/workflow/scheduler/timeline",
+            params={"run_id": timeline_contract["run_id"]},
+            headers=wf_ro,
+        )
+        assert sched.status_code == timeline_contract["success_status"]
+        assert sched.json() == timeline_contract["response"]
 
+        expected_audit = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/tool-audit-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        expected_audit.pop("schema_version")
+        for item in expected_audit["items"]:
+            item.pop("schema_version")
         audit = client.get(
             "/api/workflow/tools/audit",
-            params={"conversation_id": "conv-tools"},
+            params={"conversation_id": "conversation:demo"},
             headers=wf_ro,
         )
         audit.raise_for_status()
-        items = audit.json()["items"]
-        assert {item["entity_type"] for item in items} == {"tool_call", "tool_result"}
+        assert audit.json() == expected_audit
 
 
 def test_get_run_keeps_registry_status_even_if_workflow_completed_node_exists(
@@ -1501,6 +3969,46 @@ def test_get_run_keeps_registry_status_even_if_workflow_completed_node_exists(
     assert run["terminal"] is False
     assert "last_step_seq" not in run
     assert "step_count" not in run
+
+
+def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "run-status-v1.json"
+    )
+    contract = json.loads(fixture_path.read_text(encoding="utf-8"))
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    expected_ids = {
+        "run_id": "run-status-contract",
+        "conversation_id": "conversation-status-contract",
+        "workflow_id": "workflow-status-contract",
+        "user_id": "user-status-contract",
+        "user_turn_node_id": "turn-status-contract",
+    }
+    registry.create_run(**expected_ids, status="succeeded")
+
+    with TestClient(server.app) as client:
+        response = client.get(
+            f"/api/runs/{expected_ids['run_id']}",
+            headers=_token_header(client, role="ro", ns="conversation"),
+        )
+
+    assert response.status_code == contract["success_status"]
+    payload = response.json()
+    assert set(contract["required_fields"]).issubset(payload)
+    assert {key: payload[key] for key in expected_ids} == expected_ids
+    assert payload["status"] == "succeeded"
+    assert payload["terminal"] is (payload["status"] in contract["terminal_statuses"])
+    assert payload["cancel_requested"] is False
+    assert payload["result"] is None
+    assert payload["error"] is None
+    assert isinstance(payload["created_at_ms"], int)
+    assert isinstance(payload["updated_at_ms"], int)
 
 
 def test_get_run_keeps_registry_status_even_if_workflow_cancelled_node_exists(
@@ -1768,6 +4276,13 @@ def test_runtime_design_delete_node_undo_redo_uses_delta_and_preserves_ids(
             {start_id, end_id},
             {edge_id},
         )
+        _assert_workflow_design_entities_use_scoped_namespace(
+            service,
+            workflow_engine,
+            workflow_id=workflow_id,
+            node_ids={start_id, end_id},
+            edge_ids={edge_id},
+        )
 
         hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
         hist.raise_for_status()
@@ -1898,6 +4413,13 @@ def test_runtime_design_delete_edge_undo_redo_uses_delta_and_preserves_ids(
             start_id,
             {start_id, end_id},
             {edge_id},
+        )
+        _assert_workflow_design_entities_use_scoped_namespace(
+            service,
+            workflow_engine,
+            workflow_id=workflow_id,
+            node_ids={start_id, end_id},
+            edge_ids={edge_id},
         )
 
         hist = client.get(f"/api/workflow/design/{workflow_id}/history", headers=wf_ro)
@@ -2418,7 +4940,9 @@ def test_runtime_design_graph_reports_ready_materialization_status(
         payload = graph.json()
         assert payload["materialization_status"] == "ready"
         assert payload["current_version"] == 3
-        assert [str(node.get("metadata", {}).get("wf_op")) for node in payload["nodes"]] == [
+        assert [
+            str(node.get("metadata", {}).get("wf_op")) for node in payload["nodes"]
+        ] == [
             "start",
             "end",
         ]
@@ -2769,10 +5293,23 @@ def test_runtime_design_snapshot_restore_matches_full_replay(
         _visible_workflow_design_ids(workflow_engine, workflow_id=workflow_id)
         == snapshot_shape
     )
+    _assert_workflow_design_entities_use_scoped_namespace(
+        service,
+        workflow_engine,
+        workflow_id=workflow_id,
+        node_ids={start_id, end_id},
+        edge_ids=set(),
+    )
 
 
 def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-designer-capabilities-schema-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     service, _registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
@@ -2827,6 +5364,9 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
 
         node_types = payload["node_types"]
         edge_types = payload["edge_types"]
+        assert payload["schema_version"] == contract["schema_version"]
+        assert node_types[0]["metadata_schema"] == contract["node_metadata_schema"]
+        assert edge_types[0]["metadata_schema"] == contract["edge_metadata_schema"]
         assert node_types[0]["type"] == "workflow_node"
         assert edge_types[0]["type"] == "workflow_edge"
         node_props = node_types[0]["metadata_schema"]["properties"]
@@ -2837,7 +5377,9 @@ def test_designer_capabilities_endpoint(monkeypatch, engine_triplet):
         assert "wf_multiplicity" in edge_props
 
 
-def test_designer_capabilities_requires_explicit_capability(monkeypatch, engine_triplet):
+def test_designer_capabilities_requires_explicit_capability(
+    monkeypatch, engine_triplet
+):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -2885,45 +5427,25 @@ def test_designer_capabilities_falls_back_to_default_resolver(
         assert "start" in runtime["builtin_ops"]
 
 
-def test_admin_delete_doc_uses_node_ids_for_node_refs(monkeypatch):
+def test_admin_delete_doc_uses_engine_rollback_lifecycle(monkeypatch):
     doc_id = "doc-1"
-    calls: list[tuple[str, object]] = []
+    calls: list[str] = []
 
-    class _Read:
-        def node_ids_by_doc(self, value):
-            assert value == doc_id
-            return ["node-1", "node-2"]
-
-        def edge_ids_by_doc(self, value):
-            assert value == doc_id
-            return ["edge-1"]
-
-    class _Backend:
-        def edge_endpoints_delete(self, **kwargs):
-            calls.append(("edge_endpoints_delete", kwargs))
-
-        def node_docs_delete(self, **kwargs):
-            calls.append(("node_docs_delete", kwargs))
-
-        def edge_refs_delete(self, **kwargs):
-            calls.append(("edge_refs_delete", kwargs))
-
-        def edge_delete(self, **kwargs):
-            calls.append(("edge_delete", kwargs))
-
-        def node_refs_delete(self, **kwargs):
-            calls.append(("node_refs_delete", kwargs))
-
-        def node_delete(self, **kwargs):
-            calls.append(("node_delete", kwargs))
-
-        def document_delete(self, **kwargs):
-            calls.append(("document_delete", kwargs))
+    def rollback_document(value):
+        calls.append(value)
+        return {
+            "tombstoned_node_ids": ["node-1", "node-2"],
+            "tombstoned_edge_ids": ["edge-1"],
+        }
 
     monkeypatch.setattr(
         server,
         "engine",
-        _FixedResource(SimpleNamespace(read=_Read(), backend=_Backend())),
+        _FixedResource(
+            SimpleNamespace(
+                rollback=SimpleNamespace(rollback_document=rollback_document)
+            )
+        ),
         raising=False,
     )
     monkeypatch.setattr(server, "require_role", lambda role: None, raising=False)
@@ -2935,48 +5457,23 @@ def test_admin_delete_doc_uses_node_ids_for_node_refs(monkeypatch):
         "doc_id": doc_id,
         "deleted": {"nodes": 2, "edges": 1},
     }
-    assert ("node_refs_delete", {"ids": ["node-1", "node-2"]}) in calls
-    assert ("edge_refs_delete", {"ids": ["edge-1"]}) in calls
+    assert calls == [doc_id]
 
 
-def test_admin_delete_doc_raises_when_backend_delete_fails(monkeypatch):
+def test_admin_delete_doc_maps_rollback_failure(monkeypatch):
     doc_id = "doc-2"
 
-    class _Read:
-        def node_ids_by_doc(self, value):
-            assert value == doc_id
-            return ["node-1"]
-
-        def edge_ids_by_doc(self, value):
-            assert value == doc_id
-            return ["edge-1"]
-
-    class _Backend:
-        def edge_endpoints_delete(self, **kwargs):
-            return None
-
-        def node_docs_delete(self, **kwargs):
-            return None
-
-        def edge_refs_delete(self, **kwargs):
-            raise RuntimeError("delete failed")
-
-        def edge_delete(self, **kwargs):
-            pytest.fail("edge_delete should not run after edge_refs_delete failure")
-
-        def node_refs_delete(self, **kwargs):
-            pytest.fail("node cleanup should not run after edge cleanup failure")
-
-        def node_delete(self, **kwargs):
-            pytest.fail("node cleanup should not run after edge cleanup failure")
-
-        def document_delete(self, **kwargs):
-            pytest.fail("document_delete should not run after edge cleanup failure")
+    def rollback_document(_value):
+        raise RuntimeError("rollback failed")
 
     monkeypatch.setattr(
         server,
         "engine",
-        _FixedResource(SimpleNamespace(read=_Read(), backend=_Backend())),
+        _FixedResource(
+            SimpleNamespace(
+                rollback=SimpleNamespace(rollback_document=rollback_document)
+            )
+        ),
         raising=False,
     )
     monkeypatch.setattr(server, "require_role", lambda role: None, raising=False)
@@ -2985,9 +5482,7 @@ def test_admin_delete_doc_raises_when_backend_delete_fails(monkeypatch):
         server.admin_delete_doc(doc_id)
 
     assert exc_info.value.status_code == 500
-    assert exc_info.value.detail == (
-        f"Failed to delete document {doc_id!r} during edge_refs_delete"
-    )
+    assert exc_info.value.detail == f"Failed to roll back document {doc_id!r}"
 
 
 def test_workflow_run_submit_goal_payload_survives_failing_otel_sink(

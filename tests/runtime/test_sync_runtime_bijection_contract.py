@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from kogwistar._rust_bridge import RustExtensionUnavailableError
 from kogwistar.conversation.resolvers import default_resolver
 from kogwistar.engine_core import GraphKnowledgeEngine
 from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
@@ -29,9 +30,39 @@ class _RuntimeLaneNode:
     op: str
     metadata: dict
     terminal: bool = True
+    version: str = "v1"
+    fanout: bool = False
 
     def safe_get_id(self) -> str:
         return self.id
+
+
+@dataclass
+class _RuntimeLaneEdge:
+    id: str
+    source_ids: list[str]
+    target_ids: list[str]
+    metadata: dict
+
+    def safe_get_id(self) -> str:
+        return self.id
+
+    @property
+    def priority(self) -> int:
+        return int(self.metadata.get("wf_priority", 100))
+
+    @property
+    def multiplicity(self) -> str:
+        return str(self.metadata.get("wf_multiplicity", "one"))
+
+    @property
+    def is_default(self) -> bool:
+        return bool(self.metadata.get("wf_is_default", False))
+
+    @property
+    def predicate(self) -> str | None:
+        value = self.metadata.get("wf_predicate")
+        return value if isinstance(value, str) else None
 
 
 def _lane_runtime_engine(tmp_path):
@@ -42,11 +73,14 @@ def _lane_runtime_engine(tmp_path):
     )
 
 
-def _patch_single_step_design(monkeypatch, *, workflow_id: str, op: str) -> None:
+def _patch_single_step_design(
+    monkeypatch, *, workflow_id: str, op: str, version: str = "v1"
+) -> None:
     node = _RuntimeLaneNode(
         id=f"wf|{workflow_id}|send",
         op=op,
         metadata={"wf_terminal": True, "wf_start": True},
+        version=version,
     )
 
     def _validate(*, workflow_engine, workflow_id, predicate_registry, resolver):
@@ -547,6 +581,105 @@ def test_sync_runtime_resolver_send_lane_message_reaches_sync_mirror(
     assert [str(node.id) for node in lane_nodes] == [rows[0].message_id]
 
 
+def test_sync_runtime_dispatches_frozen_operation_version(tmp_path, monkeypatch):
+    """New sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_dispatches_frozen_operation_version`.
+    Verify sync execution dispatches the frozen operation version rather than
+    the currently registered default.
+    """
+    workflow_id = "wf-sync-versioned-dispatch"
+    _patch_single_step_design(
+        monkeypatch, workflow_id=workflow_id, op="compute", version="v1"
+    )
+    resolver = MappingStepResolver()
+
+    @resolver.register("compute", version="v2")
+    def _current(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"selected": ctx.op_version})],
+        )
+
+    @resolver.register_versioned("compute", version="v1")
+    def _historical(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"selected": f"historical-{ctx.op_version}"})],
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=False,
+    )
+
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-versioned",
+        turn_node_id="turn-versioned",
+        initial_state={},
+        run_id="run-versioned-sync",
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["selected"] == "historical-v1"
+
+
+def test_sync_runtime_legacy_python_default_completes_without_native_loader(
+    tmp_path, monkeypatch
+):
+    """New sync mirror of `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_legacy_python_default_completes_without_native_loader`.
+
+    Legacy runtime selection must not acquire a Rust dependency implicitly.
+    """
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def unavailable() -> None:
+        raise RustExtensionUnavailableError("native loader must not be called")
+
+    monkeypatch.setattr("kogwistar._rust_bridge._load_extension", unavailable)
+    workflow_id = "wf-sync-legacy-python-default"
+    _patch_single_step_design(monkeypatch, workflow_id=workflow_id, op="compute")
+    resolver = MappingStepResolver()
+
+    @resolver.register("compute")
+    def _compute(ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"implementation": "python-default"})],
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_lane_runtime_engine(tmp_path / "conversation"),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+    )
+
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-legacy-python-default",
+        turn_node_id="turn-legacy-python-default",
+        initial_state={},
+        run_id="run-legacy-python-default",
+    )
+
+    assert out.status == "succeeded"
+    assert out.final_state["implementation"] == "python-default"
+
+
 def test_sync_runtime_resolver_send_lane_message_appends_run_registry_event(
     tmp_path, monkeypatch
 ):
@@ -858,6 +991,57 @@ def test_sync_runtime_auto_transaction_mode_uses_step_for_pg_backend(monkeypatch
     )
 
     assert runtime.transaction_mode == "step"
+
+
+def test_sync_runtime_rust_postgres_authority_keeps_callbacks_outside_uow(
+    monkeypatch,
+):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_rust_postgres_authority_keeps_callbacks_outside_uow`.
+    New sync mirror for Rust Postgres transaction-authority parity.
+    """
+    class _PgVectorBackend:
+        pass
+
+    class _ConversationEngine:
+        backend = _PgVectorBackend()
+
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.PgVectorBackend",
+        _PgVectorBackend,
+    )
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    runtime = WorkflowRuntime(
+        workflow_engine=object(),
+        conversation_engine=_ConversationEngine(),
+        step_resolver=MappingStepResolver(),
+        predicate_registry={},
+        trace=False,
+    )
+
+    assert runtime.transaction_mode == "none"
+    assert runtime._should_step_uow("ordinary_step", {}) is False
+
+
+def test_sync_runtime_rejects_explicit_rust_step_uow(monkeypatch):
+    """Sync mirror: `tests/runtime/test_async_runtime_bijection_contract.py::test_async_runtime_rejects_explicit_rust_step_uow`.
+    New sync mirror for Rust step-UOW rejection parity.
+    """
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    with pytest.raises(ValueError, match="incompatible with Rust transaction authority"):
+        WorkflowRuntime(
+            workflow_engine=object(),
+            conversation_engine=object(),
+            step_resolver=MappingStepResolver(),
+            predicate_registry={},
+            transaction_mode="step",
+            trace=False,
+        )
 
 
 def test_sync_runtime_missing_op_behavior():

@@ -1,0 +1,20 @@
+{
+  "contract_version": "v1",
+  "request": {
+    "doc_id": "doc-invalid-request"
+  },
+  "python_detail": [
+    {
+      "type": "missing",
+      "loc": ["body", "nodes"],
+      "msg": "Field required",
+      "input": {
+        "doc_id": "doc-invalid-request"
+      }
+    }
+  ],
+  "rust_legacy_fields": {
+    "code": "KOGWISTAR_INVALID_REQUEST",
+    "message": "missing field `nodes`"
+  }
+}

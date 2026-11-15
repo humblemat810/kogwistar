@@ -77,9 +77,10 @@ def test_phase5_worker_runner_pg_aliases_build_pg_backend(
             self.schema = schema
 
     class FakeGraphKnowledgeEngine:
-        def __init__(self, persist_directory=None, backend=None):
+        def __init__(self, persist_directory=None, backend=None, persistence_mode="single_stage"):
             self.persist_directory = persist_directory
             self.backend = backend
+            self.persistence_mode = persistence_mode
             self.namespace = None
 
     monkeypatch.setattr(worker_runner, "PgVectorBackend", FakePgVectorBackend)
@@ -93,6 +94,7 @@ def test_phase5_worker_runner_pg_aliases_build_pg_backend(
         pg_url="postgresql://example/test",
         pg_schema="test_schema",
         embedding_dim="8",
+        persistence_mode="two_stage",
     )
 
     eng = worker_runner._build_engine(args)
@@ -101,3 +103,4 @@ def test_phase5_worker_runner_pg_aliases_build_pg_backend(
     assert eng.backend.engine == "sa:postgresql://example/test"
     assert eng.backend.embedding_dim == 8
     assert eng.backend.schema == "test_schema"
+    assert eng.persistence_mode == "two_stage"

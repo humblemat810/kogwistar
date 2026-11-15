@@ -1,4 +1,8 @@
+import json
+from pathlib import Path
+
 import pytest
+from pydantic import ValidationError
 
 pytestmark = pytest.mark.ci_full
 
@@ -9,23 +13,161 @@ from fastapi.testclient import TestClient
 
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.server_http_helpers import token_header
 
 
 def _rw_headers(client: TestClient) -> dict[str, str]:
-    resp = client.post(
-        "/auth/dev-token",
-        json={"username": "tester", "role": "rw", "ns": "docs,conversation,workflow"},
+    return token_header(
+        client,
+        username="tester",
+        role="rw",
+        ns="docs,conversation,workflow",
     )
-    resp.raise_for_status()
-    return {"Authorization": f"Bearer {resp.json()['token']}"}
+
+
+def test_graph_upsert_request_preserves_legacy_version_default() -> None:
+    from kogwistar.engine_core.graph_extraction_contract import (
+        validate_graph_extraction_request,
+    )
+    from kogwistar.server_mcp_with_admin import GraphUpsertLLMIn
+
+    legacy = GraphUpsertLLMIn.model_validate({"doc_id": "legacy-doc"})
+    request = validate_graph_extraction_request(legacy.model_dump())
+
+    assert request.contract_version == 1
+    assert request.doc_type == "text"
+    assert request.insertion_method == "api_upsert"
+
+    with pytest.raises(ValidationError):
+        GraphUpsertLLMIn.model_validate(
+            {"contract_version": 2, "doc_id": "unsupported-version"}
+        )
+
+
+def test_graph_upsert_validates_entity_shape_before_document_write(monkeypatch) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.documents_added: list[object] = []
+            self.write = self
+            self.extract = self
+
+        def add_document(self, document: object) -> None:
+            self.documents_added.append(document)
+
+        def fetch_document_text(self, document_id: str) -> None:
+            return None
+
+    fake_engine = FakeEngine()
+    monkeypatch.setattr(server, "require_role", lambda _role: None)
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
+
+    invalid = server.GraphUpsertLLMIn(
+        doc_id="invalid-graph", content="source", nodes=[{"id": "missing-fields"}]
+    )
+    with pytest.raises(server.HTTPException) as error:
+        server.api_graph_upsert_llm(invalid)
+
+    assert error.value.status_code == 422
+    assert fake_engine.documents_added == []
+
+
+def test_graph_upsert_rejects_malformed_hyperedge_before_document_write(
+    monkeypatch,
+) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.documents_added: list[object] = []
+            self.write = self
+            self.extract = self
+
+        def add_document(self, document: object) -> None:
+            self.documents_added.append(document)
+
+        def fetch_document_text(self, document_id: str) -> None:
+            return None
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-extraction-invalid-hyperedge-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    fake_engine = FakeEngine()
+    monkeypatch.setattr(server, "require_role", lambda _role: None)
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
+
+    with pytest.raises(server.HTTPException) as error:
+        server.api_graph_upsert_llm(server.GraphUpsertLLMIn.model_validate(fixture))
+
+    assert error.value.status_code == 422
+    assert fake_engine.documents_added == []
+
+
+def test_graph_upsert_legacy_request_reaches_existing_persistence_path(monkeypatch) -> None:
+    import kogwistar.server_mcp_with_admin as server
+
+    class FakeEngine:
+        def __init__(self) -> None:
+            self.documents_added: list[object] = []
+            self.write = self
+            self.extract = self
+            self.persist = self
+
+        def add_document(self, document: object) -> None:
+            self.documents_added.append(document)
+
+        def fetch_document_text(self, document_id: str) -> None:
+            return None
+
+        def persist_graph_extraction(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "document_id": "legacy-doc",
+                "node_ids": [],
+                "edge_ids": [],
+                "nodes_added": 0,
+                "edges_added": 0,
+            }
+
+    fake_engine = FakeEngine()
+    monkeypatch.setattr(server, "require_role", lambda _role: None)
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
+
+    response = server.api_graph_upsert_llm(
+        server.GraphUpsertLLMIn(doc_id="legacy-doc", content="legacy source")
+    )
+
+    assert response.document_id == "legacy-doc"
+    assert len(fake_engine.documents_added) == 1
 
 # Import your FastAPI app
 
 DOC_ID = "pytest-doc-upsert-1"
 
 
-def test_graph_upsert_llm_batch_with_references():
+def test_graph_upsert_llm_batch_with_references(monkeypatch, tmp_path):
     # clean slate (best-effort)
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.setenv(selector, "python")
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only graph upsert attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
 
     import kogwistar.server_mcp_with_admin as server
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -35,14 +177,43 @@ def test_graph_upsert_llm_batch_with_references():
     headers = _rw_headers(client)
 
     fake_engine = GraphKnowledgeEngine(
-        persist_directory="./.tmp_pytest/graph_upsert_fake",
+        persist_directory=str(tmp_path / "graph_upsert_fake"),
         kg_graph_type="knowledge",
         embedding_function=ConstantEmbeddingFunction(dim=8),
         backend_factory=build_fake_backend,
+        persistence_mode="two_stage",
     )
-    server.engine._value = fake_engine
+    from kogwistar.engine_core.engine_sqlite import EngineSQLite
+
+    metadata_directory = tmp_path / "graph_upsert_metadata"
+    durable_metadata = EngineSQLite(metadata_directory)
+    durable_metadata.ensure_initialized()
+    fake_engine.metadata = durable_metadata
+    monkeypatch.setattr(server.engine, "_value", fake_engine)
 
     client.delete(f"/admin/doc/{DOC_ID}", headers=headers)
+
+    contract_dir = Path(__file__).resolve().parents[2] / "contracts" / "golden"
+    extraction = json.loads((contract_dir / "graph-extraction-v1.json").read_text())
+    extraction["nodes"][0]["metadata"] = {"engine_type": "attacker-selected"}
+    response_contract = json.loads(
+        (contract_dir / "graph-upsert-success-v1.json").read_text()
+    )
+    contract_response = client.post(
+        "/api/graph/upsert", json=extraction, headers=headers
+    )
+    assert contract_response.status_code == response_contract["http_status"], (
+        contract_response.text
+    )
+    contract_body = contract_response.json()
+    expected_body = response_contract["body"]
+    assert {
+        "document_id": contract_body["document_id"],
+        "node_ids_count": len(contract_body["node_ids"]),
+        "edge_ids_count": len(contract_body["edge_ids"]),
+        "nodes_added": contract_body["nodes_added"],
+        "edges_added": contract_body["edges_added"],
+    } == expected_body
 
     payload = {
         "doc_id": DOC_ID,
@@ -150,6 +321,30 @@ def test_graph_upsert_llm_batch_with_references():
     assert data["edges_added"] >= 2
     assert len(data["node_ids"]) >= 2
     assert len(data["edge_ids"]) >= 2
+
+    from kogwistar.workers.index_job_worker import IndexJobWorker
+
+    worker_result = IndexJobWorker(
+        engine=fake_engine,
+        batch_size=32,
+        max_jobs_per_tick=32,
+        namespace=fake_engine.namespace,
+    ).tick()
+    assert worker_result.failed == 0
+    assert worker_result.done == worker_result.claimed
+    assert worker_result.done > 0
+
+    reopened_metadata = EngineSQLite(metadata_directory)
+    completed_jobs = reopened_metadata.list_index_jobs(
+        namespace=fake_engine.namespace, limit=32
+    )
+    assert len(completed_jobs) == worker_result.claimed
+    assert all(job.status == "DONE" for job in completed_jobs)
+
+    node_hits = fake_engine.vector_search_nodes([0.01] * 8, top_k=10)
+    edge_hits = fake_engine.vector_search_edges([0.01] * 8, top_k=10)
+    assert set(data["node_ids"]).issubset(set(node_hits["ids"][0]))
+    assert set(data["edge_ids"]).issubset(set(edge_hits["ids"][0]))
 
     # minimal smoke test of viz JSON (ensures persistence + endpoints tables are coherent)
     viz = client.get(f"/api/viz/d3.json?doc_id={DOC_ID}&mode=reify", headers=headers)

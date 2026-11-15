@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "python_models": {
+    "node": "kogwistar.conversation.models.ConversationNode",
+    "edge": "kogwistar.conversation.models.ConversationEdge"
+  },
+  "assistant_node": {
+    "required_fields": [
+      "id",
+      "label",
+      "type",
+      "summary",
+      "properties",
+      "mentions",
+      "metadata",
+      "role",
+      "turn_index",
+      "conversation_id"
+    ],
+    "field_values": {
+      "label": "Assistant turn",
+      "type": "entity",
+      "role": "assistant",
+      "properties.entity_type": "assistant_turn",
+      "metadata.entity_type": "assistant_turn",
+      "metadata.role": "assistant",
+      "metadata.in_conversation_chain": true,
+      "metadata.in_ui_chain": true,
+      "metadata.lifecycle_status": "active",
+      "metadata.redirect_to_id": null
+    }
+  },
+  "generated_edge": {
+    "required_fields": [
+      "id",
+      "source_ids",
+      "target_ids",
+      "relation",
+      "label",
+      "type",
+      "properties",
+      "metadata"
+    ],
+    "field_values": {
+      "relation": "generated",
+      "label": "generated",
+      "type": "relationship",
+      "properties.entity_type": "conversation_edge",
+      "metadata.lifecycle_status": "active",
+      "metadata.redirect_to_id": null
+    }
+  }
+}

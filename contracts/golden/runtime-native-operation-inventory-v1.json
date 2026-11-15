@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "registry_scope": "builtins",
+  "operations": [
+    { "operation": "agent.event.ack", "version": "v1" },
+    { "operation": "agent.event.receive", "version": "v1" },
+    { "operation": "agent.event.request", "version": "v1" },
+    { "operation": "emit-result", "version": "v1" },
+    { "operation": "increment-counter", "version": "v1" },
+    { "operation": "noop", "version": "v1" }
+  ]
+}

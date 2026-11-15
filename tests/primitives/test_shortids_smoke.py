@@ -1,5 +1,7 @@
 import importlib
 import json
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -194,3 +196,44 @@ def test_persistence_across_instances(in_tmpdir):
 
     # ensure numbering continues
     assert shortids.l2s_id("SECOND") == "<sid>2"
+
+
+def test_concurrent_mapper_instances_share_persisted_allocations(tmp_path):
+    root = tmp_path / "shortids"
+    values = [f"entity-{index}" for index in range(48)]
+
+    def allocate(value: str) -> tuple[str, str]:
+        mapper = shortids.ShortIdMapper("shared-token", root_dir=str(root))
+        return value, mapper.l2s_id(value)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        allocated = list(executor.map(allocate, values))
+
+    mapping = dict(allocated)
+    assert len(set(mapping.values())) == len(values)
+    assert all(
+        shortids.ShortIdMapper("shared-token", root_dir=str(root)).s2l_id(alias) == value
+        for value, alias in allocated
+    )
+    assert shortids.ShortIdMapper("shared-token", root_dir=str(root)).l2s_id(
+        values[0]
+    ) == mapping[values[0]]
+
+
+def test_shared_python_rust_short_id_state_fixture_continues_legacy_mapping(tmp_path):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "short-id-state-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    root = tmp_path / "shortids"
+    root.mkdir()
+    mapper = shortids.ShortIdMapper(fixture["run_id"], root_dir=str(root))
+    assert mapper._file().stem == fixture["file_key"]
+    mapper._file().write_text(json.dumps(fixture["state"]), encoding="utf-8")
+    mapper.state = mapper._load()
+
+    assert mapper.l2s_id(fixture["next_entity"]) == fixture["expected_alias"]
+    assert mapper.s2l_id("<sid>2") == "node-b"

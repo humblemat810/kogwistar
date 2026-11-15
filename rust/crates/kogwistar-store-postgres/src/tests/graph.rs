@@ -1,0 +1,1885 @@
+// Domain-focused tests; shared fixtures live in the parent test module.
+use super::*;
+use kogwistar_store::{
+    DistanceMetric, GraphEndpointKind, GraphIncidentEdgeRead, GraphMutation,
+    GraphProjectionVectorQuery, GraphRecord, GraphScope, MetadataFilter, NodeIndexStore,
+    VectorCollectionStore, VectorQuery, similarity_from_distance,
+};
+
+#[test]
+fn node_document_ids_match_python_sorted_unique_projection() {
+    let document = serde_json::json!({
+        "mentions": [
+            {"spans": [
+                {"doc_id": "doc-b"},
+                {"document_page_url": "https://example.test/document/doc-a/page"},
+                {"doc_id": "", "document_page_url": "https://example.test/document/doc-c"}
+            ]},
+            {"doc_id": "doc-b"}
+        ]
+    });
+    assert_eq!(
+        node_document_ids(&document).into_iter().collect::<Vec<_>>(),
+        vec!["doc-a".to_owned(), "doc-b".to_owned(), "doc-c".to_owned()]
+    );
+}
+#[test]
+fn graph_reference_rows_match_python_reference_projection_contract() {
+    let document = serde_json::json!({
+        "doc_id": "doc-fallback",
+        "mentions": [{"spans": [
+            {
+                "doc_id": "doc-explicit",
+                "insertion_method": "parser",
+                "page_number": 4,
+                "excerpt": "evidence",
+                "start_char": 8,
+                "end_char": 16,
+                "verification": {
+                    "method": "human",
+                    "is_verified": true,
+                    "score": 0.9,
+                    "notes": "not projected"
+                }
+            },
+            {"doc_id": null, "page_number": 5}
+        ]}]
+    });
+    let rows = graph_reference_rows("node", "n-1", &document);
+    assert_eq!(
+        rows,
+        vec![
+            serde_json::json!({
+                "id": "n-1::mention::0::span::0",
+                "node_id": "n-1",
+                "doc_id": "doc-explicit",
+                "insertion_method": "parser",
+                "verification_method": "human",
+                "is_verified": true,
+                "verificication_score": 0.9,
+                "page_number": 4,
+                "excerpt": "evidence",
+                "start_char": 8,
+                "end_char": 16
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            serde_json::json!({
+                "id": "n-1::mention::0::span::1",
+                "node_id": "n-1",
+                "doc_id": "doc-fallback",
+                "page_number": 5
+            })
+            .as_object()
+            .unwrap()
+            .clone()
+        ]
+    );
+    assert!(graph_reference_rows("document", "d-1", &document).is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract; python=kogwistar/engine_core/vector_search.py#similarity_from_distance; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract; python_test=tests/core/test_search_nodes_as_of.py#test_postgres_vector_metric_contract_is_shared_with_rust
+async fn postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-vector-metric-semantics-v1.json"
+    )))?;
+    let schema = test_schema("graph_vector_metric_semantics");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(2, GraphTableNames::default())
+        .await?;
+    let scope = GraphScope {
+        namespace: format!("metric-semantics-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+    for vector in fixture["vectors"].as_array().unwrap() {
+        let id = vector["id"].as_str().unwrap();
+        let embedding = vector["embedding"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap() as f32)
+            .collect::<Vec<_>>();
+        let metadata = Map::from_iter([(
+            "lifecycle_status".to_owned(),
+            Value::String("active".to_owned()),
+        )]);
+        store
+            .apply_graph_mutation(GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("metric-{id}-{}", std::process::id()),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({"id": id, "metadata": metadata}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some(id.to_owned()),
+                    metadata,
+                    embedding: Some(embedding),
+                },
+                embedding_dim: 2,
+            })
+            .await?;
+    }
+
+    for case in fixture["cases"].as_array().unwrap() {
+        let metric = match case["metric"].as_str().unwrap() {
+            "cosine" => DistanceMetric::Cosine,
+            "l2" => DistanceMetric::L2,
+            "ip" => DistanceMetric::InnerProduct,
+            other => panic!("unknown fixture metric {other}"),
+        };
+        let query = GraphProjectionVectorQuery {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            query: VectorQuery {
+                embedding: fixture["query_embedding"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap() as f32)
+                    .collect(),
+                limit: 10,
+                metadata: MetadataFilter::default(),
+                metric,
+            },
+            embedding_dim: 2,
+        };
+        let hits = store.graph_projection_vector_query(query).await?;
+        let expected_ids = case["expected_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        let actual_ids = hits
+            .iter()
+            .map(|hit| hit.record.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_ids, expected_ids, "metric {}", case["metric"]);
+        for ((hit, distance), similarity) in hits
+            .iter()
+            .zip(case["expected_distances"].as_array().unwrap())
+            .zip(case["expected_similarities"].as_array().unwrap())
+        {
+            let expected_distance = distance.as_f64().unwrap();
+            let expected_similarity = similarity.as_f64().unwrap();
+            assert!(
+                (hit.distance - expected_distance).abs() < 1e-5,
+                "{} raw distance: expected {expected_distance}, got {}",
+                case["metric"],
+                hit.distance
+            );
+            let actual_similarity = similarity_from_distance(Some(hit.distance), metric).unwrap();
+            assert!(
+                (actual_similarity - expected_similarity).abs() < 1e-5,
+                "{} normalized score: expected {expected_similarity}, got {actual_similarity}",
+                case["metric"]
+            );
+        }
+    }
+
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[test]
+fn graph_edge_endpoint_rows_match_shared_python_fixture() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/edge-endpoint-rows-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(fixture["schema_version"], 1);
+    let edge_id = fixture["edge"]["id"].as_str().unwrap();
+    let rows = crate::graph::graph_edge_endpoint_rows(edge_id, &fixture["edge"]).unwrap();
+    let actual: Vec<Value> = rows.into_iter().map(Value::Object).collect();
+    let expected: Vec<Value> = serde_json::from_value(fixture["expected_rows"].clone()).unwrap();
+    assert_eq!(actual, expected);
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_edge_mutation_persists_shared_endpoint_projection_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/edge-endpoint-rows-v1.json"
+    ))?;
+    let schema = test_schema("edge_endpoint_rows");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let edge = &fixture["edge"];
+    let edge_id = edge["id"].as_str().unwrap();
+    let namespace = format!("edge-endpoint-rows-{}", std::process::id());
+    let scope = GraphScope {
+        namespace: namespace.clone(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let metadata: Map<String, Value> = serde_json::from_value(edge["metadata"].clone())?;
+    store
+        .apply_graph_mutation(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: format!("edge-endpoint-rows-{}", std::process::id()),
+            op: "ADD".to_owned(),
+            payload: edge.clone(),
+            record: GraphRecord {
+                id: edge_id.to_owned(),
+                document: Some(edge.to_string()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await?;
+
+    for (endpoint_id, endpoint_kind, should_match) in [
+        ("node-source", GraphEndpointKind::Node, true),
+        ("edge-parent", GraphEndpointKind::Edge, true),
+        ("edge-parent", GraphEndpointKind::Node, false),
+        ("node-source", GraphEndpointKind::Edge, false),
+    ] {
+        let rows = store
+            .graph_incident_edges(GraphIncidentEdgeRead {
+                scope: scope.clone(),
+                endpoint_id: endpoint_id.to_owned(),
+                endpoint_kind,
+                limit: 10,
+            })
+            .await?;
+        assert_eq!(rows.iter().any(|row| row.id == edge_id), should_match);
+    }
+    let wrong_scope = store
+        .graph_incident_edges(GraphIncidentEdgeRead {
+            scope: GraphScope {
+                namespace: format!("{namespace}-other"),
+                workspace_id: None,
+                graph_space: None,
+            },
+            endpoint_id: "node-source".to_owned(),
+            endpoint_kind: GraphEndpointKind::Node,
+            limit: 10,
+        })
+        .await?;
+    assert!(wrong_scope.is_empty());
+    assert!(
+        store
+            .graph_incident_edges(GraphIncidentEdgeRead {
+                scope: scope.clone(),
+                endpoint_id: "node-source".to_owned(),
+                endpoint_kind: GraphEndpointKind::Node,
+                limit: 0,
+            })
+            .await?
+            .is_empty()
+    );
+
+    let client = store.client().await?;
+    let persisted = client
+        .query(
+            &format!(
+                "SELECT id, document, metadata::TEXT FROM {} \
+                 WHERE metadata ->> 'edge_id' = $1 ORDER BY id",
+                tables.edge_endpoints
+            ),
+            &[&edge_id],
+        )
+        .await
+        .map_err(backend)?;
+    let actual: Vec<Value> = persisted
+        .iter()
+        .map(|row| {
+            let document: String = row.get("document");
+            serde_json::from_str(&document)
+        })
+        .collect::<Result<_, _>>()?;
+    let mut expected: Vec<Value> = serde_json::from_value(fixture["expected_rows"].clone())?;
+    expected.sort_by_key(|row| row["id"].as_str().unwrap_or_default().to_owned());
+    assert_eq!(actual, expected);
+    for (row, projected) in persisted.iter().zip(&actual) {
+        let row_id: String = row.get("id");
+        assert_eq!(row_id, projected["id"]);
+        let metadata_json: String = row.get("metadata");
+        let metadata: Value = serde_json::from_str(&metadata_json)?;
+        assert_eq!(metadata["namespace"], namespace);
+        assert_eq!(metadata["causal_type"], "dependency");
+    }
+    drop(client);
+    drop(store);
+
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    let reopened_client = reopened.client().await?;
+    let reopened_rows = reopened_client
+        .query(
+            &format!(
+                "SELECT id, document FROM {} WHERE metadata ->> 'edge_id' = $1 ORDER BY id",
+                tables.edge_endpoints
+            ),
+            &[&edge_id],
+        )
+        .await
+        .map_err(backend)?;
+    let reopened_actual: Vec<Value> = reopened_rows
+        .iter()
+        .map(|row| {
+            let document: String = row.get("document");
+            serde_json::from_str(&document)
+        })
+        .collect::<Result<_, _>>()?;
+    assert_eq!(reopened_actual, expected);
+    reopened_client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn concurrent_graph_schema_bootstrap_serializes_vector_extension_creation()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let first_schema = test_schema("concurrent_graph_bootstrap_a");
+    let second_schema = test_schema("concurrent_graph_bootstrap_b");
+    let first = PostgresStore::from_dsn(&dsn, &first_schema)?;
+    let second = PostgresStore::from_dsn(&dsn, &second_schema)?;
+
+    let (first_result, second_result) = tokio::join!(
+        first.create_graph_schema(3, GraphTableNames::default()),
+        second.create_graph_schema(3, GraphTableNames::default()),
+    );
+    first_result?;
+    second_result?;
+
+    let client = first.client().await?;
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA \"{first_schema}\" CASCADE; DROP SCHEMA \"{second_schema}\" CASCADE;"
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_named_vector_collections_are_scoped_ranked_and_not_graph_entities()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("named_vector_collection");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let schema_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/pg-node-index-schema-v1.json"
+    )))?;
+    let client = store.client().await?;
+    let index_table = schema_contract["table"].as_str().unwrap();
+    let embedding_column = schema_contract["embedding_column"].as_str().unwrap();
+    let index_relation = format!("{}.{}", tables.schema, index_table);
+    let node_index_vector_type: String = client
+        .query_one(
+            "SELECT format_type(a.atttypid, a.atttypmod) \
+             FROM pg_attribute AS a \
+             WHERE a.attrelid = to_regclass($1) AND a.attname = $2",
+            &[&index_relation, &embedding_column],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert_eq!(node_index_vector_type, schema_contract["vector_type"]);
+    drop(client);
+    store
+        .create_graph_schema_with_node_index(3, GraphTableNames::default(), "custom_node_index")
+        .await?;
+    let client = store.client().await?;
+    let custom_node_index_exists: bool = client
+        .query_one(
+            "SELECT to_regclass($1) IS NOT NULL",
+            &[&format!("{}.custom_node_index", tables.schema)],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert!(custom_node_index_exists);
+
+    let record = |id: &str, document: &str, category: &str, vector: Vec<f32>| {
+        let mut metadata = Map::new();
+        metadata.insert("category".to_owned(), Value::String(category.to_owned()));
+        GraphRecord {
+            id: id.to_owned(),
+            document: Some(document.to_owned()),
+            metadata,
+            embedding: Some(vector),
+        }
+    };
+    store
+        .upsert_vector_collection(
+            "tenant-a",
+            "search-index",
+            vec![
+                record("idx-a", "alpha", "manual", vec![1.0, 0.0]),
+                record("idx-b", "beta", "manual", vec![0.8, 0.2]),
+            ],
+        )
+        .await?;
+    store
+        .upsert_vector_collection(
+            "tenant-b",
+            "search-index",
+            vec![record("idx-a", "other tenant", "manual", vec![1.0, 0.0])],
+        )
+        .await?;
+    store
+        .upsert_vector_collection(
+            "tenant-a",
+            "other-index",
+            vec![record(
+                "idx-a",
+                "other collection",
+                "manual",
+                vec![1.0, 0.0],
+            )],
+        )
+        .await?;
+
+    let mut filter = MetadataFilter::default();
+    filter
+        .equals
+        .insert("category".to_owned(), Value::String("manual".to_owned()));
+    let query = VectorQuery {
+        embedding: vec![1.0, 0.0],
+        limit: 10,
+        metadata: filter,
+        metric: DistanceMetric::Cosine,
+    };
+    let ranked = store
+        .query_vector_collection("tenant-a", "search-index", &query)
+        .await?;
+    assert_eq!(
+        ranked
+            .iter()
+            .map(|hit| hit.record.id.as_str())
+            .collect::<Vec<_>>(),
+        ["idx-a", "idx-b"]
+    );
+    assert!(ranked[0].distance < ranked[1].distance);
+
+    store
+        .upsert_vector_collection(
+            "tenant-a",
+            "search-index",
+            vec![record("idx-a", "alpha updated", "manual", vec![0.0, 1.0])],
+        )
+        .await?;
+    let updated = store
+        .query_vector_collection("tenant-a", "search-index", &query)
+        .await?;
+    assert_eq!(updated[0].record.id, "idx-b");
+    assert_eq!(updated[1].record.document.as_deref(), Some("alpha updated"));
+
+    store
+        .delete_vector_collection_records("tenant-a", "search-index", vec!["idx-b".to_owned()])
+        .await?;
+    let remaining = store
+        .query_vector_collection("tenant-a", "search-index", &query)
+        .await?;
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].record.id, "idx-a");
+    let client = store.client().await?;
+    let canonical_node_count: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*) FROM {}.gke_nodes WHERE id=$1",
+                tables.quoted_schema
+            ),
+            &[&"idx-a"],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert_eq!(canonical_node_count, 0);
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn node_index_operations_match_shared_python_fixture() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("node_index_shared_fixture");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/pg-node-index-schema-v1.json"
+    )))?;
+    let record_fixture = &fixture["node_index_record"];
+    let record = GraphRecord {
+        id: record_fixture["id"].as_str().unwrap().to_owned(),
+        document: record_fixture["document"].as_str().map(str::to_owned),
+        metadata: serde_json::from_value(record_fixture["metadata"].clone())?,
+        embedding: Some(
+            record_fixture["embedding"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect(),
+        ),
+    };
+    NodeIndexStore::upsert_node_index(&store, "gke_node_index", vec![record.clone()]).await?;
+    let retrieved =
+        NodeIndexStore::get_node_index(&store, "gke_node_index", std::slice::from_ref(&record.id))
+            .await?;
+    assert_eq!(retrieved, vec![record]);
+
+    let query_contract = &fixture["node_index_query"];
+    let query = VectorQuery {
+        embedding: query_contract["embedding"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_f64().unwrap() as f32)
+            .collect(),
+        limit: query_contract["limit"].as_u64().unwrap() as usize,
+        metadata: MetadataFilter {
+            equals: serde_json::from_value(query_contract["metadata"].clone())?,
+        },
+        metric: DistanceMetric::Cosine,
+    };
+    let matches = NodeIndexStore::query_node_index(&store, "gke_node_index", &query).await?;
+    let actual_ids = matches
+        .iter()
+        .map(|item| item.record.id.as_str())
+        .collect::<Vec<_>>();
+    let expected_ids = query_contract["expected_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(actual_ids, expected_ids);
+    let tables = Tables::new(&schema)?;
+    store
+        .client()
+        .await?
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn graph_mutations_materialize_node_docs_in_the_same_transaction() -> PostgresStoreResult<()>
+{
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("node_docs_projection");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let scope = kogwistar_store::GraphScope {
+        namespace: format!("node-docs-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let node_id = "node-docs-native";
+    let mutation = |event_id: &str, op: &str, mention_ids: &[&str]| {
+        let document = serde_json::json!({
+            "id": node_id,
+            "mentions": mention_ids.iter().map(|doc_id| {
+                serde_json::json!({"spans": [{"doc_id": doc_id}]})
+            }).collect::<Vec<_>>()
+        });
+        GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: event_id.to_owned(),
+            op: op.to_owned(),
+            payload: serde_json::json!({"id": node_id}),
+            record: GraphRecord {
+                id: node_id.to_owned(),
+                document: Some(document.to_string()),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 3,
+        }
+    };
+
+    store
+        .apply_graph_mutation(mutation(
+            "node-docs-add",
+            "ADD",
+            &["doc-b", "doc-a", "doc-b"],
+        ))
+        .await?;
+    let client = store.client().await?;
+    let rows = client
+            .query(
+                &format!(
+                    "SELECT id, metadata::TEXT FROM {} WHERE metadata->>'node_id'=$1 ORDER BY metadata->>'doc_id'",
+                    tables.node_docs
+                ),
+                &[&node_id],
+            )
+            .await
+            .map_err(backend)?;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].get::<_, String>(0), "node-docs-native::doc-a");
+    assert_eq!(rows[1].get::<_, String>(0), "node-docs-native::doc-b");
+    let projection = store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![node_id.to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(
+        projection[0].metadata.get("doc_ids"),
+        Some(&Value::String("[\"doc-a\",\"doc-b\"]".to_owned()))
+    );
+
+    store
+        .apply_graph_mutation(mutation("node-docs-replace", "REPLACE", &["doc-c"]))
+        .await?;
+    let rows = client
+        .query(
+            &format!(
+                "SELECT id FROM {} WHERE metadata->>'node_id'=$1",
+                tables.node_docs
+            ),
+            &[&node_id],
+        )
+        .await
+        .map_err(backend)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].get::<_, String>(0), "node-docs-native::doc-c");
+
+    store
+        .apply_graph_mutation(mutation("node-docs-tombstone", "TOMBSTONE", &["doc-c"]))
+        .await?;
+    let rows = client
+        .query(
+            &format!(
+                "SELECT id FROM {} WHERE metadata->>'node_id'=$1",
+                tables.node_docs
+            ),
+            &[&node_id],
+        )
+        .await
+        .map_err(backend)?;
+    assert!(rows.is_empty());
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn graph_mutation_retry_requires_identical_effect_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_mutation_retry");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let namespace = format!("graph-mutation-retry-{}", std::process::id());
+    let mutation = kogwistar_store::GraphMutation {
+        scope: kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: "stable-node-write".to_owned(),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": "retry-node", "text": "original"}),
+        record: kogwistar_store::GraphRecord {
+            id: "retry-node".to_owned(),
+            document: Some("original".to_owned()),
+            metadata: Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+
+    let batch = |mutation| kogwistar_store::GraphMutationBatch {
+        mutations: vec![mutation],
+        index_jobs: vec![kogwistar_store::NewIndexJob {
+            job_id: "stable-node-index".to_owned(),
+            namespace: namespace.clone(),
+            entity_kind: "node".to_owned(),
+            entity_id: "retry-node".to_owned(),
+            index_kind: "node_docs".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: None,
+            max_retries: 3,
+        }],
+    };
+    let first = store
+        .apply_graph_mutations_with_index_jobs_atomic(batch(mutation.clone()))
+        .await?;
+    drop(store);
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let retry = store
+        .apply_graph_mutations_with_index_jobs_atomic(batch(mutation.clone()))
+        .await?;
+    assert!(first[0].inserted && first[0].mutated);
+    assert!(!retry[0].inserted && !retry[0].mutated);
+    assert_eq!(retry[0].event.seq, first[0].event.seq);
+
+    let mut conflicting = mutation;
+    conflicting.payload["text"] = serde_json::json!("different");
+    assert!(matches!(
+        store
+            .apply_graph_mutations_with_index_jobs_atomic(batch(conflicting))
+            .await,
+        Err(PostgresStoreError::Backend(message))
+            if message.contains("reused with different input")
+    ));
+
+    let events = store.replay_raw_events(&namespace, 0, 10).await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, "stable-node-write");
+    let jobs = store
+        .list_index_jobs(Some(&namespace), None, None, None, None, 10)
+        .await?;
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].job_id, "stable-node-index");
+    let rows = store
+        .graph_projection_records(GraphProjectionRead {
+            scope: kogwistar_store::GraphScope {
+                namespace: namespace.clone(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["retry-node".to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].document.as_deref(), Some("original"));
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_concurrent_graph_mutations_share_one_transaction_order_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_mutation_writer_race");
+    let first_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store.ensure_schema().await?;
+    first_store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let second_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let scope = GraphScope {
+        namespace: format!("graph-mutation-writer-race-{}", std::process::id()),
+        workspace_id: Some("workspace".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let mutation = |writer: &str| {
+        let mut metadata = Map::new();
+        metadata.insert("writer".to_owned(), serde_json::json!(writer));
+        kogwistar_store::GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{writer}"),
+            op: "REPLACE".to_owned(),
+            payload: serde_json::json!({"id":"shared-node", "writer":writer}),
+            record: GraphRecord {
+                id: "shared-node".to_owned(),
+                document: Some(serde_json::json!({"writer":writer}).to_string()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        }
+    };
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        first_store.apply_graph_mutation(mutation("first")).await
+    };
+    let second_barrier = Arc::clone(&barrier);
+    let second = async {
+        second_barrier.wait().await;
+        second_store.apply_graph_mutation(mutation("second")).await
+    };
+    let (first, second) = tokio::join!(first, second);
+    let first = first?;
+    let second = second?;
+    assert!(first.inserted && first.mutated);
+    assert!(second.inserted && second.mutated);
+
+    let events = first_store
+        .replay_events(&scope.namespace, 0, 10)
+        .await
+        .map_err(backend)?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq + 1, events[1].seq);
+    let records = first_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["shared-node".to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(
+        records[0].metadata.get("writer"),
+        events[1].payload.get("writer")
+    );
+
+    drop(first_store);
+    drop(second_store);
+    let cleanup = PostgresStore::from_dsn(&dsn, &schema)?;
+    cleanup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_concurrent_acl_mutations_keep_event_and_truth_projection_order_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("acl_mutation_writer_race");
+    let first_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store.ensure_schema().await?;
+    first_store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let second_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let scope = GraphScope {
+        namespace: format!("acl-mutation-writer-race-{}", std::process::id()),
+        workspace_id: Some("workspace".to_owned()),
+        graph_space: Some("acl".to_owned()),
+    };
+    let mutation = |writer: &str, mode: &str| {
+        let metadata = serde_json::json!({
+            "entity_type": "acl_record",
+            "acl_truth_graph": "conversation",
+            "acl_target_entity_id": "protected-node",
+            "acl_target_grain": "node",
+            "acl_target_item_id": "",
+            "acl_version": 1,
+            "acl_mode": mode,
+            "writer": writer
+        })
+        .as_object()
+        .expect("ACL metadata is an object")
+        .clone();
+        kogwistar_store::GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("acl-event-{writer}"),
+            op: "REPLACE".to_owned(),
+            payload: serde_json::json!({"id":"acl-record", "writer":writer, "acl_mode":mode}),
+            record: GraphRecord {
+                id: "acl-record".to_owned(),
+                document: Some(serde_json::json!({"writer":writer, "acl_mode":mode}).to_string()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        }
+    };
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        first_store
+            .apply_graph_mutation(mutation("first", "private"))
+            .await
+    };
+    let second_barrier = Arc::clone(&barrier);
+    let second = async {
+        second_barrier.wait().await;
+        second_store
+            .apply_graph_mutation(mutation("second", "public"))
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    assert!(first?.inserted);
+    assert!(second?.inserted);
+
+    let events = first_store
+        .replay_raw_events(&scope.namespace, 0, 10)
+        .await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq + 1, events[1].seq);
+    let final_payload: serde_json::Value = serde_json::from_str(&events[1].payload_json)?;
+    let records = first_store
+        .graph_acl_records_for_entities(&scope, "conversation", &["protected-node".to_owned()])
+        .await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, "acl-record");
+    assert_eq!(records[0].metadata["writer"], final_payload["writer"]);
+    assert_eq!(records[0].metadata["acl_mode"], final_payload["acl_mode"]);
+
+    drop(first_store);
+    drop(second_store);
+    let cleanup = PostgresStore::from_dsn(&dsn, &schema)?;
+    cleanup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_concurrent_graph_writes_keep_coalesced_index_intent_current_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_index_intent_writer_race");
+    let first_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    first_store.ensure_schema().await?;
+    first_store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let second_store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let scope = GraphScope {
+        namespace: format!("graph-index-writer-race-{}", std::process::id()),
+        workspace_id: Some("workspace".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let batch = |writer: &str| {
+        let mut metadata = Map::new();
+        metadata.insert("writer".to_owned(), serde_json::json!(writer));
+        kogwistar_store::GraphMutationBatch {
+            mutations: vec![kogwistar_store::GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("graph-event-{writer}"),
+                op: "REPLACE".to_owned(),
+                payload: serde_json::json!({"id":"shared-node", "writer":writer}),
+                record: GraphRecord {
+                    id: "shared-node".to_owned(),
+                    document: Some(serde_json::json!({"writer":writer}).to_string()),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }],
+            index_jobs: vec![kogwistar_store::NewIndexJob {
+                job_id: format!("index-job-{writer}"),
+                namespace: scope.namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: "shared-node".to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: Some(serde_json::json!({"writer":writer}).to_string()),
+                max_retries: 3,
+            }],
+        }
+    };
+
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let first_barrier = Arc::clone(&barrier);
+    let first = async {
+        first_barrier.wait().await;
+        first_store
+            .apply_graph_mutations_with_index_jobs_atomic(batch("first"))
+            .await
+    };
+    let second_barrier = Arc::clone(&barrier);
+    let second = async {
+        second_barrier.wait().await;
+        second_store
+            .apply_graph_mutations_with_index_jobs_atomic(batch("second"))
+            .await
+    };
+    let (first, second) = tokio::join!(first, second);
+    assert!(
+        first?
+            .first()
+            .is_some_and(|result| result.inserted && result.mutated)
+    );
+    assert!(
+        second?
+            .first()
+            .is_some_and(|result| result.inserted && result.mutated)
+    );
+
+    let events = first_store
+        .replay_raw_events(&scope.namespace, 0, 10)
+        .await?;
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].seq + 1, events[1].seq);
+    let final_event: serde_json::Value = serde_json::from_str(&events[1].payload_json)?;
+    let records = first_store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["shared-node".to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 1,
+        })
+        .await?;
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].metadata["writer"], final_event["writer"]);
+
+    let jobs = first_store
+        .list_index_jobs(Some(&scope.namespace), None, None, None, None, 10)
+        .await?;
+    assert_eq!(jobs.len(), 1, "matching pending intents coalesce");
+    assert_eq!(jobs[0].status, "PENDING");
+    let final_intent: serde_json::Value =
+        serde_json::from_str(jobs[0].payload_json.as_deref().expect("intent payload"))?;
+    assert_eq!(final_intent["writer"], final_event["writer"]);
+
+    drop(first_store);
+    drop(second_store);
+    let cleanup = PostgresStore::from_dsn(&dsn, &schema)?;
+    cleanup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[test]
+fn physical_graph_purge_requires_canonical_tombstone() {
+    let active = Map::new();
+    assert!(!canonical_tombstone_present(&active));
+
+    let mut tombstoned = Map::new();
+    tombstoned.insert(
+        "lifecycle_status".to_owned(),
+        Value::String("tombstoned".to_owned()),
+    );
+    assert!(canonical_tombstone_present(&tombstoned));
+
+    tombstoned.insert(
+        "lifecycle_status".to_owned(),
+        Value::String("deleted".to_owned()),
+    );
+    assert!(canonical_tombstone_present(&tombstoned));
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn physical_edge_purge_removes_all_derived_rows_when_dsn_available() -> PostgresStoreResult<()>
+{
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("physical_edge_purge");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let edge_id = "purged-edge";
+    let scope = kogwistar_store::GraphScope {
+        namespace: format!("physical-edge-purge-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let mut metadata = Map::new();
+    metadata.insert(
+        "lifecycle_status".to_owned(),
+        Value::String("tombstoned".to_owned()),
+    );
+    store
+        .upsert_graph_projection(GraphProjectionUpsert {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            record: kogwistar_store::GraphRecord {
+                id: edge_id.to_owned(),
+                document: Some("{}".to_owned()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await?;
+
+    let client = store.client().await?;
+    for (table, id, document, row_metadata) in [
+        (
+            &tables.edge_endpoints,
+            "purged-edge::src::node::source",
+            r#"{"edge_id":"purged-edge","endpoint_id":"source"}"#,
+            serde_json::json!({"edge_id": edge_id, "namespace": scope.namespace.clone()}),
+        ),
+        (
+            &tables.edge_refs,
+            "purged-edge::mention::0::span::0",
+            r#"{"edge_id":"purged-edge","doc_id":"source-doc"}"#,
+            serde_json::json!({"edge_id": edge_id, "doc_id": "source-doc", "namespace": scope.namespace.clone()}),
+        ),
+    ] {
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {table} (id, document, metadata) VALUES ($1, $2, $3::TEXT::JSONB)"
+                ),
+                &[&id, &document, &row_metadata.to_string()],
+            )
+            .await
+            .map_err(backend)?;
+    }
+
+    let deleted = store
+        .apply_graph_delete_mutation(GraphDeleteMutation {
+            scope: scope.clone(),
+            table: "gke_edges".to_owned(),
+            entity_kind: "edge".to_owned(),
+            event_id: "purged-edge-delete-event".to_owned(),
+            entity_id: edge_id.to_owned(),
+            payload: serde_json::json!({"id": edge_id}),
+        })
+        .await?;
+    assert!(deleted.is_some());
+
+    assert!(
+        store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_edges".to_owned(),
+                ids: Some(vec![edge_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 1,
+            })
+            .await?
+            .is_empty()
+    );
+    for table in [&tables.edge_endpoints, &tables.edge_refs] {
+        let count: i64 = client
+            .query_one(
+                &format!(
+                    "SELECT COUNT(*) FROM {table} WHERE metadata ->> 'edge_id' = $1 OR id = $1"
+                ),
+                &[&edge_id],
+            )
+            .await
+            .map_err(backend)?
+            .try_get(0)
+            .map_err(backend)?;
+        assert_eq!(count, 0, "stale edge projection row remained in {table}");
+    }
+    let events = store.replay_raw_events(&scope.namespace, 0, 10).await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, "purged-edge-delete-event");
+    assert_eq!(events[0].op, "DELETE");
+
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[test]
+fn lifecycle_mutations_accept_only_nodes_and_edges() {
+    assert!(validate_graph_lifecycle_target("gke_nodes", "node").is_ok());
+    assert!(validate_graph_lifecycle_target("gke_edges", "edge").is_ok());
+    assert!(validate_graph_lifecycle_target("gke_nodes", "document").is_err());
+    assert!(validate_graph_lifecycle_target("gke_edges", "node").is_err());
+    assert!(validate_graph_lifecycle_target("gke_documents", "document").is_err());
+    assert!(validate_graph_lifecycle_target("gke_domains", "domain").is_err());
+}
+#[test]
+fn graph_mutations_map_each_entity_kind_to_exactly_one_table() {
+    let targets = [
+        ("node", "gke_nodes"),
+        ("edge", "gke_edges"),
+        ("document", "gke_documents"),
+        ("domain", "gke_domains"),
+    ];
+    for (entity_kind, expected_table) in targets {
+        assert!(validate_graph_projection_target(expected_table, entity_kind).is_ok());
+        for (_, other_table) in targets {
+            if other_table != expected_table {
+                assert!(validate_graph_projection_target(other_table, entity_kind).is_err());
+            }
+        }
+    }
+    assert!(validate_graph_projection_target("gke_nodes", "unknown").is_err());
+}
+#[test]
+fn graph_read_filter_accepts_only_legacy_default_scope_rows() {
+    let default_scope = kogwistar_store::GraphScope {
+        namespace: "default".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let (sql, values) = graph_filter_sql(
+        &default_scope,
+        &kogwistar_store::MetadataFilter::default(),
+        1,
+    )
+    .unwrap();
+    assert_eq!(values, vec!["namespace"]);
+    assert!(sql.contains("metadata -> $1::TEXT"));
+    assert!(sql.contains("NOT (metadata ? 'namespace')"));
+
+    let scoped = kogwistar_store::GraphScope {
+        namespace: "default".to_owned(),
+        workspace_id: Some("workspace".to_owned()),
+        graph_space: None,
+    };
+    let (sql, values) =
+        graph_filter_sql(&scoped, &kogwistar_store::MetadataFilter::default(), 1).unwrap();
+    assert_eq!(values, vec!["namespace", "workspace_id"]);
+    assert!(!sql.contains("NOT (metadata"));
+}
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("arbitrary_precision");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let integer = "1606938044258990275541962092341162602522202993782792835301376";
+    let entity_id = "large-level-node";
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))?;
+    let payload_json = fixture["cases"][0]["canonical_json"]
+        .as_str()
+        .expect("shared Python node fixture")
+        .replace("\"id\":\"parity-node\"", &format!("\"id\":\"{entity_id}\""))
+        .replace(
+            "\"level_from_root\":0",
+            &format!("\"level_from_root\":{integer}"),
+        );
+    let payload: Value = serde_json::from_str(&payload_json)?;
+    let metadata: Map<String, Value> =
+        serde_json::from_str(&format!(r#"{{"level_from_root":{integer}}}"#))?;
+    let namespace = format!("large-integer-{}", std::process::id());
+    let scope = kogwistar_store::GraphScope {
+        namespace: namespace.clone(),
+        workspace_id: Some("ws".to_owned()),
+        graph_space: Some("facts".to_owned()),
+    };
+    store
+        .apply_graph_mutation(kogwistar_store::GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{entity_id}"),
+            op: "ADD".to_owned(),
+            payload,
+            record: kogwistar_store::GraphRecord {
+                id: entity_id.to_owned(),
+                document: Some("arbitrary precision integration probe".to_owned()),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 3,
+        })
+        .await?;
+
+    let read = GraphProjectionRead {
+        scope,
+        table: "gke_nodes".to_owned(),
+        ids: Some(vec![entity_id.to_owned()]),
+        metadata: kogwistar_store::MetadataFilter::default(),
+        limit: 1,
+    };
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    let rows = reopened.graph_projection_records(read).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        serde_json::to_string(&rows[0].metadata["level_from_root"])?,
+        integer
+    );
+    let events = reopened.replay_raw_events(&namespace, 0, 10).await?;
+    assert_eq!(events.len(), 1);
+    assert!(events[0].payload_json.contains(integer));
+    let event_payload: Value = serde_json::from_str(&events[0].payload_json)?;
+    assert_eq!(event_payload["id"], entity_id);
+    assert_eq!(
+        serde_json::to_string(&event_payload["level_from_root"])?,
+        integer
+    );
+    let envelope_wire = format!(
+        r#"{{"schema_version":1,"model_class":"node","payload":{}}}"#,
+        events[0].payload_json
+    );
+    let decoded = kogwistar_contracts::RawGraphModelEnvelopeV1::from_json(&envelope_wire)
+        .expect("persisted Python-shaped node parses")
+        .decode_persistent_v2()
+        .expect("persisted node retains its exact typed hierarchy level");
+    assert_eq!(
+        decoded
+            .level_from_root
+            .as_ref()
+            .map(|level| level.as_decimal_str()),
+        Some(integer)
+    );
+    assert!(decoded.raw_payload.get().contains(integer));
+
+    let cleanup = reopened.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn graph_mutation_batch_rolls_back_when_index_intent_fails_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_batch_rollback");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let tables = Tables::new(&schema)?;
+    store
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "CREATE FUNCTION {}.reject_batch_index_job() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN IF NEW.entity_id = 'batch-rollback-edge' THEN \
+                 RAISE EXCEPTION 'injected second index job failure'; END IF; RETURN NEW; \
+                 END; $$; CREATE TRIGGER reject_batch_index_job BEFORE INSERT ON {} \
+                 FOR EACH ROW EXECUTE FUNCTION {}.reject_batch_index_job();",
+            tables.quoted_schema, tables.index_jobs, tables.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+
+    let namespace = format!("batch-{}", std::process::id());
+    let entity_id = "batch-rollback-node";
+    let mutation = kogwistar_store::GraphMutation {
+        scope: kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{entity_id}"),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": entity_id, "entity_type": "node"}),
+        record: kogwistar_store::GraphRecord {
+            id: entity_id.to_owned(),
+            document: Some("atomic batch rollback probe".to_owned()),
+            metadata: Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+    let edge_id = "batch-rollback-edge";
+    let edge_mutation = kogwistar_store::GraphMutation {
+        scope: kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        },
+        table: "gke_edges".to_owned(),
+        entity_kind: "edge".to_owned(),
+        event_id: format!("event-{edge_id}"),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({
+            "id": edge_id,
+            "source_ids": ["batch-source"],
+            "target_ids": ["batch-target"]
+        }),
+        record: kogwistar_store::GraphRecord {
+            id: edge_id.to_owned(),
+            document: Some(format!(
+                r#"{{"id":"{edge_id}","source_ids":["batch-source"],"target_ids":["batch-target"]}}"#
+            )),
+            metadata: Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+    let batch = kogwistar_store::GraphMutationBatch {
+        mutations: vec![mutation, edge_mutation],
+        index_jobs: vec![
+            kogwistar_store::NewIndexJob {
+                job_id: format!("job-{entity_id}"),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: entity_id.to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            },
+            kogwistar_store::NewIndexJob {
+                job_id: format!("job-{edge_id}"),
+                namespace: namespace.clone(),
+                entity_kind: "edge".to_owned(),
+                entity_id: edge_id.to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            },
+        ],
+    };
+
+    assert!(matches!(
+        store
+            .apply_graph_mutations_with_index_jobs_atomic(batch)
+            .await,
+        Err(PostgresStoreError::Backend(_))
+    ));
+    assert!(store.replay_raw_events(&namespace, 0, 10).await?.is_empty());
+    assert!(
+        store
+            .graph_projection_records(GraphProjectionRead {
+                scope: kogwistar_store::GraphScope {
+                    namespace: namespace.clone(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![entity_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 10,
+            })
+            .await?
+            .is_empty()
+    );
+    assert!(
+        store
+            .graph_projection_records(GraphProjectionRead {
+                scope: kogwistar_store::GraphScope {
+                    namespace: namespace.clone(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_edges".to_owned(),
+                ids: Some(vec![edge_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 10,
+            })
+            .await?
+            .is_empty()
+    );
+    let endpoint_row_count: i64 = store
+        .client()
+        .await?
+        .query_one(
+            &format!(
+                "SELECT COUNT(*) FROM {} WHERE metadata ->> 'edge_id' = $1",
+                tables.edge_endpoints
+            ),
+            &[&edge_id],
+        )
+        .await
+        .map_err(backend)?
+        .try_get(0)
+        .map_err(backend)?;
+    assert_eq!(endpoint_row_count, 0);
+    assert!(
+        store
+            .list_index_jobs(Some(&namespace), None, None, None, None, 10)
+            .await?
+            .is_empty()
+    );
+    assert!(
+        store
+            .claim_index_jobs(10, 30, Some(&namespace))
+            .await?
+            .is_empty()
+    );
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn graph_mutation_batch_rolls_back_event_when_projection_fails_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_projection_rollback");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    let tables = Tables::new(&schema)?;
+    store
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "CREATE FUNCTION {0}.reject_graph_projection() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = 'projection-rollback-failing-node' THEN \
+                 RAISE EXCEPTION 'injected graph projection failure'; END IF; RETURN NEW; \
+                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {0}.gke_nodes \
+                 FOR EACH ROW EXECUTE FUNCTION {0}.reject_graph_projection();",
+            tables.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+
+    let namespace = format!("projection-rollback-{}", std::process::id());
+    let entity_id = "projection-rollback-node";
+    let failing_entity_id = "projection-rollback-failing-node";
+    let make_mutation = |id: &str| kogwistar_store::GraphMutation {
+        scope: kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": id, "entity_type": "node"}),
+        record: kogwistar_store::GraphRecord {
+            id: id.to_owned(),
+            document: Some("atomic projection rollback probe".to_owned()),
+            metadata: Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+    let batch = kogwistar_store::GraphMutationBatch {
+        mutations: vec![make_mutation(entity_id), make_mutation(failing_entity_id)],
+        index_jobs: [entity_id, failing_entity_id]
+            .into_iter()
+            .map(|id| kogwistar_store::NewIndexJob {
+                job_id: format!("job-{id}"),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: id.to_owned(),
+                index_kind: "node_docs".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            })
+            .collect(),
+    };
+
+    assert!(matches!(
+        store
+            .apply_graph_mutations_with_index_jobs_atomic(batch)
+            .await,
+        Err(PostgresStoreError::Backend(_))
+    ));
+    assert!(store.replay_raw_events(&namespace, 0, 10).await?.is_empty());
+    assert!(
+        store
+            .graph_projection_records(GraphProjectionRead {
+                scope: kogwistar_store::GraphScope {
+                    namespace: namespace.clone(),
+                    workspace_id: None,
+                    graph_space: None,
+                },
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec![entity_id.to_owned(), failing_entity_id.to_owned()]),
+                metadata: kogwistar_store::MetadataFilter::default(),
+                limit: 10,
+            })
+            .await?
+            .is_empty()
+    );
+    assert!(
+        store
+            .list_index_jobs(Some(&namespace), None, None, None, None, 10)
+            .await?
+            .is_empty()
+    );
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn committed_graph_state_survives_reopen_after_injected_graph_failure_when_dsn_available()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("graph_failure_reopen");
+    let namespace = format!("graph-failure-reopen-{}", std::process::id());
+    let durable_id = "graph-failure-reopen-durable-node";
+    let failed_id = "graph-failure-reopen-failing-node";
+    let tables = Tables::new(&schema)?;
+    let make_mutation = |id: &str| kogwistar_store::GraphMutation {
+        scope: kogwistar_store::GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        },
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": id, "entity_type": "node"}),
+        record: kogwistar_store::GraphRecord {
+            id: id.to_owned(),
+            document: Some("PostgreSQL failure/reopen probe".to_owned()),
+            metadata: Map::new(),
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+
+    let initial = PostgresStore::from_dsn(&dsn, &schema)?;
+    initial.ensure_schema().await?;
+    initial
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+    initial
+        .apply_graph_mutation(make_mutation(durable_id))
+        .await?;
+    drop(initial);
+
+    let setup = PostgresStore::from_dsn(&dsn, &schema)?;
+    setup
+        .client()
+        .await?
+        .batch_execute(&format!(
+            "CREATE FUNCTION {0}.reject_graph_projection() RETURNS trigger \
+                 LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '{failed_id}' THEN \
+                 RAISE EXCEPTION 'injected graph projection failure'; END IF; RETURN NEW; \
+                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {0}.gke_nodes \
+                 FOR EACH ROW EXECUTE FUNCTION {0}.reject_graph_projection();",
+            tables.quoted_schema,
+        ))
+        .await
+        .map_err(backend)?;
+    drop(setup);
+
+    let during_failure = PostgresStore::from_dsn(&dsn, &schema)?;
+    assert!(matches!(
+        during_failure
+            .apply_graph_mutation(make_mutation(failed_id))
+            .await,
+        Err(PostgresStoreError::Backend(_))
+    ));
+    drop(during_failure);
+
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    let events = reopened.replay_raw_events(&namespace, 0, 10).await?;
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_id, format!("event-{durable_id}"));
+    assert_eq!(events[0].entity_id, durable_id);
+
+    let projection = reopened
+        .graph_projection_records(GraphProjectionRead {
+            scope: kogwistar_store::GraphScope {
+                namespace: namespace.clone(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![durable_id.to_owned(), failed_id.to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(projection.len(), 1);
+    assert_eq!(projection[0].id, durable_id);
+
+    reopened
+        .client()
+        .await?
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn unit_of_work_reads_acl_truth_from_its_own_transaction() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("uow_acl_read");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let scope = kogwistar_store::GraphScope {
+        namespace: format!("uow-acl-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let entity_id = "uow-acl-target";
+    let acl_id = "uow-acl-record";
+    let metadata = serde_json::json!({
+        "entity_type": "acl_record",
+        "acl_truth_graph": "conversation",
+        "acl_target_entity_id": entity_id,
+        "acl_target_grain": "node",
+        "acl_target_item_id": "",
+        "acl_version": 1,
+        "acl_mode": "private"
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let mutation = kogwistar_store::GraphMutation {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: "uow-acl-event".to_owned(),
+        op: "ADD".to_owned(),
+        payload: serde_json::json!({"id": acl_id}),
+        record: kogwistar_store::GraphRecord {
+            id: acl_id.to_owned(),
+            document: Some("ACL record".to_owned()),
+            metadata,
+            embedding: None,
+        },
+        embedding_dim: 3,
+    };
+
+    let entity_id = entity_id.to_owned();
+    let expected_acl_id = acl_id.to_owned();
+    store
+        .transaction(move |uow| {
+            Box::pin(async move {
+                uow.apply_graph_mutation(mutation).await?;
+                let records = uow
+                    .graph_acl_records_for_entities(
+                        &scope,
+                        "conversation",
+                        std::slice::from_ref(&entity_id),
+                    )
+                    .await?;
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0].id, expected_acl_id);
+                assert_eq!(records[0].metadata["acl_version"], 1);
+                Ok(())
+            })
+        })
+        .await?;
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}

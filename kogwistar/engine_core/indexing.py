@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass
@@ -10,23 +11,52 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from pydantic_extension.model_slicing.mixin import use_mode
 
+from ..implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+    selected_transaction_authority,
+)
 from .async_compat import run_awaitable_blocking
-from .canonical_events import CanonicalEntityRevision, read_canonical_entity_revision
+from .canonical_events import (
+    CanonicalEntityRevision,
+    canonical_revision_job_payload,
+    read_canonical_entity_revision,
+)
 from .models import Edge, Grounding, Node, Span
+from .projection_action import is_projection_action_payload
 
 if TYPE_CHECKING:
     # Avoid runtime import cycles; we only need this for typing.
     from .engine import GraphKnowledgeEngine
+    from .engine_postgres_meta import EnginePostgresMetaStore
+    from .engine_sqlite import EngineSQLite
+    from .rust_meta_sqlite import RustEngineSQLite
+    from .rust_postgres_session import RustEnginePostgresMetaStore
     from ..workers.async_index_job_worker import AsyncIndexJobWorker
     from ..workers.index_job_worker import IndexJobWorker
 
 
 EntityT = TypeVar("EntityT")
+_logger = logging.getLogger(__name__)
 
 
-def _is_tombstoned(meta: dict | None) -> bool:
+def _is_tombstoned(meta: Mapping[str, object] | None) -> bool:
     meta = meta or {}
     return str(meta.get("lifecycle_status") or "active") == "tombstoned"
+
+
+def _canonical_source_payload_json(source: dict[str, object]) -> str:
+    blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "source_fingerprint": hashlib.blake2b(
+                blob.encode("utf-8"), digest_size=16
+            ).hexdigest(),
+            "source_state": source["state"],
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _backend_object(value: object) -> dict[str, Any]:
@@ -74,6 +104,25 @@ class IndexingSubsystem:
 
     _PHASE1_JOIN_INDEX_KINDS = ("node_docs", "node_refs", "edge_refs", "edge_endpoints")
 
+    @property
+    def metadata(
+        self,
+    ) -> "EngineSQLite | EnginePostgresMetaStore | RustEngineSQLite | RustEnginePostgresMetaStore":
+        """Return the canonical metadata store, failing clearly on invalid engines."""
+
+        if not hasattr(self.engine, "metadata"):
+            raise TypeError(
+                "IndexingSubsystem requires the backend-neutral engine.metadata interface"
+            )
+        return self.engine.metadata
+
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        """Expose the owning engine snapshot to worker-boundary decorators."""
+
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def enqueue_index_job(
         self,
         *,
@@ -88,11 +137,11 @@ class IndexingSubsystem:
             return ""
         job_id = str(uuid.uuid4())
 
-        enqueue = getattr(self.engine.meta_sqlite, "enqueue_index_job", None)
+        enqueue = getattr(self.metadata, "enqueue_index_job", None)
         if enqueue is None:
             return ""
 
-        job_id2 = self.engine.meta_sqlite.enqueue_index_job(
+        job_id2 = self.metadata.enqueue_index_job(
             job_id=job_id,
             namespace=(self.engine.namespace if namespace is None else namespace),
             entity_kind=entity_kind,
@@ -108,6 +157,7 @@ class IndexingSubsystem:
         if callable(hook):
             hook(str(label), time.perf_counter() - float(started_s))
 
+    @implementation_selection_bound
     def canonical_source_payload(self, *, entity_kind: str, entity_id: str) -> str:
         """Return a stable current-state identity for derived projection jobs.
 
@@ -123,14 +173,36 @@ class IndexingSubsystem:
         else:
             raise ValueError(f"unsupported entity kind for index work: {entity_kind!r}")
 
-        got = _backend_object(
-            run_awaitable_blocking(
-                getter(ids=[entity_id], include=["documents", "metadatas"])
+        from .rust_postgres_session import RustEnginePostgresMetaStore
+
+        metadata_store = self.metadata
+        if isinstance(metadata_store, RustEnginePostgresMetaStore):
+            table_attr = "nodes" if entity_kind == "node" else "edges"
+            table = getattr(getattr(self.engine.backend, table_attr, None), "name", None)
+            if not isinstance(table, str) or not table:
+                raise RuntimeError(f"backend has no table name for {entity_kind} projection")
+            records = metadata_store.graph_projection_records(
+                namespace=self.engine.namespace,
+                workspace_id=None,
+                graph_space=None,
+                table=table,
+                ids=[entity_id],
+                metadata={},
+                limit=1,
+                for_update=bool(getattr(metadata_store, "transaction_active", False)),
             )
-        )
-        ids = got.get("ids") or []
-        documents = got.get("documents") or []
-        metadatas = got.get("metadatas") or []
+            ids = [str(record.get("id") or "") for record in records]
+            documents = [record.get("document") for record in records]
+            metadatas = [record.get("metadata") or {} for record in records]
+        else:
+            got = _backend_object(
+                run_awaitable_blocking(
+                    getter(ids=[entity_id], include=["documents", "metadatas"])
+                )
+            )
+            ids = got.get("ids") or []
+            documents = got.get("documents") or []
+            metadatas = got.get("metadatas") or []
         if not ids:
             source: dict[str, Any] = {
                 "entity_kind": entity_kind,
@@ -138,7 +210,12 @@ class IndexingSubsystem:
                 "state": "missing",
             }
         else:
-            metadata = metadatas[0] if metadatas and isinstance(metadatas[0], dict) else {}
+            metadata_value = metadatas[0] if metadatas else None
+            metadata = (
+                cast(Mapping[str, object], metadata_value)
+                if isinstance(metadata_value, Mapping)
+                else {}
+            )
             source = {
                 "entity_kind": entity_kind,
                 "entity_id": entity_id,
@@ -147,14 +224,29 @@ class IndexingSubsystem:
                 "metadata": metadata,
             }
 
-        blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
-        return json.dumps(
-            {"source_fingerprint": hashlib.blake2b(blob.encode("utf-8"), digest_size=16).hexdigest(),
-             "source_state": source["state"]},
-            sort_keys=True,
-            separators=(",", ":"),
+        return _canonical_source_payload_json(source)
+
+    @implementation_selection_bound
+    def canonical_source_payload_for_projection(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        document: str,
+        metadata: Mapping[str, object],
+    ) -> str:
+        """Build the same fingerprint from a projection being written now."""
+        return _canonical_source_payload_json(
+            {
+                "entity_kind": entity_kind,
+                "entity_id": entity_id,
+                "state": "deleted" if _is_tombstoned(metadata) else "active",
+                "document": document,
+                "metadata": dict(metadata),
+            }
         )
 
+    @implementation_selection_bound
     def canonical_entity_revision(
         self, *, entity_kind: str, entity_id: str, namespace: str | None = None
     ) -> CanonicalEntityRevision | None:
@@ -168,7 +260,7 @@ class IndexingSubsystem:
         selected_namespace = str(
             namespace or getattr(self.engine, "namespace", "default")
         )
-        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
+        iter_events = getattr(self.metadata, "iter_entity_events", None)
         if not callable(iter_events):
             raise RuntimeError("canonical event store does not support iter_entity_events")
         events = cast(
@@ -182,41 +274,81 @@ class IndexingSubsystem:
             entity_id=entity_id,
         )
 
+    @implementation_selection_bound
     def canonical_revision_payload(self, *, entity_kind: str, entity_id: str) -> str:
         """Return a stable identity derived from canonical entity events."""
-        revision = self.canonical_entity_revision(
-            entity_kind=entity_kind, entity_id=entity_id
-        )
-        if revision is None:
-            state = "missing"
-            revision_number = 0
-            payload: dict[str, Any] = {}
-        else:
-            state = revision.state
-            revision_number = revision.revision
-            payload = revision.payload
-        source = {
-            "entity_kind": entity_kind,
-            "entity_id": entity_id,
-            "state": state,
-            "revision": revision_number,
-            "payload": payload,
-        }
-        blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
-        return json.dumps(
-            {
-                "source_fingerprint": hashlib.blake2b(
-                    blob.encode("utf-8"), digest_size=16
-                ).hexdigest(),
-                "source_state": state,
-                "canonical_revision": revision_number,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
+        return self.canonical_revision_payloads(
+            entity_kind=entity_kind, entity_ids=[entity_id]
+        )[entity_id]
 
-    def enqueue_index_jobs_for_node(self, node_id: str, *, op: str) -> None:
-        payload_json = self.canonical_source_payload(
+    @implementation_selection_bound
+    def canonical_revision_payloads(
+        self, *, entity_kind: str, entity_ids: Iterable[str], namespace: str | None = None
+    ) -> dict[str, str]:
+        """Return current revision identities after one canonical event scan."""
+        selected_namespace = str(
+            namespace or getattr(self.engine, "namespace", "default")
+        )
+        requested_ids = {str(entity_id) for entity_id in entity_ids}
+        events_by_id: dict[str, list[tuple[int, str, str, str, str]]] = {
+            entity_id: [] for entity_id in requested_ids
+        }
+        if requested_ids:
+            iter_events = getattr(self.metadata, "iter_entity_events", None)
+            if not callable(iter_events):
+                raise RuntimeError("canonical event store does not support iter_entity_events")
+            for event in cast(
+                Iterable[tuple[int, str, str, str, str]],
+                iter_events(namespace=selected_namespace, from_seq=1),
+            ):
+                if str(event[1]) == entity_kind and str(event[2]) in requested_ids:
+                    events_by_id[str(event[2])].append(event)
+
+        result: dict[str, str] = {}
+        for entity_id in requested_ids:
+            revision = read_canonical_entity_revision(
+                events=events_by_id[entity_id],
+                namespace=selected_namespace,
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
+            if revision is None:
+                blob = json.dumps(
+                    {
+                        "entity_kind": entity_kind,
+                        "entity_id": entity_id,
+                        "state": "missing",
+                        "revision": 0,
+                        "payload": {},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                result[entity_id] = json.dumps(
+                    {
+                        "source_fingerprint": hashlib.blake2b(
+                            blob.encode("utf-8"),
+                            digest_size=16,
+                        ).hexdigest(),
+                        "source_state": "missing",
+                        "canonical_revision": 0,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            else:
+                result[entity_id] = canonical_revision_job_payload(revision)
+        return result
+
+    @implementation_selection_bound
+    def enqueue_index_jobs_for_node(
+        self,
+        node_id: str,
+        *,
+        op: str,
+        source_payload_json: str | None = None,
+    ) -> None:
+        payload_json = source_payload_json or self.canonical_source_payload(
             entity_kind="node", entity_id=node_id
         )
         if getattr(self.engine, "persistence_mode", "single_stage") == "two_stage":
@@ -238,8 +370,15 @@ class IndexingSubsystem:
                 payload_json=payload_json,
             )
 
-    def enqueue_index_jobs_for_edge(self, edge_id: str, *, op: str) -> None:
-        payload_json = self.canonical_source_payload(
+    @implementation_selection_bound
+    def enqueue_index_jobs_for_edge(
+        self,
+        edge_id: str,
+        *,
+        op: str,
+        source_payload_json: str | None = None,
+    ) -> None:
+        payload_json = source_payload_json or self.canonical_source_payload(
             entity_kind="edge", entity_id=edge_id
         )
         if getattr(self.engine, "persistence_mode", "single_stage") == "two_stage":
@@ -261,28 +400,88 @@ class IndexingSubsystem:
                 payload_json=payload_json,
             )
 
+    @implementation_selection_bound
     def repair_missing_two_stage_embedding_jobs(
-        self, *, max_entities: int = 100, namespace: str | None = None
+        self,
+        *,
+        max_entities: int = 100,
+        namespace: str | None = None,
+        max_event_window: int | None = None,
     ) -> int:
         """Recreate missing active embedding work from canonical events.
 
         This is a bounded repair scanner, not a second queue. Canonical events
         identify current entities; existing index jobs remain worker
         coordination. A DONE job with a missing vector is repaired too.
+
+        When ``max_event_window`` is provided, scan only that sequence range
+        and persist a replay cursor so callers can resume across invocations.
+        The default retains the legacy full-history scan behavior.
+        A checkpointed scan requires one operator-designated scanner per
+        metadata store and namespace; the replay cursor is not a lease.
+        The requested namespace must match the active engine namespace.
         """
         if getattr(self.engine, "persistence_mode", "single_stage") != "two_stage":
             return 0
-        iter_events = getattr(self.engine.meta_sqlite, "iter_entity_events", None)
-        list_jobs = getattr(self.engine.meta_sqlite, "list_index_jobs", None)
+        iter_events = getattr(self.metadata, "iter_entity_events", None)
+        list_jobs = getattr(self.metadata, "list_index_jobs", None)
         if not callable(iter_events) or not callable(list_jobs):
             return 0
+        iter_events = cast(Callable[..., Iterable[object]], iter_events)
+        list_jobs = cast(Callable[..., Iterable[object]], list_jobs)
+        next_event: object | None = None
+        cursor_set_fn: Callable[..., object] | None = None
         ns = self.engine.namespace if namespace is None else str(namespace)
+        if ns != self.engine.namespace:
+            raise ValueError("repair namespace must match the active engine namespace")
+        if max_event_window is not None:
+            window = int(max_event_window)
+            entity_limit = max(int(max_entities), 0)
+            if window <= 0 or entity_limit <= 0:
+                return 0
+            cursor_get = getattr(self.metadata, "cursor_get", None)
+            cursor_set = getattr(self.metadata, "cursor_set", None)
+            if not callable(cursor_get) or not callable(cursor_set):
+                raise RuntimeError(
+                    "checkpointed two-stage repair requires replay cursor support"
+                )
+            cursor_get_fn = cast(Callable[..., int], cursor_get)
+            cursor_set_fn = cast(Callable[..., object], cursor_set)
+            consumer = "kogwistar.two_stage_embedding_repair.v1"
+            cursor = max(0, int(cursor_get_fn(namespace=ns, consumer=consumer)))
+            from_seq = cursor + 1
+            to_seq = from_seq + min(window, entity_limit) - 1
+            page = list(
+                iter_events(
+                    namespace=ns,
+                    from_seq=from_seq,
+                    to_seq=to_seq,
+                    batch_size=min(window, entity_limit),
+                )
+            )
+            next_event = next(
+                iter(
+                    iter_events(
+                        namespace=ns,
+                        from_seq=to_seq + 1,
+                        batch_size=1,
+                    )
+                ),
+                None,
+            )
+        else:
+            page = list(iter_events(namespace=ns, from_seq=1))
+            consumer = ""
+            to_seq = 0
+
         latest: dict[tuple[str, str], Any] = {}
-        events = cast(Iterable[Any], iter_events(namespace=ns, from_seq=1))
-        for event in events:
-            if isinstance(event, dict):
+        for event in cast(Iterable[Any], page):
+            if isinstance(event, Mapping):
                 entity_kind = str(event.get("entity_kind") or "")
                 entity_id = str(event.get("entity_id") or "")
+            elif callable(getattr(event, "keys", None)):
+                entity_kind = str(event["entity_kind"] or "")
+                entity_id = str(event["entity_id"] or "")
             elif isinstance(event, (tuple, list)) and len(event) >= 4:
                 # EngineSQLite compatibility shape:
                 # (seq, entity_kind, entity_id, op, payload_json).
@@ -294,22 +493,16 @@ class IndexingSubsystem:
             if entity_kind in {"node", "edge"} and entity_id:
                 latest[(entity_kind, entity_id)] = event
         repaired = 0
-        for (entity_kind, entity_id), event in sorted(latest.items()):
+        for entity_kind, entity_id in sorted(latest):
             if repaired >= max(int(max_entities), 0):
                 break
-            op = str(
-                (
-                    event.get("op")
-                    if isinstance(event, dict)
-                    else event[3]
-                    if isinstance(event, (tuple, list))
-                    else getattr(event, "op", "")
-                )
-                or ""
-            ).upper()
             revision_payload = self.canonical_revision_payload(
                 entity_kind=entity_kind, entity_id=entity_id
             )
+            revision_data = json.loads(revision_payload)
+            source_state = revision_data.get("source_state")
+            if source_state not in {"active", "deleted", "missing"}:
+                raise ValueError(f"unknown canonical source state: {source_state!r}")
             getter = getattr(self.engine.backend, f"{entity_kind}_get")
             current = _backend_object(
                 run_awaitable_blocking(
@@ -325,28 +518,52 @@ class IndexingSubsystem:
             adapter = getattr(self.engine, "two_stage_projection_adapter", None)
             stage1_query = getattr(adapter, "stage1_query", None)
             if callable(stage1_query):
-                stage1_present = bool(stage1_query(ids=[entity_id], limit=1))
-            if op in {"DELETE", "TOMBSTONE", "REMOVE"}:
-                if not current.get("ids") and not stage1_present:
-                    continue
-                needs_delete = bool(current.get("ids")) and _is_tombstoned(metadata)
-                needs_delete = needs_delete or stage1_present
-                desired_op = "DELETE"
-            else:
-                needs_delete = False
-                desired_op = "UPSERT"
+                stage1_present = bool(
+                    stage1_query(entity_kind=entity_kind, ids=[entity_id], limit=1)
+                )
+            capability = getattr(self.engine, "two_stage_projection_capability", None)
+            inline_projection = (
+                getattr(capability, "stage1_strategy", None) == "none"
+            )
+            is_tombstoned = _is_tombstoned(metadata)
+            if source_state != "active" and not current.get("ids") and not stage1_present:
+                continue
+            if (
+                inline_projection
+                and source_state != "active"
+                and is_tombstoned
+                and not stage1_present
+                and metadata.get("_kogwistar_stage2_ready") is False
+            ):
+                # The inline canonical row explicitly records that its derived
+                # projection has already been removed.
+                continue
+            if inline_projection and source_state == "active" and not is_tombstoned:
+                # These backends keep the vectorless source in the canonical row;
+                # there is no separate Stage-1 projection to restore or query.
+                stage1_present = bool(current.get("ids"))
+            needs_delete = source_state != "active"
+            desired_op = "DELETE" if needs_delete else "UPSERT"
             ready = bool(current.get("ids")) and bool(embeddings) and embeddings[0] is not None
-            ready = ready and not _is_tombstoned(metadata)
+            ready = ready and not is_tombstoned
             projected_fingerprint = (
                 metadata.get("_kogwistar_source_fingerprint")
                 if isinstance(metadata, dict)
                 else None
             )
-            current_fingerprint = json.loads(revision_payload).get("source_fingerprint")
+            current_fingerprint = revision_data.get("source_fingerprint")
             if projected_fingerprint and projected_fingerprint != current_fingerprint:
                 ready = False
             if not needs_delete and ready:
                 continue
+            if not needs_delete and not stage1_present:
+                restore_stage1 = getattr(
+                    adapter, "restore_stage1_from_canonical_event", None
+                )
+                if not callable(restore_stage1) or not restore_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ):
+                    continue
             jobs = cast(
                 Iterable[Any],
                 list_jobs(namespace=ns, entity_kind=entity_kind, entity_id=entity_id),
@@ -368,8 +585,15 @@ class IndexingSubsystem:
                     namespace=ns,
                 )
                 repaired += 1
+        if cursor_set_fn is not None:
+            cursor_set_fn(
+                namespace=ns,
+                consumer=consumer,
+                last_seq=to_seq if next_event is not None else 0,
+            )
         return repaired
 
+    @implementation_selection_bound
     def reconcile_indexes(
         self,
         *,
@@ -388,7 +612,52 @@ class IndexingSubsystem:
         """
         if not getattr(self.engine, "_phase1_enable_index_jobs", False):
             return 0
-        claim = getattr(self.engine.meta_sqlite, "claim_index_jobs", None)
+        native_join_reconciliation_required = (
+            selected_transaction_authority() == "rust"
+        )
+        if native_join_reconciliation_required:
+            from .rust_meta_sqlite import RustEngineSQLite
+
+            if isinstance(self.metadata, RustEngineSQLite):
+                from .rust_postgres_session import RustEnginePostgresMetaStore
+
+                # SQLite queue stays Rust-owned; Chroma projection stays eventual.
+                # PostgreSQL alone needs native joined reconciliation for atomicity.
+                native_join_reconciliation_required = isinstance(
+                    self.metadata, RustEnginePostgresMetaStore
+                )
+        if native_join_reconciliation_required:
+            reconcile_native = getattr(self.metadata, "reconcile_join_index_jobs", None)
+            backend = getattr(self.engine, "backend", None)
+            table_names = {
+                "nodes_table": getattr(getattr(backend, "nodes", None), "name", None),
+                "edges_table": getattr(getattr(backend, "edges", None), "name", None),
+                "node_docs_table": getattr(getattr(backend, "node_docs", None), "name", None),
+                "node_refs_table": getattr(getattr(backend, "node_refs", None), "name", None),
+                "edge_refs_table": getattr(getattr(backend, "edge_refs", None), "name", None),
+                "edge_endpoints_table": getattr(
+                    getattr(backend, "edge_endpoints", None), "name", None
+                ),
+            }
+            if callable(reconcile_native) and all(
+                isinstance(name, str) and name for name in table_names.values()
+            ):
+                ns = self.engine.namespace if namespace is None else namespace
+                started = time.perf_counter()
+                reconciled = cast(Callable[..., int], reconcile_native)(
+                    limit=max_jobs,
+                    lease_seconds=lease_seconds,
+                    namespace=ns,
+                    **cast(dict[str, str], table_names),
+                )
+                self._profile_step("reconcile.rust_join_index_jobs", started)
+                return reconciled
+            _logger.warning(
+                "leaving index jobs pending: Rust transaction authority has no "
+                "native PostgreSQL join-index reconciler for this backend"
+            )
+            return 0
+        claim = getattr(self.metadata, "claim_index_jobs", None)
         if claim is None:
             return 0
 
@@ -427,6 +696,12 @@ class IndexingSubsystem:
             payload_json = getattr(job, "payload_json", None) or (
                 job.get("payload_json") if isinstance(job, dict) else None
             )
+            raw_claim_token = getattr(job, "claim_token", None) or (
+                job.get("claim_token") if isinstance(job, dict) else None
+            )
+            claim_token = (
+                str(raw_claim_token) if raw_claim_token is not None else None
+            )
 
             retry_count = (
                 getattr(job, "retry_count", None)
@@ -443,21 +718,35 @@ class IndexingSubsystem:
 
             job_started = time.perf_counter()
             try:
-                self.apply_index_job(
-                    job_id=str(job_id),
-                    entity_kind=str(entity_kind),
-                    entity_id=str(entity_id),
-                    index_kind=str(index_kind),
-                    op=str(op),
-                    namespace=ns,
-                    payload_json=payload_json,
-                    validated_entity_cache=entity_cache,
-                )
+                # A result admitted by the Rust worker is already the durable
+                # idempotency record.  Reconcile only the queue acknowledgement
+                # instead of repeating provider or projection work.
+                accepted_result = getattr(job, "accepted_result_json", None)
+                if isinstance(job, dict):
+                    accepted_result = job.get("accepted_result_json")
+                if accepted_result is not None and is_projection_action_payload(
+                    accepted_result
+                ):
+                    raise RuntimeError(
+                        "accepted graph projection action must be handled by "
+                        "IndexJobWorker with a projection store"
+                    )
+                if accepted_result is None:
+                    self.apply_index_job(
+                        job_id=str(job_id),
+                        entity_kind=str(entity_kind),
+                        entity_id=str(entity_id),
+                        index_kind=str(index_kind),
+                        op=str(op),
+                        namespace=ns,
+                        payload_json=payload_json,
+                        validated_entity_cache=entity_cache,
+                    )
             except Exception as e:
                 err = f"{type(e).__name__}: {e}"
-                bump = getattr(self.engine.meta_sqlite, "bump_retry_and_requeue", None)
+                bump = getattr(self.metadata, "bump_retry_and_requeue", None)
                 mark_failed = getattr(
-                    self.engine.meta_sqlite, "mark_index_job_failed", None
+                    self.metadata, "mark_index_job_failed", None
                 )
 
                 if job_id:
@@ -465,25 +754,47 @@ class IndexingSubsystem:
                     if bump is not None and next_retry < try_mr:
                         delay = min(300, 2 ** min(next_retry - 1, 8))
                         bump_started = time.perf_counter()
-                        bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        if claim_token is None:
+                            bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        else:
+                            bump(
+                                str(job_id),
+                                err,
+                                next_run_at_seconds=int(delay),
+                                claim_token=claim_token,
+                            )
                         self._profile_step("reconcile.bump_retry_and_requeue", bump_started)
                     elif mark_failed is not None:
                         fail_started = time.perf_counter()
-                        mark_failed(str(job_id), err, final=True)
+                        if claim_token is None:
+                            mark_failed(str(job_id), err, final=True)
+                        else:
+                            mark_failed(
+                                str(job_id),
+                                err,
+                                final=True,
+                                claim_token=claim_token,
+                            )
                         self._profile_step("reconcile.mark_index_job_failed", fail_started)
                 self._profile_step("reconcile.job_total", job_started)
                 continue
 
-            mark_done = getattr(self.engine.meta_sqlite, "mark_index_job_done", None)
+            mark_done = getattr(self.metadata, "mark_index_job_done", None)
             if mark_done is not None and job_id:
                 done_started = time.perf_counter()
-                mark_done(str(job_id))
+                if claim_token is None:
+                    acknowledged = mark_done(str(job_id))
+                else:
+                    acknowledged = mark_done(str(job_id), claim_token=claim_token)
                 self._profile_step("reconcile.mark_index_job_done", done_started)
+                if acknowledged is False:
+                    continue
             self._profile_step("reconcile.job_total", job_started)
             applied += 1
 
         return applied
 
+    @implementation_selection_bound
     def make_index_job_worker(
         self,
         *,
@@ -492,10 +803,20 @@ class IndexingSubsystem:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        repair_scan_interval_s: float = 0.0,
+        reconcile_scan_interval_s: float = 0.0,
     ) -> IndexJobWorker:
         # local import to avoid subsystem importing workers at module import time if you want
         from ..workers.index_job_worker import IndexJobWorker
 
+        projection_adapter = getattr(
+            self.engine, "two_stage_projection_adapter", None
+        )
+        projection_store = (
+            projection_adapter
+            if callable(getattr(projection_adapter, "apply_projection_action", None))
+            else None
+        )
         return IndexJobWorker(
             engine=self.engine,
             max_inflight=max_inflight,
@@ -503,8 +824,12 @@ class IndexingSubsystem:
             lease_seconds=lease_seconds,
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
+            projection_store=projection_store,
+            repair_scan_interval_s=repair_scan_interval_s,
+            reconcile_scan_interval_s=reconcile_scan_interval_s,
         )
 
+    @implementation_selection_bound
     def make_async_index_job_worker(
         self,
         *,
@@ -513,6 +838,8 @@ class IndexingSubsystem:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        repair_scan_interval_s: float = 0.0,
+        reconcile_scan_interval_s: float = 0.0,
     ) -> AsyncIndexJobWorker:
         """Build async worker without converting async projection calls to sync."""
         from ..workers.async_index_job_worker import AsyncIndexJobWorker
@@ -524,8 +851,11 @@ class IndexingSubsystem:
             lease_seconds=lease_seconds,
             max_jobs_per_tick=max_jobs_per_tick,
             namespace=namespace,
+            repair_scan_interval_s=repair_scan_interval_s,
+            reconcile_scan_interval_s=reconcile_scan_interval_s,
         )
 
+    @implementation_selection_bound
     def apply_index_job(
         self,
         *,
@@ -566,10 +896,10 @@ class IndexingSubsystem:
         # Phase 2: fingerprints + drift detection
         coalesce_key = f"{entity_kind}:{entity_id}:{index_kind}"
         get_applied = getattr(
-            self.engine.meta_sqlite, "get_index_applied_fingerprint", None
+            self.metadata, "get_index_applied_fingerprint", None
         )
         set_applied = getattr(
-            self.engine.meta_sqlite, "set_index_applied_fingerprint", None
+            self.metadata, "set_index_applied_fingerprint", None
         )
 
         def _fp(obj: object) -> str:
@@ -636,6 +966,26 @@ class IndexingSubsystem:
             fn: Callable[..., object], *args: object, **kwargs: object
         ) -> dict[str, Any]:
             return _backend_object(run_awaitable_blocking(fn(*args, **kwargs)))
+
+        if op == "DELETE" and index_kind in self._PHASE1_JOIN_INDEX_KINDS:
+            # A derived-index delete is valid only after canonical lifecycle
+            # state has made the entity tombstoned, or when the base entity is
+            # already absent.  This prevents a stale/manual queue row from
+            # deleting projections for an active graph entity.
+            getter = (
+                self.engine.backend.node_get
+                if entity_kind == "node"
+                else self.engine.backend.edge_get
+            )
+            canonical = _backend_call(getter, ids=[entity_id], include=["metadatas"])
+            canonical_ids = canonical.get("ids") or []
+            if canonical_ids:
+                metadata_rows = canonical.get("metadatas") or []
+                metadata = metadata_rows[0] if metadata_rows else None
+                if not isinstance(metadata, dict) or not _is_tombstoned(metadata):
+                    raise ValueError(
+                        "derived index DELETE requires a canonical tombstone"
+                    )
 
         def _actual_payload() -> list[Any]:
             if entity_kind == "node":
@@ -735,7 +1085,7 @@ class IndexingSubsystem:
 
         started = time.perf_counter()
         applied_fp = (
-            self.engine.meta_sqlite.get_index_applied_fingerprint(
+            self.metadata.get_index_applied_fingerprint(
                 namespace=namespace, coalesce_key=coalesce_key
             )
             if callable(get_applied)

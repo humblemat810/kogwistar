@@ -49,7 +49,15 @@ import re
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Iterator, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Coroutine,
+    Iterator,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from typing import Any, Protocol, TypeVar, cast
@@ -61,6 +69,11 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ..json_types import JsonValue
+from ..implementation_selection import (
+    assert_no_python_transaction_during_rust_scope,
+    assert_python_transaction_entry_allowed,
+    selected_transaction_authority,
+)
 from ..utils.embedding_vectors import (
     normalize_embedding_rows,
     normalize_embedding_vector,
@@ -114,6 +127,36 @@ JSONB = psql.JSONB
 
 
 _VECTOR_TYPE_RE = re.compile(r"^vector\((?P<dimension>\d+)\)$")
+_postgres_schema_bootstrap_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "kogwistar_postgres_schema_bootstrap_active", default=False
+)
+
+
+def _reject_sqlalchemy_transaction_during_rust_scope(connection: Connection) -> None:
+    assert_no_python_transaction_during_rust_scope()
+    if (
+        selected_transaction_authority() == "rust"
+        and not _postgres_schema_bootstrap_active.get()
+        and not connection.get_execution_options().get(
+            "kogwistar_schema_bootstrap", False
+        )
+    ):
+        if connection.dialect.name != "postgresql":
+            raise RuntimeError(
+                "Rust-selected PostgreSQL authority requires PostgreSQL read-only enforcement"
+            )
+        connection.exec_driver_sql("SET TRANSACTION READ ONLY")
+
+
+def _guard_sqlalchemy_transaction_entry(engine: sa.Engine | AsyncEngine) -> None:
+    """Guard raw engine access from opening a second owner inside Rust UoWs."""
+    sync_engine = engine.sync_engine if isinstance(engine, AsyncEngine) else engine
+    if not event.contains(
+        sync_engine, "begin", _reject_sqlalchemy_transaction_during_rust_scope
+    ):
+        event.listen(
+            sync_engine, "begin", _reject_sqlalchemy_transaction_during_rust_scope
+        )
 
 
 @dataclass(frozen=True)
@@ -290,6 +333,7 @@ class PostgresUnitOfWork:
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
+        assert_python_transaction_entry_allowed()
         existing = get_active_conn()
         if existing is not None:
             # Join outer transaction
@@ -309,6 +353,7 @@ class AsyncPostgresUnitOfWork:
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[None]:
+        assert_python_transaction_entry_allowed()
         existing = get_active_conn()
         if existing is not None:
             yield
@@ -332,6 +377,7 @@ class PgVectorConfig:
     stage1_table: str = "gke_stage1_projections"
     documents_table: str = "gke_documents"
     domains_table: str = "gke_domains"
+    node_index_table: str = "gke_node_index"
     edge_endpoints_table: str = "gke_edge_endpoints"
     edge_refs_table: str = "gke_edge_refs"
     node_docs_table: str = "gke_node_docs"
@@ -404,6 +450,7 @@ class PgCollectionFacade:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
@@ -462,6 +509,7 @@ class PgCollectionFacade:
     def delete(
         self, *, ids: Sequence[str] | None = None, where: Json | None = None
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if self._b._is_async_engine:
             return cast(None, self._call_async(
                 lambda: self._b._delete_async(self._t, ids=ids, where=where)
@@ -527,6 +575,7 @@ class PgCollectionFacade:
         For vector collections we also allow updating embeddings (atomic in Postgres).
         For non-vector collections embeddings are ignored.
         """
+        assert_python_transaction_entry_allowed()
         if self._s.ignore_embeddings:
             embeddings = None
         if self._b._is_async_engine:
@@ -722,7 +771,18 @@ def where_jsonb(
                 elif op == "$lte":
                     clauses.append(lhs <= rhs)
                 elif op == "$ne":
-                    clauses.append(lhs != rhs)
+                    field_text = _json_text(metadata_col, k)
+                    if rhs is None:
+                        clauses.append(
+                            sa.or_(
+                                sa.not_(metadata_col.has_key(k)),  # type: ignore[attr-defined]
+                                field_text.is_not(None),
+                            )
+                        )
+                    else:
+                        # JSONB comparisons are UNKNOWN for missing/null keys;
+                        # the shared filter contract treats those as not equal.
+                        clauses.append(sa.or_(lhs != rhs, field_text.is_(None)))
                 else:
                     raise NotImplementedError(
                         f"Unsupported where operator: {op} (key={k})"
@@ -794,6 +854,7 @@ class PgVectorBackend:
         stage1_table: str = "gke_stage1_projections",
         documents_table: str = "gke_documents",
         domains_table: str = "gke_domains",
+        node_index_table: str = "gke_node_index",
         edge_endpoints_table: str = "gke_edge_endpoints",
         edge_refs_table: str = "gke_edge_refs",
         node_docs_table: str = "gke_node_docs",
@@ -806,6 +867,7 @@ class PgVectorBackend:
             ) from _pgvector_import_error
 
         self.engine = engine
+        _guard_sqlalchemy_transaction_entry(engine)
         self._is_async_engine = isinstance(engine, AsyncEngine)
         self.embedding_dim = int(embedding_dim)
         self.distance = str(self._normalize_distance(distance)).lower()
@@ -866,6 +928,17 @@ class PgVectorBackend:
                 nullable=False,
             ),
         )
+
+        self._edge_endpoint_fields = (
+            "source_ids",
+            "target_ids",
+            "source_edge_ids",
+            "target_edge_ids",
+        )
+        self._edge_endpoint_gin_indexes = {
+            field: f"idx_{edges_table}_{field}_gin"
+            for field in self._edge_endpoint_fields
+        }
 
         # High-churn, non-semantic staging projection.  It is deliberately
         # separate from named projections and vector serving tables.
@@ -939,6 +1012,30 @@ class PgVectorBackend:
             ),
         )
 
+        self.node_index = sa.Table(
+            node_index_table,
+            md,
+            sa.Column("id", sa.String, primary_key=True),
+            sa.Column("document", sa.Text, nullable=True),
+            sa.Column(
+                "metadata", JSONB, nullable=False, server_default=sa.text("'{}'::jsonb")
+            ),
+            sa.Column("embedding", Vector(self.embedding_dim), nullable=True),
+            sa.Column(
+                "created_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                nullable=False,
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(timezone=True),
+                server_default=sa.func.now(),
+                onupdate=sa.func.now(),
+                nullable=False,
+            ),
+        )
+
         # Non-vector collections
         self.edge_endpoints = sa.Table(
             edge_endpoints_table,
@@ -964,6 +1061,10 @@ class PgVectorBackend:
             sa.Index(
                 f"ix_{edge_endpoints_table}_endpoint",
                 sa.text("(metadata->>'endpoint_node_id')"),
+            ),
+            sa.Index(
+                f"ix_{edge_endpoints_table}_endpoint_id",
+                sa.text("(metadata->>'endpoint_id')"),
             ),
             sa.Index(
                 f"ix_{edge_endpoints_table}_edge", sa.text("(metadata->>'edge_id')")
@@ -1135,10 +1236,21 @@ class PgVectorBackend:
     def ensure_schema(self) -> None:
         """Dev convenience: create extension/schema/tables if missing."""
         if self._is_async_engine:
-            _run_coro_sync(self._ensure_schema_async())
+            _run_coro_sync(self._ensure_schema_with_bootstrap_scope_async())
             return
-        with cast(Engine, self.engine).begin() as conn:
-            self._ensure_schema_sync(conn)
+        token = _postgres_schema_bootstrap_active.set(True)
+        try:
+            with cast(Engine, self.engine).begin() as conn:
+                self._ensure_schema_sync(conn)
+        finally:
+            _postgres_schema_bootstrap_active.reset(token)
+
+    async def _ensure_schema_with_bootstrap_scope_async(self) -> None:
+        token = _postgres_schema_bootstrap_active.set(True)
+        try:
+            await self._ensure_schema_async()
+        finally:
+            _postgres_schema_bootstrap_active.reset(token)
 
     # ----------------------------
     # Shared helpers
@@ -1183,6 +1295,7 @@ class PgVectorBackend:
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1212,21 +1325,32 @@ class PgVectorBackend:
             conn.execute(stmt)
 
     def stage1_projection_get(
-        self, *, namespace: str, entity_kind: str, entity_id: str
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        for_update: bool = False,
     ) -> dict[str, JsonValue] | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        active = get_active_conn()
+        if for_update and (
+            not isinstance(active, Connection) or not active.in_transaction()
+        ):
+            raise RuntimeError(
+                "row-locking Stage-1 reads require an active PostgreSQL UoW"
+            )
+        query = sa.select(self.stage1_projections).where(
+            self.stage1_projections.c.namespace == str(namespace),
+            self.stage1_projections.c.entity_kind == entity_kind,
+            self.stage1_projections.c.entity_id == str(entity_id),
+        )
+        if for_update:
+            query = query.with_for_update()
         with self._conn() as conn:
             row = (
-                conn.execute(
-                    sa.select(self.stage1_projections).where(
-                        self.stage1_projections.c.namespace == str(namespace),
-                        self.stage1_projections.c.entity_kind == entity_kind,
-                        self.stage1_projections.c.entity_id == str(entity_id),
-                    )
-                )
-                .mappings()
-                .first()
+                conn.execute(query).mappings().first()
             )
         return dict(row) if row is not None else None
 
@@ -1264,6 +1388,7 @@ class PgVectorBackend:
     def stage1_projection_delete(
         self, *, namespace: str, entity_kind: str, entity_id: str
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         with self._conn() as conn:
@@ -1286,6 +1411,7 @@ class PgVectorBackend:
         source_fingerprint: str,
         revision: int = 0,
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         table = self.stage1_projections
@@ -1315,20 +1441,33 @@ class PgVectorBackend:
             await conn.execute(stmt)
 
     async def stage1_projection_get_async(
-        self, *, namespace: str, entity_kind: str, entity_id: str
+        self,
+        *,
+        namespace: str,
+        entity_kind: str,
+        entity_id: str,
+        for_update: bool = False,
     ) -> dict[str, JsonValue] | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        active = get_active_conn()
+        if for_update and (
+            not isinstance(active, AsyncConnection) or not active.in_transaction()
+        ):
+            raise RuntimeError(
+                "row-locking Stage-1 reads require an active async PostgreSQL UoW"
+            )
+        query = sa.select(self.stage1_projections).where(
+            self.stage1_projections.c.namespace == str(namespace),
+            self.stage1_projections.c.entity_kind == entity_kind,
+            self.stage1_projections.c.entity_id == str(entity_id),
+        )
+        if for_update:
+            query = query.with_for_update()
         async with self._async_conn() as conn:
             row = (
                 (
-                    await conn.execute(
-                        sa.select(self.stage1_projections).where(
-                            self.stage1_projections.c.namespace == str(namespace),
-                            self.stage1_projections.c.entity_kind == entity_kind,
-                            self.stage1_projections.c.entity_id == str(entity_id),
-                        )
-                    )
+                    await conn.execute(query)
                 )
                 .mappings()
                 .first()
@@ -1369,6 +1508,7 @@ class PgVectorBackend:
     async def stage1_projection_delete_async(
         self, *, namespace: str, entity_kind: str, entity_id: str
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
         async with self._async_conn() as conn:
@@ -1403,6 +1543,21 @@ class PgVectorBackend:
                 "(namespace, materialization_status, updated_at_ms)"
             )
         )
+        conn.execute(
+            sa.text(
+                f'CREATE INDEX IF NOT EXISTS "ix_{self.edge_endpoints.name}_endpoint_id" '
+                f'ON "{self.schema}"."{self.edge_endpoints.name}" '
+                "((metadata->>'endpoint_id'))"
+            )
+        )
+        for field, index_name in self._edge_endpoint_gin_indexes.items():
+            conn.execute(
+                sa.text(
+                    f'CREATE INDEX IF NOT EXISTS "{index_name}" '
+                    f'ON "{self.schema}"."{self.edges.name}" '
+                    f"USING gin (((metadata ->> '{field}')::jsonb) jsonb_path_ops)"
+                )
+            )
 
         # Optional-but-useful vector indexes. We default to HNSW because it's
         # generally strong out of the box and doesn't require ANALYZE/training.
@@ -1415,6 +1570,7 @@ class PgVectorBackend:
             (self.edges.name, "edges"),
             (self.documents.name, "documents"),
             (self.domains.name, "domains"),
+            (self.node_index.name, "node_index"),
         ):
             idx = f"idx_{name}_embedding_hnsw"
             conn.execute(
@@ -1438,6 +1594,7 @@ class PgVectorBackend:
             self.edges.name,
             self.documents.name,
             self.domains.name,
+            self.node_index.name,
         )
         rows = (
             conn.execute(
@@ -1613,6 +1770,7 @@ class PgVectorBackend:
     def _delete(
         self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
+        assert_python_transaction_entry_allowed()
         stmt = sa.delete(table)
         if ids is not None:
             stmt = stmt.where(table.c.id.in_(list(ids)))
@@ -1626,6 +1784,7 @@ class PgVectorBackend:
     async def _delete_async(
         self, table: sa.Table, *, ids: Sequence[str] | None, where: Json | None
     ) -> None:
+        assert_python_transaction_entry_allowed()
         stmt = sa.delete(table)
         if ids is not None:
             stmt = stmt.where(table.c.id.in_(list(ids)))
@@ -1645,6 +1804,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
@@ -1694,6 +1854,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json],
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if embeddings is not None and len(embeddings) != len(ids):
             raise ValueError("embeddings length must match ids length")
 
@@ -1943,6 +2104,8 @@ class PgVectorBackend:
           non-vector tables, it is ignored.
         """
 
+        assert_python_transaction_entry_allowed()
+
         if documents is None and metadatas is None and embeddings is None:
             return
 
@@ -2002,6 +2165,7 @@ class PgVectorBackend:
         metadatas: Sequence[Json] | None = None,
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
+        assert_python_transaction_entry_allowed()
         if documents is None and metadatas is None and embeddings is None:
             return
 
@@ -2144,6 +2308,9 @@ class PgVectorBackend:
         self._domains_c = PgCollectionFacade(
             self, self.domains, CollectionSpec(vector=True)
         )
+        self._node_index_c = PgCollectionFacade(
+            self, self.node_index, CollectionSpec(vector=True)
+        )
 
         # Non-vector collections (materialized/index tables)
         nv = CollectionSpec(vector=False, ignore_embeddings=True)
@@ -2206,6 +2373,12 @@ class PgVectorBackend:
             "domain_delete",
             "domain_query",
             "domain_update",
+            "node_index_add",
+            "node_index_upsert",
+            "node_index_get",
+            "node_index_delete",
+            "node_index_query",
+            "node_index_update",
             "edge_endpoints_add",
             "edge_endpoints_upsert",
             "edge_endpoints_get",
@@ -2340,6 +2513,71 @@ class PgVectorBackend:
         limit: int = 200,
     ) -> dict[str, JsonValue]:
         return self._edges_c.get(ids=ids, where=where, include=include, limit=limit)
+
+    def edge_get_by_endpoint(
+        self,
+        *,
+        endpoint_id: str,
+        endpoint_type: str,
+        include: list[str] | None = None,
+        limit: int = 512,
+    ) -> dict[str, JsonValue] | Awaitable[dict[str, JsonValue]]:
+        """Read incident edges from canonical edge metadata, not a lagging projection."""
+        if endpoint_type not in {"node", "edge"}:
+            raise ValueError("endpoint_type must be 'node' or 'edge'")
+        fields = (
+            ("source_ids", "target_ids")
+            if endpoint_type == "node"
+            else ("source_edge_ids", "target_edge_ids")
+        )
+        predicates = [
+            sa.cast(
+                self.edges.c.metadata.op("->>")(sa.literal_column(f"'{field}'")),
+                psql.JSONB,
+            ).contains([endpoint_id])
+            for field in fields
+        ]
+        selected = include or ["documents", "metadatas"]
+        columns = [self.edges.c.id]
+        if "documents" in selected:
+            columns.append(self.edges.c.document)
+        if "metadatas" in selected:
+            columns.append(self.edges.c.metadata)
+        query = (
+            sa.select(*columns)
+            .where(sa.or_(*predicates))
+            .order_by(self.edges.c.id.asc())
+            .limit(max(0, int(limit)))
+        )
+
+        if self._is_async_engine:
+            return self._edge_endpoint_query_async(query, selected)
+        with self._conn() as conn:
+            rows = conn.execute(query).fetchall()
+        return self._edge_endpoint_rows(rows, selected)
+
+    async def _edge_endpoint_query_async(
+        self, query: sa.Select, include: list[str]
+    ) -> dict[str, JsonValue]:
+        async with self._async_conn() as conn:
+            rows = (await conn.execute(query)).fetchall()
+        return self._edge_endpoint_rows(rows, include)
+
+    @staticmethod
+    def _edge_endpoint_rows(
+        rows: Sequence[object], include: list[str]
+    ) -> dict[str, JsonValue]:
+        mappings = [
+            cast(Mapping[str, Any], getattr(row, "_mapping")) for row in rows
+        ]
+        result: dict[str, JsonValue] = {
+            "ids": [str(row["id"]) for row in mappings]
+        }
+        if "documents" in include:
+            result["documents"] = [row["document"] for row in mappings]
+        if "metadatas" in include:
+            result["metadatas"] = [dict(row["metadata"] or {}) for row in mappings]
+        return result
 
     def edge_delete(
         self, *, ids: Sequence[str] | None = None, where: Json | None = None
@@ -2510,6 +2748,74 @@ class PgVectorBackend:
         embeddings: Sequence[Sequence[float]] | None = None,
     ) -> None:
         return self._domains_c.update(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
+
+    def node_index_add(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
+        return self._node_index_c.add(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
+
+    def node_index_upsert(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str],
+        metadatas: Sequence[Json],
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
+        return self._node_index_c.upsert(
+            ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
+        )
+
+    def node_index_get(
+        self,
+        *,
+        ids: Sequence[str] | None = None,
+        where: Json | None = None,
+        include: list[str] | None = None,
+        limit: int = 200,
+    ) -> dict[str, JsonValue]:
+        return self._node_index_c.get(
+            ids=ids, where=where, include=include, limit=limit
+        )
+
+    def node_index_delete(
+        self, *, ids: Sequence[str] | None = None, where: Json | None = None
+    ) -> None:
+        return self._node_index_c.delete(ids=ids, where=where)
+
+    def node_index_query(
+        self,
+        *,
+        query_embeddings: Sequence[Sequence[float]],
+        n_results: int = 10,
+        where: Json | None = None,
+        include: list[str] | None = None,
+    ) -> dict[str, JsonValue]:
+        return self._node_index_c.query(
+            query_embeddings=query_embeddings,
+            n_results=n_results,
+            where=where,
+            include=include,
+        )
+
+    def node_index_update(
+        self,
+        *,
+        ids: Sequence[str],
+        documents: Sequence[str | None] | None = None,
+        metadatas: Sequence[Json] | None = None,
+        embeddings: Sequence[Sequence[float]] | None = None,
+    ) -> None:
+        return self._node_index_c.update(
             ids=ids, documents=documents, metadatas=metadatas, embeddings=embeddings
         )
 
@@ -2807,6 +3113,7 @@ def build_postgres_backend(
         stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
+        node_index_table=cfg.node_index_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
         edge_refs_table=cfg.edge_refs_table,
         node_docs_table=cfg.node_docs_table,
@@ -2841,6 +3148,7 @@ def build_async_postgres_backend(
         stage1_table=cfg.stage1_table,
         documents_table=cfg.documents_table,
         domains_table=cfg.domains_table,
+        node_index_table=cfg.node_index_table,
         edge_endpoints_table=cfg.edge_endpoints_table,
         edge_refs_table=cfg.edge_refs_table,
         node_docs_table=cfg.node_docs_table,

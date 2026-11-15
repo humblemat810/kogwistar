@@ -1,0 +1,22 @@
+{
+  "conversation_id": "conversation:demo",
+  "schema_version": 1,
+  "turns": [
+    {
+      "content": "Hello",
+      "entity_type": "conversation_turn",
+      "node_id": "node:user-1",
+      "role": "user",
+      "schema_version": 1,
+      "turn_index": 0
+    },
+    {
+      "content": "Hello, world.",
+      "entity_type": "assistant_turn",
+      "node_id": "node:assistant-1",
+      "role": "assistant",
+      "schema_version": 1,
+      "turn_index": 1
+    }
+  ]
+}

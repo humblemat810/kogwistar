@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "model_class": "assoc_flattened_llm_edge",
+  "payload": {
+    "label": "Associated flattened edge parity",
+    "type": "relationship",
+    "summary": "Cross-language associated flattened edge fixture",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": {"vendor_extension": {"version": 1}},
+    "source_ids": ["nn:source"],
+    "target_ids": ["nn:target"],
+    "relation": "connects_to",
+    "source_edge_ids": null,
+    "target_edge_ids": null,
+    "id": "ne:assoc-flat-edge",
+    "local_id": "ne:assoc-flat-edge"
+  }
+}

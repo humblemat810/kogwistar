@@ -1,0 +1,14 @@
+[package]
+name = "kogwistar-store-chroma"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+kogwistar-store = { path = "../kogwistar-store" }
+reqwest.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url.workspace = true

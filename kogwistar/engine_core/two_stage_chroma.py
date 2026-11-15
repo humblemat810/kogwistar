@@ -12,10 +12,14 @@ from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Protocol, cast
 
 from .async_compat import run_awaitable_blocking
+from .canonical_events import canonical_revision_job_payload
 from .edge_endpoint_rows import edge_endpoint_rows
 from .engine import GraphKnowledgeEngine
 from .models import Edge, Node
+from ..json_types import JsonValue
+from ..runtime.serialize import stable_json_dumps
 from .storage_backend import TwoStageProjectionCapability
+from .two_stage_namespace import active_graph_namespace
 
 
 class _Stage1MetaStore(Protocol):
@@ -50,6 +54,10 @@ def _embedding(value: object) -> list[float] | None:
     return [float(item) for item in value]
 
 
+def _sequence_number(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 def _job_value(job: object, name: str) -> object:
     if isinstance(job, Mapping):
         return job.get(name)
@@ -80,10 +88,10 @@ class SQLiteChromaTwoStageProjectionAdapter:
         self.engine = engine
 
     def _meta(self) -> _Stage1MetaStore:
-        return cast(_Stage1MetaStore, self.engine.meta_sqlite)
+        return cast(_Stage1MetaStore, self.engine.metadata)
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
 
     @staticmethod
     def _stage1_key(entity_kind: str, entity_id: str) -> str:
@@ -129,6 +137,86 @@ class SQLiteChromaTwoStageProjectionAdapter:
             materialization_status="pending",
         )
 
+    def restore_stage1_from_canonical_event(
+        self, *, entity_kind: str, entity_id: str
+    ) -> bool:
+        """Rebuild missing staging from one revalidated canonical event snapshot."""
+        revision = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if revision is None or revision.state != "active":
+            return False
+        if entity_kind == "node":
+            entity: Node | Edge = Node.model_validate(revision.payload)
+            document, metadata = self.engine.write.node_doc_and_meta(entity)
+            document_payload = entity.model_dump(
+                field_mode="backend", exclude=["embedding", "metadata"]
+            )
+        elif entity_kind == "edge":
+            entity = Edge.model_validate(revision.payload)
+            document_payload = entity.model_dump(
+                field_mode="backend", exclude=["embedding"]
+            )
+            document = stable_json_dumps(cast(JsonValue, document_payload))
+            metadata = self.engine.write.enrich_edge_meta(entity)
+        else:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+
+        if entity_kind == "node":
+            document = stable_json_dumps(cast(JsonValue, document_payload))
+        metadata = dict(metadata or {})
+        for key in (
+            "properties",
+            "mentions",
+            "source_ids",
+            "target_ids",
+            "source_edge_ids",
+            "target_edge_ids",
+            "references",
+        ):
+            value = metadata.get(key)
+            if isinstance(value, str):
+                try:
+                    metadata[key] = stable_json_dumps(
+                        cast(JsonValue, json.loads(value))
+                    )
+                except (TypeError, ValueError):
+                    pass
+
+        revision_payload = json.loads(canonical_revision_job_payload(revision))
+        source_fingerprint = str(revision_payload["source_fingerprint"])
+        payload = {
+            "id": entity_id,
+            "entity_kind": entity_kind,
+            "document": str(document),
+            "metadata": metadata,
+            "source_fingerprint": source_fingerprint,
+        }
+        replace = getattr(self._meta(), "replace_stage1_node_projection", None)
+        if not callable(replace):
+            raise RuntimeError("Chroma two-stage arrangement requires SQLite Stage-1 storage")
+        replace(
+            self._namespace(),
+            self._stage1_key(entity_kind, entity_id),
+            payload,
+            last_authoritative_seq=int(revision.revision),
+            last_materialized_seq=int(revision.revision),
+            projection_schema_version=2,
+            materialization_status="pending",
+        )
+
+        latest = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if latest is None or latest.revision != revision.revision:
+            self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=int(revision.revision),
+            )
+            return False
+        return True
+
     def _enqueue(self, *, entity_kind: str, entity_id: str, op: str) -> None:
         self.engine.indexing.enqueue_index_job(
             entity_kind=entity_kind,
@@ -139,6 +227,23 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 entity_kind=entity_kind, entity_id=entity_id
             ),
         )
+
+    def _restore_current_stage1(self, *, entity_kind: str, entity_id: str) -> bool:
+        """Make stale-job replay schedule the current canonical projection."""
+        revision = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if revision is None or revision.state != "active":
+            self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return False
+        if not self.restore_stage1_from_canonical_event(
+            entity_kind=entity_kind, entity_id=entity_id
+        ):
+            raise RuntimeError("current Chroma revision changed during Stage-1 recovery")
+        self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
+        return True
 
     enqueue_embedding_job = _enqueue
 
@@ -167,10 +272,33 @@ class SQLiteChromaTwoStageProjectionAdapter:
             )
         )
 
-    def remove_stage1(self, *, entity_kind: str, entity_id: str, **_: object) -> None:
+    def remove_stage1(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        expected_last_authoritative_seq: int | None = None,
+        **_: object,
+    ) -> bool | None:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
-        clear = getattr(self._meta(), "clear_stage1_node_projection", None)
+        meta = self._meta()
+        if expected_last_authoritative_seq is not None:
+            compare_clear = getattr(
+                meta, "clear_stage1_node_projection_if_current", None
+            )
+            if not callable(compare_clear):
+                raise RuntimeError(
+                    "Chroma two-stage promotion requires revision-conditional Stage-1 cleanup"
+                )
+            return bool(
+                compare_clear(
+                    self._namespace(),
+                    self._stage1_key(entity_kind, entity_id),
+                    int(expected_last_authoritative_seq),
+                )
+            )
+        clear = getattr(meta, "clear_stage1_node_projection", None)
         if not callable(clear):
             raise RuntimeError("Chroma two-stage arrangement lacks Stage-1 cleanup")
         clear(self._namespace(), self._stage1_key(entity_kind, entity_id))
@@ -219,6 +347,31 @@ class SQLiteChromaTwoStageProjectionAdapter:
         )
         return str(json.loads(revision_payload).get("source_fingerprint") or "")
 
+    def _delete_projection_and_restore_if_active(
+        self, *, entity_kind: str, entity_id: str
+    ) -> None:
+        row = self._meta().get_stage1_node_projection(
+            self._namespace(), self._stage1_key(entity_kind, entity_id)
+        )
+        if row is not None:
+            self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=_sequence_number(
+                    row.get("last_authoritative_seq")
+                ),
+            )
+        self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+        latest = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if latest is not None and latest.state == "active":
+            if not self.restore_stage1_from_canonical_event(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                raise RuntimeError("Chroma delete raced with resurrection and could not restore Stage-1")
+            self._enqueue(entity_kind=entity_kind, entity_id=entity_id, op="UPSERT")
+
     def apply_embedding_job(
         self,
         *,
@@ -233,29 +386,63 @@ class SQLiteChromaTwoStageProjectionAdapter:
         current = self.engine.indexing.canonical_entity_revision(
             entity_kind=entity_kind, entity_id=entity_id
         )
-        if op.upper() == "DELETE" or current is None or current.state != "active":
-            self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-            self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+        if op.upper() == "DELETE":
+            if (
+                expected
+                and current is not None
+                and current.state == "active"
+                and expected != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            ):
+                self._restore_current_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                return
+            self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
+        if current is None or current.state != "active":
+            self._delete_projection_and_restore_if_active(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         if expected and expected != self._current_fingerprint(
             entity_kind=entity_kind, entity_id=entity_id
         ):
+            self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         row = self._meta().get_stage1_node_projection(
             self._namespace(), self._stage1_key(entity_kind, entity_id)
         )
         if not row:
-            raise RuntimeError("current Stage-1 projection is missing")
+            self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
         staged = _mapping(row.get("payload"))
-        if expected and str(staged.get("source_fingerprint") or "") != expected:
+        staged_seq = _sequence_number(row.get("last_authoritative_seq"))
+        staged_fingerprint = str(staged.get("source_fingerprint") or "")
+        if not staged_fingerprint:
+            raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+        if (expected and staged_fingerprint != expected) or (
+            staged_fingerprint != self._current_fingerprint(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+        ):
+            self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
             return
         document = str(staged.get("document") or "")
         embedding = self.engine.embed.iterative_defensive_emb(document)
         metadata = cast(dict[str, Any], staged.get("metadata") or {})
         metadata["_kogwistar_stage2_ready"] = True
-        metadata["_kogwistar_source_fingerprint"] = expected or self._current_fingerprint(
-            entity_kind=entity_kind, entity_id=entity_id
-        )
+        metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
+        metadata["_kogwistar_source_revision"] = staged_seq
         self._collection_call(
             entity_kind,
             "upsert",
@@ -268,7 +455,31 @@ class SQLiteChromaTwoStageProjectionAdapter:
             from .models import Edge
 
             self._promote_edge_endpoints(Edge.model_validate_json(document), embedding)
-        self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+        latest = self.engine.indexing.canonical_entity_revision(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if latest is None or latest.state != "active":
+            self.remove_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                expected_last_authoritative_seq=staged_seq,
+            )
+            self.remove_stage2_or_invalidate(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
+        if self._current_fingerprint(
+            entity_kind=entity_kind, entity_id=entity_id
+        ) != str(staged.get("source_fingerprint") or ""):
+            self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            return
+        self.remove_stage1(
+            entity_kind=entity_kind,
+            entity_id=entity_id,
+            expected_last_authoritative_seq=staged_seq,
+        )
 
     def apply_embedding_jobs_batch(
         self, jobs: Sequence[object]
@@ -311,17 +522,37 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 if expected and expected != self._current_fingerprint(
                     entity_kind=entity_kind, entity_id=entity_id
                 ):
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
                 row = self._meta().get_stage1_node_projection(
                     self._namespace(), self._stage1_key(entity_kind, entity_id)
                 )
                 if not row:
-                    raise RuntimeError("current Stage-1 projection is missing")
-                staged = _mapping(row.get("payload"))
-                if expected and str(staged.get("source_fingerprint") or "") != expected:
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
                     outcomes[job_id] = None
                     continue
+                staged = _mapping(row.get("payload"))
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if not staged_fingerprint:
+                    raise RuntimeError("Chroma Stage-1 projection has no source fingerprint")
+                if (expected and staged_fingerprint != expected) or (
+                    staged_fingerprint != self._current_fingerprint(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                ):
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
+                staged["_stage1_authoritative_seq"] = int(
+                    _sequence_number(row.get("last_authoritative_seq"))
+                )
                 prepared.append(
                     (job_id, entity_kind, entity_id, expected, payload_json, staged)
                 )
@@ -355,7 +586,7 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     outcomes[job_id] = exc
             return outcomes
 
-        for (job_id, entity_kind, entity_id, expected, _, staged), embedding in zip(
+        for (job_id, entity_kind, entity_id, _, _, staged), embedding in zip(
             prepared, embeddings
         ):
             try:
@@ -364,14 +595,17 @@ class SQLiteChromaTwoStageProjectionAdapter:
                 )
                 if current is None or current.state != "active":
                     continue
-                if expected and expected != self._current_fingerprint(
+                staged_fingerprint = str(staged.get("source_fingerprint") or "")
+                if staged_fingerprint != self._current_fingerprint(
                     entity_kind=entity_kind, entity_id=entity_id
                 ):
+                    outcomes[job_id] = None
                     continue
                 metadata = cast(dict[str, Any], staged.get("metadata") or {})
                 metadata["_kogwistar_stage2_ready"] = True
-                metadata["_kogwistar_source_fingerprint"] = expected or self._current_fingerprint(
-                    entity_kind=entity_kind, entity_id=entity_id
+                metadata["_kogwistar_source_fingerprint"] = staged_fingerprint
+                metadata["_kogwistar_source_revision"] = _sequence_number(
+                    staged.get("_stage1_authoritative_seq")
                 )
                 self._collection_call(
                     entity_kind,
@@ -387,7 +621,43 @@ class SQLiteChromaTwoStageProjectionAdapter:
                     self._promote_edge_endpoints(
                         Edge.model_validate_json(str(staged["document"])), embedding
                     )
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                latest = self.engine.indexing.canonical_entity_revision(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                if latest is None or latest.state != "active":
+                    self.remove_stage1(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        expected_last_authoritative_seq=_sequence_number(
+                            staged.get("_stage1_authoritative_seq")
+                        ),
+                    )
+                    self.remove_stage2_or_invalidate(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                    outcomes[job_id] = None
+                    continue
+                if self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                ) != str(staged.get("source_fingerprint") or ""):
+                    if self.restore_stage1_from_canonical_event(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    ):
+                        self._enqueue(
+                            entity_kind=entity_kind, entity_id=entity_id, op="UPSERT"
+                        )
+                        outcomes[job_id] = None
+                        continue
+                    raise RuntimeError(
+                        "Chroma batch promotion became stale and could not restore Stage-1"
+                    )
+                self.remove_stage1(
+                    entity_kind=entity_kind,
+                    entity_id=entity_id,
+                    expected_last_authoritative_seq=_sequence_number(
+                        staged.get("_stage1_authoritative_seq")
+                    ),
+                )
                 outcomes[job_id] = None
             except BaseException as exc:
                 outcomes[job_id] = exc
@@ -408,27 +678,102 @@ class SQLiteChromaTwoStageProjectionAdapter:
             payload_json=payload_json,
         )
 
+    def backfill_stage2_source_revisions(
+        self, *, entity_kind: str, limit: int = 100, offset: int = 0
+    ) -> tuple[int, int]:
+        """Stamp verified legacy Stage-2 rows without changing their vectors.
+
+        Returns ``(fetched, updated)`` so callers can advance ``offset`` by
+        fetched rows. Run this operator migration with the normal Chroma
+        projection writer quiesced. Rows without a matching active fingerprint
+        are untouched and remain unavailable to the Rust read fence.
+        """
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported two-stage entity kind: {entity_kind!r}")
+        if not 1 <= limit <= 1000 or offset < 0:
+            raise ValueError("limit must be in [1, 1000] and offset must be non-negative")
+        page = self._collection_call(
+            entity_kind,
+            "get",
+            limit=limit,
+            offset=offset,
+            include=["metadatas"],
+        )
+        ids = [str(value) for value in _objects(page.get("ids"))]
+        if not ids:
+            return 0, 0
+        metadatas = _objects(page.get("metadatas"))
+        revisions = self.engine.indexing.canonical_revision_payloads(
+            entity_kind=entity_kind, entity_ids=ids
+        )
+        updates: list[tuple[str, dict[str, object]]] = []
+        for index, entity_id in enumerate(ids):
+            metadata = _mapping(metadatas[index]) if index < len(metadatas) else {}
+            if metadata.get("_kogwistar_stage2_ready") is not True:
+                continue
+            stored_revision = metadata.get("_kogwistar_source_revision")
+            try:
+                current = json.loads(revisions[entity_id])
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                continue
+            revision = current.get("canonical_revision")
+            if (
+                current.get("source_state") != "active"
+                or current.get("source_fingerprint")
+                != metadata.get("_kogwistar_source_fingerprint")
+                or not isinstance(revision, int)
+                or isinstance(revision, bool)
+                or revision <= 0
+            ):
+                continue
+            if (
+                isinstance(stored_revision, int)
+                and not isinstance(stored_revision, bool)
+                and stored_revision == revision
+            ):
+                continue
+            metadata["_kogwistar_source_revision"] = revision
+            updates.append((entity_id, metadata))
+        if updates:
+            self._collection_call(
+                entity_kind,
+                "update",
+                ids=[row[0] for row in updates],
+                metadatas=[row[1] for row in updates],
+            )
+        return len(ids), len(updates)
+
     def reconcile_projection(self, **_: object) -> int:
         removed = 0
         for row in self.stage1_query():
             payload = _mapping(row.get("payload"))
             entity_id = str(payload.get("id") or row.get("key") or "")
             entity_kind = str(payload.get("entity_kind") or "node")
+            staged_seq = _sequence_number(row.get("last_authoritative_seq"))
             current = self.engine.indexing.canonical_entity_revision(
                 entity_kind=entity_kind, entity_id=entity_id
             )
             if current is None or current.state != "active":
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
-                removed += 1
+                if self.remove_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+                    removed += 1
                 continue
             current_fp = self._current_fingerprint(
                 entity_kind=entity_kind, entity_id=entity_id
             )
             staged_fp = str(payload.get("source_fingerprint") or "")
-            if staged_fp and staged_fp != current_fp:
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                removed += 1
+            if staged_fp != current_fp:
+                if self.remove_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    self._restore_current_stage1(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                    removed += 1
                 continue
             got = self._collection_call(
                 entity_kind, "get", ids=[entity_id],
@@ -448,8 +793,137 @@ class SQLiteChromaTwoStageProjectionAdapter:
                             Edge.model_validate_json(document),
                             _embedding(embeddings[0]) if embeddings else None,
                         )
-                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                if self.remove_stage1(
+                    entity_kind=entity_kind, entity_id=entity_id,
+                    expected_last_authoritative_seq=staged_seq,
+                ):
+                    removed += 1
+
+        # Stage-1 can be lost independently of Chroma. Scan the semantic
+        # projection too, but defer deletions until after paging so offsets do
+        # not shift under the scan.
+        orphaned: list[tuple[str, str, int, str]] = []
+        stale_active: list[tuple[str, str]] = []
+        for entity_kind in ("node", "edge"):
+            observed: list[tuple[str, int, str]] = []
+            offset = 0
+            while True:
+                page = self._collection_call(
+                    entity_kind,
+                    "get",
+                    limit=500,
+                    offset=offset,
+                    where={"namespace": self._namespace()},
+                    include=["metadatas"],
+                )
+                ids = [str(value) for value in _objects(page.get("ids"))]
+                if not ids:
+                    break
+                metadatas = _objects(page.get("metadatas"))
+                for index, entity_id in enumerate(ids):
+                    metadata = (
+                        _mapping(metadatas[index]) if index < len(metadatas) else {}
+                    )
+                    if metadata.get("_kogwistar_stage2_ready") is not True:
+                        continue
+                    stored_revision = metadata.get("_kogwistar_source_revision")
+                    stored_fingerprint = metadata.get("_kogwistar_source_fingerprint")
+                    if (
+                        not isinstance(stored_revision, int)
+                        or isinstance(stored_revision, bool)
+                        or stored_revision <= 0
+                        or not isinstance(stored_fingerprint, str)
+                        or not stored_fingerprint
+                    ):
+                        continue
+                    observed.append((entity_id, stored_revision, stored_fingerprint))
+                offset += len(ids)
+                if len(ids) < 500:
+                    break
+
+            revisions = self.engine.indexing.canonical_revision_payloads(
+                entity_kind=entity_kind,
+                entity_ids=(row[0] for row in observed),
+                namespace=self._namespace(),
+            )
+            for entity_id, stored_revision, stored_fingerprint in observed:
+                try:
+                    current = json.loads(revisions[entity_id])
+                except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    continue
+                if current.get("source_state") != "active":
+                    orphaned.append(
+                        (entity_kind, entity_id, stored_revision, stored_fingerprint)
+                    )
+                elif (
+                    current.get("canonical_revision") != stored_revision
+                    or current.get("source_fingerprint") != stored_fingerprint
+                ):
+                    stale_active.append((entity_kind, entity_id))
+
+        for entity_kind, entity_id in stale_active:
+            current = self.engine.indexing.canonical_entity_revision(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            current_fingerprint = self._current_fingerprint(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            staged_row = self._meta().get_stage1_node_projection(
+                self._namespace(), self._stage1_key(entity_kind, entity_id)
+            )
+            staged = dict(staged_row) if isinstance(staged_row, Mapping) else None
+            staged_payload = _mapping(staged.get("payload")) if staged else {}
+            if (
+                current is not None
+                and current.state == "active"
+                and staged is not None
+                and _sequence_number(staged.get("last_authoritative_seq"))
+                == current.revision
+                and staged_payload.get("source_fingerprint") == current_fingerprint
+            ):
+                continue
+            if self._restore_current_stage1(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
                 removed += 1
+
+        for entity_kind, entity_id, revision, fingerprint in orphaned:
+            # The metadata predicate prevents cleanup from deleting a newer
+            # row that replaced this one after the scan.
+            self._collection_call(
+                entity_kind,
+                "delete",
+                ids=[entity_id],
+                where={
+                    "$and": [
+                        {"namespace": self._namespace()},
+                        {"_kogwistar_stage2_ready": True},
+                        {"_kogwistar_source_revision": revision},
+                        {"_kogwistar_source_fingerprint": fingerprint},
+                    ]
+                },
+            )
+            remaining = self._collection_call(
+                entity_kind,
+                "get",
+                ids=[entity_id],
+                where={"namespace": self._namespace()},
+                include=["metadatas"],
+            )
+            if _objects(remaining.get("ids")):
+                continue
+            if entity_kind == "edge":
+                self._collection_call(
+                    "edge_endpoints",
+                    "delete",
+                    where={
+                        "$and": [
+                            {"edge_id": entity_id},
+                            {"namespace": self._namespace()},
+                        ]
+                    },
+                )
+            removed += 1
         return removed
 
 

@@ -1,0 +1,13 @@
+{
+  "valid_integer_literals": [
+    {"name": "i64_min", "literal": "-9223372036854775808"},
+    {"name": "i64_max", "literal": "9223372036854775807"},
+    {"name": "u64_max", "literal": "18446744073709551615"}
+  ],
+  "invalid_integer_literals": [
+    {"name": "below_i64_min", "literal": "-9223372036854775809"},
+    {"name": "above_u64_max", "literal": "18446744073709551616"}
+  ],
+  "non_finite_values": ["NaN", "Infinity", "-Infinity"],
+  "non_string_object_key": {"key": 1, "value": "must fail before serialization"}
+}

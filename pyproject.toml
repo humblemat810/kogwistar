@@ -4,20 +4,22 @@ build-backend = "maturin"
 
 [project]
 name = "kogwistar"
-version = "0.6.15"
+version = "0.6.16"
 description = "Graph-native substrate for knowledge, conversation, workflow, provenance, replay, and MCP/REST tooling"
 keywords = ["agent substrate", "graph-native", "knowledge graph", "conversation", "memory", "workflow", "provenance", "replay", "mcp", "rest"]
 readme = { file = "README.md", content-type = "text/markdown" }
 license = { file = "LICENSE" }
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 authors = [{ name = "Peter Chan", email = "humblemat@gmail.com" }]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
   "Topic :: Software Development :: Libraries",
   "Topic :: Software Development :: Libraries :: Python Modules",
 ]
@@ -28,9 +30,12 @@ dependencies = [
   "anyio>=4.0",
   "Jinja2>=3.1",
   "fastapi>=0.111",
-  "mcp>=2.2.0,<3",
+  # PyPy on Windows cannot install MCP's pywin32 dependency; keep MCP opt-in there.
+  "mcp>=2.2.0,<3; implementation_name != 'pypy' or sys_platform != 'win32'",
   "httpx>=0.28.1",
-  "python-jose[cryptography]>=3.3",
+  "jsonschema>=4.21,<5",
+  "python-jose[cryptography]>=3.3; implementation_name != 'pypy' or sys_platform != 'win32'",
+  "python-jose>=3.3; implementation_name == 'pypy' and sys_platform == 'win32'",
   "PyJWT>=2.8",
   "RapidFuzz>=3.13.0",
   "joblib>=1.3; implementation_name == 'cpython'",
@@ -46,6 +51,7 @@ Repository = "https://github.com/humblemat810/kogwistar"
 Issues = "https://github.com/humblemat810/kogwistar/issues"
 
 [project.optional-dependencies]
+benchmark = ["psutil>=6"]
 chroma = ["chromadb>=1.0.15"]
 pgvector = ["sqlalchemy[asyncio]>=2.0", "pgvector>=0.3.6", "psycopg[binary]>=3.1"]
 server = ["uvicorn[standard]>=0.30", "mcp>=2.2.0,<3"]

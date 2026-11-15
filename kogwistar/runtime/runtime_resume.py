@@ -8,6 +8,7 @@ from os import PathLike
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from kogwistar.id_provider import stable_id
+from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.runtime.models import (
     RunFailure,
     RunSuspended,
@@ -32,7 +33,6 @@ from .step_context import RouteDecision, RunResult, StepResolver
 from .telemetry import EventEmitter
 
 if TYPE_CHECKING:
-    from .runtime import WorkflowRuntime
     from ..engine_core.engine import GraphKnowledgeEngine
 
 
@@ -84,6 +84,7 @@ class SuspendedResumeHost(CheckpointRuntimeHost, Protocol):
         parent_token_id: str | None = None,
         join_mask: int | None = None,
         last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
+        trace_context: TraceContext | None = None,
     ) -> WorkflowStepExecNode: ...
 
     def _persist_checkpoint(
@@ -138,6 +139,7 @@ class SuspendedResumeHost(CheckpointRuntimeHost, Protocol):
 class SuspendedRunResumeMixin:
     """Resume client-suspended runs through the existing workflow runtime."""
 
+    @implementation_selection_bound
     def resume_run(
         self: SuspendedResumeHost,
         *,
@@ -159,6 +161,7 @@ class SuspendedRunResumeMixin:
         1. A checkpoint exists for the suspended state.
         2. The suspended step was saved in _rt_join_snapshot as pending with mask logic intact.
         """
+        from .runtime import WorkflowRuntime
         from .rust_runtime_authority import (
             RustRuntimeAuthority,
             rust_runtime_authority_url,
@@ -486,6 +489,12 @@ class SuspendedRunResumeMixin:
             last_exec_node=cast(
                 WorkflowStepExecNode | WorkflowRunNode | None,
                 previous_exec_node,
+            ),
+            trace_context=_resume_lifecycle_trace_context(
+                run_id=str(run_id),
+                token_id=str(suspended_token_id),
+                step_seq=int(step_seq_current),
+                node_id=str(suspended_node_id),
             ),
         )
         if (step_seq_current % self.checkpoint_every_n_steps) == 0:

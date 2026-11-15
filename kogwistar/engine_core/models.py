@@ -1,4 +1,5 @@
 import logging
+from math import isfinite
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -97,6 +98,13 @@ class IdPolicyMixin(BaseModel):
     id: str | None = Field(default=None)
     id_policy: ClassVar[Literal["event", "canonical"]] = "event"
     id_kind: ClassVar[str] = "model"
+
+    @field_validator("id")
+    @classmethod
+    def _reject_empty_id(cls, value: str | None) -> str | None:
+        if value == "":
+            raise ValueError("id must not be empty")
+        return value
 
     def identity_key(self) -> tuple[str, ...]:
         """
@@ -360,11 +368,17 @@ class GraphEntityRefBase(GraphEntityBase):
         return _coerce_mentions_payload(mentions)
 
     def iter_span(self) -> Iterator[Span]:
+        if getattr(type(self), "_flat_extraction_mentions", False):
+            yield from cast(Iterator[Span], iter(self.mentions))
+            return
         for g in self.mentions:
             for sp in g.spans:
                 yield sp
 
     def iter_evidence(self) -> Iterator[Span | MultimodalSpan]:
+        if getattr(type(self), "_flat_extraction_mentions", False):
+            yield from cast(Iterator[Span], iter(self.mentions))
+            return
         for g in self.mentions:
             yield from g.iter_evidence()
 
@@ -374,13 +388,11 @@ class GraphEntityRefBase(GraphEntityBase):
     def _require_non_empty_refs(
         cls, mentions: list[Grounding], info: ValidationInfo
     ) -> list[Grounding]:
-        try:
-            if not mentions:
-                raise ValueError("At least one mentions is required")
+        if not mentions:
+            raise ValueError("At least one mentions is required")
+        if not getattr(cls, "_flat_extraction_mentions", False):
             for g in mentions:
                 g.validate_from_source()
-        except Exception as _e:
-            raise
         return mentions
 
     @model_validator(mode="before")
@@ -440,6 +452,15 @@ class EdgeMixin(ModeSlicingMixin, BaseModel):
         ..., description="List of target edge IDs"
     )
 
+    @field_validator(
+        "source_ids", "target_ids", "source_edge_ids", "target_edge_ids"
+    )
+    @classmethod
+    def _reject_empty_endpoint_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is not None and any(not endpoint_id for endpoint_id in value):
+            raise ValueError("edge endpoint IDs must not be empty")
+        return value
+
 
 # -------------------------
 # Storage-facing mixin (embedding OPTIONAL)
@@ -466,6 +487,15 @@ class ChromaMixin(BaseModel):
         None, description="Document ID from which this entity was extracted"
     )
     metadata: dict[str, JsonValue] = Field(default_factory=dict, description="metadata")
+
+    @field_validator("embedding")
+    @classmethod
+    def _require_finite_embedding(
+        cls, value: Sequence[float] | None
+    ) -> Sequence[float] | None:
+        if value is not None and any(not isfinite(item) for item in value):
+            raise ValueError("embedding values must be finite")
+        return value
 
     @field_validator("metadata")
     def check_metadata(cls, v: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -539,7 +569,7 @@ class LevelAwareMixin(BaseModel):
     """Mixin to handle level_from_root synchronization with metadata"""
 
     level_from_root: int | None = Field(
-        None,
+        default=None,
         description="Hierarchy level from root, metadata store final authoritative",
     )
 
@@ -578,9 +608,16 @@ class TombstoneMixin(BaseModel):
         else:
             if v["lifecycle_status"] == "deleted":
                 v["lifecycle_status"] = "tombstoned"
-            assert v["lifecycle_status"] in ["active", "tombstoned"]
+            if v["lifecycle_status"] not in ["active", "tombstoned"]:
+                raise ValueError(
+                    "lifecycle_status must be 'active' or 'tombstoned'"
+                )
         if "redirect_to_id" not in v:
             v["redirect_to_id"] = None
+        elif v["redirect_to_id"] is not None and not isinstance(
+            v["redirect_to_id"], str
+        ):
+            raise ValueError("redirect_to_id must be a string or null")
         return v
 
 
@@ -636,7 +673,13 @@ class Node(
 
 
 class Edge(
-    IdPolicyMixin, ChromaValidateSourceMixin, ChromaMixin, EdgeMixin, GraphEntityRefBase
+    IdPolicyMixin,
+    TombstoneMixin,
+    LevelAwareMixin,
+    ChromaValidateSourceMixin,
+    ChromaMixin,
+    EdgeMixin,
+    GraphEntityRefBase,
 ):
     """
     Base **provenance-heavy** knowledge graph edge.
@@ -646,7 +689,8 @@ class Edge(
     via edge-to-edge connections and rich metadata.
     """
 
-    # Edge with ref session enforced
+    # Edges share lifecycle and hierarchy metadata with nodes, while retaining
+    # their edge-specific endpoint and relation contract.
     id_kind: ClassVar[str] = "kg.edge"
 
     def safe_get_id(self) -> str:
@@ -749,6 +793,8 @@ class GroundginMandatoryExcerpt(Span):
 class LLMNodeExtraction(LLMNode):
     "extracted node information"
 
+    _flat_extraction_mentions: ClassVar[bool] = True
+
     mentions: Annotated[  # pyright: ignore[reportIncompatibleVariableOverride]
         list[GroundginMandatoryExcerpt],
         FrontendField(),
@@ -758,11 +804,37 @@ class LLMNodeExtraction(LLMNode):
     ] = Field(  # pyright: ignore[reportIncompatibleVariableOverride]
         min_length=1, description="One or more locatable mentions supporting this entity"
     )  # type: ignore
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def _coerce_mentions(cls, mentions: object) -> object:
+        return mentions
+
+    @model_validator(mode="before")
+    @classmethod
+    def end_char_minus_1_to_ending_index(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        mentions = data.get("mentions")
+        if isinstance(mentions, str):
+            mentions = json.loads(mentions)
+        if not isinstance(mentions, list):
+            raise TypeError("mentions should be a list of excerpt spans")
+        for span in mentions:
+            if isinstance(span, Span):
+                if span.end_char == -1:
+                    span.end_char += len(span.excerpt)
+            elif isinstance(span, dict) and span.get("end_char") == -1:
+                span["end_char"] += len(span["excerpt"])
+        data["mentions"] = mentions
+        return data
 
 
 class LLMEdgeExtraction(LLMEdge):
     "extracted edge information"
 
+    _flat_extraction_mentions: ClassVar[bool] = True
+
     mentions: Annotated[  # pyright: ignore[reportIncompatibleVariableOverride]
         list[GroundginMandatoryExcerpt],
         FrontendField(),
@@ -772,6 +844,30 @@ class LLMEdgeExtraction(LLMEdge):
     ] = Field(  # pyright: ignore[reportIncompatibleVariableOverride]
         min_length=1, description="One or more locatable mentions supporting this entity"
     )  # type: ignore
+
+    @field_validator("mentions", mode="before")
+    @classmethod
+    def _coerce_mentions(cls, mentions: object) -> object:
+        return mentions
+
+    @model_validator(mode="before")
+    @classmethod
+    def end_char_minus_1_to_ending_index(cls, data: object) -> object:
+        if not isinstance(data, dict):
+            return data
+        mentions = data.get("mentions")
+        if isinstance(mentions, str):
+            mentions = json.loads(mentions)
+        if not isinstance(mentions, list):
+            raise TypeError("mentions should be a list of excerpt spans")
+        for span in mentions:
+            if isinstance(span, Span):
+                if span.end_char == -1:
+                    span.end_char += len(span.excerpt)
+            elif isinstance(span, dict) and span.get("end_char") == -1:
+                span["end_char"] += len(span["excerpt"])
+        data["mentions"] = mentions
+        return data
 
 
 def _span_identity_key(span: Span) -> tuple:

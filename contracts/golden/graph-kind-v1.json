@@ -1,0 +1,21 @@
+{
+  "contract_version": 1,
+  "cases": [
+    {"input": null, "expected": "knowledge"},
+    {"input": "", "expected": "knowledge"},
+    {"input": "knowledge", "expected": "knowledge"},
+    {"input": "kg", "expected": "knowledge"},
+    {"input": " KG ", "expected": "knowledge"},
+    {"input": "workflow", "expected": "workflow"},
+    {"input": "wf", "expected": "workflow"},
+    {"input": "wisdom", "expected": "wisdom"},
+    {"input": "w", "expected": "wisdom"},
+    {"input": "conversation", "expected": "conversation"},
+    {"input": "chat", "expected": "conversation"},
+    {"input": "conv", "expected": "conversation"},
+    {"input": "dialog", "expected": "conversation"},
+    {"input": "custom-role", "expected": "custom-role"},
+    {"input": "Custom-Role", "expected": "custom-role"},
+    {"input": "   ", "expected": ""}
+  ]
+}

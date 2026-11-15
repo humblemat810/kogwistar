@@ -269,9 +269,32 @@ def _assert_smoke_result(actual: dict, *, backend_kind: str, runtime_kind: str) 
     assert actual == expected
 
 
+def _force_python_implementations(monkeypatch) -> None:
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.setenv(selector, "python")
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only backend/runtime path attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+
+
 @pytest.mark.parametrize("backend_kind", SYNC_BACKEND_PARAMS)
-def test_backend_e2e_smoke_matrix_sync_runtime(backend_kind, request, tmp_path):
+def test_backend_e2e_smoke_matrix_sync_runtime(
+    backend_kind, request, tmp_path, monkeypatch
+):
     """Backend smoke: sync runtime preserves one-step checkpoint and terminal shape across memory, chroma, and pg."""
+    _force_python_implementations(monkeypatch)
     workflow_engine, conversation_engine = _build_sync_engine_pair(
         backend_kind=backend_kind,
         tmp_path=tmp_path,
@@ -353,8 +376,11 @@ def test_backend_e2e_smoke_matrix_sync_runtime(backend_kind, request, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend_kind", ASYNC_BACKEND_PARAMS)
-async def test_backend_e2e_smoke_matrix_async_runtime(backend_kind, request, tmp_path):
+async def test_backend_e2e_smoke_matrix_async_runtime(
+    backend_kind, request, tmp_path, monkeypatch
+):
     """Backend smoke: async runtime preserves one-step checkpoint and terminal shape across memory, chroma, and pg."""
+    _force_python_implementations(monkeypatch)
     async with _build_async_engine_pair(
         backend_kind=backend_kind,
         request=request,

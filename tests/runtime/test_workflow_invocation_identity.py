@@ -99,14 +99,24 @@ def test_async_dynamic_invocation_rejects_mismatched_design_before_materializati
 
 
 def test_resume_loads_persisted_w3c_trace_as_continuation_parent(monkeypatch) -> None:
+    import json
+    from pathlib import Path
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "runtime-trace-context-v1.json"
+        ).read_text(encoding="utf-8")
+    )["resume_continuation"]
     runtime = WorkflowRuntime.__new__(WorkflowRuntime)
     latest = SimpleNamespace(
         metadata={
             "workflow_id": "workflow-1",
             "state_json": {"value": 1},
             "step_seq": 3,
-            "trace_id": "0123456789abcdef0123456789abcdef",
-            "run_execution_span_id": "0123456789abcdef",
+            **fixture["persisted"],
         }
     )
     monkeypatch.setattr(runtime, "_latest_checkpoint_for_run", lambda **_: latest)
@@ -127,8 +137,12 @@ def test_resume_loads_persisted_w3c_trace_as_continuation_parent(monkeypatch) ->
     context = captured["_trace_context"]
     assert isinstance(context, TraceContext)
     assert context.has_valid_w3c_ids is True
-    assert context.trace_id == latest.metadata["trace_id"]
-    assert context.span_id == latest.metadata["run_execution_span_id"]
+    assert context.trace_id == fixture["expected_parent"]["trace_id"]
+    assert context.span_id == fixture["expected_parent"]["span_id"]
+    resumed_span = context.child_span(step_seq=4, node_id="resume")
+    assert resumed_span.trace_id == fixture["expected_parent"]["trace_id"]
+    assert resumed_span.parent_span_id == fixture["expected_parent"]["span_id"]
+    assert resumed_span.span_id != fixture["expected_parent"]["span_id"]
 
 
 def test_supplied_trace_context_is_persisted_on_workflow_run(monkeypatch) -> None:
@@ -240,3 +254,59 @@ def test_nested_invocation_passes_parent_trace_context_to_new_child() -> None:
     )
 
     assert captured["_trace_context"] is parent
+
+
+def test_nested_invocation_preserves_frozen_transaction_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.implementation_selection import (
+        active_transaction_authority,
+        capture_implementation_selection,
+        implementation_selection_scope,
+        transaction_authority_scope,
+    )
+    from kogwistar._rust_bridge import meta_store_implementation_mode
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    snapshot = capture_implementation_selection()
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime._child_workflow_initial_state = lambda **_: {}
+    runtime._terminal_run_result = lambda **_: None
+    runtime._latest_checkpoint_for_run = lambda **_: None
+    runtime._persist_workflow_run = lambda **_: None
+    runtime._persist_workflow_invocation_lineage = lambda **_: True
+    runtime._workflow_invocation_plan = staticmethod(
+        lambda **_: {
+            "child_run_id": "child-run",
+            "conversation_id": "conversation-1",
+            "turn_node_id": "turn-1",
+            "result_state_key": "child",
+        }
+    )
+    observed: list[tuple[str | None, str | None]] = []
+
+    def child_run(**_kwargs):
+        observed.append(
+            (active_transaction_authority(), meta_store_implementation_mode())
+        )
+        return RunResult(
+            final_state={}, run_id="child-run", mq=queue.Queue(), status="succeeded"
+        )
+
+    runtime.run = child_run
+    invocation = WorkflowInvocationRequest(
+        workflow_id="child-workflow", result_state_key="child", invocation_key="act-1"
+    )
+
+    with implementation_selection_scope(snapshot):
+        with transaction_authority_scope("rust"):
+            monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+            runtime._run_workflow_invocation(
+                invocation=invocation,
+                parent_state={},
+                conversation_id="conversation-1",
+                turn_node_id="turn-1",
+                parent_run_id="parent",
+            )
+
+    assert observed == [("rust", "rust")]

@@ -1,0 +1,8 @@
+{
+  "conversation_id": "conv-create-test",
+  "user_id": "alice",
+  "status": "active",
+  "start_node_id": "conv-create-start",
+  "tail_node_id": "conv-create-start",
+  "turn_count": 0
+}

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.dead_letter_replay",
+  "arguments": {
+    "run_id": "missing-run"
+  },
+  "caller_capabilities": [
+    "service.manage"
+  ],
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/dead-letters/missing-run/replay",
+    "body": ""
+  },
+  "result": {
+    "run_id": "missing-run",
+    "replayed": false
+  }
+}

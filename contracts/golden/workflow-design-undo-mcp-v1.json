@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.design_undo",
+  "arguments": {
+    "workflow_id": "wf-undo-mcp-contract",
+    "designer_id": "alice"
+  },
+  "caller_capabilities": [
+    "workflow.design.write",
+    "approve_action"
+  ],
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/design/wf-undo-mcp-contract/undo",
+    "body": "{\"workflow_id\":\"wf-undo-mcp-contract\",\"designer_id\":\"alice\"}"
+  },
+  "fixed_result_fields": {
+    "workflow_id": "wf-undo-mcp-contract",
+    "namespace": "wf_design:wf-undo-mcp-contract",
+    "current_version": 0,
+    "active_tip_version": 1,
+    "max_version": 1,
+    "allocated_max_version": 1,
+    "current_seq": 0,
+    "can_undo": false,
+    "can_redo": true,
+    "status": "ok"
+  },
+  "integer_result_fields": ["latest_seq"],
+  "array_lengths": {
+    "versions": 2,
+    "selected_versions": 1,
+    "dropped_ranges": 0,
+    "timeline": 2
+  },
+  "version_one_action": "node_upsert",
+  "absent_result_fields": ["materialization_status"]
+}

@@ -11,6 +11,10 @@ if TYPE_CHECKING:
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
 from ..messaging.models import LaneMessageProjectionRepairResult
+from ..implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_bound,
+)
 from ..runtime.projections import (
     workflow_checkpoint_latest_projection_namespace,
     workflow_run_status_projection_namespace,
@@ -185,6 +189,11 @@ class RecoverySubsystem:
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         self.engine = engine
 
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot | None:
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def recover_startup(
         self,
         *,
@@ -215,6 +224,7 @@ class RecoverySubsystem:
         findings.extend(resume_findings)
         return self._replace(report, actions=tuple(actions), findings=tuple(findings))
 
+    @implementation_selection_bound
     def inspect(
         self,
         *,
@@ -231,6 +241,7 @@ class RecoverySubsystem:
             repaired_lane_projections=(),
         )
 
+    @implementation_selection_bound
     def repair_lane_projections(
         self, namespaces: list[str]
     ) -> list[LaneMessageProjectionRepairResult]:
@@ -242,8 +253,9 @@ class RecoverySubsystem:
             results.append(repair(namespace=namespace))
         return results
 
+    @implementation_selection_bound
     def inspect_queues(self, namespaces: list[str]) -> list[QueueRecoveryState]:
-        list_jobs = self.engine.meta_sqlite.list_index_jobs
+        list_jobs = self.engine.metadata.list_index_jobs
         if not callable(list_jobs):
             return []
         now = int(time.time())
@@ -272,8 +284,9 @@ class RecoverySubsystem:
                 )
         return states
 
+    @implementation_selection_bound
     def inspect_lane_rows(self, namespaces: list[str]) -> list[LaneRecoveryState]:
-        list_rows = self.engine.meta_sqlite.list_projected_lane_messages
+        list_rows = self.engine.metadata.list_projected_lane_messages
 
         if not callable(list_rows):
             return []
@@ -306,6 +319,7 @@ class RecoverySubsystem:
                 )
         return states
 
+    @implementation_selection_bound
     def inspect_checkpoints(
         self,
         *,
@@ -350,10 +364,11 @@ class RecoverySubsystem:
             )
         ]
 
+    @implementation_selection_bound
     def inspect_run_history(
         self, *, namespace: str, workspace_id: str
     ) -> list[RunRecoveryState]:
-        meta = self.engine.meta_sqlite
+        meta = self.engine.metadata
         list_runs = meta.list_server_runs
         list_events = meta.list_server_run_events
         if not callable(list_runs):
@@ -565,7 +580,7 @@ class RecoverySubsystem:
         terminal_run_ids: set[str],
     ) -> list[CheckpointRecoveryState]:
 
-        list_projection = self.engine.meta_sqlite.list_named_projections
+        list_projection = self.engine.metadata.list_named_projections
         if not callable(list_projection):
             return []
         out: list[CheckpointRecoveryState] = []
@@ -919,7 +934,7 @@ class RecoverySubsystem:
         return tuple(repaired), tuple(findings)
 
     def _terminal_run_ids(self, namespace: str) -> set[str]:
-        meta = self.engine.meta_sqlite
+        meta = self.engine.metadata
         list_projection = meta.list_named_projections
         if callable(list_projection):
             terminal_run_ids: set[str] = set()

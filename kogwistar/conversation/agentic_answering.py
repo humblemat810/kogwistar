@@ -757,6 +757,7 @@ class AgenticAnsweringAgent:
         tail_turn_index = prev_turn_meta_summary.tail_turn_index
         assistant_turn_node_id, assistant_turn_node = self._add_assistant_turn(
             conversation_id=conversation_id,
+            run_node_id=run_node_id,
             content=assistant_text,
             provenance_span=Span.from_dummy_for_conversation(),
             turn_index=tail_turn_index + 1,
@@ -892,6 +893,7 @@ class AgenticAnsweringAgent:
             "iter_idx": 0,
             "max_iter": int(self.config.max_iter),
             "max_candidates": int(self.config.max_candidates),
+            "max_retrieval_level": int(self.config.max_retrieval_level),
             "materialize_depth": str(self.config.materialize_depth),
             "should_iterate": False,
             "_deps": {
@@ -1421,12 +1423,21 @@ class AgenticAnsweringAgent:
             if parsed is None:
                 continue
             repaired = AnswerWithCitations.model_validate(parsed)
-            # If still bad, return repaired anyway (best effort) to avoid looping.
-            return _restore_citation_node_ids(
-                repaired.model_dump(mode="python"),
-                model=answer_in_model,
-                book=alias_book,
-            )
+            try:
+                restored = _restore_citation_node_ids(
+                    repaired.model_dump(mode="python"),
+                    model=answer_in_model,
+                    book=alias_book,
+                )
+                restored_answer = answer_in_model.model_validate(restored)
+            except (KeyError, ValueError):
+                continue
+            if all(
+                is_valid_ref(reference)
+                for claim in restored_answer.claims
+                for reference in claim.citations
+            ):
+                return restored_answer.model_dump()
 
         # If repair cannot parse, fall back to the original (but mark citations empty).
         stripped = answer_validated.model_copy(deep=True)
@@ -1472,14 +1483,16 @@ class AgenticAnsweringAgent:
         }
         return out_model.model_validate(payload)
 
-    def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
+    def _prepare_run_anchor(
+        self, *, conversation_id: str, run_id: str
+    ) -> tuple[str, ConversationNode | None]:
         scope = f"conv:{conversation_id}"
         rid = pointer_id(
             scope=scope, pointer_kind="agent_run", target_kind="run", target_id=run_id
         )
         existing = _engine_get_nodes(self.conversation_engine, ids=[rid], include=[])
         if _has_result_items(existing):
-            return rid
+            return rid, None
 
         sp = Span.from_dummy_for_conversation()
         node = ConversationNode(
@@ -1500,7 +1513,14 @@ class AgenticAnsweringAgent:
             domain_id=None,
             canonical_entity_id=None,
         )
-        self.conversation_engine.write.add_node(node)
+        return rid, node
+
+    def _ensure_run_anchor(self, *, conversation_id: str, run_id: str) -> str:
+        rid, node = self._prepare_run_anchor(
+            conversation_id=conversation_id, run_id=run_id
+        )
+        if node is not None:
+            self.conversation_engine.write.add_node(node)
         return rid
 
     def _persist_context_snapshot(
@@ -1551,7 +1571,7 @@ class AgenticAnsweringAgent:
                 f"{int(run_step_seq)}::{int(attempt_seq)}"
             )
 
-    def _project_kg_node(
+    def _prepare_kg_node_projection(
         self,
         *,
         # target_namespace: str, # kg, conv, wisdom
@@ -1560,8 +1580,8 @@ class AgenticAnsweringAgent:
         kg_node_id: str,
         provenance_span: Span,
         prev_turn_meta_summary: MetaFromLastSummary,
-    ) -> str:
-        """Projects a Knowledge Graph (KG) node into the conversation canvas.
+    ) -> tuple[str, ConversationNode | None, ConversationEdge | None]:
+        """Prepare a knowledge pointer and its run-to-evidence edge.
         
         ### Projections and Idempotency:
         In this system, we don't move nodes between graphs. Instead, we create a
@@ -1582,7 +1602,8 @@ class AgenticAnsweringAgent:
             target_id=kg_node_id,
         )
 
-        # If exists, still ensure run->evidence edge exists (idempotent)
+        node: ConversationNode | None = None
+        # If the pointer exists, still ensure its run->evidence edge exists.
         existing = _engine_get_nodes(self.conversation_engine, ids=[pid], include=[])
         if not _has_result_items(existing):
             kg = _engine_get_nodes(self.knowledge_engine, ids=[kg_node_id], include=["metadatas"])
@@ -1637,11 +1658,11 @@ class AgenticAnsweringAgent:
             prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(
                 str(meta.get("summary"))
             )
-            self.conversation_engine.write.add_node(node)
 
         # Link run -> evidence
         eid = edge_id(scope=scope, rel="used_evidence", src=run_node_id, dst=pid)
         ex_edge = _engine_get_edges(self.conversation_engine, ids=[eid], include=[])
+        edge: ConversationEdge | None = None
         if not _has_result_items(ex_edge):
             edge = ConversationEdge(
                 id=eid,
@@ -1665,6 +1686,28 @@ class AgenticAnsweringAgent:
                 source_edge_ids=[],
                 target_edge_ids=[],
             )
+        return pid, node, edge
+
+    def _project_kg_node(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        kg_node_id: str,
+        provenance_span: Span,
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> str:
+        """Persist a knowledge pointer and its run-to-evidence edge."""
+        pid, node, edge = self._prepare_kg_node_projection(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            kg_node_id=kg_node_id,
+            provenance_span=provenance_span,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+        if node is not None:
+            self.conversation_engine.write.add_node(node)
+        if edge is not None:
             self.conversation_engine.write.add_edge(edge)
         return pid
 
@@ -1830,17 +1873,41 @@ class AgenticAnsweringAgent:
         self,
         *,
         conversation_id: str,
+        run_node_id: str,
         content: str,
         provenance_span: Span,
         turn_index: int,
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> tuple[str, ConversationNode]:
-        # Minimal assistant turn node
+        """Persist the assistant turn under an ID stable for this agent run."""
+        nid, node = self._prepare_assistant_turn(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            content=content,
+            provenance_span=provenance_span,
+            turn_index=turn_index,
+        )
+        self.conversation_engine.write.add_node(node)
+        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
+        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
+        prev_turn_meta_summary.tail_turn_index += 1
+        return nid, node
+
+    def _prepare_assistant_turn(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        content: str,
+        provenance_span: Span,
+        turn_index: int,
+    ) -> tuple[str, ConversationNode]:
+        """Build the assistant turn without choosing a persistence owner."""
         nid = pointer_id(
             scope=f"conv:{conversation_id}",
             pointer_kind="turn",
             target_kind="assistant",
-            target_id=str(int(time.time() * 1000)),
+            target_id=run_node_id,
         )
         emb = normalize_embedding_vector(
             self.conversation_engine.iterative_defensive_emb(content),
@@ -1866,10 +1933,6 @@ class AgenticAnsweringAgent:
             canonical_entity_id=None,
             embedding=emb,
         )
-        self.conversation_engine.write.add_node(node)
-        prev_turn_meta_summary.prev_node_char_distance_from_last_summary += len(content)
-        prev_turn_meta_summary.prev_node_distance_from_last_summary += 1
-        prev_turn_meta_summary.tail_turn_index += 1
         return nid, node
 
     def _add_link_to_new_turn(
@@ -1936,13 +1999,34 @@ class AgenticAnsweringAgent:
         provenance_span: Span | list[Span],
         prev_turn_meta_summary: MetaFromLastSummary,
     ) -> None:
+        edge = self._prepare_run_to_response_edge(
+            conversation_id=conversation_id,
+            run_node_id=run_node_id,
+            response_node_id=response_node_id,
+            used_node_ids=used_node_ids,
+            provenance_span=provenance_span,
+            prev_turn_meta_summary=prev_turn_meta_summary,
+        )
+        if edge is not None:
+            self.conversation_engine.write.add_edge(edge)
+
+    def _prepare_run_to_response_edge(
+        self,
+        *,
+        conversation_id: str,
+        run_node_id: str,
+        response_node_id: str,
+        used_node_ids: list[str],
+        provenance_span: Span | list[Span],
+        prev_turn_meta_summary: MetaFromLastSummary,
+    ) -> ConversationEdge | None:
         scope = f"conv:{conversation_id}"
         eid = edge_id(
             scope=scope, rel="generated", src=run_node_id, dst=response_node_id
         )
         ex = _engine_get_edges(self.conversation_engine, ids=[eid], include=[])
         if _has_result_items(ex):
-            return
+            return None
 
         if type(provenance_span) is Span:
             provenance_span_coerced = [provenance_span]
@@ -1978,4 +2062,4 @@ class AgenticAnsweringAgent:
             source_edge_ids=[],
             target_edge_ids=[],
         )
-        self.conversation_engine.write.add_edge(edge)
+        return edge

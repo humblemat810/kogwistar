@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Callable
 from typing import Any, Protocol, cast
+
+import sqlalchemy as sa
 
 from ..utils.embedding_vectors import normalize_embedding_vector
 from .async_compat import run_awaitable_blocking
@@ -12,7 +15,9 @@ from .canonical_events import CanonicalEntityRevision
 from .edge_endpoint_rows import edge_endpoint_rows
 from .engine import GraphKnowledgeEngine
 from .models import Edge, Node
+from .projection_action import ProjectionAction
 from .storage_backend import TwoStageProjectionCapability
+from .two_stage_namespace import active_graph_namespace
 
 
 class _PostgresProjectionBackend(Protocol):
@@ -31,6 +36,13 @@ class _PostgresProjectionBackend(Protocol):
     def edge_endpoints_upsert(self, **kwargs: object) -> object: ...
 
     def __getattr__(self, name: str) -> Callable[..., object]: ...
+
+
+def _same_stage1_revision(original: dict[str, Any], current: dict[str, Any]) -> bool:
+    return all(
+        original.get(field) == current.get(field)
+        for field in ("document", "metadata", "source_fingerprint", "revision")
+    )
 
 
 def postgres_two_stage_capability() -> TwoStageProjectionCapability:
@@ -61,7 +73,7 @@ class PostgresTwoStageProjectionAdapter:
             )
 
     def _namespace(self) -> str:
-        return str(getattr(self.engine, "namespace", "default"))
+        return active_graph_namespace(self.engine)
 
     def _backend(self) -> _PostgresProjectionBackend:
         return cast(_PostgresProjectionBackend, self.engine.backend)
@@ -72,7 +84,9 @@ class PostgresTwoStageProjectionAdapter:
         if entity_kind == "node":
             document, metadata = self.engine.write.node_doc_and_meta(cast(Node, entity))
         elif entity_kind == "edge":
-            document = entity.model_dump_json(field_mode="backend", exclude=["embedding"])
+            document = entity.model_dump_json(
+                field_mode="backend", exclude=["embedding"]
+            )
             metadata = self.engine.write.enrich_edge_meta(cast(Edge, entity))
         else:
             raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
@@ -202,10 +216,29 @@ class PostgresTwoStageProjectionAdapter:
     ) -> None:
         expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
         current = self._current(entity_kind=entity_kind, entity_id=entity_id)
-        if op.upper() == "DELETE" or current is None or current.state != "active":
+        if op.upper() == "DELETE":
+            if (
+                expected
+                and current is not None
+                and current.state == "active"
+                and expected
+                != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            ):
+                return
             with self.engine.uow():
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+                self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            return
+        if current is None or current.state != "active":
+            with self.engine.uow():
+                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
             return
         if expected and expected != self._current_fingerprint(
             entity_kind=entity_kind, entity_id=entity_id
@@ -214,10 +247,30 @@ class PostgresTwoStageProjectionAdapter:
         row = self._backend().stage1_projection_get(
             namespace=self._namespace(), entity_kind=entity_kind, entity_id=entity_id
         )
+        native_projection = False
+        if row is None:
+            row = self._native_projection_stage1_get(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            native_projection = row is not None
         if row is None:
             raise RuntimeError("current PostgreSQL Stage-1 projection is missing")
         document = str(row["document"])
         embedding = self.engine.embed.iterative_defensive_emb(document)
+        if native_projection:
+            normalized_embedding = normalize_embedding_vector(
+                embedding, allow_none=False
+            )
+            if normalized_embedding is None:
+                raise RuntimeError("PostgreSQL Stage-1 promotion requires an embedding")
+            self._promote_native_projection_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                original=row,
+                expected_fingerprint=expected,
+                embedding=normalized_embedding,
+            )
+            return
         metadata = dict(row.get("metadata") or {})
         metadata["_kogwistar_stage2_ready"] = True
         metadata["_kogwistar_source_fingerprint"] = expected or str(
@@ -226,23 +279,41 @@ class PostgresTwoStageProjectionAdapter:
         # Embedding happens outside SQL transaction. Recheck identity, then make
         # vector upsert + Stage-1 deletion one local PostgreSQL handoff.
         with self.engine.uow():
+            locked_row = self._backend().stage1_projection_get(
+                namespace=self._namespace(),
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                for_update=True,
+            )
+            if locked_row is None or not _same_stage1_revision(row, locked_row):
+                return
             current = self._current(entity_kind=entity_kind, entity_id=entity_id)
             if current is None or current.state != "active":
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
-                self.remove_stage2_or_invalidate(entity_kind=entity_kind, entity_id=entity_id)
+                self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
                 return
-            if expected and expected != self._current_fingerprint(
+            current_fingerprint = self._current_fingerprint(
                 entity_kind=entity_kind, entity_id=entity_id
+            )
+            staged_fingerprint = str(locked_row.get("source_fingerprint") or "")
+            if (expected and expected != current_fingerprint) or (
+                staged_fingerprint and staged_fingerprint != current_fingerprint
             ):
                 return
+            metadata = dict(locked_row.get("metadata") or {})
+            metadata["_kogwistar_stage2_ready"] = True
+            metadata["_kogwistar_source_fingerprint"] = current_fingerprint
+            locked_document = str(locked_row["document"])
             getattr(self._backend(), f"{entity_kind}_upsert")(
                 ids=[entity_id],
-                documents=[document],
+                documents=[locked_document],
                 metadatas=[metadata],
                 embeddings=[embedding],
             )
             if entity_kind == "edge":
-                self._promote_edge_endpoints(document)
+                self._promote_edge_endpoints(locked_document)
             self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
 
     def apply_embedding_jobs_batch(
@@ -257,20 +328,32 @@ class PostgresTwoStageProjectionAdapter:
         prepared: list[tuple[str, str, str, str, dict[str, Any]]] = []
         outcomes: dict[str, BaseException | None] = {}
         for job in jobs:
-            value = lambda name: getattr(job, name, None) if not isinstance(job, dict) else job.get(name)
+            value = lambda name: (
+                getattr(job, name, None) if not isinstance(job, dict) else job.get(name)
+            )
             job_id = str(value("job_id") or "")
             entity_kind = str(value("entity_kind") or "")
             entity_id = str(value("entity_id") or "")
             op = str(value("op") or "UPSERT")
             raw_payload_json = value("payload_json")
-            payload_json = raw_payload_json if isinstance(raw_payload_json, str) else None
+            payload_json = (
+                raw_payload_json if isinstance(raw_payload_json, str) else None
+            )
             try:
-                expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
+                expected = str(
+                    json.loads(payload_json or "{}").get("source_fingerprint") or ""
+                )
                 current = self._current(entity_kind=entity_kind, entity_id=entity_id)
-                if op.upper() == "DELETE" or current is None or current.state != "active":
+                if (
+                    op.upper() == "DELETE"
+                    or current is None
+                    or current.state != "active"
+                ):
                     self.apply_embedding_job(
-                        entity_kind=entity_kind, entity_id=entity_id,
-                        op=op, payload_json=payload_json
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        op=op,
+                        payload_json=payload_json,
                     )
                     outcomes[job_id] = None
                     continue
@@ -280,10 +363,22 @@ class PostgresTwoStageProjectionAdapter:
                     outcomes[job_id] = None
                     continue
                 row = self._backend().stage1_projection_get(
-                    namespace=self._namespace(), entity_kind=entity_kind, entity_id=entity_id
+                    namespace=self._namespace(),
+                    entity_kind=entity_kind,
+                    entity_id=entity_id,
                 )
                 if row is None:
-                    raise RuntimeError("current PostgreSQL Stage-1 projection is missing")
+                    try:
+                        self.apply_embedding_job(
+                            entity_kind=entity_kind,
+                            entity_id=entity_id,
+                            op=op,
+                            payload_json=payload_json,
+                        )
+                        outcomes[job_id] = None
+                    except BaseException as exc:
+                        outcomes[job_id] = exc
+                    continue
                 prepared.append((job_id, entity_kind, entity_id, expected, row))
             except BaseException as exc:
                 outcomes[job_id] = exc
@@ -293,7 +388,10 @@ class PostgresTwoStageProjectionAdapter:
         documents = [str(row[4]["document"]) for row in prepared]
         try:
             raw_embeddings = run_awaitable_blocking(self.engine._ef(documents))
-            embeddings = [normalize_embedding_vector(value, allow_none=False) for value in raw_embeddings]
+            embeddings = [
+                normalize_embedding_vector(value, allow_none=False)
+                for value in raw_embeddings
+            ]
             if len(embeddings) != len(prepared):
                 raise RuntimeError("embedding provider returned wrong batch length")
         except BaseException:
@@ -314,24 +412,40 @@ class PostgresTwoStageProjectionAdapter:
             ):
                 if embedding is None or job_id in outcomes:
                     continue
-                current = self._current(entity_kind=entity_kind, entity_id=entity_id)
-                if current is None or current.state != "active" or (
-                    expected and expected != self._current_fingerprint(
-                        entity_kind=entity_kind, entity_id=entity_id
-                    )
-                ):
-                    continue
-                metadata = dict(row.get("metadata") or {})
-                metadata["_kogwistar_stage2_ready"] = True
-                metadata["_kogwistar_source_fingerprint"] = expected or str(
-                    row.get("source_fingerprint") or ""
+                locked_row = self._backend().stage1_projection_get(
+                    namespace=self._namespace(),
+                    entity_kind=entity_kind,
+                    entity_id=entity_id,
+                    for_update=True,
                 )
+                if locked_row is None or not _same_stage1_revision(row, locked_row):
+                    outcomes[job_id] = None
+                    continue
+                current = self._current(entity_kind=entity_kind, entity_id=entity_id)
+                if current is None or current.state != "active":
+                    outcomes[job_id] = None
+                    continue
+                current_fingerprint = self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                staged_fingerprint = str(locked_row.get("source_fingerprint") or "")
+                if (expected and expected != current_fingerprint) or (
+                    staged_fingerprint and staged_fingerprint != current_fingerprint
+                ):
+                    outcomes[job_id] = None
+                    continue
+                metadata = dict(locked_row.get("metadata") or {})
+                metadata["_kogwistar_stage2_ready"] = True
+                metadata["_kogwistar_source_fingerprint"] = current_fingerprint
+                locked_document = str(locked_row["document"])
                 getattr(self._backend(), f"{entity_kind}_upsert")(
-                    ids=[entity_id], documents=[str(row["document"])],
-                    metadatas=[metadata], embeddings=[embedding]
+                    ids=[entity_id],
+                    documents=[locked_document],
+                    metadatas=[metadata],
+                    embeddings=[embedding],
                 )
                 if entity_kind == "edge":
-                    self._promote_edge_endpoints(str(row["document"]))
+                    self._promote_edge_endpoints(locked_document)
                 self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
                 outcomes[job_id] = None
         return outcomes
@@ -342,7 +456,9 @@ class PostgresTwoStageProjectionAdapter:
             entity_kind=str(kwargs.get("entity_kind") or ""),
             entity_id=str(kwargs.get("entity_id") or ""),
             op=str(kwargs.get("op") or "UPSERT"),
-            payload_json=raw_payload_json if isinstance(raw_payload_json, str) else None,
+            payload_json=raw_payload_json
+            if isinstance(raw_payload_json, str)
+            else None,
         )
 
     def reconcile_projection(self, **_: object) -> int:
@@ -362,7 +478,9 @@ class PostgresTwoStageProjectionAdapter:
             if current is None or current.state != "active":
                 with self.engine.uow():
                     self.remove_stage1(entity_kind=kind, entity_id=entity_id)
-                    self.remove_stage2_or_invalidate(entity_kind=kind, entity_id=entity_id)
+                    self.remove_stage2_or_invalidate(
+                        entity_kind=kind, entity_id=entity_id
+                    )
                 removed += 1
                 continue
             if self._current_fingerprint(entity_kind=kind, entity_id=entity_id) != str(
@@ -388,6 +506,317 @@ class PostgresTwoStageProjectionAdapter:
                 self.remove_stage1(entity_kind=kind, entity_id=entity_id)
                 removed += 1
         return removed
+
+    def _native_projection_stage1_get(
+        self, *, entity_kind: str, entity_id: str
+    ) -> dict[str, Any] | None:
+        """Read Rust-native Stage-1, represented by a null-vector graph row."""
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported Stage-1 entity kind: {entity_kind!r}")
+        result = cast(
+            dict[str, Any],
+            getattr(self._backend(), f"{entity_kind}_get")(
+                ids=[entity_id], include=["documents", "metadatas", "embeddings"]
+            ),
+        )
+        ids = result.get("ids")
+        documents = result.get("documents")
+        metadatas = result.get("metadatas")
+        embeddings = result.get("embeddings")
+        if not isinstance(ids, list) or entity_id not in ids:
+            return None
+        index = ids.index(entity_id)
+        if (
+            not isinstance(documents, list)
+            or index >= len(documents)
+            or not isinstance(documents[index], str)
+            or not isinstance(metadatas, list)
+            or index >= len(metadatas)
+            or not isinstance(metadatas[index], dict)
+            or not isinstance(embeddings, list)
+            or index >= len(embeddings)
+            or embeddings[index] is not None
+        ):
+            return None
+        metadata = dict(metadatas[index])
+        if (
+            metadata.get("namespace") != self._namespace()
+            or metadata.get("_kogwistar_stage2_ready") is True
+            or metadata.get("lifecycle_status") in {"tombstoned", "deleted"}
+        ):
+            return None
+        return {"document": documents[index], "metadata": metadata}
+
+    def _promote_native_projection_stage1(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        original: dict[str, Any],
+        expected_fingerprint: str,
+        embedding: list[float],
+    ) -> bool:
+        """Promote a Rust-native pending row under its graph-row lock."""
+        backend = cast(Any, self._backend())
+        table = backend.nodes if entity_kind == "node" else backend.edges
+        with self.engine.uow():
+            with backend._conn() as connection:
+                row = (
+                    connection.execute(
+                        sa.select(table)
+                        .where(table.c.id == entity_id)
+                        .with_for_update()
+                    )
+                    .mappings()
+                    .first()
+                )
+            if row is None:
+                return False
+            document = row["document"]
+            metadata = row["metadata"]
+            if (
+                document != original["document"]
+                or not isinstance(metadata, dict)
+                or metadata != original["metadata"]
+                or metadata.get("namespace") != self._namespace()
+                or metadata.get("_kogwistar_stage2_ready") is True
+                or row["embedding"] is not None
+            ):
+                return False
+            current = self._current(entity_kind=entity_kind, entity_id=entity_id)
+            if current is None or current.state != "active":
+                return False
+            current_fingerprint = self._current_fingerprint(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            if (
+                not expected_fingerprint
+                or expected_fingerprint != current_fingerprint
+                or (
+                    metadata.get("_kogwistar_source_fingerprint")
+                    not in (None, current_fingerprint)
+                )
+            ):
+                return False
+            promoted_metadata = dict(metadata)
+            promoted_metadata["_kogwistar_stage2_ready"] = True
+            promoted_metadata["_kogwistar_source_fingerprint"] = current_fingerprint
+            getattr(backend, f"{entity_kind}_upsert")(
+                ids=[entity_id],
+                documents=[str(document)],
+                metadatas=[promoted_metadata],
+                embeddings=[embedding],
+            )
+            if entity_kind == "edge":
+                self._promote_edge_endpoints(str(document))
+        return True
+
+    def apply_projection_action(self, action: ProjectionAction) -> bool:
+        """Replay a Rust-accepted projection action under Python PG authority."""
+        if action.namespace != self._namespace():
+            return False
+        entity_kind = action.entity_kind
+        entity_id = action.entity_id
+        current = self._current(entity_kind=entity_kind, entity_id=entity_id)
+
+        if action.operation == "DELETE":
+            if current is not None and current.state == "active":
+                return True
+            with self.engine.uow():
+                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+                self.remove_stage2_or_invalidate(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+            return True
+
+        record = action.record
+        if record is None or record.document is None or record.embedding is None:
+            return False
+        if current is None or current.state != "active":
+            return True
+
+        accepted_metadata = dict(record.metadata)
+        stage1_marker_names = (
+            "_kogwistar_stage1_source_fingerprint",
+            "_kogwistar_stage1_expected_fingerprint",
+            "_kogwistar_stage1_revision",
+            "_kogwistar_stage1_expected_revision",
+        )
+        has_stage1_marker = any(name in accepted_metadata for name in stage1_marker_names)
+        expected_revision: int | None = None
+        if has_stage1_marker:
+            source_fingerprint = accepted_metadata.pop(
+                "_kogwistar_stage1_source_fingerprint", None
+            )
+            expected_fingerprint = accepted_metadata.pop(
+                "_kogwistar_stage1_expected_fingerprint", None
+            )
+            source_revision = accepted_metadata.pop(
+                "_kogwistar_stage1_revision", None
+            )
+            expected_revision_raw = accepted_metadata.pop(
+                "_kogwistar_stage1_expected_revision", None
+            )
+            if (
+                not isinstance(source_fingerprint, str)
+                or not source_fingerprint
+                or not isinstance(expected_fingerprint, str)
+                or not expected_fingerprint
+                or type(source_revision) is not int
+                or type(expected_revision_raw) is not int
+            ):
+                return False
+            expected_revision = expected_revision_raw
+            if (
+                source_fingerprint != expected_fingerprint
+                or source_revision != expected_revision
+            ):
+                return False
+            assert expected_revision is not None
+            if (
+                expected_fingerprint
+                != self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                or expected_revision != current.revision
+            ):
+                return True
+            expected_fingerprint = source_fingerprint
+            source_metadata = dict(accepted_metadata)
+        else:
+            expected_fingerprint = accepted_metadata.get(
+                "_kogwistar_source_fingerprint"
+            )
+            if (
+                accepted_metadata.get("_kogwistar_stage2_ready") is not True
+                or not isinstance(expected_fingerprint, str)
+                or not expected_fingerprint
+            ):
+                return False
+            if expected_fingerprint != self._current_fingerprint(
+                entity_kind=entity_kind, entity_id=entity_id
+            ):
+                return True
+            source_metadata = dict(accepted_metadata)
+            source_metadata.pop("_kogwistar_stage2_ready", None)
+            source_metadata.pop("_kogwistar_source_fingerprint", None)
+
+        accepted_metadata = dict(source_metadata)
+        accepted_metadata["_kogwistar_stage2_ready"] = True
+        accepted_metadata["_kogwistar_source_fingerprint"] = expected_fingerprint
+        staged = self._backend().stage1_projection_get(
+            namespace=self._namespace(), entity_kind=entity_kind, entity_id=entity_id
+        )
+        if staged is not None:
+            if (
+                staged.get("document") != record.document
+                or dict(staged.get("metadata") or {}) != source_metadata
+                or str(staged.get("source_fingerprint") or "")
+                != expected_fingerprint
+                or (
+                    has_stage1_marker
+                    and int(staged.get("revision") or -1) != expected_revision
+                )
+            ):
+                return False
+            with self.engine.uow():
+                self._lock_graph_projection(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                locked = self._backend().stage1_projection_get(
+                    namespace=self._namespace(), entity_kind=entity_kind,
+                    entity_id=entity_id, for_update=True,
+                )
+                if locked is None or not _same_stage1_revision(staged, locked):
+                    return True
+                latest = self._current(entity_kind=entity_kind, entity_id=entity_id)
+                if latest is None or latest.state != "active":
+                    return True
+                latest_fingerprint = self._current_fingerprint(
+                    entity_kind=entity_kind, entity_id=entity_id
+                )
+                if latest_fingerprint != expected_fingerprint:
+                    return True
+                if has_stage1_marker and latest.revision != expected_revision:
+                    return True
+                getattr(self._backend(), f"{entity_kind}_upsert")(
+                    ids=[entity_id], documents=[record.document],
+                    metadatas=[accepted_metadata], embeddings=[list(record.embedding)],
+                )
+                if entity_kind == "edge":
+                    self._promote_edge_endpoints(record.document)
+                self.remove_stage1(entity_kind=entity_kind, entity_id=entity_id)
+            return True
+
+        native_stage1 = self._native_projection_stage1_get(
+            entity_kind=entity_kind, entity_id=entity_id
+        )
+        if native_stage1 is not None:
+            if (
+                native_stage1.get("document") != record.document
+                or dict(native_stage1.get("metadata") or {}) != source_metadata
+            ):
+                return False
+            return self._promote_native_projection_stage1(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                original=native_stage1,
+                expected_fingerprint=expected_fingerprint,
+                embedding=list(record.embedding),
+            )
+
+        existing = cast(
+            dict[str, Any],
+            getattr(self._backend(), f"{entity_kind}_get")(
+                ids=[entity_id], include=["documents", "metadatas", "embeddings"]
+            ),
+        )
+        ids = existing.get("ids")
+        if not isinstance(ids, list) or entity_id not in ids:
+            return False
+        position = ids.index(entity_id)
+        documents = existing.get("documents")
+        metadatas = existing.get("metadatas")
+        embeddings = existing.get("embeddings")
+        if (
+            not isinstance(documents, list)
+            or position >= len(documents)
+            or documents[position] != record.document
+            or not isinstance(metadatas, list)
+            or position >= len(metadatas)
+            or metadatas[position] != accepted_metadata
+            or embeddings is None
+            or position >= len(embeddings)
+        ):
+            return False
+        vector = embeddings[position]
+        if vector is None or isinstance(vector, (str, bytes)):
+            return False
+        try:
+            actual_vector = list(vector)
+        except TypeError:
+            return False
+        expected_vector = list(record.embedding)
+        return len(actual_vector) == len(expected_vector) and all(
+            math.isclose(float(actual), expected, rel_tol=1e-6, abs_tol=1e-7)
+            for actual, expected in zip(actual_vector, expected_vector)
+        )
+
+    def _lock_graph_projection(self, *, entity_kind: str, entity_id: str) -> None:
+        """Acquire the graph-row lock before the Stage-1 row lock, like Rust."""
+        if entity_kind not in {"node", "edge"}:
+            raise ValueError(f"unsupported graph entity kind: {entity_kind!r}")
+        backend = cast(Any, self._backend())
+        table = backend.nodes if entity_kind == "node" else backend.edges
+        with backend._conn() as connection:
+            connection.execute(
+                sa.select(table.c.id)
+                .where(
+                    table.c.id == entity_id,
+                    table.c.metadata["namespace"].astext == self._namespace(),
+                )
+                .with_for_update()
+            ).first()
 
 
 __all__ = ["PostgresTwoStageProjectionAdapter", "postgres_two_stage_capability"]

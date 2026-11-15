@@ -7,6 +7,10 @@ from contextlib import AbstractContextManager
 from typing import Protocol
 
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+from kogwistar.implementation_selection import (
+    ImplementationSelectionSnapshot,
+    implementation_selection_metadata,
+)
 from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime.models import (
     StepRunResult,
@@ -29,6 +33,9 @@ class RuntimeTraceEngine(Protocol):
 class RuntimeTracePersistenceHost(Protocol):
     @property
     def conversation_engine(self) -> RuntimeTraceEngine: ...
+
+    @property
+    def _implementation_selection_snapshot(self) -> ImplementationSelectionSnapshot: ...
 
     def _trace_write_mode(self) -> AbstractContextManager[None]: ...
 
@@ -79,6 +86,9 @@ class RuntimeTracePersistenceMixin:
         for key, value in (run_metadata or {}).items():
             if key not in metadata and value is not None:
                 metadata[str(key)] = value
+        metadata["implementation_selection"] = implementation_selection_metadata(
+            self._implementation_selection_snapshot
+        )
         if metadata.get("parent_run_id"):
             metadata.setdefault(
                 "wf_invoked",
@@ -126,6 +136,7 @@ class RuntimeTracePersistenceMixin:
         parent_token_id: str | None = None,
         join_mask: int | None = None,
         last_exec_node: WorkflowStepExecNode | WorkflowRunNode | None = None,
+        trace_context: TraceContext | None = None,
     ) -> WorkflowStepExecNode:
         result_json = try_serialize_with_ref(result)
         workspace_id = str(state.get("workspace_id") or "").strip()
@@ -170,6 +181,16 @@ class RuntimeTracePersistenceMixin:
         )
         if workspace_id:
             node.metadata["workspace_id"] = workspace_id
+        if trace_context is not None:
+            trace_fields = trace_context.as_fields()
+            node.metadata.update(
+                {
+                    "trace_id": trace_fields["trace_id"],
+                    "span_id": trace_fields["span_id"],
+                    "parent_span_id": trace_fields["parent_span_id"],
+                    "trace_attempt": trace_fields["attempt"],
+                }
+            )
         with self._trace_write_mode():
             self.conversation_engine.write.add_node(node)
             if last_exec_node:

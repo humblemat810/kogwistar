@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "legacy_default": "v1",
+  "valid": ["v1", "v2", "custom@1"],
+  "invalid": ["", " v2", "v2 ", 2, null, true]
+}

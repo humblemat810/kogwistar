@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.dead_letters",
+  "arguments": {
+    "limit": 10
+  },
+  "caller_capabilities": [
+    "project_view"
+  ],
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/dead-letters?limit=10",
+    "body": ""
+  },
+  "result": {
+    "runs": [],
+    "limit": 10
+  }
+}

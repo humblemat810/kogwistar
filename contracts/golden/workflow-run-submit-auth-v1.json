@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "action": "spawn_process",
+  "required_capabilities": ["spawn_process", "workflow.run.write"],
+  "success_status": 202,
+  "denied_status": 403
+}

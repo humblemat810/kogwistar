@@ -1,0 +1,22 @@
+{
+  "conversation_id": "conversation:tied-index-contract",
+  "schema_version": 1,
+  "turns": [
+    {
+      "content": "Question",
+      "entity_type": "conversation_turn",
+      "node_id": "z-user-turn",
+      "role": "user",
+      "schema_version": 1,
+      "turn_index": 4
+    },
+    {
+      "content": "Answer",
+      "entity_type": "assistant_turn",
+      "node_id": "a-assistant-turn",
+      "role": "assistant",
+      "schema_version": 1,
+      "turn_index": 4
+    }
+  ]
+}

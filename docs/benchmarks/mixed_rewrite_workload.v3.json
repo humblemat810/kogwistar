@@ -1,0 +1,74 @@
+{
+  "schema": "kogwistar-mixed-rewrite-workload/v3",
+  "purpose": "Portable deterministic graph workload for backend and Rust rewrite comparisons.",
+  "graph_contract": {
+    "source": "mixed-rewrite-source-v1",
+    "root": "mixed-node-root",
+    "each_write": "atomically append one canonical Kogwistar Node event and one Edge event linking the previous node to the new node; replace both graph projections in the same SQLite transaction",
+    "grounding": "each node and edge has a source span whose excerpt exactly matches the immutable deterministic source text",
+    "fixture": "mixed_rewrite_fixture.v3.json"
+  },
+  "embedding": {
+    "inference": "excluded from timed sections",
+    "vector_source": "SHAKE256-seeded deterministic vectors stored in the fixture",
+    "seed": "kogwistar-mixed-rewrite-v1",
+    "encoding": "little-endian uint32 samples mapped to [-1,1], L2-normalized, rounded to IEEE-754 float32",
+    "dimension": 384
+  },
+  "backend_matrix": {
+    "sqlite_event_projection": "SQLite authoritative graph events and projections; no vector index",
+    "chroma_sqlite_metadata": "Chroma PersistentClient vector collection with SQLite metadata; Kogwistar graph events/projections remain in SQLite",
+    "postgres_pgvector": "PostgreSQL/pgvector semantic index; Kogwistar graph events/projections remain in SQLite"
+  },
+  "profiles": {
+    "read_after_write": {
+      "trace_schema": "kogwistar-mixed-rewrite-trace/v2",
+      "trace": ["write_record", "read_event", "read_projection"],
+      "write_atomicity": "one Node+Edge bundle and both named projections per transaction",
+      "visibility": "both reads must observe and validate the just-committed node, edge, endpoints, and source grounding"
+    },
+    "concurrent": {
+      "trace_schema": "kogwistar-mixed-rewrite-concurrent-trace/v3",
+      "writers": 1,
+      "readers": 4,
+      "mixes": {
+        "balanced": "four graph reads per individually committed node+edge write; two readers observe before commit and two after commit",
+        "read_heavy": "eight graph reads per individually committed node+edge write; all readers observe both before and after commit"
+      },
+      "visibility": "pre-commit reads observe the prior committed graph head; post-commit reads observe the new head and validate its edge event and endpoints"
+    }
+  },
+  "service_modes": [
+    "python_mcp_registry_python_authority",
+    "python_mcp_registry_rust_authority",
+    "python_streamable_http_python_authority",
+    "python_streamable_http_rust_authority",
+    "rust_native_jsonrpc_http_benchmark_slice"
+  ],
+  "service_mode_scope": {
+    "rust_native_jsonrpc_http_benchmark_slice": "benchmark-only vertical slice implementing identical deterministic graph tool request/response operations; not the production Kogwistar MCP server",
+    "embedding_inference": "excluded from timed sections; graph fixture carries precomputed vectors for backend runs"
+  },
+  "measurement": {
+    "fixture_sizes": [1000, 2000],
+    "minimum_samples_per_configuration": 5,
+    "fresh_database_per_sample": true,
+    "warmup_reported_separately": true,
+    "metrics": [
+      "whole-trace throughput and p50/p95/p99 latency",
+      "per-operation throughput and p50/p95/p99 latency",
+      "process CPU time and RSS",
+      "SQLite database and vector index footprint",
+      "startup/readiness separately from steady state",
+      "errors and exact final graph-state digest"
+    ]
+  },
+  "acceptance": [
+    "all configurations consume the same versioned trace",
+    "node and edge events and projections are equivalent across implementations",
+    "read-after-write and concurrent visibility match the declared trace",
+    "backend restart/reopen preserves the expected graph and vector state",
+    "requested backends cannot be silently skipped",
+    "two fixture sizes and at least five fresh samples per configuration are reported"
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "schema": "kogwistar-mixed-rewrite-workload/v2",
+  "purpose": "Portable deterministic workload contract for backend and rewrite comparisons.",
+  "embedding": {
+    "inference": "excluded",
+    "vector_source": "SHAKE256-seeded deterministic vectors precomputed before timing",
+    "seed": "kogwistar-mixed-rewrite-v1",
+    "encoding": "little-endian uint32 samples mapped to [-1,1], L2-normalized, rounded to IEEE-754 float32",
+    "dimension": 384,
+    "fixture": "mixed_rewrite_fixture.v2.json"
+  },
+  "backend_matrix": {
+    "sqlite_event_projection": "SQLite authoritative events and projections; no semantic vector index, used as persistence baseline",
+    "chroma_sqlite_metadata": "Chroma PersistentClient vector collection and its SQLite metadata; Kogwistar app events/projections remain in SQLite",
+    "postgres_pgvector": "Kogwistar PgVectorBackend with cosine pgvector node index; Kogwistar app events/projections remain in SQLite"
+  },
+  "profiles": {
+    "read_after_write": {
+      "trace_schema": "kogwistar-mixed-rewrite-trace/v1",
+      "trace": ["write_record", "read_event", "read_projection"],
+      "write_atomicity": "one event plus one named projection in one transaction",
+      "visibility": "both reads must observe the just-committed write"
+    },
+    "concurrent": {
+      "trace_schema": "kogwistar-mixed-rewrite-concurrent-trace/v2",
+      "writers": 1,
+      "readers": 4,
+      "mixes": {
+        "balanced": "four graph reads per individually committed write; two readers observe before commit and two after commit",
+        "read_heavy": "eight graph reads per individually committed write; all readers observe both before and after commit"
+      },
+      "write_atomicity": "one logical record per transaction",
+      "visibility": "pre-commit reads observe the prior revision; post-commit reads observe the new revision; each observation has an exact revision bound"
+    }
+  },
+  "service_modes": [
+    "python_mcp_registry_python_authority",
+    "python_mcp_registry_rust_authority",
+    "python_streamable_http_python_authority",
+    "python_streamable_http_rust_authority",
+    "rust_native_jsonrpc_http_benchmark_slice"
+  ],
+  "service_mode_scope": {
+    "rust_native_jsonrpc_http_benchmark_slice": "benchmark-only deterministic SQLite event/projection tool service; implements sequential and concurrent tools/call behavior; not the production Kogwistar MCP server",
+    "embedding_inference": "excluded from timed sections; precomputed normalized vectors are used for backend runs"
+  },
+  "operation_contract": {
+    "write_record": "append one canonical entity event and atomically replace its projection",
+    "read_event": "read the expected entity event by namespace and sequence",
+    "read_projection": "read the expected named projection by namespace and key",
+    "vector_upsert": "persist one precomputed normalized vector outside timed model inference; vector commit is measured separately from SQLite event/projection commit",
+    "vector_query": "query deterministic sampled revisions; each query must return the expected record as cosine top-1"
+  },
+  "vector_query_sampling": {
+    "default_max_queries_per_sample": 100,
+    "schedule": "evenly spaced deterministic indexes including first and final record",
+    "reason": "avoid accidental quadratic nearest-neighbor validation work as fixture size grows"
+  },
+  "measurement": {
+    "fixture_sizes": [1000, 2000],
+    "minimum_samples": 5,
+    "warmup_samples": 1,
+    "report_tail_percentiles": [50, 95, 99],
+    "report_startup_separately": true,
+    "report_cpu_rss_database_and_vector_index_bytes": true,
+    "report_sample_variation": true
+  }
+}

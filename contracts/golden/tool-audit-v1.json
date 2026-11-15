@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "conversation_id": "conversation:demo",
+  "items": [
+    {
+      "schema_version": 1,
+      "node_id": "tool-call:1",
+      "entity_type": "tool_call",
+      "tool_name": "kg_neighbors",
+      "conversation_id": "conversation:demo",
+      "turn_index": 2,
+      "summary": "Read adjacent graph nodes",
+      "properties": {
+        "status": "requested"
+      }
+    },
+    {
+      "schema_version": 1,
+      "node_id": "tool-result:1",
+      "entity_type": "tool_result",
+      "tool_name": "kg_neighbors",
+      "conversation_id": "conversation:demo",
+      "turn_index": 2,
+      "summary": "Returned two visible neighbors",
+      "properties": {
+        "status": "completed",
+        "count": 2
+      }
+    }
+  ]
+}

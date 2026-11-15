@@ -7,11 +7,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
+from kogwistar.json_types import JsonObject
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from kogwistar.runtime.models import (
     RunFailure,
@@ -26,6 +28,7 @@ from kogwistar.runtime.models import (
 )
 from kogwistar.runtime.replay import load_checkpoint, replay_to
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
+from kogwistar.runtime.telemetry import EventEmitter
 from tests._helpers.embeddings import ConstantEmbeddingFunction
 from tests._helpers.fake_backend import build_fake_backend
 
@@ -136,6 +139,7 @@ class _JoinWorkflowEngine:
 class _TraceEmitter:
     def __init__(self) -> None:
         self.emitted: list[tuple[str, dict[str, object]]] = []
+        self.bridge_events: list[dict[str, object]] = []
 
     def step_started(self, ctx):
         self.emitted.append(("started", ctx.as_fields()))
@@ -144,7 +148,15 @@ class _TraceEmitter:
         payload = dict(ctx.as_fields())
         payload["status"] = status
         payload["duration_ms"] = duration_ms
+        payload.update(extra or {})
         self.emitted.append(("completed", payload))
+
+    def emit(self, *, type, ctx, payload=None):
+        event = dict(ctx.as_fields())
+        event.update(payload or {})
+        if type == "runtime_scheduler_bridge":
+            self.bridge_events.append(event)
+        return f"event-{len(self.bridge_events)}"
 
 
 def _mk_nodes():
@@ -358,14 +370,14 @@ def test_runtime_parity_bridge_route_next_shared_semantics():
 
     assert sync_default_next == ["n|fallback"]
     assert async_default_next == sync_default_next
-    assert sync_default_decision.selected == [
-        ("e-default", "n|fallback", "default")
-    ]
+    assert sync_default_decision.selected == [("e-default", "n|fallback", "default")]
 
 
 def _seed_join_bridge_graph(workflow_id: str):
     nodes = [
-        _join_node("start", workflow_id=workflow_id, op="start", start=True, fanout=True),
+        _join_node(
+            "start", workflow_id=workflow_id, op="start", start=True, fanout=True
+        ),
         _join_node("a", workflow_id=workflow_id, op="a"),
         _join_node("b", workflow_id=workflow_id, op="b"),
         _join_node("join", workflow_id=workflow_id, op="join", join=True),
@@ -391,7 +403,9 @@ def _normalize_join_bridge_state(state: dict) -> dict:
 
 def _seed_trace_bridge_graph(workflow_id: str):
     nodes = [
-        _join_node("start", workflow_id=workflow_id, op="start", start=True, terminal=True),
+        _join_node(
+            "start", workflow_id=workflow_id, op="start", start=True, terminal=True
+        ),
     ]
     return nodes, []
 
@@ -400,7 +414,7 @@ def _normalize_trace_payloads(emitted: list[tuple[str, dict[str, object]]]) -> d
     kinds = [kind for kind, _payload in emitted]
     started = emitted[0][1]
     completed = emitted[1][1]
-    return {
+    normalized = {
         "kinds": kinds,
         "node_id": started["node_id"],
         "trace_id_matches_run": started["trace_id"] == started["run_id"],
@@ -408,6 +422,9 @@ def _normalize_trace_payloads(emitted: list[tuple[str, dict[str, object]]]) -> d
         "completed_status": completed["status"],
         "duration_non_negative": int(completed["duration_ms"]) >= 0,
     }
+    if "rust_bridge" in completed:
+        normalized["rust_bridge"] = completed["rust_bridge"]
+    return normalized
 
 
 def _run_sync_join_bridge() -> dict:
@@ -422,22 +439,30 @@ def _run_sync_join_bridge() -> dict:
 
     @resolver.register("a")
     def _a(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("a", {"parts": "a"})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("a", {"parts": "a"})]
+        )
 
     @resolver.register("b")
     def _b(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("a", {"parts": "b"})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("a", {"parts": "b"})]
+        )
 
     @resolver.register("join")
     def _join(ctx):
         return RunSuccess(
             conversation_node_id=None,
-            state_update=[("u", {"join_calls": int(ctx.state_view.get("join_calls", 0)) + 1})],
+            state_update=[
+                ("u", {"join_calls": int(ctx.state_view.get("join_calls", 0)) + 1})
+            ],
         )
 
     @resolver.register("end")
     def _end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"done": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"done": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=engine,
@@ -464,11 +489,15 @@ def _run_async_join_bridge(monkeypatch) -> dict:
             self.kwargs = kwargs
 
         def run(self, **kwargs):
-            return type("RunResultShim", (), {
-                "run_id": str(kwargs.get("run_id") or "sync-run"),
-                "final_state": dict(kwargs.get("initial_state") or {}),
-                "status": "succeeded",
-            })()
+            return type(
+                "RunResultShim",
+                (),
+                {
+                    "run_id": str(kwargs.get("run_id") or "sync-run"),
+                    "final_state": dict(kwargs.get("initial_state") or {}),
+                    "status": "succeeded",
+                },
+            )()
 
         def apply_state_update(self, state, result):
             for mode, payload in result.state_update:
@@ -486,8 +515,12 @@ def _run_async_join_bridge(monkeypatch) -> dict:
             adj[str(edge.source_ids[0])].append(edge)
         return node_map["start"], node_map, adj
 
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate
+    )
 
     resolver = AsyncMappingStepResolver()
 
@@ -497,22 +530,30 @@ def _run_async_join_bridge(monkeypatch) -> dict:
 
     @resolver.register("a")
     async def _a(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("a", {"parts": "a"})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("a", {"parts": "a"})]
+        )
 
     @resolver.register("b")
     async def _b(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("a", {"parts": "b"})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("a", {"parts": "b"})]
+        )
 
     @resolver.register("join")
     async def _join(ctx):
         return RunSuccess(
             conversation_node_id=None,
-            state_update=[("u", {"join_calls": int(ctx.state_view.get("join_calls", 0)) + 1})],
+            state_update=[
+                ("u", {"join_calls": int(ctx.state_view.get("join_calls", 0)) + 1})
+            ],
         )
 
     @resolver.register("end")
     async def _end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"done": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"done": True})]
+        )
 
     runtime = AsyncWorkflowRuntime(
         workflow_engine=object(),
@@ -534,7 +575,7 @@ def _run_async_join_bridge(monkeypatch) -> dict:
     return _normalize_join_bridge_state(dict(out.final_state or {}))
 
 
-def _run_sync_trace_bridge() -> tuple[dict, dict]:
+def _run_sync_trace_bridge(*, bridge_probe: bool = False) -> tuple[dict, dict]:
     workflow_id = "wf_trace_bridge_sync"
     nodes, edges = _seed_trace_bridge_graph(workflow_id)
     engine = _JoinWorkflowEngine(nodes, edges)
@@ -543,7 +584,13 @@ def _run_sync_trace_bridge() -> tuple[dict, dict]:
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"path": "trace"})])
+        if bridge_probe:
+            from kogwistar._rust_bridge import api_health
+
+            api_health(payload={"probe": True}, python_value={"ok": False})
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"path": "trace"})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=engine,
@@ -562,7 +609,9 @@ def _run_sync_trace_bridge() -> tuple[dict, dict]:
     return dict(out.final_state or {}), _normalize_trace_payloads(emitter.emitted)
 
 
-def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
+def _run_async_trace_bridge(
+    monkeypatch, *, bridge_probe: bool = False
+) -> tuple[dict, dict]:
     emitted: list[tuple[str, dict[str, object]]] = []
 
     class _FakeWorkflowRuntime:
@@ -570,11 +619,15 @@ def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
             self.emitter = kwargs["events"]
 
         def run(self, **kwargs):
-            return type("RunResultShim", (), {
-                "run_id": str(kwargs.get("run_id") or "sync-run"),
-                "final_state": dict(kwargs.get("initial_state") or {}),
-                "status": "succeeded",
-            })()
+            return type(
+                "RunResultShim",
+                (),
+                {
+                    "run_id": str(kwargs.get("run_id") or "sync-run"),
+                    "final_state": dict(kwargs.get("initial_state") or {}),
+                    "status": "succeeded",
+                },
+            )()
 
         def _should_step_uow(self, *args, **kwargs):
             return False
@@ -600,6 +653,7 @@ def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
             payload = dict(ctx.as_fields())
             payload["status"] = status
             payload["duration_ms"] = duration_ms
+            payload.update(extra or {})
             emitted.append(("completed", payload))
 
     class _Node:
@@ -612,14 +666,24 @@ def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
         start = _Node("start", "start", terminal=True, fanout=False)
         return start, {"start": start}, {"start": []}
 
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime)
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.WorkflowRuntime", _FakeWorkflowRuntime
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate
+    )
 
     resolver = AsyncMappingStepResolver()
 
     @resolver.register("start")
     async def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"path": "trace"})])
+        if bridge_probe:
+            from kogwistar._rust_bridge import api_health
+
+            api_health(payload={"probe": True}, python_value={"ok": False})
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"path": "trace"})]
+        )
 
     runtime = AsyncWorkflowRuntime(
         workflow_engine=object(),
@@ -639,6 +703,299 @@ def _run_async_trace_bridge(monkeypatch) -> tuple[dict, dict]:
         )
     )
     return dict(out.final_state or {}), _normalize_trace_payloads(emitted)
+
+
+def test_runtime_step_trace_correlates_actual_rust_bridge_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Extension:
+        def api_health(self, _payload: str) -> str:
+            return json.dumps({"ok": True})
+
+    monkeypatch.setattr("kogwistar._rust_bridge.import_module", lambda _name: _Extension())
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    _sync_state, sync_trace = _run_sync_trace_bridge(bridge_probe=True)
+    _async_state, async_trace = _run_async_trace_bridge(
+        monkeypatch, bridge_probe=True
+    )
+    _plain_state, plain_trace = _run_sync_trace_bridge()
+
+    assert sync_trace["rust_bridge"] == async_trace["rust_bridge"]
+    bridge = sync_trace["rust_bridge"]
+    assert bridge["ffi_calls"] == 1
+    assert bridge["calls_by_method"] == {"api_health": 1}
+    assert "probe" not in repr(bridge)
+    assert "rust_bridge" not in plain_trace
+
+
+def test_workflow_step_trace_joins_dispatch_and_rust_store_transaction(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+
+    store = RustEngineSQLite(tmp_path, "workflow-step-trace.sqlite")
+    store.ensure_initialized()
+    workflow_id = "wf_trace_rust_storage"
+    nodes, edges = _seed_trace_bridge_graph(workflow_id)
+    workflow_engine = _JoinWorkflowEngine(nodes, edges)
+    emitted = _TraceEmitter()
+    resolver = MappingStepResolver()
+    dispatched: list[str] = []
+    dispatch_identities: list[dict[str, object]] = []
+
+    class _TransactionalConversationEngine(_JoinConversationEngine):
+        def uow(self):
+            return store.transaction()
+
+    @resolver.register("start")
+    def _start(ctx):
+        dispatched.append("start")
+        dispatch_identities.append(ctx.trace_ctx.as_fields())
+        store.append_entity_event(
+            namespace="workflow-trace",
+            event_id="workflow-step-event",
+            entity_kind="node",
+            entity_id="workflow-step-node",
+            op="UPSERT",
+            payload_json='{"source":"step-worker"}',
+        )
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"persisted": True})]
+        )
+
+    runtime = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=_TransactionalConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=emitted,
+        transaction_mode="step",
+    )
+    try:
+        result = runtime.run(
+            workflow_id=workflow_id,
+            conversation_id="conv-trace-rust-storage",
+            turn_node_id="turn-trace-rust-storage",
+            run_id="run-trace-rust-storage",
+            initial_state={},
+        )
+        assert result.status == "succeeded"
+        assert result.final_state["persisted"] is True
+        assert dispatched == ["start"]
+        rows = list(store.iter_entity_events(namespace="workflow-trace"))
+        assert len(rows) == 1
+        assert rows[0][2:4] == ("workflow-step-node", "UPSERT")
+
+        assert [kind for kind, _payload in emitted.emitted] == ["started", "completed"]
+        started, completed = (payload for _kind, payload in emitted.emitted)
+        identity_fields = ("run_id", "token_id", "step_seq", "node_id")
+        assert len(dispatch_identities) == 1
+        identity = tuple(dispatch_identities[0][key] for key in identity_fields)
+        assert tuple(started[key] for key in identity_fields) == identity
+        assert tuple(completed[key] for key in identity_fields) == identity
+        assert sum(
+            tuple(payload[key] for key in identity_fields) == identity
+            for kind, payload in emitted.emitted
+            if kind == "started"
+        ) == 1
+        assert sum(
+            tuple(payload[key] for key in identity_fields) == identity
+            for kind, payload in emitted.emitted
+            if kind == "completed"
+        ) == 1
+        assert completed["run_id"] == started["run_id"] == "run-trace-rust-storage"
+        assert completed["node_id"] == started["node_id"] == "start"
+        bridge = completed["rust_bridge"]
+        assert bridge["ffi_calls"] >= 4
+        assert bridge["input_bytes"] > 0
+        assert bridge["output_bytes"] > 0
+        assert bridge["transaction_active_calls"] >= 1
+        assert bridge["transaction_boundary_calls"] == 2
+        assert bridge["calls_by_operation"]["raw_append"] == 1
+    finally:
+        store.close()
+
+
+def test_scheduler_rust_bridge_trace_joins_run_without_step_double_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "shadow")
+
+    workflow_id = "wf_scheduler_bridge_trace"
+    nodes = [
+        _join_node("start", workflow_id=workflow_id, op="start", start=True),
+        _join_node("end", workflow_id=workflow_id, op="end", terminal=True),
+    ]
+    edges = [_join_edge("next", workflow_id=workflow_id, src="start", dst="end")]
+    emitter = _TraceEmitter()
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = WorkflowRuntime(
+        workflow_engine=_JoinWorkflowEngine(nodes, edges),
+        conversation_engine=_JoinConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=emitter,
+    )
+    result = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-scheduler-bridge-trace",
+        turn_node_id="turn-scheduler-bridge-trace",
+        run_id="run-scheduler-bridge-trace",
+        initial_state={},
+    )
+
+    assert result.status == "succeeded"
+    scheduler_events = emitter.bridge_events
+    assert len(scheduler_events) == 1
+    scheduler_event = scheduler_events[0]
+    assert scheduler_event["run_id"] == result.run_id
+    assert scheduler_event["step_seq"] == 0
+    assert scheduler_event["node_id"] == "scheduler"
+    assert scheduler_event["operation"] == "runtime_plan_successors"
+    assert scheduler_event["source_node_id"] == "start"
+    bridge = scheduler_event["rust_bridge"]
+    assert bridge["ffi_calls"] == 1
+    assert bridge["calls_by_method"] == {"runtime_plan_successors": 1}
+    completed_steps = [
+        payload for kind, payload in emitter.emitted if kind == "completed"
+    ]
+    assert len(completed_steps) == 2
+    assert all("rust_bridge" not in payload for payload in completed_steps)
+
+
+def test_workflow_step_batch_matches_per_item_store_effect_with_fewer_crossings(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+
+    def run(
+        path: Path, *, batch: bool
+    ) -> tuple[
+        dict[str, object], dict[str, object], list[tuple[int, str, str, str, str]]
+    ]:
+        store = RustEngineSQLite(tmp_path, path.name)
+        store.ensure_initialized()
+        workflow_id = "wf_batch_trace"
+        nodes, edges = _seed_trace_bridge_graph(workflow_id)
+        emitter = _TraceEmitter()
+        resolver = MappingStepResolver()
+        operations: list[JsonObject] = [
+            {
+                "kind": "raw_append",
+                "namespace": "workflow-batch-trace",
+                "event_id": f"event-{index}",
+                "entity_kind": "node",
+                "entity_id": f"node-{index}",
+                "op": "UPSERT",
+                "payload_json": json.dumps({"index": index}, separators=(",", ":")),
+            }
+            for index in range(2)
+        ]
+
+        @resolver.register("start")
+        def _start(_ctx):
+            # Batch owns one atomic commit; per-item calls retain separate commits.
+            if batch:
+                store.execute_batch(operations)
+            else:
+                for operation in operations:
+                    store.append_entity_event(
+                            **{
+                                key: value
+                                for key, value in operation.items()
+                                if key != "kind"
+                            }
+                        )
+            return RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"persisted_count": len(operations)})],
+            )
+
+        runtime = WorkflowRuntime(
+            workflow_engine=cast(
+                GraphKnowledgeEngine, _JoinWorkflowEngine(nodes, edges)
+            ),
+            conversation_engine=cast(
+                GraphKnowledgeEngine, _JoinConversationEngine()
+            ),
+            step_resolver=resolver,
+            predicate_registry={},
+            trace=True,
+            events=cast(EventEmitter, emitter),
+            transaction_mode="none",
+        )
+        try:
+            result = runtime.run(
+                workflow_id=workflow_id,
+                conversation_id="conv-workflow-batch-trace",
+                turn_node_id="turn-workflow-batch-trace",
+                run_id="run-workflow-batch-trace",
+                initial_state={},
+            )
+            assert result.status == "succeeded"
+            trace = next(
+                payload for kind, payload in emitter.emitted if kind == "completed"
+            )
+            events = list(store.iter_entity_events(namespace="workflow-batch-trace"))
+            return (
+                dict(result.final_state or {}),
+                cast(dict[str, object], trace["rust_bridge"]),
+                events,
+            )
+        finally:
+            store.close()
+
+    per_item_state, per_item_trace, per_item_events = run(
+        tmp_path / "workflow-per-item.sqlite", batch=False
+    )
+    batch_state, batch_trace, batch_events = run(
+        tmp_path / "workflow-batch.sqlite", batch=True
+    )
+
+    assert per_item_state["persisted_count"] == batch_state["persisted_count"] == 2
+    assert per_item_events == batch_events
+    assert per_item_trace["ffi_calls"] == 2
+    assert batch_trace["ffi_calls"] == 1
+    assert per_item_trace["calls_by_operation"] == {"raw_append": 2}
+    assert batch_trace["calls_by_operation"] == {"batch": 1}
+    assert per_item_trace["input_bytes"] > batch_trace["input_bytes"] > 0
+    assert per_item_trace["output_bytes"] > 0
+    assert batch_trace["output_bytes"] > 0
+
+
+@pytest.mark.ci_full
+def test_runtime_step_trace_correlates_installed_rust_extension(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_SERVER", "rust")
+
+    _sync_state, sync_trace = _run_sync_trace_bridge(bridge_probe=True)
+    _async_state, async_trace = _run_async_trace_bridge(
+        monkeypatch, bridge_probe=True
+    )
+
+    for trace in (sync_trace, async_trace):
+        bridge = trace["rust_bridge"]
+        assert bridge["ffi_calls"] == 1
+        assert bridge["calls_by_method"] == {"api_health": 1}
+        assert "probe" not in repr(bridge)
+    assert sync_trace["rust_bridge"] == async_trace["rust_bridge"]
 
 
 def test_runtime_parity_bridge_join_barrier_waits_for_all_arrivals(monkeypatch):
@@ -791,7 +1148,9 @@ def _latest_checkpoint_state(conv_engine: GraphKnowledgeEngine, run_id: str) -> 
     ckpts = conv_engine.read.get_nodes(
         where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]}
     )
-    latest = max(ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1)))
+    latest = max(
+        ckpts, key=lambda c: int(getattr(c, "metadata", {}).get("step_seq", -1))
+    )
     state_json = latest.metadata.get("state_json", {})
     if isinstance(state_json, str):
         state_json = json.loads(state_json)
@@ -857,7 +1216,10 @@ def _normalize_suspend_resume_result(
     return {
         "suspended_status": suspended_status,
         "checkpoint_wait_reason": checkpoint_state.get("wait_reason"),
-        "checkpoint_suspended_nodes": [item[0] for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])],
+        "checkpoint_suspended_nodes": [
+            item[0]
+            for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
+        ],
         "resumed_status": resumed_status,
         "started": bool(final_state.get("started")),
         "resumed": bool(final_state.get("resumed")),
@@ -882,7 +1244,9 @@ def _resolve_progress_step(op: str):
     return _fn
 
 
-def _normalize_checkpoint_replay_result(*, run_result, ckpt0: dict, reconstructed: dict) -> dict:
+def _normalize_checkpoint_replay_result(
+    *, run_result, ckpt0: dict, reconstructed: dict
+) -> dict:
     rt_join = dict(ckpt0.get("_rt_join", {}) or {})
     pending = list(rt_join.get("pending", []) or [])
     return {
@@ -890,20 +1254,26 @@ def _normalize_checkpoint_replay_result(*, run_result, ckpt0: dict, reconstructe
         "final_op_log": list((run_result.final_state or {}).get("op_log", []) or []),
         "ckpt_op_log": list(ckpt0.get("op_log", []) or []),
         "ckpt_result_a": dict(ckpt0.get("result.a", {}) or {}),
-        "ckpt_pending_nodes": [str(item[0]) for item in pending if isinstance(item, (list, tuple)) and item],
+        "ckpt_pending_nodes": [
+            str(item[0]) for item in pending if isinstance(item, (list, tuple)) and item
+        ],
         "replay_op_log": list(reconstructed.get("op_log", []) or []),
         "replay_result_end": dict(reconstructed.get("result.end", {}) or {}),
     }
 
 
-def _normalize_resume_result(*, first_result, checkpoint_state: dict, resumed_result) -> dict:
+def _normalize_resume_result(
+    *, first_result, checkpoint_state: dict, resumed_result
+) -> dict:
     rt_join = dict(checkpoint_state.get("_rt_join", {}) or {})
     pending = list(rt_join.get("pending", []) or [])
     final_state = dict(resumed_result.final_state or {})
     return {
         "first_status": str(first_result.status),
         "resume_status": str(resumed_result.status),
-        "checkpoint_pending_nodes": [str(item[0]) for item in pending if isinstance(item, (list, tuple)) and item],
+        "checkpoint_pending_nodes": [
+            str(item[0]) for item in pending if isinstance(item, (list, tuple)) and item
+        ],
         "final_op_log": list(final_state.get("op_log", []) or []),
         "a_count": list(final_state.get("op_log", []) or []).count("a"),
         "result_a": dict(final_state.get("result.a", {}) or {}),
@@ -924,7 +1294,9 @@ def _run_sync_wait_reason_suspend_resume(tmp_path: Path) -> dict:
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("gate")
     def _gate(_ctx):
@@ -991,7 +1363,9 @@ def _run_async_wait_reason_suspend_resume(tmp_path: Path) -> dict:
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("gate")
     def _gate(_ctx):
@@ -1030,33 +1404,26 @@ def _run_async_wait_reason_suspend_resume(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     suspended_token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
-    try:
-        asyncio.run(
-            runtime.resume_run(
-                run_id=run_id,
-                suspended_node_id="gate",
-                suspended_token_id=suspended_token_id,
-                client_result=RunSuccess(
-                    conversation_node_id=None,
-                    state_update=[("u", {"resumed": True})],
-                ),
-                workflow_id=wf_id,
-                conversation_id=conv_id,
-                turn_node_id="turn_1",
-            )
+    resumed = asyncio.run(
+        runtime.resume_run(
+            run_id=run_id,
+            suspended_node_id="gate",
+            suspended_token_id=suspended_token_id,
+            client_result=RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"resumed": True})],
+            ),
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
         )
-    except NotImplementedError as exc:
-        return {
-            "suspended_status": str(out1.status),
-            "checkpoint_wait_reason": checkpoint_state.get("wait_reason"),
-            "checkpoint_suspended_nodes": [
-                item[0]
-                for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
-            ],
-            "resume_unsupported": True,
-            "resume_error": str(exc),
-        }
-    raise AssertionError("AsyncWorkflowRuntime.resume_run should be unsupported")
+    )
+    return _normalize_suspend_resume_result(
+        suspended_status=out1.status,
+        checkpoint_state=checkpoint_state,
+        resumed_status=resumed.status,
+        final_state=dict(resumed.final_state or {}),
+    )
 
 
 def _run_sync_checkpoint_load_and_replay(tmp_path: Path) -> dict:
@@ -1083,8 +1450,12 @@ def _run_sync_checkpoint_load_and_replay(tmp_path: Path) -> dict:
         run_id=run_id,
     )
     ckpt0 = load_checkpoint(conversation_engine=conv_engine, run_id=run_id, step_seq=0)
-    reconstructed = replay_to(conversation_engine=conv_engine, run_id=run_id, target_step_seq=2)
-    return _normalize_checkpoint_replay_result(run_result=out, ckpt0=ckpt0, reconstructed=reconstructed)
+    reconstructed = replay_to(
+        conversation_engine=conv_engine, run_id=run_id, target_step_seq=2
+    )
+    return _normalize_checkpoint_replay_result(
+        run_result=out, ckpt0=ckpt0, reconstructed=reconstructed
+    )
 
 
 def _run_async_checkpoint_load_and_replay(tmp_path: Path) -> dict:
@@ -1128,8 +1499,12 @@ def _run_async_checkpoint_load_and_replay(tmp_path: Path) -> dict:
         )
     )
     ckpt0 = load_checkpoint(conversation_engine=conv_engine, run_id=run_id, step_seq=0)
-    reconstructed = replay_to(conversation_engine=conv_engine, run_id=run_id, target_step_seq=2)
-    return _normalize_checkpoint_replay_result(run_result=out, ckpt0=ckpt0, reconstructed=reconstructed)
+    reconstructed = replay_to(
+        conversation_engine=conv_engine, run_id=run_id, target_step_seq=2
+    )
+    return _normalize_checkpoint_replay_result(
+        run_result=out, ckpt0=ckpt0, reconstructed=reconstructed
+    )
 
 
 def _run_sync_resume_from_checkpoint(tmp_path: Path) -> dict:
@@ -1157,7 +1532,9 @@ def _run_sync_resume_from_checkpoint(tmp_path: Path) -> dict:
         initial_state={},
         run_id="run_resume_bridge_sync_1",
     )
-    ckpt1 = load_checkpoint(conversation_engine=conv_engine, run_id=out1.run_id, step_seq=1)
+    ckpt1 = load_checkpoint(
+        conversation_engine=conv_engine, run_id=out1.run_id, step_seq=1
+    )
     checkpoint_snapshot = copy.deepcopy(ckpt1)
     out2 = runtime.run(
         workflow_id=wf_id,
@@ -1219,7 +1596,9 @@ def _run_async_resume_from_checkpoint(tmp_path: Path) -> dict:
             run_id="run_resume_bridge_async_1",
         )
     )
-    ckpt1 = load_checkpoint(conversation_engine=conv_engine, run_id=out1.run_id, step_seq=1)
+    ckpt1 = load_checkpoint(
+        conversation_engine=conv_engine, run_id=out1.run_id, step_seq=1
+    )
     checkpoint_snapshot = copy.deepcopy(ckpt1)
     out2 = asyncio.run(
         runtime.run(
@@ -1259,7 +1638,9 @@ def _run_sync_resume_from_checkpoint_frontier(tmp_path: Path) -> dict:
         initial_state={},
         run_id="run_frontier_bridge_sync_1",
     )
-    ckpt0 = load_checkpoint(conversation_engine=conv_engine, run_id=out1.run_id, step_seq=0)
+    ckpt0 = load_checkpoint(
+        conversation_engine=conv_engine, run_id=out1.run_id, step_seq=0
+    )
     checkpoint_snapshot = copy.deepcopy(ckpt0)
     out2 = runtime.run(
         workflow_id=wf_id,
@@ -1314,7 +1695,9 @@ def _run_async_resume_from_checkpoint_frontier(tmp_path: Path) -> dict:
             run_id="run_frontier_bridge_async_1",
         )
     )
-    ckpt0 = load_checkpoint(conversation_engine=conv_engine, run_id=out1.run_id, step_seq=0)
+    ckpt0 = load_checkpoint(
+        conversation_engine=conv_engine, run_id=out1.run_id, step_seq=0
+    )
     checkpoint_snapshot = copy.deepcopy(ckpt0)
     out2 = asyncio.run(
         runtime.run(
@@ -1334,7 +1717,7 @@ def _run_async_resume_from_checkpoint_frontier(tmp_path: Path) -> dict:
 
 @pytest.mark.ci_full
 def test_runtime_parity_bridge_wait_reason_suspend_resume():
-    """Bridge parity: async suspend wait reason matches sync; async resume remains unsupported."""
+    """Bridge parity: async suspended runs resume with the sync contract."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"wait_reason_{uuid.uuid4().hex}"
     sync_out = _run_sync_wait_reason_suspend_resume(root / "sync")
     async_out = _run_async_wait_reason_suspend_resume(root / "async")
@@ -1349,16 +1732,7 @@ def test_runtime_parity_bridge_wait_reason_suspend_resume():
         "ended": True,
         "final_suspended_nodes": [],
     }
-    assert async_out == {
-        "suspended_status": "suspended",
-        "checkpoint_wait_reason": "approval",
-        "checkpoint_suspended_nodes": ["gate"],
-        "resume_unsupported": True,
-        "resume_error": (
-            "AsyncWorkflowRuntime.resume_run() is removed; "
-            "use native async scheduling only"
-        ),
-    }
+    assert async_out == sync_out
 
 
 @pytest.mark.ci_full
@@ -1509,9 +1883,13 @@ def _persist_workflow_graph(
         engine.write.add_edge(edge)
 
 
-def _persisted_workflow_node_count(engine: GraphKnowledgeEngine, workflow_id: str) -> int:
+def _persisted_workflow_node_count(
+    engine: GraphKnowledgeEngine, workflow_id: str
+) -> int:
     nodes = engine.read.get_nodes(
-        where={"$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]},
+        where={
+            "$and": [{"entity_type": "workflow_node"}, {"workflow_id": workflow_id}]
+        },
         limit=100,
     )
     return len(nodes)
@@ -1539,12 +1917,16 @@ def _normalize_nested_design_result(
     }
 
 
-def _build_nested_design_bridge_resolver(*, child_wf: str, child_design: WorkflowDesignArtifact):
+def _build_nested_design_bridge_resolver(
+    *, child_wf: str, child_design: WorkflowDesignArtifact
+):
     resolver = MappingStepResolver()
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[], _route_next=["spawn"])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[], _route_next=["spawn"]
+        )
 
     @resolver.register("spawn")
     def _spawn(ctx):
@@ -1707,7 +2089,9 @@ def _run_async_nested_design_bridge(tmp_path: Path) -> dict:
 @pytest.mark.ci_full
 def test_runtime_parity_bridge_nested_workflow_synthesized_design_is_persisted_and_used():
     """Bridge parity: sync and async persist synthesized child workflow design and reuse normalized child result identically."""
-    root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"nested_design_{uuid.uuid4().hex}"
+    root = (
+        Path.cwd() / ".tmp_runtime_parity_bridge" / f"nested_design_{uuid.uuid4().hex}"
+    )
     sync_out = _run_sync_nested_design_bridge(root / "sync")
     async_out = _run_async_nested_design_bridge(root / "async")
 
@@ -1724,12 +2108,16 @@ def test_runtime_parity_bridge_nested_workflow_synthesized_design_is_persisted_a
     assert async_out == sync_out
 
 
-def _build_nested_failure_bridge_resolver(*, child_wf: str, child_design: WorkflowDesignArtifact):
+def _build_nested_failure_bridge_resolver(
+    *, child_wf: str, child_design: WorkflowDesignArtifact
+):
     resolver = MappingStepResolver()
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[], _route_next=["spawn"])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[], _route_next=["spawn"]
+        )
 
     @resolver.register("spawn")
     def _spawn(ctx):
@@ -1886,7 +2274,9 @@ def _run_async_nested_failure_bridge(tmp_path: Path) -> dict:
 @pytest.mark.ci_full
 def test_runtime_parity_bridge_nested_workflow_child_failure_fails_parent():
     """Bridge parity: sync and async child workflow failure short-circuits parent routing with same normalized failure state."""
-    root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"nested_failure_{uuid.uuid4().hex}"
+    root = (
+        Path.cwd() / ".tmp_runtime_parity_bridge" / f"nested_failure_{uuid.uuid4().hex}"
+    )
     sync_out = _run_sync_nested_failure_bridge(root / "sync")
     async_out = _run_async_nested_failure_bridge(root / "async")
 
@@ -1899,11 +2289,16 @@ def test_runtime_parity_bridge_nested_workflow_child_failure_fails_parent():
     assert async_out == sync_out
 
 
-def _normalize_roundtrip_resume_result(*, first_result, checkpoint_state: dict, resumed_result) -> dict:
+def _normalize_roundtrip_resume_result(
+    *, first_result, checkpoint_state: dict, resumed_result
+) -> dict:
     final_state = dict(resumed_result.final_state or {})
     return {
         "first_status": str(first_result.status),
-        "suspended_nodes": [item[0] for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])],
+        "suspended_nodes": [
+            item[0]
+            for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
+        ],
         "resume_status": str(resumed_result.status),
         "started": bool(final_state.get("started")),
         "pi": final_state.get("pi"),
@@ -1922,7 +2317,9 @@ def _run_sync_suspend_resume_roundtrip_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("gate")
     def _gate(_ctx):
@@ -1934,7 +2331,9 @@ def _run_sync_suspend_resume_roundtrip_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("end")
     def _end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -1982,7 +2381,9 @@ def _run_async_suspend_resume_roundtrip_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("gate")
     def _gate(_ctx):
@@ -1994,7 +2395,9 @@ def _run_async_suspend_resume_roundtrip_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("end")
     def _end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = AsyncWorkflowRuntime(
         workflow_engine=wf_engine,
@@ -2016,57 +2419,30 @@ def _run_async_suspend_resume_roundtrip_bridge(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
-    try:
-        asyncio.run(
-            runtime.resume_run(
-                run_id=run_id,
-                suspended_node_id="gate",
-                suspended_token_id=token_id,
-                client_result=RunSuccess(
-                    conversation_node_id=None,
-                    state_update=[("u", {"pi": 3.14})],
-                ),
-                workflow_id=wf_id,
-                conversation_id=conv_id,
-                turn_node_id="turn_1",
-            )
+    resumed = asyncio.run(
+        runtime.resume_run(
+            run_id=run_id,
+            suspended_node_id="gate",
+            suspended_token_id=token_id,
+            client_result=RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"pi": 3.14})],
+            ),
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
         )
-    except NotImplementedError as exc:
-        return {
-            "first_status": str(first.status),
-            "suspended_nodes": [
-                item[0]
-                for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
-            ],
-            "resume_unsupported": True,
-            "resume_error": str(exc),
-        }
-    raise AssertionError("AsyncWorkflowRuntime.resume_run should be unsupported")
-
-
-def _async_resume_unsupported_expected(suspended_nodes: list[str]) -> dict:
-    return {
-        "first_status": "suspended",
-        "suspended_nodes": suspended_nodes,
-        "resume_unsupported": True,
-        "resume_error": (
-            "AsyncWorkflowRuntime.resume_run() is removed; "
-            "use native async scheduling only"
-        ),
-    }
-
-
-def _async_branching_resume_unsupported_expected(
-    suspended_nodes: list[str], *, b_done_before_resume: bool
-) -> dict:
-    out = _async_resume_unsupported_expected(suspended_nodes)
-    out["b_done_before_resume"] = bool(b_done_before_resume)
-    return out
+    )
+    return _normalize_roundtrip_resume_result(
+        first_result=first,
+        checkpoint_state=checkpoint_state,
+        resumed_result=resumed,
+    )
 
 
 @pytest.mark.ci_full
 def test_runtime_parity_bridge_workflow_suspend_and_resume_roundtrip():
-    """Bridge parity: async suspend frontier matches sync; async resume remains unsupported."""
+    """Bridge parity: async suspension and resume match the sync contract."""
     root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"roundtrip_{uuid.uuid4().hex}"
     sync_out = _run_sync_suspend_resume_roundtrip_bridge(root / "sync")
     async_out = _run_async_suspend_resume_roundtrip_bridge(root / "async")
@@ -2079,10 +2455,12 @@ def test_runtime_parity_bridge_workflow_suspend_and_resume_roundtrip():
         "pi": 3.14,
         "ended": True,
     }
-    assert async_out == _async_resume_unsupported_expected(["gate"])
+    assert async_out == sync_out
 
 
-def _seed_suspend_resume_branching_workflow(engine: GraphKnowledgeEngine, wf_id: str) -> None:
+def _seed_suspend_resume_branching_workflow(
+    engine: GraphKnowledgeEngine, wf_id: str
+) -> None:
     engine.write.add_node(_workflow_node_obj(wf_id, "start", "start", start=True))
     engine.write.add_node(_workflow_node_obj(wf_id, "fork", "noop", fanout=True))
     engine.write.add_node(_workflow_node_obj(wf_id, "a", "suspend_op"))
@@ -2101,12 +2479,17 @@ def _seed_suspend_resume_branching_workflow(engine: GraphKnowledgeEngine, wf_id:
         engine.write.add_edge(_workflow_edge_obj(wf_id, edge_id, src, dst))
 
 
-def _normalize_branching_resume_result(*, first_result, checkpoint_state: dict, resumed_result) -> dict:
+def _normalize_branching_resume_result(
+    *, first_result, checkpoint_state: dict, resumed_result
+) -> dict:
     first_state = dict(first_result.final_state or {})
     final_state = dict(resumed_result.final_state or {})
     return {
         "first_status": str(first_result.status),
-        "suspended_nodes": [item[0] for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])],
+        "suspended_nodes": [
+            item[0]
+            for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
+        ],
         "b_done_before_resume": bool(first_state.get("b_done")),
         "resume_status": str(resumed_result.status),
         "a_done": bool(final_state.get("a_done")),
@@ -2126,7 +2509,9 @@ def _run_sync_branching_suspend_resume_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("noop")
     def _noop(_ctx):
@@ -2142,11 +2527,15 @@ def _run_sync_branching_suspend_resume_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("normal_b")
     def _normal_b(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"b_done": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"b_done": True})]
+        )
 
     @resolver.register("end")
     def _end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -2195,7 +2584,9 @@ def _run_async_branching_suspend_resume_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("start")
     def _start(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"started": True})]
+        )
 
     @resolver.register("noop")
     def _noop(_ctx):
@@ -2211,11 +2602,15 @@ def _run_async_branching_suspend_resume_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("normal_b")
     def _normal_b(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"b_done": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"b_done": True})]
+        )
 
     @resolver.register("end")
     def _end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"ended": True})]
+        )
 
     runtime = AsyncWorkflowRuntime(
         workflow_engine=wf_engine,
@@ -2237,40 +2632,35 @@ def _run_async_branching_suspend_resume_bridge(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
-    try:
-        asyncio.run(
-            runtime.resume_run(
-                run_id=run_id,
-                suspended_node_id="a",
-                suspended_token_id=token_id,
-                client_result=RunSuccess(
-                    conversation_node_id=None,
-                    state_update=[("u", {"a_done": True})],
-                ),
-                workflow_id=wf_id,
-                conversation_id=conv_id,
-                turn_node_id="turn_1",
-            )
+    resumed = asyncio.run(
+        runtime.resume_run(
+            run_id=run_id,
+            suspended_node_id="a",
+            suspended_token_id=token_id,
+            client_result=RunSuccess(
+                conversation_node_id=None,
+                state_update=[("u", {"a_done": True})],
+            ),
+            workflow_id=wf_id,
+            conversation_id=conv_id,
+            turn_node_id="turn_1",
         )
-    except NotImplementedError as exc:
-        first_state = dict(first.final_state or {})
-        return {
-            "first_status": str(first.status),
-            "suspended_nodes": [
-                item[0]
-                for item in checkpoint_state.get("_rt_join", {}).get("suspended", [])
-            ],
-            "b_done_before_resume": bool(first_state.get("b_done")),
-            "resume_unsupported": True,
-            "resume_error": str(exc),
-        }
-    raise AssertionError("AsyncWorkflowRuntime.resume_run should be unsupported")
+    )
+    return _normalize_branching_resume_result(
+        first_result=first,
+        checkpoint_state=checkpoint_state,
+        resumed_result=resumed,
+    )
 
 
 @pytest.mark.ci_full
 def test_runtime_parity_bridge_workflow_suspend_and_resume_branching_roundtrip():
-    """Bridge parity: async suspended branch/join frontier matches sync; async resume remains unsupported."""
-    root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"branch_roundtrip_{uuid.uuid4().hex}"
+    """Bridge parity: async suspended branch resumes into the same join state."""
+    root = (
+        Path.cwd()
+        / ".tmp_runtime_parity_bridge"
+        / f"branch_roundtrip_{uuid.uuid4().hex}"
+    )
     sync_out = _run_sync_branching_suspend_resume_bridge(root / "sync")
     async_out = _run_async_branching_suspend_resume_bridge(root / "async")
 
@@ -2283,9 +2673,7 @@ def test_runtime_parity_bridge_workflow_suspend_and_resume_branching_roundtrip()
         "b_done": True,
         "ended": True,
     }
-    assert async_out == _async_branching_resume_unsupported_expected(
-        ["a"], b_done_before_resume=True
-    )
+    assert async_out == sync_out
 
 
 def _seed_unreachable_join_workflow(engine: GraphKnowledgeEngine, wf_id: str) -> None:
@@ -2320,7 +2708,9 @@ def _normalize_unreachable_join_result(result) -> dict:
         "status": str(result.status),
         "ended": bool(final_state.get("ended")),
         "event_set": sorted(set(events)),
-        "join_before_end_a": _idx("join_done") >= 0 and _idx("end_a") >= 0 and _idx("join_done") < _idx("end_a"),
+        "join_before_end_a": _idx("join_done") >= 0
+        and _idx("end_a") >= 0
+        and _idx("join_done") < _idx("end_a"),
     }
 
 
@@ -2458,7 +2848,11 @@ def _run_async_unreachable_join_bridge(tmp_path: Path) -> dict:
 @pytest.mark.ci_full
 def test_runtime_parity_bridge_join_unreachable_branch_not_required():
     """Bridge parity: sync and async joins do not wait on branch outside reachable join region."""
-    root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"unreachable_join_{uuid.uuid4().hex}"
+    root = (
+        Path.cwd()
+        / ".tmp_runtime_parity_bridge"
+        / f"unreachable_join_{uuid.uuid4().hex}"
+    )
     sync_out = _run_sync_unreachable_join_bridge(root / "sync")
     async_out = _run_async_unreachable_join_bridge(root / "async")
 
@@ -2468,7 +2862,9 @@ def test_runtime_parity_bridge_join_unreachable_branch_not_required():
     assert async_out == sync_out
 
 
-def _normalize_trace_metadata_payloads(emitted: list[tuple[str, dict[str, object]]]) -> dict:
+def _normalize_trace_metadata_payloads(
+    emitted: list[tuple[str, dict[str, object]]],
+) -> dict:
     started = emitted[0][1]
     completed = emitted[1][1]
     return {
@@ -2517,7 +2913,13 @@ def test_runtime_parity_bridge_runtime_trace_events_metadata_shape(monkeypatch):
     sync_runtime = WorkflowRuntime(
         workflow_engine=_JoinWorkflowEngine(sync_nodes, sync_edges),
         conversation_engine=_JoinConversationEngine(),
-        step_resolver=MappingStepResolver({"start": lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])}),
+        step_resolver=MappingStepResolver(
+            {
+                "start": lambda _ctx: RunSuccess(
+                    conversation_node_id=None, state_update=[]
+                )
+            }
+        ),
         predicate_registry={},
         trace=True,
         events=emitter_sync,
@@ -2528,15 +2930,35 @@ def test_runtime_parity_bridge_runtime_trace_events_metadata_shape(monkeypatch):
         turn_node_id="turn-trace-meta",
         initial_state={},
     )
+    run_trace = next(
+        node
+        for node in sync_runtime.conversation_engine.nodes
+        if node.metadata.get("entity_type") == "workflow_run"
+    )
+    selection_trace = run_trace.metadata["implementation_selection"]
+    assert selection_trace["schema_version"] == 1
+    assert selection_trace["source"] == "engine_construction"
+    assert set(selection_trace["selectors"]) == {
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+    }
     _sync_state, _async_trace = _run_async_trace_bridge(monkeypatch)
     async_emitted = []
     async_state, _ = _run_async_trace_bridge(monkeypatch)
     del async_state
     async_emitted = []
+
     class _CaptureEmitter:
         sink = None
+
         def step_started(self, ctx):
             async_emitted.append(("started", ctx.as_fields()))
+
         def step_completed(self, ctx, *, status, duration_ms, extra=None):
             payload = dict(ctx.as_fields())
             payload["status"] = status
@@ -2553,11 +2975,19 @@ def test_runtime_parity_bridge_runtime_trace_events_metadata_shape(monkeypatch):
         start = _Node("start", "start", terminal=True, fanout=False)
         return start, {"start": start}, {"start": []}
 
-    monkeypatch.setattr("kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate)
+    monkeypatch.setattr(
+        "kogwistar.runtime.async_runtime.validate_workflow_design", _fake_validate
+    )
     runtime = AsyncWorkflowRuntime(
         workflow_engine=object(),
         conversation_engine=object(),
-        step_resolver=AsyncMappingStepResolver({"start": lambda _ctx: RunSuccess(conversation_node_id=None, state_update=[])}),
+        step_resolver=AsyncMappingStepResolver(
+            {
+                "start": lambda _ctx: RunSuccess(
+                    conversation_node_id=None, state_update=[]
+                )
+            }
+        ),
         predicate_registry={},
         trace=True,
         events=_CaptureEmitter(),
@@ -2602,7 +3032,9 @@ def test_runtime_parity_bridge_runtime_trace_events_metadata_shape(monkeypatch):
     assert async_out == sync_out
 
 
-def _seed_native_update_bridge_workflow(engine: GraphKnowledgeEngine, wf_id: str) -> None:
+def _seed_native_update_bridge_workflow(
+    engine: GraphKnowledgeEngine, wf_id: str
+) -> None:
     _persist_workflow_graph(
         engine,
         nodes=[
@@ -2691,7 +3123,9 @@ def _run_async_native_update_bridge(tmp_path: Path) -> dict:
 
 def test_runtime_parity_bridge_workflow_runtime_native_update_schema_applies_known_and_falls_back_unknown():
     """Bridge parity: sync and async apply known native-update schema keys and fall back unknown keys compatibly."""
-    root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"native_update_{uuid.uuid4().hex}"
+    root = (
+        Path.cwd() / ".tmp_runtime_parity_bridge" / f"native_update_{uuid.uuid4().hex}"
+    )
     sync_out = _run_sync_native_update_bridge(root / "sync")
     async_out = _run_async_native_update_bridge(root / "async")
 
@@ -2700,7 +3134,9 @@ def test_runtime_parity_bridge_workflow_runtime_native_update_schema_applies_kno
 
 
 def _normalize_parity_artifacts(conv_engine: GraphKnowledgeEngine, run_id: str) -> dict:
-    nodes = conv_engine.read.get_nodes(where={"$and": [{"run_id": run_id}]}, limit=10_000)
+    nodes = conv_engine.read.get_nodes(
+        where={"$and": [{"run_id": run_id}]}, limit=10_000
+    )
     edges = conv_engine.read.get_edges(limit=10_000)
     node_counts: dict[str, int] = {}
     edge_counts: dict[str, int] = {}
@@ -2736,7 +3172,9 @@ def _run_side_by_side_bridge(tmp_path: Path, terminal_case: str) -> tuple[dict, 
         _workflow_node_obj(workflow_id, "wf|start", "start", start=True),
         _workflow_node_obj(workflow_id, "wf|leaf", "leaf", terminal=True),
     ]
-    graph_edges = [_workflow_edge_obj(workflow_id, "wf|start->leaf", "wf|start", "wf|leaf")]
+    graph_edges = [
+        _workflow_edge_obj(workflow_id, "wf|start->leaf", "wf|start", "wf|leaf")
+    ]
     _persist_workflow_graph(sync_wf, nodes=graph_nodes, edges=graph_edges)
     _persist_workflow_graph(async_wf, nodes=graph_nodes, edges=graph_edges)
 
@@ -2793,7 +3231,9 @@ def _run_side_by_side_bridge(tmp_path: Path, terminal_case: str) -> tuple[dict, 
             "$and": [
                 {
                     "entity_type": (
-                        "workflow_completed" if terminal_case == "success" else "workflow_failed"
+                        "workflow_completed"
+                        if terminal_case == "success"
+                        else "workflow_failed"
                     )
                 },
                 {"run_id": run_id},
@@ -2806,7 +3246,9 @@ def _run_side_by_side_bridge(tmp_path: Path, terminal_case: str) -> tuple[dict, 
             "$and": [
                 {
                     "entity_type": (
-                        "workflow_completed" if terminal_case == "success" else "workflow_failed"
+                        "workflow_completed"
+                        if terminal_case == "success"
+                        else "workflow_failed"
                     )
                 },
                 {"run_id": run_id},
@@ -2866,7 +3308,11 @@ def test_runtime_parity_bridge_side_by_side_node_edge_and_terminal_parity(
     expected: dict[str, object],
 ):
     """Bridge parity: sync and async persist same normalized conversation node/edge effects and terminal node kind."""
-    root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"side_by_side_{terminal_case}_{uuid.uuid4().hex}"
+    root = (
+        Path.cwd()
+        / ".tmp_runtime_parity_bridge"
+        / f"side_by_side_{terminal_case}_{uuid.uuid4().hex}"
+    )
     sync_out, async_out = _run_side_by_side_bridge(root, terminal_case)
 
     assert sync_out["status"] == expected["status"]
@@ -2896,17 +3342,24 @@ def _run_sync_parent_cancellation_bridge(tmp_path: Path) -> dict:
 
     def _cancel(run_id: str) -> bool:
         seen_runs.append(str(run_id))
-        return bool(cancel_flags.get("parent-run", False) and str(run_id) in {"parent-run", "child-run"})
+        return bool(
+            cancel_flags.get("parent-run", False)
+            and str(run_id) in {"parent-run", "child-run"}
+        )
 
     resolver = MappingStepResolver()
 
     @resolver.register("child")
     def _child(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"child_started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"child_started": True})]
+        )
 
     @resolver.register("child_end")
     def _child_end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"child_ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"child_ended": True})]
+        )
 
     runtime = WorkflowRuntime(
         workflow_engine=wf_engine,
@@ -2960,11 +3413,15 @@ def _run_async_parent_cancellation_bridge(tmp_path: Path) -> dict:
 
     @resolver.register("child")
     async def _child(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"child_started": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"child_started": True})]
+        )
 
     @resolver.register("child_end")
     async def _child_end(_ctx):
-        return RunSuccess(conversation_node_id=None, state_update=[("u", {"child_ended": True})])
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("u", {"child_ended": True})]
+        )
 
     runtime = AsyncWorkflowRuntime(
         workflow_engine=wf_engine,
@@ -3002,7 +3459,9 @@ def _run_async_parent_cancellation_bridge(tmp_path: Path) -> dict:
 @pytest.mark.ci_full
 def test_runtime_parity_bridge_parent_cancellation_propagates_to_child():
     """Bridge parity: sync and async parent cancellation reaches child workflow run and lands same cancelled status."""
-    root = Path.cwd() / ".tmp_runtime_parity_bridge" / f"parent_cancel_{uuid.uuid4().hex}"
+    root = (
+        Path.cwd() / ".tmp_runtime_parity_bridge" / f"parent_cancel_{uuid.uuid4().hex}"
+    )
     sync_out = _run_sync_parent_cancellation_bridge(root / "sync")
     async_out = _run_async_parent_cancellation_bridge(root / "async")
 

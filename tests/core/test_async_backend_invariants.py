@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 
 import pytest
 
+from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
-from kogwistar.engine_core.models import Node
+from kogwistar.engine_core.models import Edge, Node
+from kogwistar.runtime.models import (
+    WorkflowRunNode,
+    WorkflowRuntimeEdge,
+    WorkflowStepExecNode,
+)
 from kogwistar.server.run_registry import RunRegistry
-from tests._helpers.graph_builders import build_entity_node
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 from tests._kg_factories import kg_document
 from tests.core._async_chroma_real import (
     make_real_async_chroma_backend,
@@ -194,3 +202,748 @@ async def test_async_pg_backend_invariants(async_pg_backend, async_pg_uow, tmp_p
     assert (await backend.node_get(ids=[rollback_node.id]))["ids"] == []
     assert await asyncio.to_thread(registry.get_run, rollback_run_id) is None
     assert await asyncio.to_thread(registry.list_events, rollback_run_id) == []
+
+
+@pytest.mark.asyncio
+async def test_async_pg_rust_authority_writes_event_and_projection(
+    async_pg_backend, async_pg_schema, async_pg_uow, tmp_path, monkeypatch
+):
+    """Async writes use the Rust event/projection authority as one operation."""
+    pytest.importorskip("sqlalchemy")
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "async_pg_rust_contract"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    assert engine.meta_sqlite.__class__.__name__ == "RustEnginePostgresMetaStore"
+    meta = engine.meta_sqlite
+    original_enqueue = meta.enqueue_index_job
+    enqueue_transaction_states: list[bool] = []
+
+    def capture_enqueue(**values):
+        enqueue_transaction_states.append(meta.transaction_active)
+        return original_enqueue(**values)
+
+    monkeypatch.setattr(meta, "enqueue_index_job", capture_enqueue)
+
+    doc = kg_document(
+        doc_id="doc::async-pg-rust-contract",
+        content="rust authority alpha beta",
+        source="async-rust-contract",
+    )
+    node = _mk_node(
+        node_id="node::async-pg-rust-contract",
+        doc_id=doc.id,
+        summary="async Rust authority node",
+    )
+    target = _mk_node(
+        node_id="node::async-pg-rust-contract-target",
+        doc_id=doc.id,
+        summary="async Rust authority edge target",
+    )
+    await engine.write.add_node_async(node, doc_id=doc.id)
+    await engine.write.add_node_async(target, doc_id=doc.id)
+
+    edge: Edge = build_relationship_edge(
+        edge_id="edge::async-pg-rust-contract",
+        src=node.id,
+        tgt=target.id,
+        doc_id=doc.id,
+        summary="async Rust authority edge",
+    )
+    await engine.write.add_edge_async(edge, doc_id=doc.id)
+
+    assert (
+        await async_pg_backend.node_get(ids=[node.id, target.id])
+    )["ids"] == [node.id, target.id]
+    assert (await async_pg_backend.edge_get(ids=[edge.id]))["ids"] == [edge.id]
+    events = list(
+        engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
+    )
+    assert [(kind, entity_id, op) for _, kind, entity_id, op, _ in events] == [
+        ("node", node.id, "ADD"),
+        ("node", target.id, "ADD"),
+        ("edge", edge.id, "ADD"),
+    ]
+    assert enqueue_transaction_states
+    assert all(enqueue_transaction_states)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_rust_authority_rolls_back_graph_write_if_index_enqueue_fails(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_index_enqueue_failure_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    source = _mk_node(
+        node_id="node::async-pg-index-enqueue-source",
+        doc_id="doc::async-pg-index-enqueue",
+        summary="edge endpoint",
+    )
+    target = _mk_node(
+        node_id="node::async-pg-index-enqueue-target",
+        doc_id="doc::async-pg-index-enqueue",
+        summary="edge endpoint",
+    )
+    if entity_kind == "edge":
+        await engine.write.add_node_async(source)
+        await engine.write.add_node_async(target)
+        entity = build_relationship_edge(
+            edge_id="edge::async-pg-index-enqueue-failure",
+            src=source.id,
+            tgt=target.id,
+            doc_id="doc::async-pg-index-enqueue",
+        )
+    else:
+        entity = _mk_node(
+            node_id="node::async-pg-index-enqueue-failure",
+            doc_id="doc::async-pg-index-enqueue",
+            summary="must roll back with index intent",
+        )
+
+    def fail_enqueue(**_values):
+        raise RuntimeError("injected index enqueue failure")
+
+    monkeypatch.setattr(engine.meta_sqlite, "enqueue_index_job", fail_enqueue)
+    write = engine.write.add_node_async if entity_kind == "node" else engine.write.add_edge_async
+    with pytest.raises(RuntimeError, match="injected index enqueue failure"):
+        await write(entity)
+
+    entity_events = [
+        event
+        for event in engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
+        if event[2] == entity.id
+    ]
+    assert entity_events == []
+    assert all(
+        job.entity_id != entity.id
+        for job in engine.meta_sqlite.list_index_jobs(namespace=engine.namespace)
+    )
+    if entity_kind == "node":
+        assert (await async_pg_backend.node_get(ids=[entity.id]))["ids"] == []
+    else:
+        assert (await async_pg_backend.edge_get(ids=[entity.id]))["ids"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_python_authority_rolls_back_graph_write_if_index_enqueue_fails(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_python_index_enqueue_failure_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    assert isinstance(engine.meta_sqlite, EnginePostgresMetaStore)
+    source = _mk_node(
+        node_id="node::async-pg-python-index-source",
+        doc_id="doc::async-pg-python-index",
+        summary="edge endpoint",
+    )
+    target = _mk_node(
+        node_id="node::async-pg-python-index-target",
+        doc_id="doc::async-pg-python-index",
+        summary="edge endpoint",
+    )
+    if entity_kind == "edge":
+        await engine.write.add_node_async(source)
+        await engine.write.add_node_async(target)
+        entity = build_relationship_edge(
+            edge_id="edge::async-pg-python-index-enqueue-failure",
+            src=source.id,
+            tgt=target.id,
+            doc_id="doc::async-pg-python-index",
+        )
+    else:
+        entity = _mk_node(
+            node_id="node::async-pg-python-index-enqueue-failure",
+            doc_id="doc::async-pg-python-index",
+            summary="must roll back with index intent",
+        )
+
+    def fail_enqueue(**_values):
+        raise RuntimeError("injected Python index enqueue failure")
+
+    monkeypatch.setattr(engine.meta_sqlite, "enqueue_index_job", fail_enqueue)
+    write = engine.write.add_node_async if entity_kind == "node" else engine.write.add_edge_async
+    with pytest.raises(RuntimeError, match="injected Python index enqueue failure"):
+        await write(entity)
+
+    entity_events = [
+        event
+        for event in engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)
+        if event[2] == entity.id
+    ]
+    assert entity_events == []
+    if entity_kind == "node":
+        assert (await async_pg_backend.node_get(ids=[entity.id]))["ids"] == []
+    else:
+        assert (await async_pg_backend.edge_get(ids=[entity.id]))["ids"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_python_authority_enqueues_index_intents_atomically(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    from kogwistar.engine_core.postgres_backend import get_active_conn
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "python")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "python")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_python_atomic_index_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    assert isinstance(engine.meta_sqlite, EnginePostgresMetaStore)
+    source = _mk_node(
+        node_id="node::async-pg-python-atomic-source",
+        doc_id="doc::async-pg-python-atomic",
+        summary="edge endpoint",
+    )
+    target = _mk_node(
+        node_id="node::async-pg-python-atomic-target",
+        doc_id="doc::async-pg-python-atomic",
+        summary="edge endpoint",
+    )
+    if entity_kind == "edge":
+        await engine.write.add_node_async(source)
+        await engine.write.add_node_async(target)
+        entity = build_relationship_edge(
+            edge_id="edge::async-pg-python-atomic",
+            src=source.id,
+            tgt=target.id,
+            doc_id="doc::async-pg-python-atomic",
+        )
+    else:
+        entity = _mk_node(
+            node_id="node::async-pg-python-atomic",
+            doc_id="doc::async-pg-python-atomic",
+            summary="atomic index intent",
+        )
+
+    meta = engine.meta_sqlite
+    original_enqueue = meta.enqueue_index_job
+    transaction_states: list[bool] = []
+
+    def capture_enqueue(**values):
+        transaction_states.append(get_active_conn() is not None)
+        return original_enqueue(**values)
+
+    monkeypatch.setattr(meta, "enqueue_index_job", capture_enqueue)
+    monkeypatch.setattr(engine, "reconcile_indexes", lambda **_values: 0)
+    write = engine.write.add_node_async if entity_kind == "node" else engine.write.add_edge_async
+    await write(entity)
+
+    assert transaction_states
+    assert all(transaction_states)
+    jobs = [
+        job
+        for job in meta.list_index_jobs(namespace=engine.namespace)
+        if job.entity_id == entity.id
+    ]
+    expected_payload = engine.indexing.canonical_source_payload(
+        entity_kind=entity_kind, entity_id=entity.id
+    )
+    assert jobs
+    assert all(job.payload_json == expected_payload for job in jobs), (
+        [(job.index_kind, job.payload_json) for job in jobs],
+        expected_payload,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_rust_authority_rejects_inline_index_mode_before_graph_effect(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_rust_inline_disabled_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    engine._phase1_enable_index_jobs = False
+    if entity_kind == "node":
+        entity = _mk_node(
+            node_id="node::async-pg-inline-disabled",
+            doc_id="doc::async-pg-inline-disabled",
+            summary="must not be committed",
+        )
+    else:
+        entity = build_relationship_edge(
+            edge_id="edge::async-pg-inline-disabled",
+            src="missing-source",
+            tgt="missing-target",
+            doc_id="doc::async-pg-inline-disabled",
+        )
+
+    write = engine.write.add_node_async if entity_kind == "node" else engine.write.add_edge_async
+    with pytest.raises(RuntimeError, match="requires durable index jobs"):
+        await write(entity)
+
+    assert list(engine.meta_sqlite.iter_entity_events(namespace=engine.namespace)) == []
+    if entity_kind == "node":
+        assert (await async_pg_backend.node_get(ids=[entity.id]))["ids"] == []
+    else:
+        assert (await async_pg_backend.edge_get(ids=[entity.id]))["ids"] == []
+
+
+@pytest.mark.asyncio
+async def test_async_pg_rust_authority_round_trips_derived_workflow_models(
+    async_pg_backend, tmp_path, monkeypatch
+):
+    """Derived Pydantic models cross Python/Rust writes and reads intact."""
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "async_pg_rust_derived_contract"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+
+    run_base = _mk_node(
+        node_id="node::async-pg-derived-run",
+        doc_id="doc::async-pg-derived",
+        summary="derived workflow run",
+    )
+    run_node = WorkflowRunNode(
+        id=run_base.id,
+        label=run_base.label,
+        type=run_base.type,
+        summary=run_base.summary,
+        doc_id=run_base.doc_id,
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "workflow_run",
+            "workflow_id": "wf::derived",
+            "workflow_version": "v1",
+            "run_id": "run::derived",
+            "conversation_id": "conversation::derived",
+            "turn_node_id": "turn::derived",
+            "status": "running",
+        },
+    )
+    step_exec_node = WorkflowStepExecNode(
+        id="node::async-pg-derived-step",
+        label="parse step execution",
+        type="entity",
+        summary="derived workflow step execution",
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "workflow_step_exec",
+            "workflow_id": "wf::derived",
+            "run_id": "run::derived",
+            "workflow_node_id": "wf-node::parse",
+            "step_seq": 1,
+            "op": "parse",
+            "status": "ok",
+            "duration_ms": 17,
+            "result_json": '{"parsed":true}',
+        },
+    )
+    conversation_node = ConversationNode(
+        id="node::async-pg-derived-conversation",
+        label="conversation turn",
+        type="entity",
+        summary="derived conversation user turn",
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "conversation_node",
+            "level_from_root": 0,
+            "in_conversation_chain": True,
+            "in_ui_chain": True,
+        },
+        role="user",
+        turn_index=0,
+        conversation_id="conversation::derived",
+        user_id="user::reader",
+    )
+    assistant_node = ConversationNode(
+        id="node::async-pg-derived-assistant",
+        label="assistant reply",
+        type="entity",
+        summary="derived conversation assistant turn",
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "conversation_node",
+            "level_from_root": 1,
+            "in_conversation_chain": True,
+            "in_ui_chain": True,
+        },
+        role="assistant",
+        turn_index=1,
+        conversation_id="conversation::derived",
+        user_id="user::reader",
+        level_from_root=1,
+    )
+    conversation_edge = ConversationEdge(
+        id="edge::async-pg-derived-conversation-next-turn",
+        label="next turn",
+        type="relationship",
+        summary="user turn leads to assistant turn",
+        relation="next_turn",
+        source_ids=[conversation_node.id],
+        target_ids=[assistant_node.id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "causal_type": "chain",
+            "char_distance_from_last_summary": 48,
+            "turn_distance_from_last_summary": 1,
+        },
+    )
+    target = _mk_node(
+        node_id="node::async-pg-derived-target",
+        doc_id="doc::async-pg-derived",
+        summary="derived workflow edge target",
+    )
+    runtime_edge = WorkflowRuntimeEdge(
+        id="edge::async-pg-derived-runtime",
+        label="runtime transition",
+        type="relationship",
+        summary="workflow run links to target",
+        relation="next",
+        source_ids=[run_node.id],
+        target_ids=[target.id],
+        source_edge_ids=None,
+        target_edge_ids=None,
+        doc_id="doc::async-pg-derived",
+        mentions=run_base.mentions,
+        metadata={
+            "relation": "next",
+            "conversation_id": "conversation::derived",
+            "run_id": "run::derived",
+            "entity_type": "conversation_edge",
+        },
+    )
+    acl_previous = ACLNode(
+        id="node::async-pg-derived-acl-v1",
+        label="acl:truth:target:node",
+        type="entity",
+        summary="private acl for target node",
+        doc_id="acl:truth",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "acl_record",
+            "acl_truth_graph": engine.kg_graph_type,
+            "acl_target_entity_id": target.id,
+            "acl_target_grain": "node",
+            "acl_version": 1,
+            "acl_mode": "private",
+        },
+        properties={"shared_with_principals": [], "shared_with_groups": []},
+    )
+    acl_current = ACLNode(
+        id="node::async-pg-derived-acl-v2",
+        label="acl:truth:target:node",
+        type="entity",
+        summary="shared acl for target node",
+        doc_id="acl:truth",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "acl_record",
+            "acl_truth_graph": engine.kg_graph_type,
+            "acl_target_entity_id": target.id,
+            "acl_target_grain": "node",
+            "acl_version": 2,
+            "acl_mode": "shared",
+            "supersedes_version": 1,
+        },
+        properties={"shared_with_principals": ["user:reader"], "shared_with_groups": []},
+    )
+    acl_edge = ACLEdge(
+        id="edge::async-pg-derived-acl-supersedes",
+        label="acl_supersedes",
+        type="relationship",
+        summary="acl supersedes previous acl state",
+        relation="acl_supersedes",
+        source_ids=[acl_current.id],
+        target_ids=[acl_previous.id],
+        source_edge_ids=[],
+        target_edge_ids=[],
+        doc_id="acl:truth",
+        mentions=run_base.mentions,
+        metadata={
+            "entity_type": "acl_supersedes",
+            "acl_truth_graph": engine.kg_graph_type,
+            "acl_target_entity_id": target.id,
+            "acl_target_grain": "node",
+        },
+    )
+
+    meta = engine.meta_sqlite
+    original_apply = meta.apply_graph_mutation
+    original_projection_records = meta.graph_projection_records
+    envelopes: list[dict[str, object]] = []
+    projection_lock_requests: list[bool] = []
+
+    def capture_envelope(**values):
+        envelope = values.get("model_envelope")
+        assert isinstance(envelope, dict)
+        envelopes.append(envelope)
+        return original_apply(**values)
+
+    def capture_projection_lock(**values):
+        projection_lock_requests.append(bool(values.get("for_update", False)))
+        return original_projection_records(**values)
+
+    monkeypatch.setattr(meta, "apply_graph_mutation", capture_envelope)
+    monkeypatch.setattr(meta, "graph_projection_records", capture_projection_lock)
+    await engine.write.add_node_async(run_node)
+    await engine.write.add_node_async(step_exec_node)
+    await engine.write.add_node_async(conversation_node)
+    await engine.write.add_node_async(assistant_node)
+    await engine.write.add_edge_async(conversation_edge)
+    await engine.write.add_node_async(target)
+    await engine.write.add_edge_async(runtime_edge)
+    await engine.write.add_node_async(acl_previous)
+    await engine.write.add_node_async(acl_current)
+    await engine.write.add_edge_async(acl_edge)
+    assert True in projection_lock_requests
+
+    assert [envelope["model_class"] for envelope in envelopes] == [
+        "workflow_run_node",
+        "workflow_step_exec_node",
+        "conversation_node",
+        "conversation_node",
+        "conversation_edge",
+        "node",
+        "workflow_runtime_edge",
+        "acl_node",
+        "acl_node",
+        "acl_edge",
+    ]
+    events = list(meta.iter_entity_events(namespace=engine.namespace))
+    event_payloads = {
+        entity_id: json.loads(payload_json)
+        for _, _, entity_id, _, payload_json in events
+    }
+    assert type(WorkflowRunNode.model_validate(event_payloads[run_node.id])) is WorkflowRunNode
+    assert (
+        type(WorkflowStepExecNode.model_validate(event_payloads[step_exec_node.id]))
+        is WorkflowStepExecNode
+    )
+    assert (
+        type(ConversationNode.model_validate(event_payloads[conversation_node.id]))
+        is ConversationNode
+    )
+    assert (
+        type(ConversationNode.model_validate(event_payloads[assistant_node.id]))
+        is ConversationNode
+    )
+    assert (
+        type(ConversationEdge.model_validate(event_payloads[conversation_edge.id]))
+        is ConversationEdge
+    )
+    assert (
+        type(WorkflowRuntimeEdge.model_validate(event_payloads[runtime_edge.id]))
+        is WorkflowRuntimeEdge
+    )
+    assert type(ACLNode.model_validate(event_payloads[acl_current.id])) is ACLNode
+    assert type(ACLEdge.model_validate(event_payloads[acl_edge.id])) is ACLEdge
+    assert event_payloads[acl_edge.id]["source_ids"] == [acl_current.id]
+    assert event_payloads[acl_edge.id]["target_ids"] == [acl_previous.id]
+
+    node_rows = await async_pg_backend.node_get(
+        ids=[run_node.id], include=["documents", "metadatas"]
+    )
+    edge_rows = await async_pg_backend.edge_get(
+        ids=[runtime_edge.id], include=["documents", "metadatas"]
+    )
+    assert node_rows["ids"] == [run_node.id]
+    assert node_rows["metadatas"][0]["_class_name"] == "WorkflowRunNode"
+    step_rows = await async_pg_backend.node_get(
+        ids=[step_exec_node.id], include=["documents", "metadatas"]
+    )
+    assert step_rows["ids"] == [step_exec_node.id]
+    assert step_rows["metadatas"][0]["_class_name"] == "WorkflowStepExecNode"
+    conversation_rows = await async_pg_backend.node_get(
+        ids=[conversation_node.id], include=["documents", "metadatas"]
+    )
+    assert conversation_rows["ids"] == [conversation_node.id]
+    assert conversation_rows["metadatas"][0]["_class_name"] == "ConversationNode"
+    conversation_edge_rows = await async_pg_backend.edge_get(
+        ids=[conversation_edge.id], include=["documents", "metadatas"]
+    )
+    assert conversation_edge_rows["ids"] == [conversation_edge.id]
+    assert conversation_edge_rows["metadatas"][0]["relation"] == "next_turn"
+    assert conversation_edge_rows["metadatas"][0]["node_endpoint_count"] == 2
+    assert conversation_edge_rows["metadatas"][0]["edge_endpoint_count"] == 0
+    assert edge_rows["ids"] == [runtime_edge.id]
+    assert edge_rows["metadatas"][0]["relation"] == "next"
+    assert edge_rows["metadatas"][0]["node_endpoint_count"] == 2
+    assert edge_rows["metadatas"][0]["edge_endpoint_count"] == 0
+
+    python_acl_node = engine.read.get_nodes(ids=[acl_current.id], node_type=ACLNode)
+    python_acl_edge = engine.read.get_edges(ids=[acl_edge.id], edge_type=ACLEdge)
+    assert len(python_acl_node) == 1
+    assert python_acl_node[0].metadata["acl_version"] == 2
+    assert python_acl_node[0].properties["shared_with_principals"] == ["user:reader"]
+    assert len(python_acl_edge) == 1
+    assert python_acl_edge[0].relation == "acl_supersedes"
+    assert python_acl_edge[0].source_ids == [acl_current.id]
+    assert python_acl_edge[0].target_ids == [acl_previous.id]
+    python_step_node = engine.read.get_nodes(
+        ids=[step_exec_node.id], node_type=WorkflowStepExecNode
+    )
+    assert len(python_step_node) == 1
+    assert type(python_step_node[0]) is WorkflowStepExecNode
+    assert python_step_node[0].metadata["result_json"] == '{"parsed":true}'
+    python_conversation_node = engine.read.get_nodes(
+        ids=[conversation_node.id], node_type=ConversationNode
+    )
+    assert len(python_conversation_node) == 1
+    assert type(python_conversation_node[0]) is ConversationNode
+    assert python_conversation_node[0].role == "user"
+    assert python_conversation_node[0].turn_index == 0
+    assert python_conversation_node[0].conversation_id == "conversation::derived"
+    python_assistant_node = engine.read.get_nodes(
+        ids=[assistant_node.id], node_type=ConversationNode
+    )
+    python_conversation_edge = engine.read.get_edges(
+        ids=[conversation_edge.id], edge_type=ConversationEdge
+    )
+    assert len(python_assistant_node) == 1
+    assert python_assistant_node[0].role == "assistant"
+    assert python_assistant_node[0].turn_index == 1
+    assert len(python_conversation_edge) == 1
+    assert type(python_conversation_edge[0]) is ConversationEdge
+    assert python_conversation_edge[0].metadata["causal_type"] == "chain"
+    assert python_conversation_edge[0].source_ids == [conversation_node.id]
+    assert python_conversation_edge[0].target_ids == [assistant_node.id]
+    projection_lock_requests.clear()
+    authorized = engine.decide_acl(
+        truth_graph=engine.kg_graph_type,
+        entity_id=target.id,
+        principal_id="user:reader",
+    )
+    denied = engine.decide_acl(
+        truth_graph=engine.kg_graph_type,
+        entity_id=target.id,
+        principal_id="user:outsider",
+    )
+    assert authorized.visible is True
+    assert projection_lock_requests and not any(projection_lock_requests)
+    assert authorized.record is not None and authorized.record.version == 2
+    assert authorized.reason == "principal_share"
+    assert denied.visible is False
+    assert denied.reason == "not_shared"
+    assert engine.acl.get_node_acl_checked(
+        target.id,
+        principal_id="user:reader",
+    ).id == target.id
+    with pytest.raises(PermissionError, match="ACL denied node"):
+        engine.acl.get_node_acl_checked(
+            target.id,
+            principal_id="user:outsider",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entity_kind", ["node", "edge"])
+async def test_async_pg_rust_authority_rolls_back_event_and_projection_together(
+    entity_kind, async_pg_backend, tmp_path, monkeypatch
+):
+    """A failure after Rust mutation must roll back the outer async transaction."""
+    pytest.importorskip("kogwistar._rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_CONTRACTS", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_POSTGRES_AUTHORITY", "rust")
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / f"async_pg_rust_rollback_{entity_kind}"),
+        embedding_function=_AsyncEmbeddingFunction(),
+        backend=async_pg_backend,
+    )
+    node = _mk_node(
+        node_id=f"node::async-pg-rollback-{entity_kind}",
+        doc_id="doc::async-pg-rollback",
+        summary="transaction rollback source",
+    )
+    target = _mk_node(
+        node_id=f"node::async-pg-rollback-{entity_kind}-target",
+        doc_id="doc::async-pg-rollback",
+        summary="transaction rollback target",
+    )
+    try:
+        if entity_kind == "edge":
+            await engine.write.add_node_async(node)
+            await engine.write.add_node_async(target)
+            entity = build_relationship_edge(
+                edge_id="edge::async-pg-rollback",
+                src=node.id,
+                tgt=target.id,
+                doc_id="doc::async-pg-rollback",
+                embedding=[0.1, 0.2, 0.3],
+            )
+        else:
+            entity = node
+
+        meta = engine.meta_sqlite
+        original_apply = meta.apply_graph_mutation
+
+        def apply_then_fail(**values):
+            result = original_apply(**values)
+            if values.get("entity_kind") == entity_kind:
+                raise RuntimeError("injected failure after Rust graph mutation")
+            return result
+
+        monkeypatch.setattr(meta, "apply_graph_mutation", apply_then_fail)
+        write = (
+            engine.write.add_edge_async
+            if entity_kind == "edge"
+            else engine.write.add_node_async
+        )
+        with pytest.raises(RuntimeError, match="after Rust graph mutation"):
+            await write(entity)
+
+        ids = (
+            (await async_pg_backend.edge_get(ids=[entity.id]))["ids"]
+            if entity_kind == "edge"
+            else (await async_pg_backend.node_get(ids=[entity.id]))["ids"]
+        )
+        assert ids == []
+        events = list(meta.iter_entity_events(namespace=engine.namespace))
+        assert not any(event[2] == entity.id for event in events)
+    finally:
+        engine.close()

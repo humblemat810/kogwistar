@@ -9,6 +9,115 @@ use std::fmt::{self, Formatter};
 use thiserror::Error;
 use uuid::Uuid;
 
+mod agent_event;
+mod conversation;
+mod delegation;
+mod document;
+mod graph_extraction;
+mod graph_kind;
+mod graph_model;
+mod graph_mutation;
+mod graph_read;
+mod graph_slice;
+mod native_seam;
+mod projection_checkpoint;
+mod provider_event;
+mod provider_request;
+mod search_index;
+mod source_map;
+mod tool_audit;
+mod worker_identity;
+pub use agent_event::{
+    DurableProviderEventPublicationV1, DurableProviderEventV1, EventTraceMetadataV1,
+    durable_provider_event, durable_provider_event_id,
+};
+pub use conversation::{
+    CONVERSATION_WIRE_VERSION, ContextSnapshotV1, ConversationContractError, ConversationSummaryV1,
+    ConversationTranscriptV1, ConversationTurnV1, context_snapshot_from_str,
+    conversation_summary_from_str, conversation_transcript_from_str, conversation_turn_from_str,
+};
+pub use delegation::{
+    DELEGATION_AUTHORITY_SCHEMA_VERSION, DelegationAuthorityV1, DelegationError,
+    attenuate_capabilities,
+};
+pub use document::{DOCUMENT_UPSERT_WIRE_VERSION, DocumentUpsertV1, DocumentUpsertValidationError};
+pub use graph_extraction::{
+    GRAPH_EXTRACTION_WIRE_VERSION, GraphExtractionRequestV1, GraphExtractionValidationError,
+};
+pub use graph_kind::normalize_graph_kind;
+pub use graph_model::{
+    AclEdgeMetadataV1, AclEdgeTypeV1, AclGrainV1, AclModeV1, AclNodeMetadataV1,
+    AssocFlattenedLlmEdgeV1, AssocFlattenedLlmNodeV1, ConversationCausalTypeV1,
+    ConversationEdgeMetadataV1, ConversationNodeMetadataV1, ConversationRoleV1, DocumentNodeTypeV1,
+    DocumentNodeV1, EdgeEntity, EdgeId, FlattenedGroundingV1, FlattenedLlmEdgeV1,
+    FlattenedLlmNodeV1, GraphCapabilityProfile, GraphEdgePayload, GraphEntity, GraphEntityCoreV1,
+    GraphEntityKind, GraphEntityPayload, GraphEntityType, GraphModelCapabilityProfileV1,
+    GraphModelClass, GraphModelEnvelope, GraphModelError, GraphModelFamily, GroundingV1,
+    HasExactLevel, HasLevel, HasLifecycle, HasMetadata, LifecycleStatus, LlmEdgeExtractionV1,
+    LlmEdgeV1, LlmEntityFieldsV1, LlmGroundingV1, LlmNodeExtractionV1, LlmNodeV1, LlmTextSpanV1,
+    MentionVerificationMethod, MentionVerificationV1, NodeId, PYTHON_GRAPH_WIRE_VERSION,
+    PersistentEdgeV1, PersistentGraphEntityV1, PersistentGraphEntityV2, PersistentNodeV1,
+    PureChromaEdgeV1, PureChromaFieldsV1, PureChromaNodeV1, PythonIntegerV1,
+    RawGraphModelEnvelopeV1, RequiredNullable, TextSpanV1, TypedGraphEntity,
+    WorkflowEdgeMetadataV1, WorkflowNodeMetadataV1, decode_persistent_graph_model_v2_from_str,
+    graph_model_capability_profiles, project_graph_model_slice_from_str,
+    project_graph_model_slices_from_str, python_level_from_root_from_str,
+    round_trip_raw_graph_model_envelope_from_str, validate_graph_model_family_from_str,
+};
+pub use graph_mutation::{
+    GraphDefaultAclIntentV1, GraphIndexJobV1, GraphMutationBatchV1, GraphMutationBatchV2,
+    GraphMutationV1, GraphMutationValidationError, GraphRecordV1, GraphScopeV1,
+};
+pub use graph_read::{
+    GRAPH_NEIGHBORS_REQUEST_VERSION, GraphNeighborsRequestV1, GraphNeighborsResolveModeV1,
+    graph_neighbors_request_from_str,
+};
+pub use graph_slice::{
+    GRAPH_SLICE_MANIFEST_VERSION, GraphModelSliceV1, GraphSliceChildLocation,
+    GraphSliceDeclarationV1, GraphSliceError, GraphSliceFieldV1, GraphSliceManifestV1,
+    GraphSliceMode,
+};
+pub use native_seam::{
+    NATIVE_SEAM_ATTESTATION_VERSION, NativeSeamAuthority, RUST_NATIVE_EXECUTOR_AUTHORITY,
+    RUST_NATIVE_IMPLEMENTATION_AUTHORITY, attach_native_seam_attestation,
+    attach_rust_native_executor_attestation, attach_rust_native_seam_attestation,
+    attach_typed_native_seam_attestation, native_seam_attestation_is_valid,
+};
+pub use projection_checkpoint::{
+    PROJECTION_CHECKPOINT_WIRE_VERSION, ProjectionCheckpointV1, ProjectionCheckpointValidationError,
+};
+pub use provider_event::{
+    PROVIDER_EVENT_CONTRACT_VERSION, ProviderEventContractError, ProviderEventV1,
+    provider_event_from_str,
+};
+pub use provider_request::{
+    PROVIDER_REQUEST_CONTRACT_VERSION, ProviderRequestContractError, ProviderRequestV1,
+    provider_request_from_str,
+};
+pub use search_index::{
+    SearchIndexEntryV1, SearchIndexUpsertV1, build_search_index_embedding_text,
+    make_search_index_key,
+};
+pub use source_map::{
+    SOURCE_MAP_WIRE_VERSION, SourceMapChunkV1, SourceMapV1, SourceMapValidationError,
+};
+pub use tool_audit::{
+    TOOL_AUDIT_WIRE_VERSION, ToolAuditContractError, ToolAuditItemV1, ToolAuditResponseV1,
+    tool_audit_response_from_str,
+};
+pub use worker_identity::{
+    WORKER_IDENTITY_ATTESTATION_VERSION, WorkerIdentityAttestationError,
+    WorkerIdentityAttestationV1, worker_identity_attestation_from_str,
+};
+
+/// Return the stable graph-class names exposed by the versioned Python seam.
+pub fn supported_graph_model_classes() -> Vec<&'static str> {
+    graph_model::GraphModelClass::all()
+        .iter()
+        .map(|class| class.wire_name())
+        .collect()
+}
+
 pub const CONTRACT_VERSION: &str = "1.0.0";
 
 #[derive(Debug, Error)]
@@ -50,6 +159,8 @@ pub enum ContractError {
     StateUpdatePayloadMustBeObject,
     #[error("state-update append target must be a list")]
     StateUpdateTargetMustBeList,
+    #[error("unsupported state-update mode: {mode:?}")]
+    StateUpdateModeUnsupported { mode: String },
     #[error("Either update or state_update can be used")]
     StateUpdateConflict,
     #[error("event envelope must be a JSON object")]
@@ -109,6 +220,9 @@ impl ContractError {
             Self::StateUpdateItemMustBePair => "KOGWISTAR_CONTRACT_STATE_UPDATE_ITEM_TYPE",
             Self::StateUpdatePayloadMustBeObject => "KOGWISTAR_CONTRACT_STATE_UPDATE_PAYLOAD_TYPE",
             Self::StateUpdateTargetMustBeList => "KOGWISTAR_CONTRACT_STATE_UPDATE_TARGET_TYPE",
+            Self::StateUpdateModeUnsupported { .. } => {
+                "KOGWISTAR_CONTRACT_STATE_UPDATE_MODE_UNSUPPORTED"
+            }
             Self::StateUpdateConflict => "KOGWISTAR_CONTRACT_STATE_UPDATE_CONFLICT",
             Self::EventEnvelopeMustBeObject => "KOGWISTAR_CONTRACT_EVENT_ENVELOPE_TYPE",
             Self::EventTypeMissing => "KOGWISTAR_CONTRACT_EVENT_TYPE_MISSING",
@@ -376,6 +490,56 @@ fn state_update_entries(value: &Value) -> Result<&Vec<Value>, ContractError> {
         .ok_or(ContractError::StateUpdateItemMustBePair)
 }
 
+fn apply_state_update_entry(
+    state: &mut Value,
+    mode: &str,
+    payload: &Map<String, Value>,
+) -> Result<(), ContractError> {
+    match mode {
+        "a" => {
+            for (key, value) in payload {
+                state_list_mut(state_object_mut(state)?, key)?.push(value.clone());
+            }
+        }
+        "u" => {
+            for (key, value) in payload {
+                state_object_mut(state)?.insert(key.clone(), value.clone());
+            }
+        }
+        "e" => {
+            for (key, value) in payload {
+                extend_json_list(
+                    state_list_mut(state_object_mut(state)?, key)?,
+                    value.clone(),
+                )?;
+            }
+        }
+        // Preserve the historical JSON bridge behavior. New typed callers
+        // validate the mode vocabulary before folding through this helper.
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Apply already-typed runtime deltas directly, rejecting unsupported modes.
+/// This avoids serializing Rust-owned delta DTOs back through JSON at the
+/// native runtime boundary while sharing the same fold semantics.
+pub fn apply_state_update_pairs<'a, I>(mut state: Value, updates: I) -> Result<Value, ContractError>
+where
+    I: IntoIterator<Item = (&'a str, &'a Map<String, Value>)>,
+{
+    state_object_mut(&mut state)?;
+    for (mode, payload) in updates {
+        if !matches!(mode, "u" | "a" | "e") {
+            return Err(ContractError::StateUpdateModeUnsupported {
+                mode: mode.to_owned(),
+            });
+        }
+        apply_state_update_entry(&mut state, mode, payload)?;
+    }
+    Ok(state)
+}
+
 /// Apply the JSON subset of the Python runtime's `u`/`a`/`e` state reducer.
 /// The bridge keeps Python ownership for non-JSON values and preserves in-place
 /// mutation by updating the caller's existing dict after this fold succeeds.
@@ -383,16 +547,31 @@ pub fn apply_state_update_from_str(payload_json: &str) -> Result<String, Contrac
     let Value::Object(request) = serde_json::from_str::<Value>(payload_json)? else {
         return Err(ContractError::StateUpdateRequestMustBeObject);
     };
-    let mut state = request
+    let state = request
         .get("state")
         .cloned()
         .ok_or(ContractError::StateUpdateStateMustBeObject)?;
-    state_object_mut(&mut state)?;
     let state_update = request
         .get("state_update")
         .ok_or(ContractError::StateUpdateItemMustBePair)?;
-    let update = request.get("update").cloned().unwrap_or(Value::Null);
-    if json_truthy(&update) && json_truthy(state_update) {
+    let update = request.get("update");
+    let state_schema = request.get("state_schema");
+    let state = apply_state_update_values(state, state_update, update, state_schema)?;
+    Ok(canonical_json(&state, false))
+}
+
+/// Apply a Python-compatible JSON state delta without crossing a string/JSON
+/// serialization boundary. Native runtime callers use this same reducer for
+/// in-memory effects; `apply_state_update_from_str` remains the stable bridge.
+pub fn apply_state_update_values(
+    mut state: Value,
+    state_update: &Value,
+    update: Option<&Value>,
+    state_schema: Option<&Value>,
+) -> Result<Value, ContractError> {
+    state_object_mut(&mut state)?;
+    let update_value = update.cloned().unwrap_or(Value::Null);
+    if json_truthy(&update_value) && json_truthy(state_update) {
         return Err(ContractError::StateUpdateConflict);
     }
     for item in state_update_entries(state_update)? {
@@ -408,33 +587,13 @@ pub fn apply_state_update_from_str(payload_json: &str) -> Result<String, Contrac
         let Some(payload) = pair[1].as_object() else {
             return Err(ContractError::StateUpdatePayloadMustBeObject);
         };
-        match mode {
-            "a" => {
-                for (key, value) in payload {
-                    state_list_mut(state_object_mut(&mut state)?, key)?.push(value.clone());
-                }
-            }
-            "u" => {
-                for (key, value) in payload {
-                    state_object_mut(&mut state)?.insert(key.clone(), value.clone());
-                }
-            }
-            "e" => {
-                for (key, value) in payload {
-                    extend_json_list(
-                        state_list_mut(state_object_mut(&mut state)?, key)?,
-                        value.clone(),
-                    )?;
-                }
-            }
-            _ => {}
-        }
+        apply_state_update_entry(&mut state, mode, payload)?;
     }
-    if json_truthy(&update) {
-        let Some(update) = update.as_object() else {
+    if json_truthy(&update_value) {
+        let Some(update) = update_value.as_object() else {
             return Err(ContractError::StateUpdatePayloadMustBeObject);
         };
-        let schema = request.get("state_schema").and_then(Value::as_object);
+        let schema = state_schema.and_then(Value::as_object);
         for (key, value) in update {
             if schema
                 .and_then(|schema| schema.get(key))
@@ -450,7 +609,7 @@ pub fn apply_state_update_from_str(payload_json: &str) -> Result<String, Contrac
             }
         }
     }
-    Ok(canonical_json(&state, false))
+    Ok(state)
 }
 
 fn normalize_entity_event(value: &Value) -> Result<Value, ContractError> {
@@ -579,11 +738,51 @@ fn push_python_json_string(out: &mut String, value: &str, ensure_ascii: bool) {
     out.push('"');
 }
 
+fn python_float_repr(value: &serde_json::Number) -> String {
+    let repr = if let Some(number) = value.as_f64().filter(|_| value.is_f64()) {
+        let mut buffer = ryu::Buffer::new();
+        buffer.format_finite(number).to_owned()
+    } else {
+        return value.to_string();
+    };
+
+    if let Some((mantissa, exponent)) = repr.split_once('e').or_else(|| repr.split_once('E'))
+        && let Ok(exponent) = exponent.parse::<i32>()
+    {
+        let sign = if exponent < 0 { "-" } else { "+" };
+        return format!("{mantissa}e{sign}{:02}", exponent.unsigned_abs());
+    }
+
+    if value
+        .as_f64()
+        .is_some_and(|number| number != 0.0 && number.abs() < 1e-4)
+    {
+        let (sign, unsigned) = repr
+            .strip_prefix('-')
+            .map_or(("", repr.as_str()), |value| ("-", value));
+        let decimal_position = unsigned.find('.').unwrap_or(unsigned.len()) as i32;
+        let digits: String = unsigned.chars().filter(char::is_ascii_digit).collect();
+        let Some(first_significant) = digits.find(|digit| digit != '0') else {
+            return repr;
+        };
+        let exponent = decimal_position - first_significant as i32 - 1;
+        let significant = digits[first_significant..].trim_end_matches('0');
+        let mut mantissa = significant[..1].to_owned();
+        if significant.len() > 1 {
+            mantissa.push('.');
+            mantissa.push_str(&significant[1..]);
+        }
+        return format!("{sign}{mantissa}e-{:02}", exponent.unsigned_abs());
+    }
+
+    repr
+}
+
 fn push_python_json(out: &mut String, value: &Value, ensure_ascii: bool) {
     match value {
         Value::Null => out.push_str("null"),
         Value::Bool(value) => out.push_str(if *value { "true" } else { "false" }),
-        Value::Number(value) => out.push_str(&value.to_string()),
+        Value::Number(value) => out.push_str(&python_float_repr(value)),
         Value::String(value) => push_python_json_string(out, value, ensure_ascii),
         Value::Array(values) => {
             out.push('[');
@@ -1457,6 +1656,90 @@ mod tests {
     }
 
     #[test]
+    fn strict_json_integer_contract_matches_shared_python_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/strict-json-v1.json"
+        )))
+        .expect("valid strict JSON fixture");
+        for case in fixture["valid_integer_literals"].as_array().unwrap() {
+            let literal = case["literal"].as_str().unwrap();
+            assert!(serde_json::from_str::<Value>(literal).is_ok(), "{literal}");
+        }
+        for case in fixture["invalid_integer_literals"].as_array().unwrap() {
+            let literal = case["literal"].as_str().unwrap();
+            let parsed = serde_json::from_str::<Value>(literal).unwrap();
+            assert!(
+                parsed.as_i64().is_none() && parsed.as_u64().is_none(),
+                "out-of-range integer must not retain integer semantics: {literal}"
+            );
+            assert!(
+                parsed.as_f64().is_some(),
+                "Serde JSON representation changed; re-audit the shared contract: {literal}"
+            );
+        }
+    }
+
+    #[test]
+    fn python_graph_model_payloads_match_shared_canonical_wire_json() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid Python graph model payload fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(
+            fixture["origin"],
+            "Python Node/Edge.model_dump(field_mode=backend, dump_format=json)"
+        );
+
+        for case in fixture["cases"].as_array().expect("graph payload cases") {
+            let payload = &case["payload"];
+            let expected = case["canonical_json"]
+                .as_str()
+                .expect("Python-produced canonical JSON");
+            assert_eq!(canonical_json(payload, false), expected, "{}", case["kind"]);
+            if matches!(
+                case["kind"].as_str(),
+                Some("node" | "edge" | "edge_with_edge_endpoints")
+            ) {
+                assert_eq!(
+                    hex::encode(Sha256::digest(expected.as_bytes())),
+                    case["canonical_json_sha256"]
+                        .as_str()
+                        .expect("graph entity canonical JSON SHA-256"),
+                    "{} canonical JSON digest",
+                    case["kind"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn conversation_node_payload_matches_python_fixture_and_digest() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/conversation-node-payload-v1.json"
+        )))
+        .expect("valid Python ConversationNode fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        assert_eq!(fixture["model_class"], "conversation_node");
+
+        let payload = fixture.get("payload").expect("ConversationNode payload");
+        let envelope = GraphModelEnvelope::new(GraphModelClass::ConversationNode, payload.clone());
+        envelope
+            .validate_family_v1()
+            .expect("Python ConversationNode payload validates in Rust");
+
+        let canonical = canonical_json(payload, false);
+        assert_eq!(canonical, fixture["canonical_json"]);
+        assert_eq!(
+            hex::encode(Sha256::digest(canonical.as_bytes())),
+            fixture["canonical_json_sha256"]
+        );
+    }
+
+    #[test]
     fn evidence_hash_matches_python_golden() {
         for case in fixture()["evidence_hashes"].as_array().unwrap() {
             let canonical = canonicalize_evidence_pack_digest(&case["value"]).unwrap();
@@ -1466,6 +1749,79 @@ mod tests {
                 case["expected"]
             );
         }
+    }
+
+    #[test]
+    fn runtime_state_update_matches_shared_python_golden() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/runtime-state-update-v1.json"
+        )))
+        .expect("valid shared runtime state-update fixture");
+        assert_eq!(fixture["schema_version"], 1);
+        for case in fixture["cases"].as_array().unwrap() {
+            let request = serde_json::json!({
+                "state": case["state"],
+                "state_update": case["state_update"],
+                "update": case["update"],
+                "state_schema": case["state_schema"]
+            });
+            let result: Value =
+                serde_json::from_str(&apply_state_update_from_str(&request.to_string()).unwrap())
+                    .unwrap();
+            assert_eq!(result, case["expected"], "case {}", case["name"]);
+            let in_memory = apply_state_update_values(
+                case["state"].clone(),
+                &case["state_update"],
+                Some(&case["update"]),
+                Some(&case["state_schema"]),
+            )
+            .unwrap();
+            assert_eq!(in_memory, result, "in-memory case {}", case["name"]);
+            if case["update"].is_null() || case["update"].as_object().is_some_and(Map::is_empty) {
+                let typed_updates: Vec<(String, Map<String, Value>)> = case["state_update"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|item| {
+                        (
+                            item[0].as_str().unwrap().to_owned(),
+                            serde_json::from_value(item[1].clone()).unwrap(),
+                        )
+                    })
+                    .collect();
+                let typed = apply_state_update_pairs(
+                    case["state"].clone(),
+                    typed_updates
+                        .iter()
+                        .map(|(mode, payload)| (mode.as_str(), payload)),
+                )
+                .unwrap();
+                assert_eq!(typed, result, "typed case {}", case["name"]);
+            }
+        }
+    }
+
+    #[test]
+    fn typed_state_update_rejects_unknown_modes_without_changing_legacy_bridge() {
+        let payload = Map::from_iter([("items".to_owned(), serde_json::json!([2]))]);
+        let error =
+            apply_state_update_pairs(serde_json::json!({"items": [1]}), [("unknown", &payload)])
+                .expect_err("typed native deltas must reject unknown modes");
+        assert_eq!(
+            error.code(),
+            "KOGWISTAR_CONTRACT_STATE_UPDATE_MODE_UNSUPPORTED"
+        );
+
+        let initial = serde_json::json!({"items": [1]});
+        let legacy = apply_state_update_values(
+            initial.clone(),
+            &serde_json::json!([["unknown", {"items": [2]}]]),
+            None,
+            None,
+        )
+        .expect("the legacy JSON bridge continues ignoring unknown modes");
+        assert_eq!(legacy, initial);
     }
 
     proptest! {

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "operation": "aa_select_used_evidence/v1",
+  "state": {
+    "evidence_selector": "bm25",
+    "question": "Explain graph vector retrieval none",
+    "max_used": 2,
+    "candidates": [
+      {"id": "node-first", "label": "Graph query", "summary": "vector access"},
+      {"id": "node-best", "label": "retrieval", "summary": "query vector graph"},
+      {"id": "node-irrelevant", "label": "unrelated", "summary": "nothing"},
+      {"id": "node-tied", "label": "Graph", "summary": "vector"},
+      {"id": "node-missing-fields"}
+    ]
+  },
+  "expected": {
+    "selection": {
+      "used_node_ids": ["node-best", "node-first"],
+      "used_edge_ids": [],
+      "reasoning": "bm25_fallback_token_overlap"
+    }
+  }
+}

@@ -45,6 +45,7 @@ def test_reopening_pgvector_schema_with_new_dimension_fails_before_writes(
         "gke_edges",
         "gke_documents",
         "gke_domains",
+        "gke_node_index",
     }
     message = str(error)
     assert f"{pg_schema}.gke_nodes.embedding is vector(2)" in message

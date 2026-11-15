@@ -1,0 +1,26 @@
+{
+  "version": "v1",
+  "run_id": "evidence-run",
+  "conversation_id": "evidence-conversation",
+  "snapshot_node_id": "snapshot|evidence-run|5",
+  "snapshot_metadata": {
+    "entity_type": "context_snapshot",
+    "conversation_id": "evidence-conversation",
+    "run_id": "evidence-run",
+    "run_step_seq": 5,
+    "used_node_ids": [
+      "evidence-node-1",
+      "evidence-node-2"
+    ]
+  },
+  "evidence_refs": [
+    "evidence-node-1",
+    "evidence-node-2"
+  ],
+  "source_summary": {
+    "used_node_count": 2,
+    "evidence_pack_digest": {
+      "items": 2
+    }
+  }
+}

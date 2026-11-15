@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "model_class": "flattened_llm_node",
+  "payload": {
+    "label": "Flattened node parity",
+    "type": "entity",
+    "summary": "Cross-language flattened node fixture",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": {"vendor_extension": {"version": 1}},
+    "mentions": [
+      {
+        "span_ids": ["span:node-1"]
+      }
+    ],
+    "id": "nn:flat-node",
+    "local_id": "nn:flat-node"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.services_repair",
+  "arguments": {
+    "limit": 37
+  },
+  "python_service_arguments": {
+    "limit": 37
+  },
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/services/repair?limit=37",
+    "body": ""
+  },
+  "result": {
+    "limit": 37,
+    "repaired": 2,
+    "failed": 0
+  }
+}

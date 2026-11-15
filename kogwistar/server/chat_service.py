@@ -17,7 +17,7 @@ from typing import Any, ClassVar, cast
 
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
-from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.engine import GraphKnowledgeEngine, scoped_namespace
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.cost_ledger import CostLedger
 
@@ -205,11 +205,24 @@ class ChatRunService:
         action: str,
         capabilities: str | list[str] | tuple[str, ...],
     ) -> JsonObject:
+        self._require_capability(
+            "approve_action",
+            ["approve_action"],
+            approval_message="Approving capability requires approve_action capability",
+        )
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message=(
+                "Inspecting capabilities requires project_view and "
+                "read_security_scope capabilities"
+            ),
+        )
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.grant(
             subject=owner, action=action, capabilities=capabilities
         )
-        return self.capability_snapshot()
+        return self._capability_snapshot_result()
 
     def revoke_capability(
         self,
@@ -217,9 +230,22 @@ class ChatRunService:
         subject: str | None = None,
         capability: str,
     ) -> JsonObject:
+        self._require_capability(
+            "approve_action",
+            ["approve_action"],
+            approval_message="Revoking capability requires approve_action capability",
+        )
+        self._require_capability(
+            "project_view",
+            ["project_view", "read_security_scope"],
+            approval_message=(
+                "Inspecting capabilities requires project_view and "
+                "read_security_scope capabilities"
+            ),
+        )
         owner = str(subject or self._capability_subject()).strip().lower()
         self.capability_kernel.revoke(subject=owner, capability=capability)
-        return self.capability_snapshot()
+        return self._capability_snapshot_result()
 
     def _publish(
         self, run_id: str, event_type: str, payload: PublishPayload = None
@@ -248,13 +274,9 @@ class ChatRunService:
         self, workflow_id: str
     ) -> Iterator[GraphKnowledgeEngine]:
         eng = self._workflow_engine()
-        prev_ns = str(getattr(eng, "namespace", "default") or "default")
         target_ns = self._workflow_namespace(workflow_id)
-        eng.namespace = target_ns
-        try:
+        with scoped_namespace(eng, target_ns):
             yield eng
-        finally:
-            eng.namespace = prev_ns
 
     def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]:
         return self._conversation_queries._conversation_nodes(conversation_id)
@@ -543,9 +565,16 @@ class ChatRunService:
             ["send_message"],
             approval_message="Sending message requires send_message capability",
         )
+        conversation_owner = self._conversation_owner(conversation_id)
+        if not conversation_owner:
+            raise KeyError(f"Unknown conversation_id: {conversation_id}")
+        if user_id is not None and str(user_id) != conversation_owner:
+            raise PermissionError(
+                "user_id must match the owner of the target conversation"
+            )
         return self._run_execution.submit_turn_for_answer(
             conversation_id=conversation_id,
-            user_id=user_id,
+            user_id=conversation_owner,
             text=text,
             workflow_id=workflow_id,
         )
@@ -709,6 +738,9 @@ class ChatRunService:
                 "read_security_scope capabilities"
             ),
         )
+        return self._capability_snapshot_result()
+
+    def _capability_snapshot_result(self) -> JsonObject:
         return self.capability_kernel.snapshot() | {
             "current_subject": self._capability_subject(),
             "effective_capabilities": list(self._effective_capabilities()),
@@ -721,11 +753,6 @@ class ChatRunService:
         capabilities: str | list[str] | tuple[str, ...],
         subject: str | None = None,
     ) -> JsonObject:
-        self._require_capability(
-            "approve_action",
-            ["approve_action"],
-            approval_message="Approving capability requires approve_action capability",
-        )
         return self.approve_action(
             subject=subject or self._capability_subject(),
             action=action,
@@ -738,11 +765,6 @@ class ChatRunService:
         capability: str,
         subject: str | None = None,
     ) -> JsonObject:
-        self._require_capability(
-            "approve_action",
-            ["approve_action"],
-            approval_message="Revoking capability requires approve_action capability",
-        )
         return self.revoke_capability(subject=subject, capability=capability)
 
     def list_steps(self, run_id: str) -> list[dict[str, Any]]:
@@ -953,6 +975,8 @@ class ChatRunService:
         *,
         trigger_type: str,
         payload: dict[str, Any] | None = None,
+        authenticated_user_id: str | None = None,
+        enforce_authenticated_owner: bool = False,
     ) -> dict[str, Any]:
         self._require_capability(
             "service.manage",
@@ -963,6 +987,8 @@ class ChatRunService:
             service_id,
             trigger_type=trigger_type,
             payload=payload,
+            authenticated_user_id=authenticated_user_id,
+            enforce_authenticated_owner=enforce_authenticated_owner,
         )
 
     def list_service_events(
@@ -1216,10 +1242,11 @@ class ChatRunService:
             list[Any], list_fn(namespace=scope, inbox_id=inbox_id, status="claimed")
         )
         repaired: list[str] = []
-        now = now_ms()
+        # Lane-message lease_until is stored as Unix seconds, unlike run timestamps.
+        now_epoch_seconds = now_ms() // 1000
         for row in rows:
             lease_until = int(getattr(row, "lease_until", 0) or 0)
-            if lease_until and lease_until > now:
+            if lease_until and lease_until > now_epoch_seconds:
                 continue
             update_fn(message_id=row.message_id, status="pending")
             repaired.append(str(row.message_id))
@@ -1322,8 +1349,11 @@ class ChatRunService:
     def operator_dashboard(self, *, limit: int = 100) -> dict[str, Any]:
         self._require_capability(
             "project_view",
-            ["project_view"],
-            approval_message="Reading operator dashboard requires project_view capability",
+            ["project_view", "workflow.run.read", "read_security_scope"],
+            approval_message=(
+                "Reading operator dashboard requires project_view, "
+                "workflow.run.read, and read_security_scope capabilities"
+            ),
         )
         def _dir_size(path: str | None) -> int:
             import os

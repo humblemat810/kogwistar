@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "origin": "Python ConversationNode.model_dump(field_mode=backend, dump_format=json)",
+  "model_class": "conversation_node",
+  "canonical_json_sha256": "0ff5399c131015be42be53cb833c7098e56a4313e7d46c22bd6ad589ddb44f60",
+  "canonical_json": "{\"canonical_entity_id\":\"entity:parity-node\",\"conversation_id\":\"conversation:1\",\"doc_id\":\"doc:rust-python-parity\",\"domain_id\":null,\"embedding\":[1.0,0.0,0.0],\"id\":\"conversation:turn:1\",\"label\":\"Assistant turn\",\"level_from_root\":0,\"mentions\":[{\"multimodal_spans\":[],\"spans\":[{\"collection_page_url\":\"https://example.test/source\",\"context_after\":\"\",\"context_before\":\"\",\"doc_id\":\"doc:rust-python-parity\",\"document_page_url\":\"https://example.test/source#span\",\"end_char\":13,\"excerpt\":\"Node evidence\",\"insertion_method\":\"contract-test\",\"page_number\":1,\"source_cluster_id\":null,\"start_char\":0,\"verification\":{\"is_verified\":false,\"method\":\"heuristic\",\"notes\":\"no explicit verification from LLM\",\"score\":null}}]}],\"metadata\":{\"conversation_id\":\"conversation:1\",\"entity_type\":\"assistant_turn\",\"graph_space\":\"facts\",\"in_conversation_chain\":true,\"in_ui_chain\":true,\"kind\":\"node\",\"level_from_root\":0,\"lifecycle_status\":\"active\",\"redirect_to_id\":null,\"role\":\"assistant\",\"turn_index\":1,\"user_id\":\"user:1\",\"workspace_id\":\"ws\"},\"properties\":{\"attributes\":[\"unicode-雪\",\"nested-payload\"]},\"role\":\"assistant\",\"summary\":\"Answer turn for cross-language model contract.\",\"turn_index\":1,\"type\":\"entity\",\"user_id\":\"user:1\"}",
+  "payload": {
+    "canonical_entity_id": "entity:parity-node",
+    "conversation_id": "conversation:1",
+    "doc_id": "doc:rust-python-parity",
+    "domain_id": null,
+    "embedding": [1.0, 0.0, 0.0],
+    "id": "conversation:turn:1",
+    "label": "Assistant turn",
+    "level_from_root": 0,
+    "mentions": [{"multimodal_spans": [], "spans": [{"collection_page_url": "https://example.test/source", "context_after": "", "context_before": "", "doc_id": "doc:rust-python-parity", "document_page_url": "https://example.test/source#span", "end_char": 13, "excerpt": "Node evidence", "insertion_method": "contract-test", "page_number": 1, "source_cluster_id": null, "start_char": 0, "verification": {"is_verified": false, "method": "heuristic", "notes": "no explicit verification from LLM", "score": null}}]}],
+    "metadata": {"conversation_id": "conversation:1", "entity_type": "assistant_turn", "graph_space": "facts", "in_conversation_chain": true, "in_ui_chain": true, "kind": "node", "level_from_root": 0, "lifecycle_status": "active", "redirect_to_id": null, "role": "assistant", "turn_index": 1, "user_id": "user:1", "workspace_id": "ws"},
+    "properties": {"attributes": ["unicode-雪", "nested-payload"]},
+    "role": "assistant",
+    "summary": "Answer turn for cross-language model contract.",
+    "turn_index": 1,
+    "type": "entity",
+    "user_id": "user:1"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "route": "GET /api/runs/{run_id}/events/poll",
+  "success_status": 200,
+  "required_fields": ["run_id", "events"],
+  "required_event_fields": ["seq", "run_id", "event_type", "payload", "created_at_ms"]
+}

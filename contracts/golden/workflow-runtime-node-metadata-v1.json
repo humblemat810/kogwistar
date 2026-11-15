@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "run_defaults_omitted",
+      "model_class": "workflow_run_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "conversation_id": "conv", "turn_node_id": "turn"},
+      "valid": true
+    },
+    {
+      "id": "run_missing_turn_node_id",
+      "model_class": "workflow_run_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "conversation_id": "conv"},
+      "valid": false
+    },
+    {
+      "id": "run_wrong_entity_type",
+      "model_class": "workflow_run_node",
+      "metadata": {"entity_type": "conversation_node", "workflow_id": "wf", "run_id": "run", "conversation_id": "conv", "turn_node_id": "turn"},
+      "valid": false
+    },
+    {
+      "id": "step_defaults_omitted",
+      "model_class": "workflow_step_exec_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "workflow_node_id": "step", "step_seq": 0, "op": "parse", "result_json": "{}"},
+      "valid": true
+    },
+    {
+      "id": "step_numeric_string_sequence",
+      "model_class": "workflow_step_exec_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "workflow_node_id": "step", "step_seq": "2", "op": "parse", "result_json": "{}"},
+      "valid": true
+    },
+    {
+      "id": "step_integer_coercion_compatibility",
+      "model_class": "workflow_step_exec_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "workflow_node_id": "step", "step_seq": true, "duration_ms": "1_0", "op": "parse", "result_json": "{}"},
+      "valid": true
+    },
+    {
+      "id": "step_arbitrarily_large_sequence_string",
+      "model_class": "workflow_step_exec_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "workflow_node_id": "step", "step_seq": "999999999999999999999999999999999999999999", "op": "parse", "result_json": "{}"},
+      "valid": true
+    },
+    {
+      "id": "step_missing_result_json",
+      "model_class": "workflow_step_exec_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "workflow_node_id": "step", "step_seq": 0, "op": "parse"},
+      "valid": false
+    },
+    {
+      "id": "step_negative_sequence",
+      "model_class": "workflow_step_exec_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "workflow_node_id": "step", "step_seq": -1, "op": "parse", "result_json": "{}"},
+      "valid": false
+    },
+    {
+      "id": "step_fractional_sequence",
+      "model_class": "workflow_step_exec_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "workflow_node_id": "step", "step_seq": 1.5, "op": "parse", "result_json": "{}"},
+      "valid": false
+    },
+    {
+      "id": "checkpoint_defaults_omitted",
+      "model_class": "workflow_checkpoint_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "step_seq": 0, "state_json": "{}"},
+      "valid": true
+    },
+    {
+      "id": "checkpoint_missing_state_json",
+      "model_class": "workflow_checkpoint_node",
+      "metadata": {"run_id": "run", "workflow_id": "wf", "step_seq": 0},
+      "valid": false
+    },
+    {
+      "id": "completed_defaults_omitted",
+      "model_class": "workflow_completed_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "conversation_id": "conv", "accepted_step_seq": 0},
+      "valid": true
+    },
+    {
+      "id": "completed_arbitrarily_large_negative_sequence",
+      "model_class": "workflow_completed_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "conversation_id": "conv", "accepted_step_seq": "-999999999999999999999999999999999999999999"},
+      "valid": true
+    },
+    {
+      "id": "completed_missing_conversation_id",
+      "model_class": "workflow_completed_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "accepted_step_seq": 0},
+      "valid": false
+    },
+    {
+      "id": "cancelled_defaults_omitted",
+      "model_class": "workflow_cancelled_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "conversation_id": "conv", "accepted_step_seq": 0},
+      "valid": true
+    },
+    {
+      "id": "failed_defaults_omitted",
+      "model_class": "workflow_failed_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "conversation_id": "conv", "accepted_step_seq": 0},
+      "valid": true
+    },
+    {
+      "id": "failed_errors_must_be_string_list",
+      "model_class": "workflow_failed_node",
+      "metadata": {"workflow_id": "wf", "run_id": "run", "conversation_id": "conv", "accepted_step_seq": 0, "errors": ["failed", 2]},
+      "valid": false
+    }
+  ]
+}

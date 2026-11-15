@@ -2,27 +2,40 @@
 use kogwistar_contracts::EntityEventEnvelope;
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, DistanceMetric, EntityEvent,
-    EventPruneStore, EventReadStore, EventWriteStore, GraphMutation, GraphMutationStore,
+    EventPruneStore, EventReadStore, EventWriteStore, GraphAuthorityCapability, GraphEntityKind,
+    GraphMutation, GraphMutationBatch, GraphMutationStore, GraphProjectionPageRead,
     GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore, GraphRecord, GraphScope,
     GraphWriteStore, IndexJob, IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter,
     LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter,
     NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor, ServerRun,
-    ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
-    StoreError, StoreResult, VectorMatch, VectorQuery, WorkflowDesignDelta,
-    WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore, WorkflowDesignHistoryWriteStore,
-    WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite, integer_timestamp, timestamp_i64,
+    NodeIndexStore, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore, ReplayCursor,
+    ServerRun, ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate,
+    ServerRunWriteStore, StoreError, StoreResult, VectorCollectionStore, VectorMatch, VectorQuery,
+    WorkflowDesignDelta, WorkflowDesignDeltaWrite, WorkflowDesignHistoryReadStore,
+    WorkflowDesignHistoryWriteStore, WorkflowDesignSnapshot, WorkflowDesignSnapshotWrite,
+    integer_timestamp, timestamp_i64, validate_graph_mutation, validate_graph_mutation_batch,
+    validate_graph_mutation_replay,
 };
+
+pub type GraphNodeEdgeVectorSnapshot = (Vec<GraphRecord>, Vec<GraphRecord>, Vec<Vec<VectorMatch>>);
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+mod recorded_runtime;
+pub use recorded_runtime::ProviderEventPublicationCommit;
+
+/// Cloned handles share one process-local writer lock and volatile state. A new
+/// store starts empty; state is not persisted across process or store lifetimes.
+/// This backend provides no cross-process coordination or durable transactions.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryStore {
     state: Arc<RwLock<State>>,
 }
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct State {
     namespaces: BTreeMap<String, NamespaceState>,
+    vector_collections: BTreeMap<(String, String), Vec<GraphRecord>>,
     graph_projections: BTreeMap<GraphScope, GraphProjectionState>,
     workflow_design_snapshots: BTreeMap<(String, i64), WorkflowDesignSnapshot>,
     workflow_design_deltas: BTreeMap<(String, i64), WorkflowDesignDelta>,
@@ -31,6 +44,127 @@ struct State {
     index_jobs: BTreeMap<String, IndexJob>,
     lane_messages: BTreeMap<String, ProjectedLaneMessage>,
     next_claim_token: i64,
+}
+
+fn enqueue_index_job_into_state(state: &mut State, job: NewIndexJob) -> String {
+    let now = now_seconds();
+    let key = job.coalesce_key();
+    if let Some(existing) = state.index_jobs.values_mut().find(|row| {
+        row.namespace == job.namespace && row.coalesce_key == key && row.status == "PENDING"
+    }) {
+        if job.op == "DELETE" || existing.op == "DELETE" {
+            existing.op = "DELETE".to_owned();
+        } else {
+            existing.op = job.op;
+        }
+        existing.payload_json = job.payload_json;
+        existing.updated_at = integer_timestamp(now);
+        return existing.job_id.clone();
+    }
+    let job_id = job.job_id.clone();
+    state.index_jobs.insert(
+        job_id.clone(),
+        IndexJob {
+            job_id: job.job_id,
+            namespace: job.namespace,
+            entity_kind: job.entity_kind,
+            entity_id: job.entity_id,
+            index_kind: job.index_kind,
+            coalesce_key: key,
+            op: job.op,
+            status: "PENDING".to_owned(),
+            lease_until: None,
+            next_run_at: None,
+            max_retries: job.max_retries,
+            retry_count: 0,
+            last_error: None,
+            payload_json: job.payload_json,
+            created_at: integer_timestamp(now),
+            updated_at: integer_timestamp(now),
+            claim_token: None,
+            claim_attempts: 0,
+            accepted_result_json: None,
+            accepted_result_sha256: None,
+            accepted_at: None,
+        },
+    );
+    job_id
+}
+
+pub(crate) fn apply_graph_mutation_batch_to_state(
+    state: &mut State,
+    batch: GraphMutationBatch,
+) -> StoreResult<Vec<AppliedGraphMutation>> {
+    validate_graph_mutation_batch(&batch)?;
+    let namespace_name = batch.mutations[0].scope.namespace.clone();
+    let mut next_seq = state
+        .namespaces
+        .get(&namespace_name)
+        .map_or(0, |scope| scope.next_event_seq);
+    let mut seen = BTreeMap::<String, EntityEvent>::new();
+    let mut pending = Vec::<(GraphMutation, EntityEvent)>::new();
+    let mut results = Vec::with_capacity(batch.mutations.len());
+
+    for mutation in batch.mutations {
+        let existing = state
+            .namespaces
+            .get(&namespace_name)
+            .and_then(|scope| {
+                scope
+                    .event_seq_by_id
+                    .get(&mutation.event_id)
+                    .and_then(|seq| scope.events.iter().find(|event| event.seq == *seq))
+            })
+            .or_else(|| seen.get(&mutation.event_id));
+        if let Some(event) = existing {
+            validate_graph_mutation_replay(&mutation, event)?;
+            results.push(AppliedGraphMutation {
+                event: event.clone(),
+                inserted: false,
+                mutated: false,
+            });
+            continue;
+        }
+
+        next_seq += 1;
+        let event = EntityEvent {
+            namespace: namespace_name.clone(),
+            seq: next_seq,
+            event_id: mutation.event_id.clone(),
+            entity_kind: mutation.entity_kind.clone(),
+            entity_id: mutation.record.id.clone(),
+            op: mutation.op.clone(),
+            payload: mutation.payload.clone(),
+        };
+        seen.insert(event.event_id.clone(), event.clone());
+        pending.push((mutation, event.clone()));
+        results.push(AppliedGraphMutation {
+            event,
+            inserted: true,
+            mutated: true,
+        });
+    }
+
+    for (mutation, event) in pending {
+        let namespace_state = InMemoryStore::scope_mut(state, &namespace_name);
+        namespace_state.next_event_seq = event.seq;
+        namespace_state
+            .event_seq_by_id
+            .insert(event.event_id.clone(), event.seq);
+        namespace_state.events.push(event);
+
+        let projection = state.graph_projections.entry(mutation.scope).or_default();
+        let record_key = (mutation.table, mutation.record.id.clone());
+        if !projection.records.contains_key(&record_key) {
+            projection.record_order.push(record_key.clone());
+        }
+        projection.records.insert(record_key, mutation.record);
+    }
+
+    for job in batch.index_jobs {
+        enqueue_index_job_into_state(state, job);
+    }
+    Ok(results)
 }
 
 impl IndexJobReadStore for InMemoryStore {
@@ -385,7 +519,14 @@ impl LaneMessageWriteStore for InMemoryStore {
                 row.status.as_str(),
                 "completed" | "failed" | "cancelled" | "dead-letter"
             )
-            && row.claimed_by.as_deref().is_none_or(|v| v == claimed_by)
+            && row.claimed_by.as_deref().is_none_or(|v| {
+                row.status == "claimed"
+                    && v == claimed_by
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|until| timestamp_i64(until) >= now_seconds())
+            })
         {
             row.status = "completed".to_owned();
             row.claimed_by = None;
@@ -411,7 +552,14 @@ impl LaneMessageWriteStore for InMemoryStore {
                 row.status.as_str(),
                 "completed" | "failed" | "cancelled" | "dead-letter"
             )
-            && row.claimed_by.as_deref().is_none_or(|v| v == claimed_by)
+            && row.claimed_by.as_deref().is_none_or(|v| {
+                row.status == "claimed"
+                    && v == claimed_by
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|until| timestamp_i64(until) >= now)
+            })
         {
             row.status = "pending".to_owned();
             row.claimed_by = None;
@@ -440,7 +588,14 @@ impl LaneMessageWriteStore for InMemoryStore {
                 row.status.as_str(),
                 "completed" | "failed" | "cancelled" | "dead-letter"
             )
-            && row.claimed_by.as_deref().is_none_or(|v| v == claimed_by)
+            && row.claimed_by.as_deref().is_none_or(|v| {
+                row.status == "claimed"
+                    && v == claimed_by
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|until| timestamp_i64(until) >= now_seconds())
+            })
         {
             row.status = "dead-letter".to_owned();
             row.claimed_by = None;
@@ -456,49 +611,8 @@ impl LaneMessageWriteStore for InMemoryStore {
 impl IndexJobWriteStore for InMemoryStore {
     async fn enqueue_index_job(&self, job: NewIndexJob) -> StoreResult<String> {
         namespace(&job.namespace)?;
-        let now = now_seconds();
-        let key = job.coalesce_key();
         let mut state = self.state.write().expect("in-memory store lock poisoned");
-        if let Some(existing) = state.index_jobs.values_mut().find(|row| {
-            row.namespace == job.namespace && row.coalesce_key == key && row.status == "PENDING"
-        }) {
-            if job.op == "DELETE" || existing.op == "DELETE" {
-                existing.op = "DELETE".to_owned();
-            } else {
-                existing.op = job.op;
-            }
-            existing.payload_json = job.payload_json;
-            existing.updated_at = integer_timestamp(now);
-            return Ok(existing.job_id.clone());
-        }
-        let job_id = job.job_id.clone();
-        state.index_jobs.insert(
-            job_id.clone(),
-            IndexJob {
-                job_id: job.job_id,
-                namespace: job.namespace,
-                entity_kind: job.entity_kind,
-                entity_id: job.entity_id,
-                index_kind: job.index_kind,
-                coalesce_key: key,
-                op: job.op,
-                status: "PENDING".to_owned(),
-                lease_until: None,
-                next_run_at: None,
-                max_retries: job.max_retries,
-                retry_count: 0,
-                last_error: None,
-                payload_json: job.payload_json,
-                created_at: integer_timestamp(now),
-                updated_at: integer_timestamp(now),
-                claim_token: None,
-                claim_attempts: 0,
-                accepted_result_json: None,
-                accepted_result_sha256: None,
-                accepted_at: None,
-            },
-        );
-        Ok(job_id)
+        Ok(enqueue_index_job_into_state(&mut state, job))
     }
 
     async fn claim_index_jobs(
@@ -562,7 +676,13 @@ impl IndexJobWriteStore for InMemoryStore {
             return Ok(false);
         };
         if row.status != "DOING"
-            || claim_token.is_some_and(|token| row.claim_token.as_deref() != Some(token))
+            || claim_token.is_some_and(|token| {
+                row.claim_token.as_deref() != Some(token)
+                    || row
+                        .lease_until
+                        .as_ref()
+                        .is_none_or(|lease_until| timestamp_i64(lease_until) < now)
+            })
         {
             return Ok(false);
         }
@@ -652,7 +772,13 @@ impl IndexJobWriteStore for InMemoryStore {
             .index_jobs
             .get_mut(job_id)
             && row.status == "DOING"
-            && claim_token.is_none_or(|token| row.claim_token.as_deref() == Some(token))
+            && claim_token.is_none_or(|token| {
+                row.claim_token.as_deref() == Some(token)
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+            })
         {
             if final_ {
                 row.status = "FAILED".to_owned();
@@ -679,7 +805,13 @@ impl IndexJobWriteStore for InMemoryStore {
             .index_jobs
             .get_mut(job_id)
             && row.status == "DOING"
-            && claim_token.is_none_or(|token| row.claim_token.as_deref() == Some(token))
+            && claim_token.is_none_or(|token| {
+                row.claim_token.as_deref() == Some(token)
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+            })
         {
             row.retry_count += 1;
             row.last_error = Some(error.chars().take(2000).collect());
@@ -739,7 +871,13 @@ impl IndexJobWriteStore for InMemoryStore {
             + 1;
         if let Some(row) = state.index_jobs.get_mut(job_id)
             && row.status == "DOING"
-            && claim_token.is_none_or(|token| row.claim_token.as_deref() == Some(token))
+            && claim_token.is_none_or(|token| {
+                row.claim_token.as_deref() == Some(token)
+                    && row
+                        .lease_until
+                        .as_ref()
+                        .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+            })
         {
             row.status = "PENDING".to_owned();
             row.lease_until = None;
@@ -753,10 +891,10 @@ impl IndexJobWriteStore for InMemoryStore {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct NamespaceState {
-    records: BTreeMap<String, GraphRecord>,
-    record_order: Vec<String>,
+    records: BTreeMap<(String, String), GraphRecord>,
+    record_order: Vec<(String, String)>,
     events: Vec<EntityEvent>,
     event_seq_by_id: BTreeMap<String, i64>,
     cursors: BTreeMap<String, i64>,
@@ -767,10 +905,10 @@ struct NamespaceState {
 /// Materialized graph rows are separately keyed by all graph scope fields.
 /// Events deliberately remain in `NamespaceState`, matching the authoritative
 /// namespace-local event log and idempotency contract.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct GraphProjectionState {
-    records: BTreeMap<String, GraphRecord>,
-    record_order: Vec<String>,
+    records: BTreeMap<(String, String), GraphRecord>,
+    record_order: Vec<(String, String)>,
 }
 
 impl InMemoryStore {
@@ -785,6 +923,7 @@ impl InMemoryStore {
         &self,
         mutation: GraphMutation,
     ) -> StoreResult<AppliedGraphMutation> {
+        validate_graph_mutation(&mutation)?;
         namespace(&mutation.scope.namespace)?;
         let record = mutation.record;
         if record.id.is_empty() {
@@ -845,15 +984,73 @@ impl InMemoryStore {
             .insert(event.event_id.clone(), seq);
         namespace_state.events.push(event.clone());
         let projection = state.graph_projections.entry(mutation.scope).or_default();
-        if !projection.records.contains_key(&record.id) {
-            projection.record_order.push(record.id.clone());
+        let record_key = (mutation.table, record.id.clone());
+        if !projection.records.contains_key(&record_key) {
+            projection.record_order.push(record_key.clone());
         }
-        projection.records.insert(record.id.clone(), record);
+        projection.records.insert(record_key, record);
         Ok(AppliedGraphMutation {
             event,
             inserted: true,
             mutated: true,
         })
+    }
+
+    /// Apply a graph mutation group and its explicit indexing intents under
+    /// one in-memory write lock. This is atomic within this process, not durable.
+    pub async fn apply_graph_mutations_with_index_jobs_atomic(
+        &self,
+        batch: GraphMutationBatch,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        apply_graph_mutation_batch_to_state(&mut state, batch)
+    }
+
+    /// Apply a batch only when its namespace-local uniqueness predicates still
+    /// hold. Workspace and graph-space do not weaken canonical entity identity.
+    /// Checks and graph/index-job writes share the same process lock.
+    pub async fn apply_graph_mutations_with_index_jobs_if_absent(
+        &self,
+        batch: GraphMutationBatch,
+        unique_record_ids: &[(GraphScope, String, String)],
+        unique_metadata: &[GraphProjectionRead],
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        for (scope, table, id) in unique_record_ids {
+            if state
+                .graph_projections
+                .iter()
+                .any(|(candidate_scope, projection)| {
+                    candidate_scope.namespace == scope.namespace
+                        && projection
+                            .records
+                            .contains_key(&(table.clone(), id.clone()))
+                })
+            {
+                return Err(StoreError::Backend {
+                    backend: "memory-graph-write".to_owned(),
+                    message: format!("unique graph record already exists: {table}/{id}"),
+                });
+            }
+        }
+        for read in unique_metadata {
+            let exists = state
+                .graph_projections
+                .iter()
+                .any(|(candidate_scope, projection)| {
+                    candidate_scope.namespace == read.scope.namespace
+                        && projection.records.iter().any(|((table, _), record)| {
+                            table == &read.table && read.metadata.matches(&record.metadata)
+                        })
+                });
+            if exists {
+                return Err(StoreError::Backend {
+                    backend: "memory-graph-write".to_owned(),
+                    message: format!("unique graph metadata already exists: {}", read.table),
+                });
+            }
+        }
+        apply_graph_mutation_batch_to_state(&mut state, batch)
     }
 
     /// Restore an isolated event snapshot without exposing restore semantics on
@@ -947,6 +1144,231 @@ impl InMemoryStore {
             Self::scope_mut(&mut state, &namespace).projections = projections;
         }
         Ok(())
+    }
+
+    /// Read node and edge projections under one lock so readers cannot combine
+    /// opposite sides of an atomic graph-mutation batch from different states.
+    pub fn graph_node_edge_snapshot(
+        &self,
+        scope: &GraphScope,
+        limit: usize,
+    ) -> StoreResult<(Vec<GraphRecord>, Vec<GraphRecord>)> {
+        namespace(&scope.namespace)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let projection = state.graph_projections.get(scope);
+        let rows_for_table = |table: &str| {
+            projection
+                .map(|projection| {
+                    projection
+                        .record_order
+                        .iter()
+                        .filter(|(record_table, _)| record_table == table)
+                        .filter_map(|key| projection.records.get(key))
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        Ok((rows_for_table("gke_nodes"), rows_for_table("gke_edges")))
+    }
+
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#claim_visible_provider_event; python=kogwistar/agent/event_journal.py#claim_one,kogwistar/messaging/service.py#claim_pending_attempt; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_provider_events.rs#in_memory_native_receive_claims_visible_event_and_routes_it; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=ACL visibility and queue claim share one in-memory writer lock.
+    /// Claim one provider-event lane only while holding the same lock used by
+    /// graph projection writes, so ACL revocation cannot race visibility and
+    /// claim in this process-local backend.
+    pub fn claim_visible_provider_event(
+        &self,
+        scope: &GraphScope,
+        conversation_id: &str,
+        principal: &kogwistar_store::GraphAclPrincipal,
+        filter: LaneMessageClaimFilter,
+    ) -> StoreResult<Vec<ProjectedLaneMessage>> {
+        if filter.namespace != scope.namespace || filter.limit == 0 {
+            return Ok(Vec::new());
+        }
+        let now = now_seconds();
+        let allowed_ids = filter
+            .message_ids
+            .as_ref()
+            .map(|ids| ids.iter().collect::<std::collections::HashSet<_>>());
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let projection = state.graph_projections.get(scope);
+        let graph_nodes = projection
+            .into_iter()
+            .flat_map(|projection| projection.record_order.iter())
+            .filter(|(table, _)| table == "gke_nodes")
+            .filter_map(|key| projection.and_then(|projection| projection.records.get(key)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let graph_edges = projection
+            .into_iter()
+            .flat_map(|projection| projection.record_order.iter())
+            .filter(|(table, _)| table == "gke_edges")
+            .filter_map(|key| projection.and_then(|projection| projection.records.get(key)))
+            .cloned()
+            .collect::<Vec<_>>();
+        let eligible = |row: &&ProjectedLaneMessage| {
+            row.namespace == filter.namespace
+                && row.purpose == "agent_event"
+                && row.inbox_id == filter.inbox_id
+                && row.conversation_id == conversation_id
+                && row.sender_id == "agent-runtime"
+                && allowed_ids
+                    .as_ref()
+                    .is_none_or(|ids| ids.contains(&row.message_id))
+                && filter
+                    .run_id
+                    .as_ref()
+                    .is_none_or(|value| row.run_id.as_deref() == Some(value))
+                && filter
+                    .msg_type
+                    .as_ref()
+                    .is_none_or(|value| row.msg_type == *value)
+                && filter
+                    .recipient_id
+                    .as_ref()
+                    .is_none_or(|value| row.recipient_id == *value)
+                && ((row.status == "pending" && row.available_at <= now)
+                    || (row.status == "claimed"
+                        && row
+                            .lease_until
+                            .as_ref()
+                            .is_some_and(|value| timestamp_i64(value) < now)))
+        };
+        let candidate_lanes = state
+            .lane_messages
+            .values()
+            .filter(eligible)
+            .cloned()
+            .collect::<Vec<_>>();
+        if candidate_lanes.len() > 20_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-provider-event-claim".to_owned(),
+                message: "provider-event receive exceeded its 20000-candidate safety bound"
+                    .to_owned(),
+            });
+        }
+        let candidate_ids = candidate_lanes
+            .iter()
+            .map(|lane| lane.message_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut acl_nodes = graph_nodes.clone();
+        acl_nodes.extend(candidate_lanes.iter().map(|lane| {
+            let mut candidate = GraphRecord::new(lane.message_id.clone());
+            candidate.metadata = serde_json::json!({
+                "entity_type": "lane_message",
+                "mentions": []
+            })
+            .as_object()
+            .expect("lane candidate metadata is an object")
+            .clone();
+            candidate
+        }));
+        let (visible_nodes, _) = kogwistar_store::graph_records_visible_by_acl(
+            &acl_nodes,
+            &graph_edges,
+            "conversation",
+            principal,
+        );
+        let visible_ids = visible_nodes
+            .into_iter()
+            .filter(|node| candidate_ids.contains(&node.id))
+            .map(|node| node.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut ids = state
+            .lane_messages
+            .values()
+            .filter(eligible)
+            .filter(|row| visible_ids.contains(&row.message_id))
+            .map(|row| row.message_id.clone())
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| {
+            let row = &state.lane_messages[id];
+            (row.seq, row.created_at)
+        });
+        ids.truncate(filter.limit);
+        for id in &ids {
+            let row = state
+                .lane_messages
+                .get_mut(id)
+                .expect("selected provider event lane disappeared");
+            row.status = "claimed".to_owned();
+            row.claimed_by = Some(filter.claimed_by.clone());
+            row.lease_until = Some(integer_timestamp(now + filter.lease_seconds));
+        }
+        Ok(ids
+            .into_iter()
+            .map(|id| state.lane_messages[&id].clone())
+            .collect())
+    }
+
+    /// Read graph rows and their vector candidates from one projection revision.
+    /// ACL filtering can then use the returned rows without racing a concurrent
+    /// atomic graph mutation between topology and vector-index reads.
+    pub fn graph_node_edge_vector_snapshot(
+        &self,
+        scope: &GraphScope,
+        limit: usize,
+        table: &str,
+        queries: &[VectorQuery],
+    ) -> StoreResult<GraphNodeEdgeVectorSnapshot> {
+        if !matches!(table, "gke_nodes" | "gke_edges") {
+            return Err(StoreError::Backend {
+                backend: "memory-graph-snapshot".to_owned(),
+                message: "vector snapshot table must be gke_nodes or gke_edges".to_owned(),
+            });
+        }
+        namespace(&scope.namespace)?;
+        for query in queries {
+            finite(&query.embedding)?;
+        }
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let projection = state.graph_projections.get(scope);
+        let rows_for_table = |table: &str| {
+            projection
+                .map(|projection| {
+                    projection
+                        .record_order
+                        .iter()
+                        .filter(|(record_table, _)| record_table == table)
+                        .filter_map(|key| projection.records.get(key))
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let nodes = rows_for_table("gke_nodes");
+        let edges = rows_for_table("gke_edges");
+        let matches = queries
+            .iter()
+            .map(|query| graph_projection_vector_matches(projection, table, query))
+            .collect::<StoreResult<Vec<_>>>()?;
+        Ok((nodes, edges, matches))
+    }
+
+    fn graph_projection_rows(&self, read: &GraphProjectionRead) -> StoreResult<Vec<GraphRecord>> {
+        namespace(&read.scope.namespace)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let mut rows = state
+            .graph_projections
+            .get(&read.scope)
+            .map(|projection| {
+                projection
+                    .record_order
+                    .iter()
+                    .filter(|(table, _)| table == &read.table)
+                    .filter_map(|key| projection.records.get(key))
+                    .filter(|record| read.metadata.matches(&record.metadata))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if let Some(ids) = &read.ids {
+            rows.retain(|record| ids.contains(&record.id));
+        }
+        Ok(rows)
     }
 
     fn scope<'a>(state: &'a State, ns: &str) -> Option<&'a NamespaceState> {
@@ -1104,6 +1526,21 @@ fn namespace(ns: &str) -> StoreResult<()> {
         Ok(())
     }
 }
+fn collection_name(collection: &str) -> StoreResult<()> {
+    if collection.trim().is_empty() || collection.contains('\0') {
+        Err(StoreError::InvalidIdentifier {
+            identifier: "vector collection name",
+        })
+    } else {
+        Ok(())
+    }
+}
+fn graph_kind_name(kind: GraphEntityKind) -> &'static str {
+    match kind {
+        GraphEntityKind::Node => "node",
+        GraphEntityKind::Edge => "edge",
+    }
+}
 fn now_seconds() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1186,12 +1623,241 @@ fn cosine_memory_distance(query: &[f32], candidate: Option<&[f32]>) -> f64 {
     }
 }
 
+fn graph_projection_vector_matches(
+    projection: Option<&GraphProjectionState>,
+    table: &str,
+    query: &VectorQuery,
+) -> StoreResult<Vec<VectorMatch>> {
+    let records = projection
+        .into_iter()
+        .flat_map(|projection| {
+            projection
+                .record_order
+                .iter()
+                .filter(|(record_table, _)| record_table == table)
+                .filter_map(|key| projection.records.get(key))
+        })
+        .filter(|record| query.metadata.matches(&record.metadata))
+        .filter(|record| record.embedding.is_some());
+    let mut results = match query.metric {
+        DistanceMetric::Cosine => records
+            .map(|record| VectorMatch {
+                record: record.clone(),
+                distance: cosine_memory_distance(&query.embedding, record.embedding.as_deref()),
+            })
+            .collect(),
+        DistanceMetric::L2 | DistanceMetric::InnerProduct => records
+            .map(|record| {
+                let vector = record.embedding.as_deref().expect("filtered embedding");
+                distance(query.metric, &query.embedding, vector).map(|distance| VectorMatch {
+                    record: record.clone(),
+                    distance,
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()?,
+    };
+    results.sort_by(|left, right| left.distance.total_cmp(&right.distance));
+    results.truncate(query.limit);
+    Ok(results)
+}
+
+impl VectorCollectionStore for InMemoryStore {
+    async fn upsert_vector_collection(
+        &self,
+        ns: &str,
+        collection: &str,
+        records: Vec<GraphRecord>,
+    ) -> StoreResult<()> {
+        namespace(ns)?;
+        collection_name(collection)?;
+        if records.len() > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-vector-collection".to_owned(),
+                message: "upsert batch exceeds the 10000-record limit".to_owned(),
+            });
+        }
+        for record in &records {
+            if record.id.trim().is_empty() || record.id.contains('\0') {
+                return Err(StoreError::InvalidIdentifier {
+                    identifier: "vector collection record id",
+                });
+            }
+            if let Some(embedding) = &record.embedding {
+                finite(embedding)?;
+            }
+        }
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let collection_records = state
+            .vector_collections
+            .entry((ns.to_owned(), collection.to_owned()))
+            .or_default();
+        for record in records {
+            if let Some(existing) = collection_records
+                .iter_mut()
+                .find(|existing| existing.id == record.id)
+            {
+                *existing = record;
+            } else {
+                collection_records.push(record);
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_vector_collection_records(
+        &self,
+        ns: &str,
+        collection: &str,
+        ids: Vec<String>,
+    ) -> StoreResult<()> {
+        namespace(ns)?;
+        collection_name(collection)?;
+        if ids.len() > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-vector-collection".to_owned(),
+                message: "delete batch exceeds the 10000-record limit".to_owned(),
+            });
+        }
+        if ids
+            .iter()
+            .any(|id| id.trim().is_empty() || id.contains('\0'))
+        {
+            return Err(StoreError::InvalidIdentifier {
+                identifier: "vector collection record id",
+            });
+        }
+        let ids = ids.into_iter().collect::<std::collections::BTreeSet<_>>();
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        if let Some(records) = state
+            .vector_collections
+            .get_mut(&(ns.to_owned(), collection.to_owned()))
+        {
+            records.retain(|record| !ids.contains(&record.id));
+        }
+        Ok(())
+    }
+
+    async fn query_vector_collection(
+        &self,
+        ns: &str,
+        collection: &str,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        namespace(ns)?;
+        collection_name(collection)?;
+        finite(&query.embedding)?;
+        if query.limit > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-vector-collection".to_owned(),
+                message: "query limit exceeds the 10000-record limit".to_owned(),
+            });
+        }
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let Some(records) = state
+            .vector_collections
+            .get(&(ns.to_owned(), collection.to_owned()))
+        else {
+            return Ok(Vec::new());
+        };
+        let mut matches = records
+            .iter()
+            .filter(|record| query.metadata.matches(&record.metadata))
+            .map(|record| {
+                let distance = match query.metric {
+                    DistanceMetric::Cosine => {
+                        cosine_memory_distance(&query.embedding, record.embedding.as_deref())
+                    }
+                    metric => match record.embedding.as_deref() {
+                        Some(embedding) => distance(metric, &query.embedding, embedding)?,
+                        None => 2.0,
+                    },
+                };
+                Ok(VectorMatch {
+                    record: record.clone(),
+                    distance,
+                })
+            })
+            .collect::<StoreResult<Vec<_>>>()?;
+        matches.sort_by(|left, right| left.distance.total_cmp(&right.distance));
+        matches.truncate(query.limit);
+        Ok(matches)
+    }
+}
+
+impl NodeIndexStore for InMemoryStore {
+    async fn upsert_node_index(&self, index: &str, records: Vec<GraphRecord>) -> StoreResult<()> {
+        self.upsert_vector_collection("__node_index__", index, records)
+            .await
+    }
+
+    async fn get_node_index(&self, index: &str, ids: &[String]) -> StoreResult<Vec<GraphRecord>> {
+        collection_name(index)?;
+        if ids.len() > 10_000 {
+            return Err(StoreError::Backend {
+                backend: "memory-node-index".to_owned(),
+                message: "lookup exceeds the 10000-ID limit".to_owned(),
+            });
+        }
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let records = state
+            .vector_collections
+            .get(&("__node_index__".to_owned(), index.to_owned()));
+        let Some(records) = records else {
+            return Ok(Vec::new());
+        };
+        let by_id = records
+            .iter()
+            .map(|record| (record.id.as_str(), record))
+            .collect::<BTreeMap<_, _>>();
+        Ok(ids
+            .iter()
+            .filter_map(|id| by_id.get(id.as_str()).map(|record| (*record).clone()))
+            .collect())
+    }
+
+    async fn query_node_index(
+        &self,
+        index: &str,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        self.query_vector_collection("__node_index__", index, query)
+            .await
+    }
+}
+
 impl GraphReadStore for InMemoryStore {
     async fn graph_record(&self, ns: &str, id: &str) -> StoreResult<Option<GraphRecord>> {
         namespace(ns)?;
         let state = self.state.read().expect("in-memory store lock poisoned");
+        let matches = Self::scope(&state, ns)
+            .into_iter()
+            .flat_map(|scope| scope.record_order.iter())
+            .filter(|(_, record_id)| record_id == id)
+            .filter_map(|key| Self::scope(&state, ns)?.records.get(key))
+            .cloned()
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => Ok(None),
+            [record] => Ok(Some(record.clone())),
+            _ => Err(StoreError::Backend {
+                backend: "memory-graph-read".to_owned(),
+                message: "record ID is ambiguous across entity kinds; use a kind-aware read"
+                    .to_owned(),
+            }),
+        }
+    }
+
+    async fn graph_record_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        id: &str,
+    ) -> StoreResult<Option<GraphRecord>> {
+        namespace(ns)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let key = (graph_kind_name(kind).to_owned(), id.to_owned());
         Ok(Self::scope(&state, ns)
-            .and_then(|scope| scope.records.get(id))
+            .and_then(|scope| scope.records.get(&key))
             .cloned())
     }
     async fn graph_records(
@@ -1206,7 +1872,28 @@ impl GraphReadStore for InMemoryStore {
                 scope
                     .record_order
                     .iter()
-                    .filter_map(|id| scope.records.get(id))
+                    .filter_map(|key| scope.records.get(key))
+                    .filter(|record| filter.matches(&record.metadata))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+    async fn graph_records_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        filter: &MetadataFilter,
+    ) -> StoreResult<Vec<GraphRecord>> {
+        namespace(ns)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        Ok(Self::scope(&state, ns)
+            .map(|scope| {
+                scope
+                    .record_order
+                    .iter()
+                    .filter(|(record_kind, _)| record_kind == graph_kind_name(kind))
+                    .filter_map(|key| scope.records.get(key))
                     .filter(|record| filter.matches(&record.metadata))
                     .cloned()
                     .collect()
@@ -1224,7 +1911,7 @@ impl GraphReadStore for InMemoryStore {
                     scope
                         .record_order
                         .iter()
-                        .filter_map(|id| scope.records.get(id))
+                        .filter_map(|key| scope.records.get(key))
                 })
                 .filter(|record| query.metadata.matches(&record.metadata))
                 .filter(|record| record.embedding.is_some())
@@ -1239,7 +1926,7 @@ impl GraphReadStore for InMemoryStore {
                     scope
                         .record_order
                         .iter()
-                        .filter_map(|id| scope.records.get(id))
+                        .filter_map(|key| scope.records.get(key))
                 })
                 .filter(|record| query.metadata.matches(&record.metadata))
                 .filter_map(|record| {
@@ -1259,6 +1946,80 @@ impl GraphReadStore for InMemoryStore {
         results.truncate(query.limit);
         Ok(results)
     }
+
+    async fn vector_query_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        query: &VectorQuery,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        namespace(ns)?;
+        finite(&query.embedding)?;
+        let state = self.state.read().expect("in-memory store lock poisoned");
+        let records = Self::scope(&state, ns)
+            .into_iter()
+            .flat_map(|scope| {
+                scope
+                    .record_order
+                    .iter()
+                    .filter(|(record_kind, _)| record_kind == graph_kind_name(kind))
+                    .filter_map(|key| scope.records.get(key))
+            })
+            .filter(|record| query.metadata.matches(&record.metadata));
+        let mut results = match query.metric {
+            DistanceMetric::Cosine => records
+                .filter(|record| record.embedding.is_some())
+                .map(|record| VectorMatch {
+                    record: record.clone(),
+                    distance: cosine_memory_distance(&query.embedding, record.embedding.as_deref()),
+                })
+                .collect(),
+            DistanceMetric::L2 | DistanceMetric::InnerProduct => records
+                .filter_map(|record| {
+                    record.embedding.as_deref().map(|vector| {
+                        distance(query.metric, &query.embedding, vector).map(|distance| {
+                            VectorMatch {
+                                record: record.clone(),
+                                distance,
+                            }
+                        })
+                    })
+                })
+                .collect::<StoreResult<Vec<_>>>()?,
+        };
+        results.sort_by(|left, right| left.distance.total_cmp(&right.distance));
+        results.truncate(query.limit);
+        Ok(results)
+    }
+
+    async fn vector_query_of_kind_numeric_lte(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        query: &VectorQuery,
+        field: &str,
+        maximum: f64,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        if field.trim().is_empty() || !maximum.is_finite() {
+            return Err(StoreError::Backend {
+                backend: "memory-graph-read".to_owned(),
+                message: "invalid numeric metadata bound".to_owned(),
+            });
+        }
+        let mut bounded_query = query.clone();
+        bounded_query.limit = usize::MAX;
+        let mut matches = self.vector_query_of_kind(ns, kind, &bounded_query).await?;
+        matches.retain(|matched| {
+            matched
+                .record
+                .metadata
+                .get(field)
+                .and_then(Value::as_f64)
+                .is_some_and(|value| value <= maximum)
+        });
+        matches.truncate(query.limit);
+        Ok(matches)
+    }
 }
 
 impl GraphWriteStore for InMemoryStore {
@@ -1272,25 +2033,80 @@ impl GraphWriteStore for InMemoryStore {
         }
         let mut state = self.state.write().expect("in-memory store lock poisoned");
         let scope = Self::scope_mut(&mut state, ns);
-        if !scope.records.contains_key(&record.id) {
-            scope.record_order.push(record.id.clone());
+        let key = (String::new(), record.id.clone());
+        if !scope.records.contains_key(&key) {
+            scope.record_order.push(key.clone());
         }
-        scope.records.insert(record.id.clone(), record);
+        scope.records.insert(key, record);
         Ok(())
     }
     async fn delete_graph_record(&self, ns: &str, id: &str) -> StoreResult<bool> {
         namespace(ns)?;
         let mut state = self.state.write().expect("in-memory store lock poisoned");
         let scope = Self::scope_mut(&mut state, ns);
-        let deleted = scope.records.remove(id).is_some();
-        if deleted {
-            scope.record_order.retain(|record_id| record_id != id);
+        let matching_keys = scope
+            .record_order
+            .iter()
+            .filter(|(_, record_id)| record_id == id)
+            .cloned()
+            .collect::<Vec<_>>();
+        if matching_keys.len() > 1 {
+            return Err(StoreError::Backend {
+                backend: "memory-graph-write".to_owned(),
+                message: "record ID is ambiguous across entity kinds; use a kind-aware delete"
+                    .to_owned(),
+            });
         }
-        Ok(deleted)
+        let Some(key) = matching_keys.first() else {
+            return Ok(false);
+        };
+        scope.record_order.retain(|record_key| record_key != key);
+        Ok(scope.records.remove(key).is_some())
+    }
+
+    async fn upsert_graph_record_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        record: GraphRecord,
+    ) -> StoreResult<()> {
+        namespace(ns)?;
+        if record.id.is_empty() {
+            return Err(StoreError::EmptyRecordId);
+        }
+        if let Some(vector) = &record.embedding {
+            finite(vector)?;
+        }
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let scope = Self::scope_mut(&mut state, ns);
+        let key = (graph_kind_name(kind).to_owned(), record.id.clone());
+        if !scope.records.contains_key(&key) {
+            scope.record_order.push(key.clone());
+        }
+        scope.records.insert(key, record);
+        Ok(())
+    }
+
+    async fn delete_graph_record_of_kind(
+        &self,
+        ns: &str,
+        kind: GraphEntityKind,
+        id: &str,
+    ) -> StoreResult<bool> {
+        namespace(ns)?;
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let scope = Self::scope_mut(&mut state, ns);
+        let key = (graph_kind_name(kind).to_owned(), id.to_owned());
+        scope.record_order.retain(|record_key| record_key != &key);
+        Ok(scope.records.remove(&key).is_some())
     }
 }
 
 impl GraphMutationStore for InMemoryStore {
+    fn graph_authority_capability(&self) -> GraphAuthorityCapability {
+        GraphAuthorityCapability::AtomicBatchWithIndexJobs
+    }
+
     async fn apply_graph_mutation(
         &self,
         mutation: GraphMutation,
@@ -1298,28 +2114,43 @@ impl GraphMutationStore for InMemoryStore {
         InMemoryStore::apply_graph_mutation(self, mutation).await
     }
 
+    async fn apply_graph_mutations_atomic(
+        &self,
+        mutations: Vec<GraphMutation>,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        self.apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+            mutations,
+            index_jobs: Vec::new(),
+        })
+        .await
+    }
+
+    async fn apply_graph_mutations_with_index_jobs_atomic(
+        &self,
+        batch: GraphMutationBatch,
+    ) -> StoreResult<Vec<AppliedGraphMutation>> {
+        InMemoryStore::apply_graph_mutations_with_index_jobs_atomic(self, batch).await
+    }
+
     async fn graph_projection_records(
         &self,
         read: GraphProjectionRead,
     ) -> StoreResult<Vec<GraphRecord>> {
-        namespace(&read.scope.namespace)?;
-        let state = self.state.read().expect("in-memory store lock poisoned");
-        let mut rows = state
-            .graph_projections
-            .get(&read.scope)
-            .map(|projection| {
-                projection
-                    .record_order
-                    .iter()
-                    .filter_map(|id| projection.records.get(id))
-                    .filter(|record| read.metadata.matches(&record.metadata))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if let Some(ids) = read.ids {
-            rows.retain(|record| ids.contains(&record.id));
+        let mut rows = self.graph_projection_rows(&read)?;
+        rows.truncate(read.limit);
+        Ok(rows)
+    }
+
+    async fn graph_projection_page(
+        &self,
+        page: GraphProjectionPageRead,
+    ) -> StoreResult<Vec<GraphRecord>> {
+        let GraphProjectionPageRead { read, after_id } = page;
+        let mut rows = self.graph_projection_rows(&read)?;
+        if let Some(after_id) = after_id {
+            rows.retain(|record| record.id > after_id);
         }
+        rows.sort_by(|left, right| left.id.cmp(&right.id));
         rows.truncate(read.limit);
         Ok(rows)
     }
@@ -1338,49 +2169,7 @@ impl GraphMutationStore for InMemoryStore {
         finite(&query.query.embedding)?;
         let state = self.state.read().expect("in-memory store lock poisoned");
         let projection = state.graph_projections.get(&query.scope);
-        let mut results = match query.query.metric {
-            DistanceMetric::Cosine => projection
-                .into_iter()
-                .flat_map(|projection| {
-                    projection
-                        .record_order
-                        .iter()
-                        .filter_map(|id| projection.records.get(id))
-                })
-                .filter(|record| query.query.metadata.matches(&record.metadata))
-                .filter(|record| record.embedding.is_some())
-                .map(|record| VectorMatch {
-                    record: record.clone(),
-                    distance: cosine_memory_distance(
-                        &query.query.embedding,
-                        record.embedding.as_deref(),
-                    ),
-                })
-                .collect(),
-            DistanceMetric::L2 | DistanceMetric::InnerProduct => projection
-                .into_iter()
-                .flat_map(|projection| {
-                    projection
-                        .record_order
-                        .iter()
-                        .filter_map(|id| projection.records.get(id))
-                })
-                .filter(|record| query.query.metadata.matches(&record.metadata))
-                .filter_map(|record| {
-                    record.embedding.as_deref().map(|vector| {
-                        distance(query.query.metric, &query.query.embedding, vector).map(
-                            |distance| VectorMatch {
-                                record: record.clone(),
-                                distance,
-                            },
-                        )
-                    })
-                })
-                .collect::<StoreResult<Vec<_>>>()?,
-        };
-        results.sort_by(|left, right| left.distance.total_cmp(&right.distance));
-        results.truncate(query.query.limit);
-        Ok(results)
+        graph_projection_vector_matches(projection, &query.table, &query.query)
     }
 }
 
@@ -1724,9 +2513,10 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use kogwistar_store::{
-        GraphMutation, GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery,
-        GraphScope, ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore,
-        ShadowInspectable,
+        GraphAuthorityCapability, GraphMutation, GraphMutationStore, GraphProjectionRead,
+        GraphProjectionVectorQuery, GraphRecord, GraphScope, NewProjectedLaneMessage,
+        NodeIndexStore, ProjectionWriteStore, ServerRunReadStore, ServerRunWriteStore,
+        ShadowInspectable, VectorCollectionStore,
     };
     use serde_json::{Value, json};
     use std::future::Future;
@@ -1742,6 +2532,924 @@ mod tests {
                 Poll::Ready(value) => return value,
                 Poll::Pending => std::thread::yield_now(),
             }
+        }
+    }
+
+    #[test]
+    fn graph_authority_capability_declares_atomic_batches_and_index_jobs() {
+        let capability = InMemoryStore::new().graph_authority_capability();
+        assert_eq!(
+            capability,
+            GraphAuthorityCapability::AtomicBatchWithIndexJobs
+        );
+        assert!(capability.supports_single_mutation());
+        assert!(capability.supports_atomic_index_jobs());
+    }
+
+    #[test]
+    fn cloned_handles_share_volatile_state_but_new_store_starts_empty() {
+        let store = InMemoryStore::new();
+        let shared_handle = store.clone();
+        let scope = GraphScope {
+            namespace: "volatile-contract".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        block_on(store.apply_graph_mutation(graph_mutation(
+            scope.clone(),
+            "volatile-event",
+            "volatile-node",
+            &[1.0, 0.0],
+        )))
+        .expect("write to shared in-memory state");
+
+        assert_eq!(
+            block_on(shared_handle.replay_events(&scope.namespace, 0, 10))
+                .expect("cloned handle reads shared state")
+                .len(),
+            1
+        );
+        assert!(
+            block_on(InMemoryStore::new().replay_events(&scope.namespace, 0, 10))
+                .expect("fresh store has independent volatile state")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn named_vector_collection_isolated_from_graph_and_other_namespaces() {
+        let store = InMemoryStore::new();
+        let record = |id: &str, embedding: Vec<f32>| GraphRecord {
+            id: id.to_owned(),
+            document: Some(format!("index entry {id}")),
+            metadata: serde_json::Map::from_iter([("entry".to_owned(), json!(true))]),
+            embedding: Some(embedding),
+        };
+        block_on(store.upsert_vector_collection(
+            "knowledge",
+            "node_index",
+            vec![
+                record("idx:one", vec![1.0, 0.0]),
+                record("idx:two", vec![0.0, 1.0]),
+            ],
+        ))
+        .expect("named vector entries upsert");
+        block_on(store.upsert_vector_collection(
+            "other",
+            "node_index",
+            vec![record("idx:private", vec![1.0, 0.0])],
+        ))
+        .expect("other namespace entry upsert");
+
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 10,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        let results = block_on(store.query_vector_collection("knowledge", "node_index", &query))
+            .expect("query named vector collection");
+        assert_eq!(
+            results
+                .iter()
+                .map(|item| item.record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["idx:one", "idx:two"]
+        );
+        assert_eq!(results[0].distance, 0.0);
+        assert!(
+            block_on(store.graph_record("knowledge", "idx:one"))
+                .expect("graph read")
+                .is_none()
+        );
+        assert!(
+            block_on(store.query_vector_collection("missing", "node_index", &query))
+                .expect("isolated namespace query")
+                .is_empty()
+        );
+
+        block_on(store.delete_vector_collection_records(
+            "knowledge",
+            "node_index",
+            vec!["idx:one".to_owned()],
+        ))
+        .expect("delete from only the selected collection");
+        let remaining = block_on(store.query_vector_collection("knowledge", "node_index", &query))
+            .expect("query after delete");
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].record.id, "idx:two");
+    }
+
+    #[test]
+    fn dedicated_node_index_store_preserves_lookup_order_and_collection_isolation() {
+        let store = InMemoryStore::new();
+        let make_record = |id: &str, embedding: Vec<f32>| GraphRecord {
+            id: id.to_owned(),
+            document: Some(format!("entry {id}")),
+            metadata: serde_json::Map::new(),
+            embedding: Some(embedding),
+        };
+        block_on(store.upsert_node_index(
+            "graph-index",
+            vec![
+                make_record("idx:a", vec![1.0, 0.0]),
+                make_record("idx:b", vec![0.0, 1.0]),
+            ],
+        ))
+        .expect("index upsert");
+
+        let ids = vec!["idx:b".to_owned(), "missing".to_owned(), "idx:a".to_owned()];
+        let records = block_on(store.get_node_index("graph-index", &ids)).expect("index read");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["idx:b", "idx:a"]
+        );
+        assert!(
+            block_on(store.get_node_index("other-index", &ids))
+                .expect("isolated index")
+                .is_empty()
+        );
+
+        let matches = block_on(store.query_node_index(
+            "graph-index",
+            &VectorQuery {
+                embedding: vec![1.0, 0.0],
+                limit: 1,
+                metadata: MetadataFilter::default(),
+                metric: DistanceMetric::Cosine,
+            },
+        ))
+        .expect("index query");
+        assert_eq!(matches[0].record.id, "idx:a");
+    }
+
+    #[test]
+    fn graph_mutation_batch_commits_events_projection_and_index_jobs_atomically() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-atomic".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let first = graph_mutation(scope.clone(), "first-event", "first", &[1.0, 0.0]);
+        let second = graph_mutation(scope.clone(), "second-event", "second", &[0.0, 1.0]);
+        let job = NewIndexJob {
+            job_id: "first-index-job".to_owned(),
+            namespace: scope.namespace.clone(),
+            entity_kind: "node".to_owned(),
+            entity_id: "first".to_owned(),
+            index_kind: "embedding".to_owned(),
+            op: "UPSERT".to_owned(),
+            payload_json: Some("{}".to_owned()),
+            max_retries: 3,
+        };
+        let batch = GraphMutationBatch {
+            mutations: vec![first.clone(), second],
+            index_jobs: vec![job],
+        };
+
+        let applied = block_on(store.apply_graph_mutations_with_index_jobs_atomic(batch.clone()))
+            .expect("valid batch commits");
+        assert_eq!(applied.len(), 2);
+        assert!(applied.iter().all(|item| item.inserted && item.mutated));
+        assert_eq!(
+            block_on(store.replay_events(&scope.namespace, 0, 10))
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .len(),
+            2
+        );
+        assert_eq!(
+            block_on(store.index_jobs(
+                Some(&scope.namespace),
+                Some("PENDING"),
+                None,
+                None,
+                None,
+                10,
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let replay = block_on(store.apply_graph_mutations_with_index_jobs_atomic(batch))
+            .expect("exact batch replay is idempotent");
+        assert!(replay.iter().all(|item| !item.inserted && !item.mutated));
+        assert_eq!(
+            block_on(store.replay_events(&scope.namespace, 0, 10))
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn graph_node_edge_snapshot_never_mixes_atomic_batch_revisions() {
+        fn graph_batch(scope: &GraphScope, generation: i64) -> GraphMutationBatch {
+            let mutation = |table: &str, kind: &str, id: &str| GraphMutation {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                entity_kind: kind.to_owned(),
+                event_id: format!("{kind}-{generation}"),
+                op: if generation == 0 { "ADD" } else { "REPLACE" }.to_owned(),
+                payload: json!({"id": id, "generation": generation}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: None,
+                    metadata: json!({"generation": generation})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            };
+            GraphMutationBatch {
+                mutations: vec![
+                    mutation("gke_nodes", "node", "node-1"),
+                    mutation("gke_edges", "edge", "edge-1"),
+                ],
+                index_jobs: vec![],
+            }
+        }
+
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-snapshot".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        block_on(store.apply_graph_mutations_with_index_jobs_atomic(graph_batch(&scope, 0)))
+            .expect("initial graph pair is valid");
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let writer_store = store.clone();
+        let writer_scope = scope.clone();
+        let writer_barrier = barrier.clone();
+        let writer =
+            std::thread::spawn(move || {
+                writer_barrier.wait();
+                for generation in 1..=500 {
+                    block_on(writer_store.apply_graph_mutations_with_index_jobs_atomic(
+                        graph_batch(&writer_scope, generation),
+                    ))
+                    .expect("replacement graph pair is atomic");
+                }
+            });
+        barrier.wait();
+        for _ in 0..1_000 {
+            let (nodes, edges) = store
+                .graph_node_edge_snapshot(&scope, 10)
+                .expect("snapshot read succeeds");
+            let node_generation = nodes[0].metadata["generation"].as_i64().unwrap();
+            let edge_generation = edges[0].metadata["generation"].as_i64().unwrap();
+            assert_eq!(node_generation, edge_generation);
+        }
+        writer.join().expect("writer thread completes");
+    }
+
+    #[test]
+    fn in_memory_scoped_adjacency_fails_closed_on_invalid_endpoints() {
+        use kogwistar_store::{
+            GraphAclPrincipal, graph_neighbors_from_records, graph_records_visible_by_acl,
+        };
+        use std::collections::BTreeSet;
+
+        fn mutation(
+            scope: &GraphScope,
+            id: &str,
+            table: &str,
+            kind: &str,
+            metadata: serde_json::Map<String, Value>,
+            document: Option<String>,
+        ) -> GraphMutation {
+            GraphMutation {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                entity_kind: kind.to_owned(),
+                event_id: format!("event-{id}"),
+                op: "ADD".to_owned(),
+                payload: json!({"id": id, "metadata": metadata}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document,
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }
+        }
+
+        fn acl_mutation(scope: &GraphScope, id: &str, grain: &str) -> GraphMutation {
+            let metadata = json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "knowledge",
+                "acl_target_grain": grain,
+                "acl_target_entity_id": id,
+                "acl_version": 1,
+                "acl_mode": "public"
+            })
+            .as_object()
+            .expect("ACL metadata is an object")
+            .clone();
+            mutation(
+                scope,
+                &format!("acl-{id}"),
+                "gke_nodes",
+                "node",
+                metadata,
+                None,
+            )
+        }
+
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "endpoint-scope-test".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let foreign_scope = GraphScope {
+            graph_space: Some("other-facts".to_owned()),
+            ..scope.clone()
+        };
+        let mut mutations = vec![
+            mutation(
+                &scope,
+                "source-public",
+                "gke_nodes",
+                "node",
+                json!({"label":"source"}).as_object().unwrap().clone(),
+                None,
+            ),
+            acl_mutation(&scope, "source-public", "node"),
+            mutation(
+                &scope,
+                "target-public",
+                "gke_nodes",
+                "node",
+                json!({"label":"target"}).as_object().unwrap().clone(),
+                None,
+            ),
+            acl_mutation(&scope, "target-public", "node"),
+        ];
+
+        let edges = [
+            (
+                "edge-valid",
+                json!(["source-public"]),
+                json!(["target-public"]),
+            ),
+            (
+                "edge-absent-endpoint",
+                json!(["source-public"]),
+                json!(["missing-node"]),
+            ),
+            (
+                "edge-malformed-endpoint",
+                json!([123]),
+                json!(["target-public"]),
+            ),
+            (
+                "edge-cross-scope-endpoint",
+                json!(["source-public"]),
+                json!(["foreign-node"]),
+            ),
+        ];
+        for (id, source_ids, target_ids) in edges {
+            let metadata = json!({
+                "source_ids": source_ids,
+                "target_ids": target_ids,
+                "relation": "links"
+            });
+            mutations.push(mutation(
+                &scope,
+                id,
+                "gke_edges",
+                "edge",
+                metadata.as_object().unwrap().clone(),
+                Some(metadata.to_string()),
+            ));
+            mutations.push(acl_mutation(&scope, id, "edge"));
+        }
+        let foreign_mutations = vec![
+            mutation(
+                &foreign_scope,
+                "foreign-node",
+                "gke_nodes",
+                "node",
+                json!({"label":"out-of-scope"}).as_object().unwrap().clone(),
+                None,
+            ),
+            acl_mutation(&foreign_scope, "foreign-node", "node"),
+        ];
+
+        block_on(
+            store.apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+                mutations,
+                index_jobs: Vec::new(),
+            }),
+        )
+        .expect("fixture graph writes succeed");
+        block_on(
+            store.apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+                mutations: foreign_mutations,
+                index_jobs: Vec::new(),
+            }),
+        )
+        .expect("foreign-scope fixture graph writes succeed");
+
+        let (nodes, edges) = store
+            .graph_node_edge_snapshot(&scope, 100)
+            .expect("scoped snapshot reads");
+        assert!(nodes.iter().all(|node| node.id != "foreign-node"));
+        assert_eq!(edges.len(), 4);
+
+        let principal = GraphAclPrincipal {
+            principal_id: "reader".to_owned(),
+            groups: BTreeSet::new(),
+            security_scope: None,
+        };
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &edges, "knowledge", &principal);
+        assert_eq!(
+            visible_edges
+                .iter()
+                .map(|edge| edge.id.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["edge-valid"])
+        );
+
+        let neighbors =
+            graph_neighbors_from_records("source-public", &visible_nodes, &visible_edges, None);
+        assert_eq!(neighbors.edges, BTreeSet::from(["edge-valid".to_owned()]));
+        assert_eq!(
+            neighbors.nodes,
+            BTreeSet::from(["target-public".to_owned()])
+        );
+    }
+
+    #[test]
+    fn conflicting_graph_writes_are_serialized_within_process() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-conflicting-writes".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut writers = Vec::new();
+
+        for writer_id in ["writer-a", "writer-b"] {
+            let writer_store = store.clone();
+            let writer_scope = scope.clone();
+            let writer_barrier = barrier.clone();
+            writers.push(std::thread::spawn(move || {
+                let mut mutation = graph_mutation(
+                    writer_scope,
+                    &format!("event-{writer_id}"),
+                    "shared-node",
+                    &[1.0, 0.0],
+                );
+                mutation.op = "REPLACE".to_owned();
+                mutation.payload = json!({"id": "shared-node", "writer": writer_id});
+                mutation
+                    .record
+                    .metadata
+                    .insert("writer".to_owned(), json!(writer_id));
+
+                writer_barrier.wait();
+                block_on(writer_store.apply_graph_mutation(mutation))
+                    .expect("serialized conflicting write succeeds")
+            }));
+        }
+        barrier.wait();
+        for writer in writers {
+            writer.join().expect("writer thread completes");
+        }
+
+        let events =
+            block_on(store.replay_events(&scope.namespace, 0, 10)).expect("event replay succeeds");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].seq + 1, events[1].seq);
+
+        let records = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: 10,
+        }))
+        .expect("materialized graph read succeeds");
+        assert_eq!(records.len(), 1);
+        assert_eq!(
+            records[0].metadata.get("writer"),
+            events[1].payload.get("writer")
+        );
+    }
+
+    #[test]
+    fn graph_vector_snapshot_never_mixes_atomic_graph_revisions() {
+        fn graph_batch(scope: &GraphScope, generation: i64) -> GraphMutationBatch {
+            let vectors = if generation % 2 == 0 {
+                [("north", [1.0, 0.0]), ("east", [0.0, 1.0])]
+            } else {
+                [("north", [0.0, 1.0]), ("east", [1.0, 0.0])]
+            };
+            let mutations = vectors
+                .into_iter()
+                .map(|(id, embedding)| GraphMutation {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("{id}-{generation}"),
+                    op: if generation == 0 { "ADD" } else { "REPLACE" }.to_owned(),
+                    payload: json!({"id": id, "generation": generation}),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(generation.to_string()),
+                        metadata: json!({"generation": generation})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        embedding: Some(embedding.to_vec()),
+                    },
+                    embedding_dim: 2,
+                })
+                .collect();
+            GraphMutationBatch {
+                mutations,
+                index_jobs: Vec::new(),
+            }
+        }
+
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-vector-snapshot".to_owned(),
+            workspace_id: Some("workspace".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        block_on(store.apply_graph_mutations_with_index_jobs_atomic(graph_batch(&scope, 0)))
+            .expect("initial graph batch is valid");
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let writer_store = store.clone();
+        let writer_scope = scope.clone();
+        let writer_barrier = barrier.clone();
+        let writer =
+            std::thread::spawn(move || {
+                writer_barrier.wait();
+                for generation in 1..=500 {
+                    block_on(writer_store.apply_graph_mutations_with_index_jobs_atomic(
+                        graph_batch(&writer_scope, generation),
+                    ))
+                    .expect("replacement graph batch is atomic");
+                }
+            });
+        barrier.wait();
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 10,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        for _ in 0..1_000 {
+            let (nodes, edges, matches) = store
+                .graph_node_edge_vector_snapshot(
+                    &scope,
+                    10,
+                    "gke_nodes",
+                    std::slice::from_ref(&query),
+                )
+                .expect("consistent graph and vector snapshot succeeds");
+            assert!(edges.is_empty());
+            let generation = nodes[0].metadata["generation"].as_i64().unwrap();
+            assert!(
+                nodes
+                    .iter()
+                    .all(|node| node.metadata["generation"].as_i64() == Some(generation))
+            );
+            let best = matches[0].first().expect("vector candidate exists");
+            assert_eq!(
+                best.record.metadata["generation"].as_i64(),
+                Some(generation)
+            );
+            assert_eq!(
+                best.record.id,
+                if generation % 2 == 0 { "north" } else { "east" }
+            );
+        }
+        writer.join().expect("writer thread completes");
+    }
+
+    #[test]
+    fn invalid_graph_mutation_batch_has_no_partial_memory_effects() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "memory-rollback".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let first = graph_mutation(scope.clone(), "valid-event", "valid", &[1.0, 0.0]);
+        let mut invalid = graph_mutation(scope.clone(), "invalid-event", "invalid", &[0.0, 1.0]);
+        invalid.payload = serde_json::json!({"id": 4});
+        let result = block_on(store.apply_graph_mutations_with_index_jobs_atomic(
+            GraphMutationBatch {
+                mutations: vec![first, invalid],
+                index_jobs: vec![NewIndexJob {
+                    job_id: "must-not-appear".to_owned(),
+                    namespace: scope.namespace.clone(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "valid".to_owned(),
+                    index_kind: "embedding".to_owned(),
+                    op: "UPSERT".to_owned(),
+                    payload_json: None,
+                    max_retries: 3,
+                }],
+            },
+        ));
+        assert!(result.is_err());
+        assert!(
+            block_on(store.replay_events(&scope.namespace, 0, 10))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            block_on(store.index_jobs(Some(&scope.namespace), None, None, None, None, 10,))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn direct_graph_records_keep_node_and_edge_identity_disjoint() {
+        let store = InMemoryStore::new();
+        block_on(store.upsert_graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Node,
+            record("shared-id", "node", &[1.0, 0.0]),
+        ))
+        .unwrap();
+        block_on(store.upsert_graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Edge,
+            record("shared-id", "edge", &[0.0, 1.0]),
+        ))
+        .unwrap();
+
+        let node = block_on(store.graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Node,
+            "shared-id",
+        ))
+        .unwrap()
+        .unwrap();
+        let edge = block_on(store.graph_record_of_kind(
+            "typed-direct",
+            GraphEntityKind::Edge,
+            "shared-id",
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(node.metadata["team"], "node");
+        assert_eq!(edge.metadata["team"], "edge");
+        assert_eq!(
+            block_on(store.graph_records_of_kind(
+                "typed-direct",
+                GraphEntityKind::Node,
+                &MetadataFilter::default(),
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.graph_records_of_kind(
+                "typed-direct",
+                GraphEntityKind::Edge,
+                &MetadataFilter::default(),
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 5,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        let node_hits =
+            block_on(store.vector_query_of_kind("typed-direct", GraphEntityKind::Node, &query))
+                .unwrap();
+        let edge_hits =
+            block_on(store.vector_query_of_kind("typed-direct", GraphEntityKind::Edge, &query))
+                .unwrap();
+        assert_eq!(node_hits[0].distance, 0.0);
+        assert_eq!(edge_hits[0].distance, 1.0);
+        assert!(block_on(store.graph_record("typed-direct", "shared-id")).is_err());
+        assert!(block_on(store.delete_graph_record("typed-direct", "shared-id")).is_err());
+        assert!(
+            block_on(store.delete_graph_record_of_kind(
+                "typed-direct",
+                GraphEntityKind::Node,
+                "shared-id",
+            ))
+            .unwrap()
+        );
+        assert!(
+            block_on(store.graph_record_of_kind(
+                "typed-direct",
+                GraphEntityKind::Node,
+                "shared-id",
+            ))
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            block_on(store.graph_record_of_kind(
+                "typed-direct",
+                GraphEntityKind::Edge,
+                "shared-id",
+            ))
+            .unwrap()
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn numeric_lte_vector_filter_is_applied_before_top_n() {
+        let store = InMemoryStore::new();
+        for (id, level, embedding) in [
+            ("nearest-deep", 4, vec![1.0_f32, 0.0]),
+            ("next-shallow", 1, vec![0.9, 0.1]),
+            ("last-shallow", 2, vec![0.8, 0.2]),
+        ] {
+            let mut metadata = serde_json::Map::new();
+            metadata.insert("level_from_root".to_owned(), json!(level));
+            block_on(store.upsert_graph_record_of_kind(
+                "level-filter",
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: id.to_owned(),
+                    document: None,
+                    metadata,
+                    embedding: Some(embedding),
+                },
+            ))
+            .unwrap();
+        }
+        let query = VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 1,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        };
+        let matches = block_on(store.vector_query_of_kind_numeric_lte(
+            "level-filter",
+            GraphEntityKind::Node,
+            &query,
+            "level_from_root",
+            2.0,
+        ))
+        .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].record.id, "next-shallow");
+        let shadow = store.shadow_inspection();
+        let shadow_matches = block_on(shadow.vector_query_of_kind_numeric_lte(
+            "level-filter",
+            GraphEntityKind::Node,
+            &query,
+            "level_from_root",
+            2.0,
+        ))
+        .unwrap();
+        assert_eq!(shadow_matches, matches);
+    }
+
+    #[test]
+    fn expired_claim_token_cannot_mutate_queue_state() {
+        let store = InMemoryStore::new();
+        for job_id in ["done", "failed", "retried", "requeued"] {
+            block_on(store.enqueue_index_job(NewIndexJob {
+                job_id: job_id.to_owned(),
+                namespace: "ns".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: job_id.to_owned(),
+                index_kind: "test".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }))
+            .unwrap();
+        }
+        let claims = block_on(store.claim_index_jobs(4, -1, Some("ns"))).unwrap();
+        let tokens = claims
+            .iter()
+            .map(|claim| (claim.job_id.as_str(), claim.claim_token.as_deref().unwrap()))
+            .collect::<BTreeMap<_, _>>();
+
+        assert!(!block_on(store.mark_index_job_done("done", Some(tokens["done"]))).unwrap());
+        block_on(store.mark_index_job_failed("failed", "late", true, Some(tokens["failed"])))
+            .unwrap();
+        block_on(store.bump_retry_and_requeue("retried", "late", 0, Some(tokens["retried"])))
+            .unwrap();
+        block_on(store.requeue_index_job_at_tail(
+            "requeued",
+            "{}".to_owned(),
+            0,
+            Some(tokens["requeued"]),
+        ))
+        .unwrap();
+
+        let reclaimed = block_on(store.claim_index_jobs(4, 30, Some("ns"))).unwrap();
+        assert_eq!(reclaimed.len(), 4);
+        assert!(reclaimed.iter().all(|claim| claim.retry_count == 0));
+        assert!(
+            reclaimed.iter().all(|claim| {
+                claim.claim_token.as_deref() != Some(tokens[claim.job_id.as_str()])
+            })
+        );
+        assert!(block_on(store.mark_index_job_done("done", None)).unwrap());
+    }
+
+    #[test]
+    fn expired_lane_claim_cannot_be_finalized_before_reclaim() {
+        let store = InMemoryStore::new();
+        for (message_id, operation) in [
+            ("expired-ack", "ack"),
+            ("expired-requeue", "requeue"),
+            ("expired-dead-letter", "dead-letter"),
+        ] {
+            block_on(store.project_lane_message(NewProjectedLaneMessage {
+                message_id: message_id.to_owned(),
+                namespace: "runtime".to_owned(),
+                purpose: "user_visible".to_owned(),
+                inbox_id: "python-workers".to_owned(),
+                conversation_id: "conversation".to_owned(),
+                recipient_id: "python-worker".to_owned(),
+                sender_id: "agent".to_owned(),
+                msg_type: "workflow.worker.request.v1".to_owned(),
+                status: "pending".to_owned(),
+                created_at: 1,
+                available_at: 0,
+                run_id: Some("run-target".to_owned()),
+                step_id: Some("step".to_owned()),
+                correlation_id: Some("correlation".to_owned()),
+                payload_json: Some("{}".to_owned()),
+                error_json: None,
+            }))
+            .unwrap();
+            let claimed = block_on(store.claim_projected_lane_messages_filtered(
+                LaneMessageClaimFilter {
+                    namespace: "runtime".to_owned(),
+                    inbox_id: "python-workers".to_owned(),
+                    claimed_by: "attempt-1".to_owned(),
+                    message_ids: Some(vec![message_id.to_owned()]),
+                    run_id: Some("run-target".to_owned()),
+                    msg_type: Some("workflow.worker.request.v1".to_owned()),
+                    recipient_id: Some("python-worker".to_owned()),
+                    limit: 1,
+                    lease_seconds: -5,
+                },
+            ))
+            .unwrap();
+            assert_eq!(claimed.len(), 1);
+            assert!(timestamp_i64(claimed[0].lease_until.as_ref().unwrap()) < now_seconds());
+
+            match operation {
+                "ack" => block_on(store.ack_projected_lane_message(message_id, "attempt-1")),
+                "requeue" => {
+                    block_on(store.requeue_projected_lane_message(message_id, "attempt-1", None, 0))
+                }
+                "dead-letter" => block_on(store.dead_letter_projected_lane_message(
+                    message_id,
+                    "attempt-1",
+                    None,
+                )),
+                _ => unreachable!(),
+            }
+            .unwrap();
+            let state = store.state.read().unwrap();
+            let row = &state.lane_messages[message_id];
+            assert_eq!(row.status, "claimed", "{operation}");
+            assert_eq!(row.claimed_by.as_deref(), Some("attempt-1"), "{operation}");
+            assert_eq!(row.retry_count, 0, "{operation}");
         }
     }
 
@@ -1771,6 +3479,182 @@ mod tests {
             record: record(id, "red", embedding),
             embedding_dim: embedding.len(),
         }
+    }
+
+    #[test]
+    fn typed_graph_mutation_guard_is_atomic_at_the_memory_store_seam() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "typed".to_owned(),
+            workspace_id: Some("ws".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("valid graph model fixture");
+        let payload = fixture["cases"][0]["payload"].clone();
+        let envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::Node,
+            payload.clone(),
+        );
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "typed-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: payload.clone(),
+            record: GraphRecord {
+                id: "parity-node".to_owned(),
+                document: None,
+                metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
+                embedding: Some(vec![1.0, 0.0, 0.0]),
+            },
+            embedding_dim: 3,
+        };
+        let applied = block_on(store.apply_typed_graph_mutation(mutation.clone(), envelope));
+        assert!(applied.is_ok());
+
+        let mut invalid = mutation;
+        invalid.event_id = "invalid-event".to_owned();
+        invalid.record.id = "different-id".to_owned();
+        let invalid_envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::Node,
+            payload,
+        );
+        assert!(block_on(store.apply_typed_graph_mutation(invalid, invalid_envelope)).is_err());
+        block_on(store.apply_graph_mutation(graph_mutation(
+            scope.clone(),
+            "typed-event-2",
+            "a-parity-node",
+            &[0.0, 1.0, 0.0],
+        )))
+        .expect("insert second record for cursor paging");
+        let legacy_records = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: Default::default(),
+            limit: 10,
+        }))
+        .expect("legacy read preserves insertion order");
+        assert_eq!(
+            legacy_records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["parity-node", "a-parity-node"]
+        );
+        let records = block_on(kogwistar_store::graph_projection_records_all(
+            &store,
+            GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: Default::default(),
+                limit: 1,
+            },
+        ))
+        .expect("read all memory projection pages");
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a-parity-node", "parity-node"]
+        );
+        let mut visited = Vec::new();
+        let mut page_count = 0;
+        block_on(kogwistar_store::for_each_graph_projection_page(
+            &store,
+            GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "typed".to_owned(),
+                    workspace_id: Some("ws".to_owned()),
+                    graph_space: Some("facts".to_owned()),
+                },
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: Default::default(),
+                limit: 1,
+            },
+            |page| {
+                page_count += 1;
+                visited.extend(page.iter().map(|record| record.id.clone()));
+                Ok(())
+            },
+        ))
+        .expect("visit pages without collecting projection records");
+        assert_eq!(page_count, 2);
+        assert_eq!(visited, vec!["a-parity-node", "parity-node"]);
+    }
+
+    #[test]
+    fn graph_projection_keeps_same_id_separate_by_table() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "same-id-projection".to_owned(),
+            workspace_id: Some("ws".to_owned()),
+            graph_space: Some("universal".to_owned()),
+        };
+        let node = graph_mutation(scope.clone(), "node-event", "shared-id", &[1.0, 0.0]);
+        block_on(store.apply_graph_mutation(node)).unwrap();
+
+        let mut edge = graph_mutation(scope.clone(), "edge-event", "shared-id", &[0.0, 1.0]);
+        edge.table = "gke_edges".to_owned();
+        edge.entity_kind = "edge".to_owned();
+        block_on(store.apply_graph_mutation(edge)).unwrap();
+
+        for (table, expected_embedding) in
+            [("gke_nodes", vec![1.0, 0.0]), ("gke_edges", vec![0.0, 1.0])]
+        {
+            let records = block_on(store.graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: table.to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            }))
+            .unwrap();
+            assert_eq!(records.len(), 1, "{table}");
+            assert_eq!(records[0].id, "shared-id");
+            assert_eq!(records[0].embedding, Some(expected_embedding.clone()));
+
+            let hits = block_on(
+                store.graph_projection_vector_query(GraphProjectionVectorQuery {
+                    scope: scope.clone(),
+                    table: table.to_owned(),
+                    query: VectorQuery {
+                        embedding: vec![1.0, 0.0],
+                        limit: 10,
+                        metadata: MetadataFilter::default(),
+                        metric: DistanceMetric::Cosine,
+                    },
+                    embedding_dim: 2,
+                }),
+            )
+            .unwrap();
+            assert_eq!(hits.len(), 1, "{table}");
+            assert_eq!(hits[0].record.embedding, Some(expected_embedding));
+        }
+    }
+
+    #[test]
+    fn atomic_graph_mutation_batch_is_supported() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "atomic".to_owned(),
+            workspace_id: Some("ws".to_owned()),
+            graph_space: Some("facts".to_owned()),
+        };
+        let mutation = graph_mutation(scope, "atomic-event", "atomic-node", &[1.0, 0.0]);
+
+        let applied = block_on(store.apply_graph_mutations_atomic(vec![mutation]))
+            .expect("in-memory store supports atomic graph batches");
+        assert_eq!(applied.len(), 1);
+        assert!(applied[0].inserted && applied[0].mutated);
     }
 
     #[test]
@@ -1890,6 +3774,84 @@ mod tests {
                 .unwrap();
             assert_eq!(matches[0].record.id, "same");
             assert_eq!(matches[0].distance, -1.0);
+        });
+    }
+
+    #[test]
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract; fixture=contracts/golden/graph-mutation-scope-memory-v1.json
+    fn memory_mutation_scope_matches_shared_python_contract() {
+        block_on(async {
+            let fixture: Value = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../contracts/golden/graph-mutation-scope-memory-v1.json"
+            )))
+            .expect("shared graph mutation scope contract");
+            let store = InMemoryStore::new();
+
+            for record in fixture["records"].as_array().expect("records") {
+                let scope = &record["scope"];
+                let graph_scope = GraphScope {
+                    namespace: scope["namespace"].as_str().unwrap().to_owned(),
+                    workspace_id: scope["workspace_id"].as_str().map(str::to_owned),
+                    graph_space: scope["graph_space"].as_str().map(str::to_owned),
+                };
+                let id = record["id"].as_str().expect("record id");
+                let embedding = record["embedding"]
+                    .as_array()
+                    .expect("record embedding")
+                    .iter()
+                    .map(|value| value.as_f64().expect("embedding component") as f32)
+                    .collect::<Vec<_>>();
+                let applied = store
+                    .apply_graph_mutation(graph_mutation(
+                        graph_scope,
+                        &format!("event-{id}"),
+                        id,
+                        &embedding,
+                    ))
+                    .await
+                    .expect("scoped graph mutation");
+                assert!(applied.inserted && applied.mutated);
+            }
+
+            let embedding = fixture["query_embedding"]
+                .as_array()
+                .expect("query embedding")
+                .iter()
+                .map(|value| value.as_f64().expect("query component") as f32)
+                .collect::<Vec<_>>();
+            for case in fixture["queries"].as_array().expect("queries") {
+                let scope = &case["scope"];
+                let matches = store
+                    .graph_projection_vector_query(GraphProjectionVectorQuery {
+                        scope: GraphScope {
+                            namespace: scope["namespace"].as_str().unwrap().to_owned(),
+                            workspace_id: scope["workspace_id"].as_str().map(str::to_owned),
+                            graph_space: scope["graph_space"].as_str().map(str::to_owned),
+                        },
+                        table: "gke_nodes".to_owned(),
+                        query: VectorQuery {
+                            embedding: embedding.clone(),
+                            limit: 10,
+                            metadata: MetadataFilter::default(),
+                            metric: DistanceMetric::Cosine,
+                        },
+                        embedding_dim: embedding.len(),
+                    })
+                    .await
+                    .expect("scope-filtered vector query");
+                let actual = matches
+                    .iter()
+                    .map(|item| item.record.id.as_str())
+                    .collect::<Vec<_>>();
+                let expected = case["expected_ids"]
+                    .as_array()
+                    .expect("expected IDs")
+                    .iter()
+                    .map(|id| id.as_str().expect("expected ID"))
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected);
+            }
         });
     }
     fn record(id: &str, team: &str, embedding: &[f32]) -> GraphRecord {
@@ -2531,6 +4493,83 @@ mod tests {
                     actual: 2
                 }
             );
+        });
+    }
+
+    #[test]
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#vector_query; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-memory/src/lib.rs#graph_vector_metrics_match_shared_python_rust_contract; python_test=tests/core/test_search_nodes_as_of.py#test_postgres_vector_metric_contract_is_shared_with_rust
+    fn graph_vector_metrics_match_shared_python_rust_contract() {
+        block_on(async {
+            let fixture: Value = serde_json::from_str(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../contracts/golden/graph-vector-metric-semantics-v1.json"
+            )))
+            .expect("shared graph vector metric contract");
+            let store = InMemoryStore::new();
+            let query_embedding = fixture["query_embedding"]
+                .as_array()
+                .expect("query embedding")
+                .iter()
+                .map(|value| value.as_f64().expect("query component") as f32)
+                .collect::<Vec<_>>();
+            for vector in fixture["vectors"].as_array().expect("vectors") {
+                let id = vector["id"].as_str().expect("vector id");
+                let embedding = vector["embedding"]
+                    .as_array()
+                    .expect("embedding")
+                    .iter()
+                    .map(|value| value.as_f64().expect("embedding component") as f32)
+                    .collect::<Vec<_>>();
+                store
+                    .upsert_graph_record("metric-contract", record(id, "keep", &embedding))
+                    .await
+                    .unwrap();
+            }
+
+            for case in fixture["cases"].as_array().expect("metric cases") {
+                let metric = match case["metric"].as_str() {
+                    Some("cosine") => DistanceMetric::Cosine,
+                    Some("l2") => DistanceMetric::L2,
+                    Some("ip") => DistanceMetric::InnerProduct,
+                    other => panic!("unknown metric in shared fixture: {other:?}"),
+                };
+                let results = store
+                    .vector_query(
+                        "metric-contract",
+                        &VectorQuery {
+                            embedding: query_embedding.clone(),
+                            limit: 10,
+                            metadata: MetadataFilter::default(),
+                            metric,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                let ids = results
+                    .iter()
+                    .map(|result| result.record.id.as_str())
+                    .collect::<Vec<_>>();
+                let expected_ids = case["expected_ids"]
+                    .as_array()
+                    .expect("expected ids")
+                    .iter()
+                    .map(|value| value.as_str().expect("expected id"))
+                    .collect::<Vec<_>>();
+                assert_eq!(ids, expected_ids);
+                for (index, result) in results.iter().enumerate() {
+                    let expected_distance = case["expected_distances"][index]
+                        .as_f64()
+                        .expect("expected distance");
+                    let expected_similarity = case["expected_similarities"][index]
+                        .as_f64()
+                        .expect("expected similarity");
+                    assert!((result.distance - expected_distance).abs() < 1e-6);
+                    let similarity =
+                        kogwistar_store::similarity_from_distance(Some(result.distance), metric)
+                            .expect("finite similarity");
+                    assert!((similarity - expected_similarity).abs() < 1e-6);
+                }
+            }
         });
     }
 

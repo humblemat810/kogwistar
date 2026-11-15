@@ -168,12 +168,72 @@ def test_gate_passes_only_with_all_layers_perf_authority_and_production_canary()
         canary_evidence=_production_canary_set(),
     )
 
-    assert result["status"] == "passed"
+    assert result["status"] == "passed", result["blockers"]
     assert result["blockers"] == []
     assert result["server_operation_deferrals"] == {"status": "passed"}
     assert result["phase3_capability_evidence"] == {"status": "passed"}
     assert result["phase4_runtime_evidence"] == {"status": "passed"}
     assert result["phase5_server_evidence"] == {"status": "passed"}
+
+
+def test_gate_rejects_python_retirement_despite_full_rust_evidence(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    gate = _gate()
+    manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
+    for item in manifest["capability_ownership"]:
+        if item["capability"] in gate.REQUIRED_RUST_OWNERS:
+            item["rust_cutover_ready"] = True
+    manifest["current_persistent_evidence"]["gate_status"] = "passed"
+
+    matrix = json.loads(
+        (ROOT / "contracts" / "dual-language-support-matrix-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    matrix["policy"]["python_and_rust_are_maintained"] = False
+    next(item for item in matrix["capabilities"] if item["id"] == "graph-pgvector")[
+        "python"
+    ]["status"] = "disabled"
+    path = tmp_path / "dual-language-support-matrix-v1.json"
+    path.write_text(json.dumps(matrix), encoding="utf-8")
+    monkeypatch.setattr(gate, "SUPPORT_MATRIX_PATH", path)
+
+    result = gate.evaluate_release_gate(
+        manifest=manifest,
+        compatibility_reports=_compatibility("a" * 64),
+        runtime_performance={"gate": {"status": "passed"}},
+        phase3_capability_evidence=_phase3_capability_evidence(),
+        phase4_runtime_evidence=_phase4_runtime_evidence(),
+        phase5_server_evidence=_phase5_evidence(),
+        canary_evidence=_production_canary_set(),
+    )
+
+    assert result["status"] == "blocked"
+    assert result["dual_language_support"] == {"status": "blocked"}
+    details = {row["detail"] for row in result["blockers"]}
+    assert "dual-language policy must maintain both Python and Rust" in details
+    assert "dual-language capability graph-pgvector does not retain Python" in details
+
+
+def test_dual_language_support_rejects_missing_and_duplicate_capabilities() -> None:
+    gate = _gate()
+    matrix = json.loads(
+        (ROOT / "contracts" / "dual-language-support-matrix-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    matrix["capabilities"] = [
+        item for item in matrix["capabilities"] if item["id"] != "workflow-runtime"
+    ]
+    matrix["capabilities"].append(matrix["capabilities"][0])
+    matrix["capabilities"][0]["python"]["status"] = []
+    errors = gate.validate_dual_language_support(
+        matrix, {"deterministic-contracts", "workflow-runtime"}
+    )
+    assert "dual-language capability workflow-runtime is missing" in errors
+    assert "duplicate dual-language capability deterministic-contracts" in errors
+    assert "dual-language capability deterministic-contracts does not retain Python" in errors
 
 
 def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:

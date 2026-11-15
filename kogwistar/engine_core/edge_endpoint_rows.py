@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Protocol
 
-from ..json_types import JsonObject
+from ..json_types import JsonObject, JsonValue
 
 
 class EdgeEndpointLike(Protocol):
     """Structural edge surface required by endpoint projection adapters."""
+
+    @property
+    def id(self) -> str | None: ...
 
     @property
     def source_ids(self) -> Sequence[str] | None: ...
@@ -29,12 +32,18 @@ class EdgeEndpointLike(Protocol):
     @property
     def relation(self) -> str | None: ...
 
-    def safe_get_id(self) -> str: ...
-
+    @property
+    def metadata(self) -> Mapping[str, JsonValue] | None: ...
 
 def edge_endpoint_rows(edge: EdgeEndpointLike) -> list[JsonObject]:
     """Return deterministic, non-semantic endpoint rows for an edge."""
-    edge_id = str(edge.safe_get_id())
+    edge_id = edge.id
+    if not edge_id:
+        legacy_get_id = getattr(edge, "safe_get_id", None)
+        if callable(legacy_get_id):
+            edge_id = legacy_get_id()
+    if not isinstance(edge_id, str) or not edge_id:
+        raise ValueError("edge endpoint projection requires a non-empty edge id")
     rows: list[JsonObject] = []
     for role, endpoint_ids, endpoint_type in (
         ("src", edge.source_ids or [], "node"),
@@ -51,6 +60,7 @@ def edge_endpoint_rows(edge: EdgeEndpointLike) -> list[JsonObject]:
                 "role": role,
                 "doc_id": edge.doc_id,
                 "relation": edge.relation,
+                "causal_type": (edge.metadata or {}).get("causal_type"),
             })
     return [
         {key: value for key, value in row.items() if value is not None}

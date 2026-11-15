@@ -458,11 +458,11 @@ def test_nested_workflow_runtime_projects_child_run_under_parent_span(tmp_path):
     child_id = "wf_otel_child"
     try:
         for node in (
-            _node(workflow_id=parent_id, node_id="parent-start", op="start", start=True),
-            _node(workflow_id=parent_id, node_id="parent-act", op="act"),
-            _node(workflow_id=parent_id, node_id="parent-done", op="done", terminal=True),
-            _node(workflow_id=child_id, node_id="child-start", op="child", start=True),
-            _node(workflow_id=child_id, node_id="child-done", op="child-done", terminal=True),
+            _node(workflow_id=parent_id, node_id="parent-start", op="start", start=True, version="v1"),
+            _node(workflow_id=parent_id, node_id="parent-act", op="act", version="v1"),
+            _node(workflow_id=parent_id, node_id="parent-done", op="done", terminal=True, version="v1"),
+            _node(workflow_id=child_id, node_id="child-start", op="child", start=True, version="v1"),
+            _node(workflow_id=child_id, node_id="child-done", op="child-done", terminal=True, version="v1"),
         ):
             workflow_engine.write.add_node(node)
         for edge in (

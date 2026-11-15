@@ -1,0 +1,28 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-redo-contract",
+  "designer_id": "alice",
+  "node_id": "redo-node-contract",
+  "fixed_response_fields": {
+    "workflow_id": "wf-redo-contract",
+    "namespace": "wf_design:wf-redo-contract",
+    "current_version": 1,
+    "active_tip_version": 1,
+    "max_version": 1,
+    "allocated_max_version": 1,
+    "current_seq": 1,
+    "can_undo": true,
+    "can_redo": false,
+    "status": "ok"
+  },
+  "integer_response_fields": ["latest_seq"],
+  "array_lengths": {
+    "versions": 2,
+    "selected_versions": 2,
+    "dropped_ranges": 0,
+    "timeline": 3
+  },
+  "version_one_action": "node_upsert",
+  "absent_response_fields": ["materialization_status"]
+}

@@ -17,6 +17,8 @@ from pydantic_extension.model_slicing.mixin import ExcludeMode
 
 from ..document_types import Chunk
 
+MAX_PERSISTENT_CHAR_OFFSET = (1 << 64) - 1
+
 
 class MentionVerification(BaseModel):
     """Result of verifying a mention span against the source text."""
@@ -60,10 +62,14 @@ class Span(ModeSlicingMixin, BaseModel):
     start_char: int = Field(
         ...,
         ge=0,
+        le=MAX_PERSISTENT_CHAR_OFFSET,
         description="Character offset within start_page, zero indexed, first char in source document is index 0 with 0 offset",
     )
     end_char: int = Field(
-        ..., ge=1, description="Character offset within end_page, zero indexed"
+        ...,
+        ge=1,
+        le=MAX_PERSISTENT_CHAR_OFFSET,
+        description="Character offset within end_page, zero indexed",
     )
     excerpt: str = Field(
         "",

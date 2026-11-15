@@ -27,7 +27,8 @@ class _FakeMeta:
 class _FakeEngine:
     def __init__(self, kg_graph_type: str) -> None:
         self.kg_graph_type = kg_graph_type
-        self.meta_sqlite = _FakeMeta()
+        self.metadata = _FakeMeta()
+        self.meta_sqlite = self.metadata
         self.pre_add_node_hooks: list = []
         self.pre_add_edge_hooks: list = []
         self.pre_add_pure_edge_hooks: list = []

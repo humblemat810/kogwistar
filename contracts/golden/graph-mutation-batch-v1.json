@@ -1,0 +1,29 @@
+{
+  "contract_version": 1,
+  "atomic": true,
+  "mutations": [
+    {
+      "scope": {
+        "namespace": "tenant-a",
+        "workspace_id": "ws",
+        "graph_space": "facts"
+      },
+      "table": "gke_nodes",
+      "entity_kind": "node",
+      "event_id": "event-1",
+      "op": "ADD",
+      "payload": {
+        "id": "node-1"
+      },
+      "record": {
+        "id": "node-1",
+        "metadata": {},
+        "embedding": [
+          1.0,
+          0.0
+        ]
+      },
+      "embedding_dim": 2
+    }
+  ]
+}

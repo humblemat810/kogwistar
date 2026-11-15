@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "route": "GET /api/runs/{run_id}/checkpoints",
+  "success_status": 200,
+  "required_envelope_fields": ["run_id", "checkpoints"],
+  "required_checkpoint_fields": [
+    "node_id",
+    "step_seq",
+    "workflow_id",
+    "state"
+  ]
+}

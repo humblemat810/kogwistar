@@ -9,9 +9,10 @@ from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from os import PathLike
-from typing import Any, Protocol, TypeAlias
+from typing import Any, Protocol, TypeAlias, cast
 
-from kogwistar.json_types import JsonValue
+from kogwistar._rust_bridge import capture_rust_bridge_calls
+from kogwistar.json_types import JsonObject, JsonValue
 
 from .models import (
     RunFailure,
@@ -32,7 +33,9 @@ from .step_context import (
 from .telemetry import EventEmitter, TraceContext
 from kogwistar.utils.log import bind_log_context
 
-CompletedStep: TypeAlias = tuple[str, StepRunResult, int, str, str | None, str, int]
+CompletedStep: TypeAlias = tuple[
+    str, StepRunResult, int, str, str | None, str, int, TraceContext | None
+]
 
 
 class StepWorkerConversationHost(Protocol):
@@ -116,6 +119,7 @@ class SyncStepWorker:
         thread = threading.current_thread()
         previous_name = thread.name
         context: StepContext | None = None
+        bridge_summary: JsonObject | None = None
         try:
             thread.name = (
                 f"rt-wf-{self.workflow_id}-wf-{self.run_id}-step-{step_seq}-{node_id}"
@@ -131,6 +135,7 @@ class SyncStepWorker:
                         workflow_id=str(self.workflow_id),
                         workflow_node_id=str(node_id),
                         op=str(op),
+                        op_version=str(getattr(workflow_node, "version", "v1") or "v1"),
                         token_id=str(token_id),
                         attempt=1,
                         step_seq=int(step_seq),
@@ -179,13 +184,36 @@ class SyncStepWorker:
                     else:
                         if self.parent_lease_renew is not None:
                             self.parent_lease_renew()
-                        step_fn: StepFn = self.runtime.step_resolver(op)
-                        with (
-                            self.runtime.conversation_engine.uow()
-                            if self.runtime._should_step_uow(op, state)
-                            else nullcontext()
-                        ):
-                            result = step_fn(context)
+                        op_version = context.op_version
+                        resolve_version = getattr(
+                            self.runtime.step_resolver, "resolve_version", None
+                        )
+                        if callable(resolve_version):
+                            resolved_step = resolve_version(op, op_version)
+                            if not callable(resolved_step):
+                                raise TypeError(
+                                    "versioned step resolver returned a non-callable handler"
+                                )
+                            step_fn = cast(StepFn, resolved_step)
+                        elif op_version == "v1":
+                            step_fn = self.runtime.step_resolver(op)
+                        else:
+                            raise KeyError(
+                                f"resolver cannot verify frozen version {op_version!r} "
+                                f"for op={op!r}"
+                            )
+                        with capture_rust_bridge_calls() as bridge_trace:
+                            try:
+                                with (
+                                    self.runtime.conversation_engine.uow()
+                                    if self.runtime._should_step_uow(op, state)
+                                    else nullcontext()
+                                ):
+                                    result = step_fn(context)
+                            finally:
+                                snapshot = bridge_trace.snapshot()
+                                if snapshot["ffi_calls"]:
+                                    bridge_summary = snapshot
                         if result.status == "suspended":
                             status = "suspended"
                         elif result.status == "failure":
@@ -243,6 +271,11 @@ class SyncStepWorker:
                         context.trace_ctx,
                         status=str(status),
                         duration_ms=max(0, completed_at - started_at),
+                        extra=(
+                            {"rust_bridge": bridge_summary}
+                            if bridge_summary is not None
+                            else None
+                        ),
                     )
                 except Exception:
                     status = "status_report_error"
@@ -261,6 +294,7 @@ class SyncStepWorker:
                         parent_token_id,
                         status,
                         mask,
+                        context.trace_ctx if context is not None else None,
                     )
                 )
                 with self.work_condition:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -24,6 +25,29 @@ class CanonicalEntityRevision:
     @property
     def is_deleted(self) -> bool:
         return self.state == "deleted"
+
+
+def canonical_revision_job_payload(revision: CanonicalEntityRevision) -> str:
+    """Serialize the stable fingerprint used by derived projection jobs."""
+    source = {
+        "entity_kind": revision.entity_kind,
+        "entity_id": revision.entity_id,
+        "state": revision.state,
+        "revision": revision.revision,
+        "payload": revision.payload,
+    }
+    blob = json.dumps(source, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        {
+            "source_fingerprint": hashlib.blake2b(
+                blob.encode("utf-8"), digest_size=16
+            ).hexdigest(),
+            "source_state": revision.state,
+            "canonical_revision": revision.revision,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def read_canonical_entity_revision(

@@ -139,6 +139,7 @@ class ProjectionBackendLike(Protocol):
 
     nodes: NamedCollectionLike
     edges: NamedCollectionLike
+    edge_endpoints: NamedCollectionLike
     documents: NamedCollectionLike
     domains: NamedCollectionLike
     embedding_dim: int
@@ -485,6 +486,10 @@ class LifecycleLike(Protocol):
 
 
 class WriteLike(Protocol):
+    def defer_index_reconciliation(
+        self, *, max_jobs: int = 50
+    ) -> AbstractContextManager[None]: ...
+
     def add_document(self, document: EngineDoc) -> None: ...
 
     def add_node(self, node: GraphNode, doc_id: str | None = None) -> None: ...

@@ -106,7 +106,7 @@ class AdjudicateSubsystem(NamespaceProxy["GraphKnowledgeEngine"], AdjudicateLike
                 entity_id=entity_id,
             )
         if candidate is None:
-            meta = getattr(self._e, "meta_sqlite", None)
+            meta = getattr(self._e, "metadata", None)
             meta_getter = getattr(meta, "get_stage1_node_projection", None)
             if callable(meta_getter):
                 candidate = meta_getter(
@@ -151,13 +151,9 @@ class AdjudicateSubsystem(NamespaceProxy["GraphKnowledgeEngine"], AdjudicateLike
         )
 
     def classify_endpoint_id(self, rid: str) -> str:
-        hit = _response_mapping(run_awaitable_blocking(self._e.backend.node_get(ids=[rid])))
-        node_ids = _response_values(hit.get("ids"))
-        if node_ids and str(node_ids[0]) == rid:
+        if self._e.raw_read.node_exists(ids=[rid]):
             return "node"
-        hit = _response_mapping(run_awaitable_blocking(self._e.backend.edge_get(ids=[rid])))
-        edge_ids = _response_values(hit.get("ids"))
-        if edge_ids and str(edge_ids[0]) == rid:
+        if self._e.raw_read.edge_exists(ids=[rid]):
             return "edge"
         if self._stage1_target("node", rid) is not None:
             return "node"

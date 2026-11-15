@@ -30,6 +30,10 @@ def similarity_from_distance(
     if normalized_metric == "cosine":
         return 1.0 - value
     if normalized_metric == "l2":
+        if distance_kind == "squared_l2":
+            value = max(value, 0.0) ** 0.5
+        elif distance_kind != "distance":
+            raise ValueError(f"unsupported L2 distance kind: {distance_kind!r}")
         return 1.0 / (1.0 + max(value, 0.0))
     if normalized_metric == "ip":
         if distance_kind == "negative_inner_product":

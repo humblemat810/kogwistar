@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "model_class": "llm_node_extraction",
+  "payload": {
+    "label": "Extraction node parity",
+    "type": "entity",
+    "summary": "Cross-language extraction node fixture",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": {"vendor_extension": {"version": 1}},
+    "mentions": [
+      {
+        "collection_page_url": "https://example.test/collection",
+        "document_page_url": "https://example.test/document#extract",
+        "doc_id": "doc:rust-python-extraction",
+        "page_number": 1,
+        "start_char": 4,
+        "end_char": 13,
+        "excerpt": "extracted",
+        "context_before": "an ",
+        "context_after": " node",
+        "chunk_id": null,
+        "source_cluster_id": null
+      }
+    ],
+    "id": "nn:extract-node",
+    "local_id": "nn:extract-node"
+  }
+}

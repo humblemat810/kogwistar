@@ -6,8 +6,22 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+blake2.workspace = true
 hex.workspace = true
 kogwistar-contracts = { path = "../kogwistar-contracts" }
 kogwistar-store = { path = "../kogwistar-store" }
-serde_json.workspace = true
+reqwest.workspace = true
+serde.workspace = true
 sha2.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["time"] }
+url.workspace = true
+
+[dev-dependencies]
+kogwistar-store-chroma = { path = "../kogwistar-store-chroma" }
+kogwistar-store-memory = { path = "../kogwistar-store-memory" }
+kogwistar-store-postgres = { path = "../kogwistar-store-postgres" }
+kogwistar-store-sqlite = { path = "../kogwistar-store-sqlite" }
+tokio.workspace = true
+tokio-postgres.workspace = true

@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.service_disable",
+  "arguments": {
+    "service_id": "svc-contract"
+  },
+  "python_service_arguments": {
+    "service_id": "svc-contract"
+  },
+  "rust_request": {
+    "method": "POST",
+    "path_and_query": "/api/workflow/services/svc-contract/disable"
+  },
+  "result": {
+    "service_id": "svc-contract",
+    "enabled": false
+  }
+}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 import pytest
@@ -54,6 +55,20 @@ def test_sqlite_differential_gate_selects_only_sqlite_cases() -> None:
     assert "-m \"ci and core and not requires_pgvector\"" in gate
 
 
+def test_sqlite_architectural_gate_covers_linux_and_macos() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    gate = _between(
+        workflow,
+        "  sqlite-architectural-invariants:",
+        "  pypy-beta-best-effort:",
+    )
+
+    assert "runs-on: ${{ matrix.os }}" in gate
+    assert "os: ubuntu-latest" in gate
+    assert "os: macos-latest" in gate
+    assert 'python-version: "3.13"' in gate
+
+
 def test_pypy_ci_excludes_native_extension_tests() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     pypy_tests = _between(
@@ -61,8 +76,52 @@ def test_pypy_ci_excludes_native_extension_tests() -> None:
         "      - name: Run PyPy 3.11 CI tests",
         "      - name: Post Set up Python",
     )
+    runner = (WORKFLOW.parents[2] / "scripts" / "run_pypy311_ci.py").read_text(
+        encoding="utf-8"
+    )
 
     assert "not requires_rust" in pypy_tests
+    for marker in ("requires_rust", "requires_langgraph", "requires_pgvector"):
+        assert f"not {marker}" in pypy_tests
+        assert f"not {marker}" in runner
+
+
+def test_ci_declares_the_supported_interpreter_matrix() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    matrix = _between(workflow, "      matrix:\n        include:", "    steps:")
+
+    expected_cells = {
+        'label: cpython312\n            python-version: "3.12"',
+        'label: cpython313\n            python-version: "3.13"',
+        'label: cpython314\n            python-version: "3.14"',
+        'label: pypy311\n            python-version: pypy-3.11-v7.3.20',
+    }
+
+    for cell in expected_cells:
+        assert cell in matrix, f"missing required CI interpreter cell: {cell!r}"
+
+
+def test_rust_backend_interop_ci_node_ids_exist() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    handoff_step = _between(
+        workflow,
+        "      - name: Verify sequential Python-Rust backend handoffs",
+        '          python - "$report" <<\'PY\'',
+    )
+    selectors = re.findall(r"(tests/[^\s]+)::(test_[A-Za-z0-9_]+)", handoff_step)
+
+    assert len(selectors) == 3
+    for relative_path, test_name in selectors:
+        test_path = ROOT / relative_path
+        tree = ast.parse(test_path.read_text(encoding="utf-8"))
+        test_names = {
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        assert test_name in test_names, (
+            f"Rust backend interop CI selects missing test {relative_path}::{test_name}"
+        )
 
 
 def test_sqlite_native_extension_cases_are_marked_requires_rust() -> None:

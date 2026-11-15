@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "model_class": "workflow_failed_node",
+  "payload": {
+    "label": "Workflow failure parity",
+    "type": "entity",
+    "summary": "Cross-language workflow failure contract fixture",
+    "domain_id": null,
+    "canonical_entity_id": null,
+    "properties": null,
+    "mentions": [
+      {
+        "spans": [
+          {
+            "collection_page_url": "https://example.test/failed",
+            "document_page_url": "https://example.test/failed#span",
+            "doc_id": "doc:rust-python-parity",
+            "insertion_method": "contract-test",
+            "page_number": 1,
+            "start_char": 0,
+            "end_char": 13,
+            "excerpt": "Failure evidence",
+            "context_before": "",
+            "context_after": "",
+            "source_cluster_id": null,
+            "verification": {
+              "method": "heuristic",
+              "is_verified": false,
+              "score": null,
+              "notes": "no explicit verification from LLM"
+            }
+          }
+        ],
+        "multimodal_spans": []
+      }
+    ],
+    "id": "workflow-failed:cross-language",
+    "embedding": [1.0, 0.0, 0.0],
+    "doc_id": "doc:rust-python-parity",
+    "metadata": {
+      "entity_type": "workflow_failed",
+      "workflow_id": "wf:cross-language",
+      "run_id": "run:parity-001",
+      "conversation_id": "conversation:parity",
+      "accepted_step_seq": 3,
+      "errors": ["step parse failed", "retry limit reached"],
+      "vendor_extension": {"failure_class": "provider", "version": 1},
+      "lifecycle_status": "active",
+      "redirect_to_id": null
+    },
+    "level_from_root": null
+  }
+}

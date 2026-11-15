@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "operation_trace": "agent-durable-provider-event-v1: publish fixture event, claim, handle, acknowledge, and persist causal graph effects",
+  "projection": "Backend-authoritative final graph state, serialized canonically and hashed with SHA-256; embeddings and backend-specific vector projections excluded",
+  "digests": {
+    "in_memory": {
+      "sha256": "f3241bfac8096e569807abea5dfd28242d6ec460fb6f3de521f52a28e725a38d",
+      "source": "scoped gke_nodes and gke_edges records"
+    },
+    "sqlite_chroma": {
+      "sha256": "28e992558f504954a645469939afbb1558d41a65f3aa656bc6223ff80f74a7cc",
+      "source": "final state folded from canonical SQLite graph events; Chroma remains eventual projection"
+    },
+    "postgresql": {
+      "sha256": "23f941e0ee9c0ecb1d8ac9c03bb968cb3131235d793e7568a7bb26d59da6dec7",
+      "source": "scoped PostgreSQL gke_nodes and gke_edges rows created by the fixture trace"
+    }
+  }
+}

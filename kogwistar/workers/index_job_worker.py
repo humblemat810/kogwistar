@@ -2,36 +2,69 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, cast
+
+from ..engine_core.projection_action import (
+    ProjectionGraphStore,
+    ProjectionJobIdentity,
+    apply_projection_action,
+    is_projection_action_payload,
+)
+from ..engine_core.index_job_provider import (
+    EmbeddingJobProviderInput,
+    embedding_job_provider_input,
+)
+from ..implementation_selection import implementation_selection_bound
+from .lease_heartbeat import SyncLeaseHeartbeat
 
 if TYPE_CHECKING:
     from ..engine_core.engine import GraphKnowledgeEngine
 
 
-BatchApply = Callable[[list[object]], dict[str, BaseException | None]]
+BatchApply = Callable[
+    [Sequence[EmbeddingJobProviderInput]], dict[str, BaseException | None]
+]
+_logger = logging.getLogger(__name__)
 
 
 class IndexJobDone(Protocol):
     """Acknowledge one successfully applied index job."""
 
-    def __call__(self, job_id: str, /) -> object: ...
+    def __call__(self, job_id: str, /, *, claim_token: str | None = None) -> object: ...
 
 
 class IndexJobRetry(Protocol):
     """Requeue one failed index job with a bounded delay."""
 
-    def __call__(self, job_id: str, error: str, /, *, next_run_at_seconds: int) -> object: ...
+    def __call__(
+        self,
+        job_id: str,
+        error: str,
+        /,
+        *,
+        next_run_at_seconds: int,
+        claim_token: str | None = None,
+    ) -> object: ...
 
 
 class IndexJobFailed(Protocol):
     """Move one index job to terminal failure or a non-terminal failure state."""
 
-    def __call__(self, job_id: str, error: str, /, *, final: bool) -> object: ...
+    def __call__(
+        self,
+        job_id: str,
+        error: str,
+        /,
+        *,
+        final: bool,
+        claim_token: str | None = None,
+    ) -> object: ...
 
 
 @dataclass
@@ -40,6 +73,11 @@ class WorkerTickMetrics:
     done: int = 0
     retried: int = 0
     failed: int = 0
+    claim_lost: int = 0
+    repaired: int = 0
+    repair_scan_failures: int = 0
+    reconciled: int = 0
+    reconciliation_failures: int = 0
     avg_job_duration_s: float | None = None
 
 
@@ -48,6 +86,7 @@ class IndexJobWorker:
 
     - Uses meta store's claim/ack/requeue APIs.
     - Applies jobs via engine.indexing.apply_index_job(...).
+    - Optional repair scans require a single designated scanner per namespace.
     - ``batch_size`` controls provider batch width; ``max_inflight`` is reserved
       for future concurrent batch scheduling and does not alter batch width.
 
@@ -63,6 +102,9 @@ class IndexJobWorker:
         lease_seconds: int = 60,
         max_jobs_per_tick: int = 200,
         namespace: str | None = None,
+        projection_store: ProjectionGraphStore | None = None,
+        repair_scan_interval_s: float = 0.0,
+        reconcile_scan_interval_s: float = 0.0,
     ) -> None:
         self.engine = engine
         self.max_inflight = int(max_inflight)
@@ -70,7 +112,17 @@ class IndexJobWorker:
         self.lease_seconds = int(lease_seconds)
         self.max_jobs_per_tick = int(max_jobs_per_tick)
         self.namespace = namespace
+        self.projection_store = projection_store
+        self.repair_scan_interval_s = max(0.0, float(repair_scan_interval_s))
+        self._next_repair_scan_at = 0.0
+        self.reconcile_scan_interval_s = max(0.0, float(reconcile_scan_interval_s))
+        self._next_reconcile_scan_at = 0.0
 
+    @property
+    def _implementation_selection_snapshot(self) -> object:
+        return getattr(self.engine, "_implementation_selection_snapshot", None)
+
+    @implementation_selection_bound
     def tick(self) -> WorkerTickMetrics:
         """Drain at most one worker tick of index jobs for a namespace.
 
@@ -97,6 +149,8 @@ class IndexJobWorker:
 
         ns = self.namespace or getattr(self.engine, "namespace", "default")
         entity_cache: dict[tuple[str, str, str], object] = {}
+        self._run_repair_scan(metrics, namespace=ns)
+        self._run_reconciliation_scan(metrics, namespace=ns)
 
         while remaining > 0:
             # IMPORTANT: don't over-claim beyond what we can process this tick.
@@ -122,6 +176,9 @@ class IndexJobWorker:
             embedding_groups: dict[tuple[str, str, str], list[object]] = {}
             ordinary_jobs: list[object] = []
             for job in jobs:
+                if self._job_value(job, "accepted_result_json") is not None:
+                    ordinary_jobs.append(job)
+                    continue
                 index_kind = self._job_value(job, "index_kind")
                 if index_kind == "node_embedding":
                     payload = self._decode_payload(self._job_value(job, "payload_json"))
@@ -143,39 +200,123 @@ class IndexJobWorker:
                     work_units.append((group[start : start + max(1, self.batch_size)], batch_fn))
             work_units.extend(([job], None) for job in ordinary_jobs)
 
+            claims = [
+                (
+                    str(self._job_value(job, "job_id")),
+                    self._optional_text(self._job_value(job, "claim_token")),
+                )
+                for job in jobs
+            ]
             for unit, batch_fn in work_units:
                 batch_results: dict[str, BaseException | None] | None = None
-                if batch_fn is not None and len(unit) > 1:
-                    try:
-                        batch_results = batch_fn(unit)
-                    except Exception as exc:
-                        # A provider/adapter batch failure is per-job failure,
-                        # not a worker-process failure or batch transaction.
-                        batch_results = {
-                            str(self._job_value(job, "job_id")): exc for job in unit
-                        }
+                with SyncLeaseHeartbeat(meta, claims, self.lease_seconds) as heartbeat:
+                    if batch_fn is not None and len(unit) > 1:
+                        try:
+                            # Adapters receive only embedding inputs, never lease
+                            # tokens or other queue-authority fields.
+                            provider_inputs = [embedding_job_provider_input(job) for job in unit]
+                            batch_results = batch_fn(provider_inputs)
+                        except Exception as exc:
+                            # A provider/adapter batch failure is per-job failure,
+                            # not a worker-process failure or batch transaction.
+                            batch_results = {
+                                str(self._job_value(job, "job_id")): exc for job in unit
+                            }
 
-                for job in unit:
-                    self._process_job(
-                        job=job,
-                        batch_results=batch_results,
-                        namespace=ns,
-                        entity_cache=entity_cache,
-                        mark_done=mark_done,
-                        bump=bump,
-                        mark_failed=mark_failed,
-                        metrics=metrics,
-                        durations=durations,
-                    )
-                    remaining -= 1
-                    if remaining <= 0:
-                        break
+                    for job in unit:
+                        self._process_job(
+                            job=job,
+                            batch_results=batch_results,
+                            namespace=ns,
+                            entity_cache=entity_cache,
+                            mark_done=mark_done,
+                            bump=bump,
+                            mark_failed=mark_failed,
+                            metrics=metrics,
+                            durations=durations,
+                            lease_heartbeat=heartbeat,
+                        )
+                        remaining -= 1
+                        if remaining <= 0:
+                            break
                 if remaining <= 0:
                     break
 
         if durations:
             metrics.avg_job_duration_s = sum(durations) / len(durations)
         return metrics
+
+    def _run_repair_scan(self, metrics: WorkerTickMetrics, *, namespace: str) -> None:
+        if (
+            getattr(self.engine, "persistence_mode", "single_stage") != "two_stage"
+            or self.repair_scan_interval_s <= 0
+            or self.max_jobs_per_tick <= 0
+        ):
+            return
+        now = time.monotonic()
+        if now < self._next_repair_scan_at:
+            return
+        self._next_repair_scan_at = now + self.repair_scan_interval_s
+        repair = getattr(
+            getattr(self.engine, "indexing", None),
+            "repair_missing_two_stage_embedding_jobs",
+            None,
+        )
+        if not callable(repair):
+            return
+        repair_fn = cast(Callable[..., int], repair)
+        try:
+            metrics.repaired = int(
+                repair_fn(
+                    namespace=namespace,
+                    max_entities=self.max_jobs_per_tick,
+                    max_event_window=self.max_jobs_per_tick,
+                )
+            )
+        except Exception:
+            metrics.repair_scan_failures += 1
+            _logger.exception("bounded two-stage repair scan failed")
+
+    def _run_reconciliation_scan(
+        self, metrics: WorkerTickMetrics, *, namespace: str
+    ) -> None:
+        if (
+            getattr(self.engine, "persistence_mode", "single_stage") != "two_stage"
+            or self.reconcile_scan_interval_s <= 0
+        ):
+            return
+        now = time.monotonic()
+        if now < self._next_reconcile_scan_at:
+            return
+        self._next_reconcile_scan_at = now + self.reconcile_scan_interval_s
+        adapter = getattr(self.engine, "two_stage_projection_adapter", None)
+        reconcile = getattr(adapter, "reconcile_projection", None)
+        if not callable(reconcile):
+            return
+        # The adapter is scoped to the engine's active graph namespace. Avoid
+        # running a broader scan when a worker was explicitly given another one.
+        engine_namespace = str(getattr(self.engine, "namespace", "default"))
+        if namespace != engine_namespace:
+            metrics.reconciliation_failures += 1
+            _logger.error(
+                "two-stage projection reconciliation skipped: worker namespace "
+                "does not match engine namespace"
+            )
+            return
+        try:
+            result = cast(Callable[[], object], reconcile)()
+            if (
+                isinstance(result, bool)
+                or not isinstance(result, int)
+                or result < 0
+            ):
+                raise TypeError(
+                    "reconcile_projection must return a non-negative integer count"
+                )
+            metrics.reconciled = result
+        except Exception:
+            metrics.reconciliation_failures += 1
+            _logger.exception("two-stage projection reconciliation failed")
 
     @staticmethod
     def _job_value(job: object, name: str) -> object:
@@ -224,6 +365,7 @@ class IndexJobWorker:
         mark_failed: IndexJobFailed | None,
         metrics: WorkerTickMetrics,
         durations: list[float],
+        lease_heartbeat: SyncLeaseHeartbeat | None = None,
     ) -> None:
                 start = time.time()
 
@@ -234,6 +376,7 @@ class IndexJobWorker:
                 index_kind = self._job_value(job, "index_kind")
                 op = self._job_value(job, "op")
                 payload_json = self._job_value(job, "payload_json")
+                claim_token = self._optional_text(self._job_value(job, "claim_token"))
                 retry_count = (
                     self._job_value(job, "retry_count")
                 )
@@ -244,8 +387,72 @@ class IndexJobWorker:
                 try_rc = self._as_int(retry_count, 0)
                 try_mr = self._as_int(max_retries, 10)
 
+                if (
+                    lease_heartbeat is not None
+                    and job_id
+                    and not lease_heartbeat.owns(str(job_id))
+                ):
+                    metrics.claim_lost += 1
+                    return
+
                 try:
-                    if batch_results is not None:
+                    # Rust-owned workers may have admitted the provider result
+                    # before losing the queue acknowledgement.  Do not repeat
+                    # projection/provider work when the durable result exists.
+                    accepted_result = self._job_value(job, "accepted_result_json")
+                    is_projection_action = (
+                        accepted_result is not None
+                        and is_projection_action_payload(accepted_result)
+                    )
+                    if is_projection_action:
+                        if self.projection_store is None:
+                            raise RuntimeError(
+                                "accepted graph projection action requires projection_store"
+                            )
+                        if not isinstance(accepted_result, str):
+                            raise RuntimeError("accepted projection action must be JSON text")
+                        identity_fields = (
+                            "job_id",
+                            "namespace",
+                            "entity_kind",
+                            "entity_id",
+                            "index_kind",
+                            "op",
+                        )
+                        identity_values = {
+                            name: self._job_value(job, name) for name in identity_fields
+                        }
+                        if not all(
+                            isinstance(value, str)
+                            for value in identity_values.values()
+                        ):
+                            raise RuntimeError(
+                                "claimed projection action lacks a complete queue identity"
+                            )
+                        identity = ProjectionJobIdentity(
+                            job_id=cast(str, identity_values["job_id"]),
+                            namespace=cast(str, identity_values["namespace"]),
+                            entity_kind=cast(str, identity_values["entity_kind"]),
+                            entity_id=cast(str, identity_values["entity_id"]),
+                            index_kind=cast(str, identity_values["index_kind"]),
+                            op=cast(str, identity_values["op"]),
+                        )
+                        if identity.namespace != namespace:
+                            raise RuntimeError(
+                                "claimed projection action is outside the worker namespace"
+                            )
+                        digest = self._job_value(job, "accepted_result_sha256")
+                        apply_projection_action(
+                            identity,
+                            accepted_result,
+                            digest if isinstance(digest, str) else None,
+                            self.projection_store,
+                        )
+                    elif accepted_result is not None:
+                        # Existing provider-result records were already applied
+                        # by their producer; preserve their legacy replay rule.
+                        pass
+                    elif batch_results is not None:
                         if str(job_id) not in batch_results:
                             raise RuntimeError("batch embedding result missing job")
                         batch_error = batch_results[str(job_id)]
@@ -262,18 +469,52 @@ class IndexJobWorker:
                             payload_json=self._optional_text(payload_json),
                             validated_entity_cache=entity_cache,
                         )
+                    if (
+                        lease_heartbeat is not None
+                        and job_id
+                        and not lease_heartbeat.owns(str(job_id))
+                    ):
+                        metrics.claim_lost += 1
+                        return
                     if mark_done is not None and job_id:
-                        mark_done(str(job_id))
+                        if claim_token is None:
+                            # Preserve compatibility with legacy queue rows that
+                            # predate leases; current claimed rows always carry a
+                            # token and therefore take the ownership-checked path.
+                            acknowledged = mark_done(str(job_id))
+                        else:
+                            acknowledged = mark_done(
+                                str(job_id), claim_token=claim_token
+                            )
+                        if acknowledged is False:
+                            metrics.claim_lost += 1
+                            return
                     metrics.done += 1
                 except Exception as e:
                     err = f"{type(e).__name__}: {e}"
                     next_retry = try_rc + 1
                     if bump is not None and job_id and next_retry < try_mr:
                         delay = min(300, 2 ** min(next_retry - 1, 8))
-                        bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        if claim_token is None:
+                            bump(str(job_id), err, next_run_at_seconds=int(delay))
+                        else:
+                            bump(
+                                str(job_id),
+                                err,
+                                next_run_at_seconds=int(delay),
+                                claim_token=claim_token,
+                            )
                         metrics.retried += 1
                     elif mark_failed is not None and job_id:
-                        mark_failed(str(job_id), err, final=True)
+                        if claim_token is None:
+                            mark_failed(str(job_id), err, final=True)
+                        else:
+                            mark_failed(
+                                str(job_id),
+                                err,
+                                final=True,
+                                claim_token=claim_token,
+                            )
                         metrics.failed += 1
                 finally:
                     durations.append(time.time() - start)
@@ -319,15 +560,28 @@ def _main(argv: list[str]) -> int:
     )
     parser.add_argument("--lease-seconds", type=int, default=60)
     parser.add_argument(
+        "--persistence-mode",
+        choices=("single_stage", "two_stage"),
+        default="single_stage",
+        help="Must match the producer's persistence mode",
+    )
+    parser.add_argument(
         "--phase1-enable-index-jobs",
         action="store_true",
         help="Enable index_jobs feature flag",
+    )
+    parser.add_argument(
+        "--repair-scan-interval-s", type=float, default=0.0,
+        help="Enable bounded repair on one designated worker per namespace; 0 disables it",
     )
     args = parser.parse_args(argv)
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
 
-    eng = GraphKnowledgeEngine(persist_directory=args.persist_directory)
+    eng = GraphKnowledgeEngine(
+        persist_directory=args.persist_directory,
+        persistence_mode=args.persistence_mode,
+    )
     eng._phase1_enable_index_jobs = bool(args.phase1_enable_index_jobs)  # noqa: SLF001
 
     # Ensure the namespace matches what the producer uses.
@@ -343,6 +597,7 @@ def _main(argv: list[str]) -> int:
         max_jobs_per_tick=args.max_jobs_per_tick,
         max_inflight=args.max_inflight,
         lease_seconds=args.lease_seconds,
+        repair_scan_interval_s=args.repair_scan_interval_s,
     )
 
     stop = {"flag": False}

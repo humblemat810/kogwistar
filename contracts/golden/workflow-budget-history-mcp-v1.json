@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "tool": "workflow.budget_history",
+  "arguments": {
+    "limit": 1
+  },
+  "python_service_arguments": {
+    "limit": 1
+  },
+  "rust_request": {
+    "method": "GET",
+    "path_and_query": "/api/workflow/budget/history?limit=1",
+    "body": ""
+  },
+  "result": {
+    "cost_ledger": {
+      "workspace_id": "chat-service",
+      "event_count": 0,
+      "total_amount": 0,
+      "by_kind": {}
+    },
+    "events": []
+  }
+}

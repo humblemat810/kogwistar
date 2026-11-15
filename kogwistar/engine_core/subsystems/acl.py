@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from contextlib import AbstractContextManager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -30,12 +31,25 @@ from ...engine_core.types import GraphEntityKind
 from ...id_provider import stable_id
 from ...json_types import JsonObject, JsonValue
 from ...typing_interfaces import QueryEmbeddingInput, ReadLike, WriteLike
+from ...implementation_selection import implementation_selection_bound
 from .base import NamespaceProxy
 from ..acl_protocol import CreateOnceWriteProtocol
 from .write import CreateNodeResult
 
 if TYPE_CHECKING:
     from ..engine import GraphKnowledgeEngine
+
+
+ACLItem = Node | Edge | PureChromaNode | PureChromaEdge
+_ACL_USAGE_ID_PREFIX = "__kogwistar_acl_usage_v2__"
+
+
+def _acl_entity_id(item: ACLItem) -> str:
+    safe_get_id = getattr(item, "safe_get_id", None)
+    entity_id = safe_get_id() if callable(safe_get_id) else getattr(item, "id", None)
+    if entity_id is None or not str(entity_id).strip():
+        raise ValueError("ACL graph items require a non-empty entity id")
+    return str(entity_id)
 
 
 def _as_acl_grain(value: str | None) -> ACLGrain | None:
@@ -67,29 +81,44 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def current_principal_context(self) -> tuple[str, tuple[str, ...], str | None]:
         try:
             from ...server.auth_middleware import (
-                get_current_agent_id,
+                get_current_acl_principal_id,
+                get_current_principal_groups,
                 get_security_scope,
             )
 
-            principal_id = str(get_current_agent_id() or "").strip().lower()
+            principal_id = get_current_acl_principal_id()
+            principal_groups = get_current_principal_groups()
             security_scope = str(get_security_scope() or "").strip().lower() or None
         except Exception:
-            principal_id = ""
+            principal_id = "system"
+            principal_groups = ()
             security_scope = None
-        return principal_id or "system", (), security_scope
+        return principal_id or "system", principal_groups, security_scope
 
-    def usage_ids_for_item(self, item: Node | Edge) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def usage_ids_for_item(self, item: ACLItem) -> tuple[tuple[str, ...], tuple[str, ...]]:
         groundings: list[str] = []
         spans: list[str] = []
-        item_id = str(item.safe_get_id())
+        item_id = _acl_entity_id(item)
+        entity_kind = "edge" if isinstance(item, (Edge, PureChromaEdge)) else "node"
+        usage_id = f"{_ACL_USAGE_ID_PREFIX}:{entity_kind}:{item_id}"
         for i, grounding in enumerate(getattr(item, "mentions", None) or []):
-            groundings.append(f"{item_id}::mention::{i}")
+            groundings.append(f"{usage_id}::mention::{i}")
             for j, _span in enumerate(getattr(grounding, "spans", None) or []):
-                spans.append(f"{item_id}::mention::{i}::span::{j}")
+                spans.append(f"{usage_id}::mention::{i}::span::{j}")
         return tuple(groundings), tuple(spans)
 
+    @staticmethod
+    def _legacy_usage_id(target_item_id: str | None) -> str | None:
+        if target_item_id is None:
+            return None
+        for entity_kind in ("node", "edge"):
+            prefix = f"{_ACL_USAGE_ID_PREFIX}:{entity_kind}:"
+            if target_item_id.startswith(prefix):
+                return f"{target_item_id[len(prefix):]}"
+        return None
+
     def _metadata_acl_defaults(
-        self, item: Node | Edge
+        self, item: ACLItem
     ) -> tuple[str, str, str | None, tuple[str, ...], tuple[str, ...]]:
         metadata = getattr(item, "metadata", {}) or {}
         principal_id, _groups, current_scope = self.current_principal_context()
@@ -120,7 +149,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return mode, owner_id, security_scope, shared_principals, shared_groups
 
-    def should_auto_acl_item(self, item: Node | Edge) -> bool:
+    def should_auto_acl_item(self, item: ACLItem) -> bool:
         metadata = getattr(item, "metadata", {}) or {}
         entity_type = str(metadata.get("entity_type") or "")
         return not entity_type.startswith("acl_") and entity_type != "acl_record"
@@ -131,7 +160,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
 
     def _default_acl_context(
         self,
-        item: Node | Edge,
+        item: ACLItem,
         *,
         overrides: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -148,7 +177,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             created_by = principal_id
         return {
             "truth_graph": self._e.kg_graph_type,
-            "entity_id": str(item.safe_get_id()),
+            "entity_id": _acl_entity_id(item),
             "mode": mode,
             "created_by": created_by,
             "owner_id": owner_id,
@@ -157,7 +186,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "shared_with_groups": tuple(shared_groups),
         }
 
-    def _default_acl_records_for_item(self, item: Node | Edge, *, grain: str) -> tuple[ACLRecord, ...]:
+    def _default_acl_records_for_item(self, item: ACLItem, *, grain: str) -> tuple[ACLRecord, ...]:
         ctx = self._default_acl_context(item)
         entity_id = str(ctx["entity_id"])
 
@@ -189,6 +218,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         records.extend(_record("span", item_id) for item_id in span_ids)
         return tuple(records)
 
+    @implementation_selection_bound
     def append_canonical_write_events_for_item(self, item: Node | Edge, *, grain: str) -> None:
         """Append canonical truth and ACL events before non-transactional projection."""
         if not self.should_auto_acl_item(item):
@@ -221,15 +251,18 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         entity_id: str,
         target_item_id: str | None = None,
     ) -> int:
+        metadata = getattr(self._e, "metadata", None)
         previous = self._latest_persisted_acl_record(
             grain=grain,
             truth_graph=truth_graph,
             entity_id=entity_id,
             target_item_id=target_item_id,
+            for_update=bool(getattr(metadata, "transaction_active", False)),
         )
         return 1 if previous is None else previous.version + 1
 
-    def record_default_acl_for_item(self, item: Node | Edge, *, grain: str) -> None:
+    @implementation_selection_bound
+    def record_default_acl_for_item(self, item: ACLItem, *, grain: str) -> None:
         """Write default ACL rows for one truth item.
 
         This is the normal write-path helper. It writes the node/edge ACL record
@@ -278,9 +311,10 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     **base_kwargs,
                 )
 
+    @implementation_selection_bound
     def repair_default_acl_for_item(
         self,
-        item: Node | Edge,
+        item: ACLItem,
         *,
         grain: str,
         defaults: dict[str, Any] | None = None,
@@ -328,6 +362,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             _repair_one(grain_name="span", target_item_id=span_id)
         return repaired
 
+    @implementation_selection_bound
     def repair_acl_records_from_events(
         self,
         *,
@@ -342,8 +377,8 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         recent ACL record events, then lets normal ACL lookup see them again.
         """
         graph_name = truth_graph or self._e.kg_graph_type
-        iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
-        latest_seq_getter = getattr(self._e.meta_sqlite, "get_latest_entity_event_seq", None)
+        iter_events = getattr(self._e.metadata, "iter_entity_events", None)
+        latest_seq_getter = getattr(self._e.metadata, "get_latest_entity_event_seq", None)
         if iter_events is None or latest_seq_getter is None:
             return {
                 "truth_graph": graph_name,
@@ -583,21 +618,58 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         truth_graph: str,
         entity_id: str,
         target_item_id: str | None = None,
+        for_update: bool = False,
     ) -> tuple[ACLRecord, ...]:
         # Canonical ACL read path. Used by ACLGraph cache miss and by repair/rebuild.
-        where_terms: list[JsonObject] = [
-            {"entity_type": "acl_record"},
-            {"acl_truth_graph": truth_graph},
-        ]
+        metadata_filter: JsonObject = {
+            "entity_type": "acl_record",
+            "acl_truth_graph": truth_graph,
+        }
         if entity_id:
-            where_terms.append({"acl_target_entity_id": entity_id})
+            metadata_filter["acl_target_entity_id"] = entity_id
         if grain is not None:
-            where_terms.append({"acl_target_grain": grain})
-        nodes = self._e.raw_read.get_nodes(
-            node_type=Node,
-            where=cast(JsonObject, {"$and": where_terms}),
-            limit=400,
-        )
+            metadata_filter["acl_target_grain"] = grain
+        if target_item_id is not None:
+            metadata_filter["acl_target_item_id"] = target_item_id
+
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        metadata = getattr(self._e, "metadata", None)
+        if isinstance(metadata, RustEnginePostgresMetaStore):
+            # Row-locking ACL writes stay inside the Rust-owned UoW. Ordinary
+            # authorization reads must not request FOR UPDATE or open a UoW.
+            nodes_collection = getattr(self._e.backend, "nodes", None)
+            table_name = getattr(nodes_collection, "name", None)
+            if not isinstance(table_name, str):
+                raise TypeError("PostgreSQL backend does not expose its node table name")
+            projection_rows = metadata.graph_projection_records(
+                namespace=str(getattr(self._e, "namespace", "default")),
+                workspace_id=None,
+                graph_space=None,
+                table=table_name,
+                ids=None,
+                metadata=metadata_filter,
+                limit=400,
+                for_update=for_update,
+            )
+            got: JsonObject = {
+                "ids": [str(row["id"]) for row in projection_rows],
+                "documents": [str(row["document"]) for row in projection_rows],
+                "metadatas": [
+                    cast(JsonObject, row.get("metadata") or {})
+                    for row in projection_rows
+                ],
+            }
+            nodes = self._e.raw_read.nodes_from_single_or_id_query_result(
+                got, node_type=Node
+            )
+        else:
+            where_terms = [{key: value} for key, value in metadata_filter.items()]
+            nodes = self._e.raw_read.get_nodes(
+                node_type=Node,
+                where=cast(JsonObject, {"$and": where_terms}),
+                limit=400,
+            )
         records: list[ACLRecord] = []
         for node in nodes:
             record = self._record_from_acl_node(node)
@@ -615,8 +687,9 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         truth_graph: str,
         entity_id: str,
         target_item_id: str | None = None,
+        for_update: bool = False,
     ) -> ACLRecord | None:
-        records = self._e.acl_graph._load_records(
+        records = () if for_update else self._e.acl_graph._load_records(
             truth_graph=truth_graph,
             grain=_as_acl_grain(grain),
             entity_id=entity_id,
@@ -628,6 +701,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 truth_graph=truth_graph,
                 entity_id=entity_id,
                 target_item_id=target_item_id,
+                for_update=for_update,
             )
         if not records:
             return None
@@ -676,6 +750,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             target_item_id=target_item_id,
         )
 
+    @implementation_selection_bound
     def record_acl(
         self,
         *,
@@ -697,7 +772,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         tombstoned: bool = False,
     ) -> ACLRecord:
         with self._e.uow():
-            metadata_store = getattr(self._e, "meta_sqlite", None)
+            metadata_store = getattr(self._e, "metadata", None)
             lock_identity = getattr(metadata_store, "lock_entity_identity", None)
             if callable(lock_identity):
                 lock_identity(
@@ -710,6 +785,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 truth_graph=truth_graph,
                 entity_id=entity_id,
                 target_item_id=target_item_id,
+                for_update=True,
             )
             record = ACLRecord(
                 target=ACLTarget(
@@ -779,6 +855,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             return record
 
+    @implementation_selection_bound
     def repair_missing_default_acls(
         self,
         *,
@@ -794,7 +871,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         graph_name = truth_graph or self._e.kg_graph_type
         repaired = 0
         scanned = 0
-        iter_events = getattr(self._e.meta_sqlite, "iter_entity_events", None)
+        iter_events = getattr(self._e.metadata, "iter_entity_events", None)
         if iter_events is not None:
             prev_log = getattr(self._e, "_disable_event_log", False)
             self._e._disable_event_log = True
@@ -848,6 +925,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "repaired_acl_records": repaired,
         }
 
+    @implementation_selection_bound
     def prefetch_acl_neighborhood(
         self,
         *,
@@ -899,6 +977,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "warmed_neighbor_entity_ids": tuple(warmed_neighbors),
         }
 
+    @implementation_selection_bound
     def rebuild_acl_graph_from_truth(self, *, truth_graph: str | None = None) -> dict[str, Any]:
         acl_graph = self._e.acl_graph
         acl_graph.clear()
@@ -938,6 +1017,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "truth_graph": truth_graph,
         }
 
+    @implementation_selection_bound
     def decide_acl(
         self,
         *,
@@ -955,12 +1035,31 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             entity_id=entity_id,
             target_item_id=target_item_id,
         )
+        legacy_target_item_id = self._legacy_usage_id(target_item_id)
+        if legacy_target_item_id is not None:
+            legacy_record = self._latest_persisted_acl_record(
+                grain=grain,
+                truth_graph=truth_graph,
+                entity_id=entity_id,
+                target_item_id=legacy_target_item_id,
+            )
+            if legacy_record is not None:
+                candidates = [item for item in (record, legacy_record) if item is not None]
+                rank = {"public": 0, "group": 1, "shared": 2, "scope": 3, "private": 4}
+                record = max(
+                    candidates,
+                    key=lambda item: (
+                        item.version,
+                        item.tombstoned,
+                        rank.get(item.mode, 99),
+                    ),
+                )
         if record is None:
             return self._e.acl_graph.decide(
                 grain=grain,  # type: ignore[arg-type]
                 truth_graph=truth_graph,
                 entity_id=entity_id,
-                target_item_id=target_item_id,
+                target_item_id=(legacy_target_item_id or target_item_id),
                 principal_id=principal_id,
                 principal_groups=principal_groups,
                 security_scope=security_scope,
@@ -998,6 +1097,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
         return ACLDecision(visible=False, record=record, reason="unknown_mode")
 
+    @implementation_selection_bound
     def decide_acl_usage(
         self,
         *,
@@ -1047,6 +1147,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             reason=f"node_and_{item_grain}_visible",
         )
 
+    @implementation_selection_bound
     def decide_acl_node_read(
         self,
         *,
@@ -1121,6 +1222,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             reason="node_and_all_items_visible",
         )
 
+    @implementation_selection_bound
     def get_node_acl_checked(
         self,
         node_id: str,
@@ -1156,6 +1258,7 @@ class ACLSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             raise PermissionError(f"ACL denied node {node_id}: {decision.reason}")
         return nodes[0]
 
+    @implementation_selection_bound
     def get_edge_acl_checked(
         self,
         edge_id: str,
@@ -1196,6 +1299,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     def __getattr__(self, name: str) -> object:
         return getattr(self._raw, name)
 
+    @implementation_selection_bound
     def load_node_map(
         self,
         ids: Sequence[str],
@@ -1216,6 +1320,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._node_visible(node)
         }
 
+    @implementation_selection_bound
     def load_edge_map(
         self,
         ids: Sequence[str],
@@ -1236,13 +1341,14 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._edge_visible(edge)
         }
 
-    def _node_visible(self, node: Node) -> bool:
+    def _node_visible(self, node: ACLItem) -> bool:
         principal_id, groups, security_scope = self._e.acl.current_principal_context()
         grounding_ids, span_ids = self._e.acl.usage_ids_for_item(node)
+        node_id = _acl_entity_id(node)
         decision = self._e.acl.decide_acl_node_read(
             item_grain="span",
             truth_graph=self._e.kg_graph_type,
-            entity_id=str(node.safe_get_id()),
+            entity_id=node_id,
             grounding_item_ids=grounding_ids,
             target_item_ids=span_ids,
             principal_id=principal_id,
@@ -1254,14 +1360,14 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         if "no_acl_record" in str(decision.reason or ""):
             repaired = self._e.acl.repair_acl_records_from_events(
                 truth_graph=self._e.kg_graph_type,
-                entity_id=str(node.safe_get_id()),
+                entity_id=node_id,
                 limit=64,
             )
             if repaired.get("repaired_acl_records", 0):
                 retry = self._e.acl.decide_acl_node_read(
                     item_grain="span",
                     truth_graph=self._e.kg_graph_type,
-                    entity_id=str(node.safe_get_id()),
+                    entity_id=node_id,
                     grounding_item_ids=grounding_ids,
                     target_item_ids=span_ids,
                     principal_id=principal_id,
@@ -1269,27 +1375,23 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
                     security_scope=security_scope,
                 )
                 return retry.visible
-            repaired_truth = self._e.acl.repair_default_acl_for_item(node, grain="node")
-            if repaired_truth:
-                retry = self._e.acl.decide_acl_node_read(
-                    item_grain="span",
-                    truth_graph=self._e.kg_graph_type,
-                    entity_id=str(node.safe_get_id()),
-                    grounding_item_ids=grounding_ids,
-                    target_item_ids=span_ids,
-                    principal_id=principal_id,
-                    principal_groups=groups,
-                    security_scope=security_scope,
-                )
-                return retry.visible
+            # A read must not create an ACL owned by its requester. Legacy
+            # backfill belongs to the explicit startup/admin repair path.
         return False
 
-    def _edge_visible(self, edge: Edge) -> bool:
+    def _edge_visible(
+        self, edge: Edge | PureChromaEdge, visited: set[str] | None = None
+    ) -> bool:
+        edge_id = _acl_entity_id(edge)
+        visited = set() if visited is None else visited
+        if edge_id in visited:
+            return True
+        visited.add(edge_id)
         principal_id, groups, security_scope = self._e.acl.current_principal_context()
         edge_decision = self._e.acl.decide_acl(
             grain="edge",
             truth_graph=self._e.kg_graph_type,
-            entity_id=str(edge.safe_get_id()),
+            entity_id=edge_id,
             principal_id=principal_id,
             principal_groups=groups,
             security_scope=security_scope,
@@ -1298,14 +1400,14 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if "no_acl_record" in str(edge_decision.reason or ""):
                 repaired = self._e.acl.repair_acl_records_from_events(
                     truth_graph=self._e.kg_graph_type,
-                    entity_id=str(edge.safe_get_id()),
+                    entity_id=edge_id,
                     limit=64,
                 )
                 if repaired.get("repaired_acl_records", 0):
                     edge_decision = self._e.acl.decide_acl(
                         grain="edge",
                         truth_graph=self._e.kg_graph_type,
-                        entity_id=str(edge.safe_get_id()),
+                        entity_id=edge_id,
                         principal_id=principal_id,
                         principal_groups=groups,
                         security_scope=security_scope,
@@ -1317,7 +1419,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             decision = self._e.acl.decide_acl(
                 grain="grounding",
                 truth_graph=self._e.kg_graph_type,
-                entity_id=str(edge.safe_get_id()),
+                entity_id=edge_id,
                 target_item_id=grounding_id,
                 principal_id=principal_id,
                 principal_groups=groups,
@@ -1329,7 +1431,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             decision = self._e.acl.decide_acl(
                 grain="span",
                 truth_graph=self._e.kg_graph_type,
-                entity_id=str(edge.safe_get_id()),
+                entity_id=edge_id,
                 target_item_id=span_id,
                 principal_id=principal_id,
                 principal_groups=groups,
@@ -1344,12 +1446,44 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if str(item)
         )
         if endpoint_ids:
-            endpoint_nodes = self._raw.get_nodes(node_type=Node, ids=list(endpoint_ids))
+            endpoint_node_type = (
+                PureChromaNode if isinstance(edge, PureChromaEdge) else Node
+            )
+            endpoint_nodes = self._raw.get_nodes(
+                # Raw backend protocol annotations currently omit the pure
+                # Chroma projection class even though this runtime path selects it.
+                node_type=cast(type[Node], endpoint_node_type),
+                ids=list(endpoint_ids),
+            )
+            if {_acl_entity_id(item) for item in endpoint_nodes} != set(endpoint_ids):
+                return False
             for endpoint in endpoint_nodes:
                 if not self._node_visible(endpoint):
                     return False
+        endpoint_edge_ids = tuple(
+            str(item)
+            for item in tuple(getattr(edge, "source_edge_ids", ()) or ())
+            + tuple(getattr(edge, "target_edge_ids", ()) or ())
+            if str(item)
+        )
+        if endpoint_edge_ids:
+            endpoint_edges = self._raw.get_edges(
+                ids=list(endpoint_edge_ids),
+                # See the matching node selector above: this is a runtime model
+                # choice already supported by the backend, not an entity conversion.
+                edge_type=cast(
+                    type[Edge],
+                    PureChromaEdge if isinstance(edge, PureChromaEdge) else Edge,
+                ),
+            )
+            if {_acl_entity_id(item) for item in endpoint_edges} != set(endpoint_edge_ids):
+                return False
+            for endpoint in endpoint_edges:
+                if not self._edge_visible(endpoint, visited):
+                    return False
         return True
 
+    @implementation_selection_bound
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
@@ -1369,6 +1503,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return [node for node in nodes if self._node_visible(node)]
 
+    @implementation_selection_bound
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
@@ -1388,9 +1523,11 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return [edge for edge in edges if self._edge_visible(edge)]
 
+    @implementation_selection_bound
     def get_document(self, doc_id: str) -> Document:
         return self._raw.get_document(doc_id)
 
+    @implementation_selection_bound
     def node_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -1398,6 +1535,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> bool:
         return bool(self._raw.node_exists(ids=ids, where=where))
 
+    @implementation_selection_bound
     def edge_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -1405,6 +1543,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> bool:
         return bool(self._raw.edge_exists(ids=ids, where=where))
 
+    @implementation_selection_bound
     def get_node_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -1413,6 +1552,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[dict[str, JsonValue]]:
         return self._raw.get_node_metadatas(ids=ids, where=where, limit=limit)
 
+    @implementation_selection_bound
     def get_edge_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -1421,30 +1561,59 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[dict[str, JsonValue]]:
         return self._raw.get_edge_metadatas(ids=ids, where=where, limit=limit)
 
+    @implementation_selection_bound
     def node_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
-        return self._raw.node_ids_by_doc(doc_id, insertion_method=insertion_method)
+        node_ids = self._raw.node_ids_by_doc(doc_id, insertion_method=insertion_method)
+        if not node_ids:
+            return []
+        visible = self.get_nodes(ids=node_ids, limit=None)
+        return sorted(_acl_entity_id(node) for node in visible)
 
+    @implementation_selection_bound
     def edge_ids_by_doc(self, doc_id: str, insertion_method: str | None = None) -> list[str]:
-        return self._raw.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
+        edge_ids = self._raw.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
+        if not edge_ids:
+            return []
+        visible = self.get_edges(ids=edge_ids, limit=None)
+        return sorted(_acl_entity_id(edge) for edge in visible)
 
+    @implementation_selection_bound
     def edges_by_doc(self, doc_id: str, where: dict[str, JsonValue] | None = None) -> list[str]:
-        return self._raw.edges_by_doc(doc_id, where=where)
+        edge_ids = self._raw.edges_by_doc(doc_id, where=where)
+        if not edge_ids:
+            return []
+        visible = self.get_edges(ids=edge_ids, limit=None)
+        return sorted(_acl_entity_id(edge) for edge in visible)
 
+    @implementation_selection_bound
     def list_edges_with_ref_filter(
         self, doc_id: str, where: dict[str, JsonValue] | None = None
     ) -> list[Edge]:
-        return self._raw.list_edges_with_ref_filter(doc_id, where=where)
+        edge_ids = self.edges_by_doc(doc_id, where=where)
+        if not edge_ids:
+            return []
+        return self.get_edges(ids=edge_ids, limit=None)
 
+    @implementation_selection_bound
     def nodes_by_doc(
         self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[str]:
-        return self._raw.nodes_by_doc(doc_id, where=where)
+        node_ids = self._raw.nodes_by_doc(doc_id, where=where)
+        if not node_ids:
+            return []
+        visible = self.get_nodes(ids=node_ids, limit=None)
+        return sorted(_acl_entity_id(node) for node in visible)
 
+    @implementation_selection_bound
     def list_nodes_with_ref_filter(
         self, doc_id: str, *, where: dict[str, JsonValue] | None = None
     ) -> list[Node]:
-        return self._raw.list_nodes_with_ref_filter(doc_id, where=where)
+        node_ids = self.nodes_by_doc(doc_id, where=where)
+        if not node_ids:
+            return []
+        return self.get_nodes(ids=node_ids, limit=None)
 
+    @implementation_selection_bound
     def ids_with_insertion_method(
         self,
         *,
@@ -1453,13 +1622,21 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         ids: Sequence[str] | None = None,
         doc_id: str | None = None,
     ) -> list[str]:
-        return self._raw.ids_with_insertion_method(
+        entity_ids = self._raw.ids_with_insertion_method(
             kind=kind,
             insertion_method=insertion_method,
             ids=ids,
             doc_id=doc_id,
         )
+        if not entity_ids:
+            return []
+        if kind == "node":
+            visible = self.get_nodes(ids=entity_ids, limit=None)
+        else:
+            visible = self.get_edges(ids=entity_ids, limit=None)
+        return sorted(_acl_entity_id(item) for item in visible)
 
+    @implementation_selection_bound
     def extract_reference_contexts(
         self,
         node_or_id: Node | Edge | str,
@@ -1475,6 +1652,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             prefer_label_fallback=prefer_label_fallback,
         )
 
+    @implementation_selection_bound
     def query_nodes(
         self,
         *args: object,
@@ -1484,6 +1662,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         node_type: type[Node] | None = None,
         **kwargs: object,
     ) -> list[list[Node]]:
+        kwargs = self._exclude_acl_records_from_vector_query(kwargs)
         batches = self._raw.query_nodes(
             *args,
             query=query,
@@ -1494,6 +1673,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return [[node for node in batch if self._node_visible(node)] for batch in batches]
 
+    @implementation_selection_bound
     def query_edges(
         self,
         *args: object,
@@ -1503,6 +1683,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         edge_type: type[Edge] | None = None,
         **kwargs: object,
     ) -> list[list[Edge]]:
+        kwargs = self._exclude_acl_records_from_vector_query(kwargs)
         batches = self._raw.query_edges(
             *args,
             query=query,
@@ -1513,6 +1694,23 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         )
         return [[edge for edge in batch if self._edge_visible(edge)] for batch in batches]
 
+    @staticmethod
+    def _exclude_acl_records_from_vector_query(
+        kwargs: dict[str, object],
+    ) -> dict[str, object]:
+        """Keep internal ACL graph records out of semantic candidate ranking."""
+        result = dict(kwargs)
+        acl_record_filter: JsonObject = {"entity_type": {"$ne": "acl_record"}}
+        where = result.get("where")
+        if where is None:
+            result["where"] = acl_record_filter
+        elif isinstance(where, dict):
+            result["where"] = {"$and": [where, acl_record_filter]}
+        else:
+            raise TypeError("vector query where filter must be an object")
+        return result
+
+    @implementation_selection_bound
     def search_nodes_as_of(
         self,
         *,
@@ -1528,13 +1726,16 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         similarity_threshold: float | None = None,
         **kwargs: object,
     ) -> list[Node]:
+        filtered_where = self._exclude_acl_records_from_vector_query(
+            {"where": where}
+        )["where"]
         return [
             node
             for node in self._raw.search_nodes_as_of(
                 query=query,
                 query_embeddings=query_embeddings,
                 as_of_ts=as_of_ts,
-                where=where,
+                where=cast(dict[str, JsonValue], filtered_where),
                 n_results=n_results,
                 follow_redirects=follow_redirects,
                 node_type=node_type,
@@ -1546,6 +1747,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._node_visible(node)
         ]
 
+    @implementation_selection_bound
     def search_nodes_as_of_scored(
         self,
         *,
@@ -1561,13 +1763,16 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
         similarity_threshold: float | None = None,
         **kwargs: object,
     ) -> list[VectorSearchHit[Node]]:
+        filtered_where = self._exclude_acl_records_from_vector_query(
+            {"where": where}
+        )["where"]
         return [
             hit
             for hit in self._raw.search_nodes_as_of_scored(
                 query=query,
                 query_embeddings=query_embeddings,
                 as_of_ts=as_of_ts,
-                where=where,
+                where=cast(dict[str, JsonValue], filtered_where),
                 n_results=n_results,
                 follow_redirects=follow_redirects,
                 node_type=node_type,
@@ -1579,6 +1784,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             if self._node_visible(hit.node)
         ]
 
+    @implementation_selection_bound
     def nodes_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -1586,6 +1792,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[Node]:
         return self._raw.nodes_from_single_or_id_query_result(got, node_type=node_type)
 
+    @implementation_selection_bound
     def edges_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -1596,6 +1803,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
             got, edge_type=edge_type, include=include
         )
 
+    @implementation_selection_bound
     def nodes_from_query_result(
         self,
         gots: Mapping[str, JsonValue],
@@ -1603,6 +1811,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[list[Node]]:
         return self._raw.nodes_from_query_result(gots, node_type=node_type)
 
+    @implementation_selection_bound
     def edges_from_query_result(
         self,
         gots: Mapping[str, JsonValue],
@@ -1610,6 +1819,7 @@ class ACLAwareReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ReadLike):
     ) -> list[list[Edge]]:
         return self._raw.edges_from_query_result(gots, edge_type=edge_type)
 
+    @implementation_selection_bound
     def where_update_from_resolve_mode(
         self,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
@@ -1625,21 +1835,39 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def __getattr__(self, name: str) -> object:
         return getattr(self._raw, name)
 
+    def defer_index_reconciliation(
+        self, *, max_jobs: int = 50
+    ) -> AbstractContextManager[None]:
+        return self._raw.defer_index_reconciliation(max_jobs=max_jobs)
+
+    @implementation_selection_bound
     def add_document(self, document: Document) -> None:
         self._raw.add_document(document)
 
+    @implementation_selection_bound
     async def add_node_async(self, node: Node, doc_id: str | None = None) -> None:
         await self._raw.add_node_async(node, doc_id=doc_id)
 
+    @implementation_selection_bound
     async def add_edge_async(self, edge: Edge, doc_id: str | None = None) -> None:
         await self._raw.add_edge_async(edge, doc_id=doc_id)
 
+    @implementation_selection_bound
     def add_pure_node(self, node: PureChromaNode) -> None:
-        self._raw.add_pure_node(node)
+        # PYTHON_PARITY: add_node() persists the truth item and its ACL record
+        # through the same guarded write surface; pure graph writes must not
+        # bypass the authoritative ACL graph either.
+        with self._e.uow():
+            self._raw.add_pure_node(node)
+            self._e.acl.record_default_acl_for_item(node, grain="node")
 
+    @implementation_selection_bound
     def add_pure_edge(self, edge: PureChromaEdge) -> None:
-        self._raw.add_pure_edge(edge)
+        with self._e.uow():
+            self._raw.add_pure_edge(edge)
+            self._e.acl.record_default_acl_for_item(edge, grain="edge")
 
+    @implementation_selection_bound
     def add_domain(self, domain: Domain) -> None:
         self._raw.add_domain(domain)
 
@@ -1649,30 +1877,39 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def fanout_endpoints_rows(self, edge: Edge, doc_id: str | None) -> object:
         return self._raw.fanout_endpoints_rows(edge, doc_id)
 
+    @implementation_selection_bound
     def maybe_reindex_edge_refs(self, edge: Edge, *, force: bool = False) -> None:
         self._raw.maybe_reindex_edge_refs(edge, force=force)
 
+    @implementation_selection_bound
     def maybe_reindex_node_refs(self, node: Node, *, force: bool = False) -> None:
         self._raw.maybe_reindex_node_refs(node, force=force)
 
+    @implementation_selection_bound
     def prune_node_refs_for_doc(self, node_id: str, doc_id: str) -> bool:
         return self._raw.prune_node_refs_for_doc(node_id, doc_id)
 
+    @implementation_selection_bound
     def rebuild_edge_refs_for_doc(self, doc_id: str) -> int:
         return self._raw.rebuild_edge_refs_for_doc(doc_id)
 
+    @implementation_selection_bound
     def rebuild_all_edge_refs(self) -> int:
         return self._raw.rebuild_all_edge_refs()
 
+    @implementation_selection_bound
     def rebuild_node_refs_for_doc(self, doc_id: str) -> int:
         return self._raw.rebuild_node_refs_for_doc(doc_id)
 
+    @implementation_selection_bound
     def rebuild_all_node_refs(self) -> int:
         return self._raw.rebuild_all_node_refs()
 
+    @implementation_selection_bound
     def delete_edges_by_ids(self, edge_ids: list[str]) -> None:
         self._raw.delete_edges_by_ids(edge_ids)
 
+    @implementation_selection_bound
     def rust_postgres_delete_existing(
         self, *, entity_kind: str, entity_ids: list[str]
     ) -> bool:
@@ -1680,6 +1917,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             entity_kind=entity_kind, entity_ids=entity_ids
         )
 
+    @implementation_selection_bound
     def rust_postgres_replace_existing(
         self,
         *,
@@ -1697,9 +1935,11 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             payload=payload,
         )
 
+    @implementation_selection_bound
     def uses_rust_postgres_authority(self) -> bool:
         return self._raw.uses_rust_postgres_authority()
 
+    @implementation_selection_bound
     def add_node(self, node: Node, doc_id: str | None = None) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
@@ -1717,6 +1957,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
             self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
 
+    @implementation_selection_bound
     def create_node_if_absent(
         self, node: Node, doc_id: str | None = None
     ) -> CreateNodeResult:
@@ -1730,6 +1971,7 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
                 self._e.acl.record_default_acl_for_item(node, grain="node")
             return result
 
+    @implementation_selection_bound
     def add_edge(self, edge: Edge, doc_id: str | None = None) -> None:
         if not self._e.acl.writes_can_share_backend_transaction():
             with self._e.uow():
@@ -1759,17 +2001,22 @@ class ACLAwareWriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"], WriteLike):
     def json_or_none(self, value: object) -> str | None:
         return self._raw.json_or_none(value)
 
+    @implementation_selection_bound
     def index_node_docs(self, node: Node) -> list[str]:
         return self._raw.index_node_docs(node)
 
+    @implementation_selection_bound
     def index_node_refs(self, node: Node) -> list[str]:
         return self._raw.index_node_refs(node)
 
+    @implementation_selection_bound
     def index_edge_refs(self, edge: Edge) -> list[str]:
         return self._raw.index_edge_refs(edge)
 
+    @implementation_selection_bound
     def delete_edge_ref_rows(self, edge_id: str) -> None:
         self._raw.delete_edge_ref_rows(edge_id)
 
+    @implementation_selection_bound
     def delete_node_ref_rows(self, node_id: str) -> None:
         self._raw.delete_node_ref_rows(node_id)

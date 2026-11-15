@@ -1,0 +1,19 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-edge-contract",
+  "designer_id": "alice",
+  "edge_id": "edge-contract",
+  "version": 3,
+  "fixed_response_fields": {
+    "workflow_id": "wf-edge-contract",
+    "namespace": "wf_design:wf-edge-contract",
+    "edge_id": "edge-contract",
+    "designer_id": "alice",
+    "version": 3,
+    "can_undo": true,
+    "can_redo": false
+  },
+  "integer_response_fields": ["seq"],
+  "absent_response_fields": ["deleted"]
+}

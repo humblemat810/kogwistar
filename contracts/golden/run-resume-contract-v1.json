@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "success_status": 200,
+  "required_fields": [
+    "run_id",
+    "latest_checkpoint_step_seq",
+    "latest_wait_reason",
+    "checkpoint_schema_version",
+    "persisted_keys",
+    "ephemeral_keys",
+    "supported_wait_reasons",
+    "compatible",
+    "state_keys",
+    "resume_options"
+  ],
+  "no_checkpoint": {
+    "latest_checkpoint_step_seq": null,
+    "latest_wait_reason": null,
+    "checkpoint_schema_version": null,
+    "compatible": false,
+    "state_keys": [],
+    "resume_options": []
+  },
+  "supported_wait_reasons": [
+    "approval",
+    "message",
+    "schedule_delay",
+    "external_callback",
+    "dependency",
+    "rate_window"
+  ]
+}

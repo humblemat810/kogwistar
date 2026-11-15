@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "truth_graph": "knowledge",
+  "scope": {
+    "namespace": "vector-query-test",
+    "workspace_id": "workspace-a"
+  },
+  "metric": "cosine",
+  "n_results": 3,
+  "current_vector_redirect_contract": {
+    "node": {"source_id": "tombstoned-public", "target_id": "visible-public"},
+    "edge": {"source_id": "edge-tombstoned-public", "target_id": "edge-public"}
+  },
+  "query_embeddings": [[1.0, 0.0], [0.0, 1.0]],
+  "nodes": [
+    {
+      "id": "near-private",
+      "embedding": [1.0, 0.0],
+      "mode": "private",
+      "owner_id": "owner-b"
+    },
+    {
+      "id": "visible-public",
+      "embedding": [0.8, 0.6],
+      "mode": "public"
+    },
+    {
+      "id": "visible-scope",
+      "embedding": [0.9, 0.1],
+      "mode": "scope",
+      "owner_id": "owner-b",
+      "security_scope": "tenant-a"
+    },
+    {
+      "id": "visible-project",
+      "embedding": [0.0, 1.0],
+      "mode": "scope",
+      "owner_id": "other-owner",
+      "security_scope": "project-a"
+    },
+    {
+      "id": "tombstoned-public",
+      "embedding": [0.99, 0.1],
+      "mode": "public",
+      "lifecycle_status": "tombstoned",
+      "redirect_to_id": "visible-public"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-private-endpoint",
+      "embedding": [1.0, 0.0],
+      "mode": "public",
+      "source_ids": ["near-private"],
+      "target_ids": ["visible-public"]
+    },
+    {
+      "id": "edge-public",
+      "embedding": [0.8, 0.6],
+      "mode": "public",
+      "source_ids": ["visible-public"],
+      "target_ids": ["visible-public"]
+    },
+    {
+      "id": "edge-scope",
+      "embedding": [0.7, 0.3],
+      "mode": "scope",
+      "owner_id": "owner-b",
+      "security_scope": "tenant-a",
+      "source_ids": ["visible-public"],
+      "target_ids": ["visible-public"]
+    },
+    {
+      "id": "edge-project",
+      "embedding": [0.0, 1.0],
+      "mode": "scope",
+      "owner_id": "other-owner",
+      "security_scope": "project-a",
+      "source_ids": ["visible-public"],
+      "target_ids": ["visible-public"]
+    },
+    {
+      "id": "edge-tombstoned-public",
+      "embedding": [0.99, 0.1],
+      "mode": "public",
+      "source_ids": ["visible-public"],
+      "target_ids": ["visible-public"],
+      "lifecycle_status": "tombstoned",
+      "redirect_to_id": "edge-public"
+    }
+  ],
+  "principals": [
+    {
+      "id": "reader-a",
+      "expected": {
+        "nodes": [["visible-public"], ["visible-public"]],
+        "edges": [["edge-public"], ["edge-public"]],
+        "distances": {
+          "nodes": [[0.2], [0.4]],
+          "edges": [[0.2], [0.4]]
+        }
+      }
+    },
+    {
+      "id": "owner-b",
+      "expected": {
+        "nodes": [
+          ["near-private", "visible-scope", "visible-public"],
+          ["visible-public", "visible-scope"]
+        ],
+        "edges": [
+          ["edge-private-endpoint", "edge-scope", "edge-public"],
+          ["edge-public", "edge-scope"]
+        ],
+        "scored_nodes": [
+          ["near-private", "visible-scope", "visible-public"],
+          ["visible-public", "visible-scope", "near-private"]
+        ],
+        "distances": {
+          "nodes": [[0.0, 0.0061162653, 0.2], [0.4, 0.8895684739]],
+          "edges": [[0.0, 0.08085497, 0.2], [0.4, 0.6060807]]
+        },
+        "scored_distances": {
+          "nodes": [[0.0, 0.0061162653, 0.2], [0.4, 0.8895684739, 1.0]]
+        }
+      }
+    },
+    {
+      "id": "scope-reader",
+      "scope_parts": {
+        "tenant": "tenant-a",
+        "workspace": "workspace-a",
+        "project": "project-a"
+      },
+      "expected": {
+        "nodes": [["visible-scope", "visible-public"], ["visible-public", "visible-scope"]],
+        "edges": [["edge-scope", "edge-public"], ["edge-public", "edge-scope"]],
+        "distances": {
+          "nodes": [[0.0061162653, 0.2], [0.4, 0.8895684739]],
+          "edges": [[0.08085497, 0.2], [0.4, 0.6060807]]
+        }
+      }
+    },
+    {
+      "id": "project-reader",
+      "scope_parts": {
+        "project": "project-a"
+      },
+      "expected": {
+        "nodes": [["visible-public"], ["visible-project", "visible-public"]],
+        "edges": [["edge-public"], ["edge-project", "edge-public"]],
+        "scored_nodes": [["visible-public", "visible-project"], ["visible-project", "visible-public"]],
+        "distances": {
+          "nodes": [[0.2], [0.0, 0.4]],
+          "edges": [[0.2], [0.0, 0.4]]
+        },
+        "scored_distances": {
+          "nodes": [[0.2, 1.0], [0.0, 0.4]]
+        }
+      }
+    }
+  ]
+}

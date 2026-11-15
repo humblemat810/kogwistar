@@ -11,6 +11,8 @@ from typing import (
     cast,
 )
 
+from pydantic_extension.model_slicing.mixin import use_mode
+
 from ...entity_registry import (
     default_edge_type_for_graph_kind,
     default_node_type_for_graph_kind,
@@ -28,6 +30,7 @@ from ..models import Document, Edge, Node
 from ..types import GraphEntityKind
 from ..utils.refs import ref_doc_id
 from ..vector_search import VectorSearchHit, similarity_from_distance
+from ...implementation_selection import implementation_selection_bound
 from .base import NamespaceProxy
 
 if TYPE_CHECKING:
@@ -35,6 +38,7 @@ if TYPE_CHECKING:
 
 TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
+TGraphEntity = TypeVar("TGraphEntity", bound=Node | Edge)
 
 
 def _json_object(value: object) -> JsonObject:
@@ -71,6 +75,17 @@ def _json_float_rows(value: object) -> list[list[float]]:
         if isinstance(row, list):
             rows.append([float(item) for item in row if isinstance(item, (int, float))])
     return rows
+
+
+def _edge_has_endpoint(
+    edge: Edge, *, endpoint_id: str, endpoint_type: Literal["node", "edge"]
+) -> bool:
+    endpoint_ids = (
+        (edge.source_ids or []) + (edge.target_ids or [])
+        if endpoint_type == "node"
+        else (edge.source_edge_ids or []) + (edge.target_edge_ids or [])
+    )
+    return endpoint_id in endpoint_ids
 
 
 def _string_sequence(value: object) -> list[str]:
@@ -140,21 +155,134 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     def __init__(self, engine: GraphKnowledgeEngine) -> None:
         super().__init__(engine)
 
+    def _filter_current_stage2_records(
+        self, entity_kind: str, batches: list[list[TGraphEntity]]
+    ) -> list[list[TGraphEntity]]:
+        """Drop vector rows whose embedded revision differs from canonical events."""
+        if getattr(self._e, "persistence_mode", "single_stage") != "two_stage":
+            return batches
+        entity_ids = {
+            str(item.safe_get_id()) for batch in batches for item in batch
+        }
+        indexing = self._e.indexing
+        batch_lookup = getattr(indexing, "canonical_revision_payloads", None)
+        try:
+            if callable(batch_lookup):
+                raw_revisions = batch_lookup(
+                    entity_kind=entity_kind, entity_ids=entity_ids
+                )
+            else:
+                raw_revisions = {
+                    entity_id: indexing.canonical_revision_payload(
+                        entity_kind=entity_kind, entity_id=entity_id
+                    )
+                    for entity_id in entity_ids
+                }
+            if not isinstance(raw_revisions, Mapping):
+                raise TypeError("canonical revision lookup returned a non-object")
+            revision_cache = {
+                str(entity_id): json.loads(payload)
+                for entity_id, payload in raw_revisions.items()
+                if isinstance(entity_id, str)
+                and isinstance(payload, (str, bytes, bytearray))
+            }
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            revision_cache = {}
+        filtered: list[list[TGraphEntity]] = []
+        for batch in batches:
+            current_batch: list[TGraphEntity] = []
+            for item in batch:
+                entity_id = str(item.safe_get_id())
+                metadata = getattr(item, "metadata", {}) or {}
+                staged_fingerprint = metadata.get("_kogwistar_source_fingerprint")
+                canonical = revision_cache.get(entity_id)
+                current_fingerprint = (
+                    str(canonical.get("source_fingerprint"))
+                    if isinstance(canonical, Mapping)
+                    and canonical.get("source_state") == "active"
+                    and canonical.get("source_fingerprint")
+                    else None
+                )
+                if (
+                    isinstance(staged_fingerprint, str)
+                    and staged_fingerprint
+                    and staged_fingerprint == current_fingerprint
+                ):
+                    current_batch.append(item)
+            filtered.append(current_batch)
+        return filtered
+
     @staticmethod
     def _native_equality_filter(where: object) -> dict[str, JsonValue] | None:
         if where is None:
             return {}
         if not isinstance(where, dict):
             return None
-        if any(
-            not isinstance(key, str)
-            or key.startswith("$")
-            or isinstance(value, dict)
-            for key, value in where.items()
-        ):
-            return None
-        return cast(dict[str, JsonValue], dict(where))
+        clauses = where.get("$and")
+        if "$and" in where:
+            if set(where) != {"$and"} or not isinstance(clauses, list):
+                return None
+        else:
+            clauses = [where]
 
+        equal: dict[str, JsonValue] = {}
+        for clause in clauses:
+            if not isinstance(clause, dict):
+                return None
+            for key, value in clause.items():
+                if (
+                    not isinstance(key, str)
+                    or key.startswith("$")
+                    or isinstance(value, dict)
+                    or key in equal
+                ):
+                    return None
+                equal[key] = cast(JsonValue, value)
+        return equal
+
+    @staticmethod
+    def _native_vector_filter(
+        where: object,
+    ) -> tuple[dict[str, JsonValue], dict[str, JsonValue]] | None:
+        """Parse flat equality filters plus the ACL wrapper's metadata exclusions."""
+        if where is None:
+            return {}, {}
+        if not isinstance(where, dict):
+            return None
+        clauses = where.get("$and")
+        if "$and" in where:
+            if set(where) != {"$and"} or not isinstance(clauses, list):
+                return None
+        else:
+            clauses = [where]
+        equal: dict[str, JsonValue] = {}
+        not_equal: dict[str, JsonValue] = {}
+        for clause in clauses:
+            if not isinstance(clause, dict):
+                return None
+            for key, value in clause.items():
+                if not isinstance(key, str) or key.startswith("$"):
+                    return None
+                if isinstance(value, dict):
+                    if set(value) != {"$ne"} or key in equal or key in not_equal:
+                        return None
+                    not_equal[key] = cast(JsonValue, value["$ne"])
+                else:
+                    if key in equal or key in not_equal:
+                        return None
+                    equal[key] = cast(JsonValue, value)
+        return equal, not_equal
+
+    def _rust_postgres_projection_selected(self) -> bool:
+        from kogwistar._rust_bridge import meta_store_implementation_mode
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        return (
+            isinstance(getattr(self._e, "metadata", None), RustEnginePostgresMetaStore)
+            and meta_store_implementation_mode() == "rust"
+        )
+
+    @implementation_selection_bound
     def _rust_postgres_projection_get(
         self,
         *,
@@ -166,19 +294,22 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
-        metadata = self._native_equality_filter(where)
-        if (
-            not isinstance(meta, RustEnginePostgresMetaStore)
-            or metadata is None
-            or limit is None
-            # Native projection reads are id-sorted while the legacy backend
-            # leaves multi-row get order unspecified. Cut over only the exact
-            # singleton case until a public ordering contract is approved.
-            or ids is None
-            or len(ids) != 1
-        ):
+        meta = getattr(self._e, "metadata", None)
+        if not self._rust_postgres_projection_selected():
             return None
+        metadata = self._native_equality_filter(where)
+        if not isinstance(meta, RustEnginePostgresMetaStore):
+            return None
+        if metadata is None:
+            raise RuntimeError(
+                "Rust-selected PostgreSQL projection get does not support this "
+                "filter; refusing Python backend fallback"
+            )
+        if limit is None:
+            raise RuntimeError(
+                "Rust-selected PostgreSQL projection get requires a finite limit; "
+                "refusing Python backend fallback"
+            )
         table = (
             cast(ProjectionBackendLike, self._e.backend).nodes.name
             if entity_kind == "node"
@@ -195,6 +326,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ids=None if ids is None else list(ids),
             metadata=metadata,
             limit=int(limit),
+            for_update=meta.transaction_active,
         )
         result: JsonObject = {
             "ids": [str(record.get("id") or "") for record in records]
@@ -209,6 +341,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
         return result
 
+    @implementation_selection_bound
     def _rust_postgres_projection_query(
         self,
         *,
@@ -220,47 +353,89 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
     ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
-        meta = getattr(self._e, "meta_sqlite", None)
-        metadata = self._native_equality_filter(where)
-        if (
-            not isinstance(meta, RustEnginePostgresMetaStore)
-            or metadata is None
-            or len(query_embeddings) != 1
-        ):
+        meta = getattr(self._e, "metadata", None)
+        if not self._rust_postgres_projection_selected():
             return None
+        filters = self._native_vector_filter(where)
+        if not isinstance(meta, RustEnginePostgresMetaStore):
+            return None
+        if filters is None:
+            raise RuntimeError(
+                "Rust-selected PostgreSQL projection query does not support this "
+                "filter; refusing Python backend fallback"
+            )
+        metadata, metadata_not_equals = filters
         table = (
             cast(ProjectionBackendLike, self._e.backend).nodes.name
             if entity_kind == "node"
             else cast(ProjectionBackendLike, self._e.backend).edges.name
         )
-        matches = meta.graph_projection_vector_query(
-            namespace=getattr(self._e, "namespace", "default"),
-            workspace_id=None,
-            graph_space=None,
-            table=table,
-            embedding=list(query_embeddings[0]),
-            embedding_dim=int(cast(ProjectionBackendLike, self._e.backend).embedding_dim),
-            metadata=metadata,
-            metric=str(cast(ProjectionBackendLike, self._e.backend).distance),
-            limit=int(n_results),
-        )
-        records = [_json_object(match.get("record") or {}) for match in matches]
+        common_query = {
+            "namespace": getattr(self._e, "namespace", "default"),
+            "workspace_id": None,
+            "graph_space": None,
+            "table": table,
+            "embedding_dim": int(cast(ProjectionBackendLike, self._e.backend).embedding_dim),
+            "metadata": metadata,
+            "metric": str(cast(ProjectionBackendLike, self._e.backend).distance),
+            "limit": int(n_results),
+        }
+        if len(query_embeddings) == 1:
+            query = {**common_query, "embedding": list(query_embeddings[0])}
+            if metadata_not_equals:
+                matches_by_embedding = [
+                    meta.graph_projection_vector_query_excluding_metadata(
+                        **query, metadata_not_equals=metadata_not_equals
+                    )
+                ]
+            else:
+                matches_by_embedding = [meta.graph_projection_vector_query(**query)]
+        else:
+            query = {
+                **common_query,
+                "embeddings": [list(embedding) for embedding in query_embeddings],
+            }
+            if metadata_not_equals:
+                matches_by_embedding = meta.graph_projection_vector_query_batch_excluding_metadata(
+                    **query, metadata_not_equals=metadata_not_equals
+                )
+            else:
+                matches_by_embedding = meta.graph_projection_vector_query_batch(**query)
+        records_by_embedding = [
+            [_json_object(match.get("record") or {}) for match in matches]
+            for matches in matches_by_embedding
+        ]
         effective_include = include or ["documents", "metadatas", "distances"]
         result: JsonObject = {
-            "ids": [[str(record.get("id") or "") for record in records]]
+            "ids": [
+                [str(record.get("id") or "") for record in records]
+                for records in records_by_embedding
+            ]
         }
         if "documents" in effective_include:
-            result["documents"] = [[record.get("document") for record in records]]
+            result["documents"] = [
+                [record.get("document") for record in records]
+                for records in records_by_embedding
+            ]
         if "metadatas" in effective_include:
-            result["metadatas"] = [[_json_object(record.get("metadata") or {}) for record in records]]
+            result["metadatas"] = [
+                [_json_object(record.get("metadata") or {}) for record in records]
+                for records in records_by_embedding
+            ]
         if "embeddings" in effective_include:
-            result["embeddings"] = [_json_embeddings(
-                [normalize_embedding_vector(record.get("embedding")) for record in records]
-            )]
+            result["embeddings"] = [
+                _json_embeddings(
+                    [normalize_embedding_vector(record.get("embedding")) for record in records]
+                )
+                for records in records_by_embedding
+            ]
         if "distances" in effective_include:
             result["distances"] = cast(
                 JsonValue,
-                [[_json_float(match.get("distance", 0.0)) for match in matches]],
+                [
+                    [_json_float(match.get("distance", 0.0)) for match in matches]
+                    for matches in matches_by_embedding
+                ],
             )
         return result
 
@@ -312,6 +487,48 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             result["embeddings"] = [None for _ in payloads]
         return result
 
+    @staticmethod
+    def _merge_stage1_get_results(
+        stage2: JsonObject,
+        stage1: JsonObject | None,
+        *,
+        include: list[str],
+        limit: int | None,
+    ) -> JsonObject:
+        """Return the visible union of promoted and still-pending entities."""
+        if stage1 is None:
+            return stage2
+        stage2_ids = _json_strings(stage2.get("ids"))
+        stage1_ids = _json_strings(stage1.get("ids"))
+        existing = set(stage2_ids)
+        additions = [entity_id for entity_id in stage1_ids if entity_id not in existing]
+        if limit is not None:
+            additions = additions[: max(0, int(limit) - len(stage2_ids))]
+
+        result: JsonObject = dict(stage2)
+        result["ids"] = [*stage2_ids, *additions]
+        stage1_positions = {entity_id: index for index, entity_id in enumerate(stage1_ids)}
+        for field in include:
+            pending_values = stage1.get(field)
+            if not isinstance(pending_values, list):
+                continue
+            promoted_values = stage2.get(field)
+            if isinstance(promoted_values, list):
+                values: list[JsonValue] = list(promoted_values)
+            elif not stage2_ids:
+                values = []
+            else:
+                values = [None] * len(stage2_ids)
+            for index, entity_id in enumerate(stage2_ids):
+                pending_index = stage1_positions.get(entity_id)
+                if pending_index is not None and pending_index < len(pending_values):
+                    if index < len(values):
+                        values[index] = pending_values[pending_index]
+            for entity_id in additions:
+                values.append(pending_values[stage1_positions[entity_id]])
+            result[field] = values
+        return result
+
     def _node_get_raw(
         self,
         *,
@@ -337,11 +554,12 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             where=where,
             limit=limit,
         )))
-        if not result.get("ids"):
-            return self._stage1_fallback_get(
-                entity_kind="node", ids=ids, where=where, limit=limit, include=include
-            ) or result
-        return result
+        stage1 = self._stage1_fallback_get(
+            entity_kind="node", ids=ids, where=where, limit=limit, include=include
+        )
+        return self._merge_stage1_get_results(
+            result, stage1, include=include, limit=limit
+        )
 
     def _edge_get_raw(
         self,
@@ -368,12 +586,14 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             where=where,
             limit=limit,
         )))
-        if not result.get("ids"):
-            return self._stage1_fallback_get(
-                entity_kind="edge", ids=ids, where=where, limit=limit, include=include
-            ) or result
-        return result
+        stage1 = self._stage1_fallback_get(
+            entity_kind="edge", ids=ids, where=where, limit=limit, include=include
+        )
+        return self._merge_stage1_get_results(
+            result, stage1, include=include, limit=limit
+        )
 
+    @implementation_selection_bound
     def node_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -388,6 +608,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return bool(got.get("ids"))
 
+    @implementation_selection_bound
     def edge_exists(
         self,
         ids: Sequence[str] | None = None,
@@ -402,6 +623,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return bool(got.get("ids"))
 
+    @implementation_selection_bound
     def get_node_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -416,6 +638,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return _json_objects(got.get("metadatas"))
 
+    @implementation_selection_bound
     def get_edge_metadatas(
         self,
         ids: Sequence[str] | None = None,
@@ -430,6 +653,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return _json_objects(got.get("metadatas"))
 
+    @implementation_selection_bound
     def get_edge_endpoints(
         self,
         *,
@@ -438,6 +662,52 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         limit: int | None = 10000,
     ) -> dict[str, JsonValue]:
         """Read structural endpoint rows through the engine read boundary."""
+        if self._rust_postgres_projection_selected():
+            from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+            meta = getattr(self._e, "metadata", None)
+            if not isinstance(meta, RustEnginePostgresMetaStore):
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL structural endpoint reads require "
+                    "the native metadata store; refusing Python backend fallback"
+                )
+            if limit is None:
+                raise RuntimeError(
+                    "Rust-selected structural endpoint reads require a finite "
+                    "limit; refusing Python backend fallback"
+                )
+            parsed_filter = self._native_equality_filter(where)
+            if parsed_filter is None:
+                raise RuntimeError(
+                    "Rust-selected structural endpoint reads support equality "
+                    "filters only; refusing Python backend fallback"
+                )
+            selected = include or ["documents", "metadatas"]
+            unsupported = set(selected) - {"documents", "metadatas"}
+            if unsupported:
+                raise RuntimeError(
+                    "Rust-selected structural endpoint reads do not support "
+                    f"include fields {sorted(unsupported)!r}; refusing Python "
+                    "backend fallback"
+                )
+            records = meta.graph_projection_records(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=None,
+                graph_space=None,
+                table=cast(ProjectionBackendLike, self._e.backend)
+                .edge_endpoints.name,
+                ids=None,
+                metadata=parsed_filter,
+                limit=max(0, int(limit)),
+            )
+            result: JsonObject = {"ids": [str(record["id"]) for record in records]}
+            if "documents" in selected:
+                result["documents"] = [record.get("document") for record in records]
+            if "metadatas" in selected:
+                result["metadatas"] = [
+                    _json_object(record.get("metadata") or {}) for record in records
+                ]
+            return result
         return _json_object(run_awaitable_blocking(
             self._e.backend.edge_endpoints_get(
                 where=where,
@@ -447,6 +717,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             ))
 
     # Canonical read API
+    @implementation_selection_bound
     def get_nodes(
         self,
         ids: Sequence[str] | None = None,
@@ -500,6 +771,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return cast(list[Node], self._e._filter_items_by_resolve_mode(nodes, resolve_mode))
 
+    @implementation_selection_bound
     def get_edges(
         self,
         ids: Sequence[str] | None = None,
@@ -555,6 +827,113 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
 
+    @implementation_selection_bound
+    def get_incident_edges(
+        self,
+        endpoint_id: str,
+        *,
+        endpoint_type: Literal["node", "edge"] = "node",
+        edge_type: type[Edge] | None = None,
+        limit: int = 512,
+        resolve_mode: Literal[
+            "active_only", "redirect", "include_tombstones"
+        ] = "active_only",
+    ) -> list[Edge]:
+        """Return canonical edges incident to one typed endpoint.
+
+        Backends with an authoritative indexed query can avoid a graph-wide
+        scan. Other backends retain the bounded compatibility scan.
+        """
+        if not endpoint_id:
+            return []
+        if endpoint_type not in {"node", "edge"}:
+            raise ValueError("endpoint_type must be 'node' or 'edge'")
+        selected_edge_type = edge_type or default_edge_type_for_graph_kind(
+            self._e.kg_graph_type
+        )
+        if self._rust_postgres_projection_selected():
+            from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+            meta = getattr(self._e, "metadata", None)
+            if not isinstance(meta, RustEnginePostgresMetaStore):
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL incident-edge reads require the "
+                    "native metadata store; refusing Python backend fallback"
+                )
+            records = meta.graph_incident_edges(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=None,
+                graph_space=None,
+                endpoint_id=endpoint_id,
+                endpoint_kind=endpoint_type,
+                limit=max(0, int(limit)),
+            )
+            got: JsonObject = {
+                "ids": [str(record.get("id") or "") for record in records],
+                "documents": [record.get("document") for record in records],
+                "metadatas": [
+                    _json_object(record.get("metadata") or {}) for record in records
+                ],
+            }
+            edges = self.edges_from_single_or_id_query_result(
+                got,
+                edge_type=selected_edge_type,
+                include=["documents", "metadatas"],
+            )
+        else:
+            backend_query = getattr(self._e.backend, "edge_get_by_endpoint", None)
+            if callable(backend_query):
+                got = _json_object(
+                    run_awaitable_blocking(
+                        backend_query(
+                            endpoint_id=endpoint_id,
+                            endpoint_type=endpoint_type,
+                            include=["documents", "metadatas"],
+                            limit=limit,
+                        )
+                    )
+                )
+                edges = self.edges_from_single_or_id_query_result(
+                    got,
+                    edge_type=selected_edge_type,
+                    include=["documents", "metadatas"],
+                )
+            else:
+                edges = [
+                    edge
+                    for edge in self.get_edges(
+                        edge_type=selected_edge_type,
+                        limit=limit,
+                        resolve_mode=resolve_mode,
+                    )
+                    if _edge_has_endpoint(
+                        edge, endpoint_id=endpoint_id, endpoint_type=endpoint_type
+                    )
+                ]
+                return cast(
+                    list[Edge],
+                    self._e._filter_items_by_resolve_mode(edges, resolve_mode),
+                )
+
+        edges = self._e._resolve_redirect_chain(
+            initial_items=edges,
+            resolve_mode=resolve_mode,
+            fetch_by_ids=lambda redirect_ids: self.get_edges(
+                redirect_ids,
+                edge_type=selected_edge_type,
+                resolve_mode=resolve_mode,
+            ),
+        )
+        edges = [
+            edge
+            for edge in edges
+            if _edge_has_endpoint(
+                edge, endpoint_id=endpoint_id, endpoint_type=endpoint_type
+            )
+        ]
+        return self._e._filter_items_by_resolve_mode(edges, resolve_mode)
+
+    @implementation_selection_bound
     def get_document(self, doc_id: str) -> Document:
         raw_doc_get_result = self._rust_postgres_projection_get(
             entity_kind="document",
@@ -594,6 +973,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return doc
 
+    @implementation_selection_bound
     def query_nodes(
         self,
         *args: object,
@@ -620,32 +1000,44 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        native = (
-            None
-            if args or set(kwargs) - {"where", "n_results"}
-            else self._rust_postgres_projection_query(
-            entity_kind="node",
-            query_embeddings=query_embeddings,
-            where=kwargs.get("where"),
-            n_results=int(cast(int, kwargs.get("n_results", 10))),
-            include=include,
-            )
-        )
-        got = cast(
-            Mapping[str, JsonValue],
-            native
-            or run_awaitable_blocking(
-                self._e.backend.node_query(
-                    *args,
-                    query_embeddings=query_embeddings,
-                    include=include,
-                    **kwargs,
+        if args or set(kwargs) - {"where", "n_results"}:
+            if self._rust_postgres_projection_selected():
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL node query does not support this "
+                    "argument shape; refusing Python backend fallback"
                 )
-            ),
-        )
-        return self.nodes_from_query_result(
+            native = None
+        else:
+            native = self._rust_postgres_projection_query(
+                entity_kind="node",
+                query_embeddings=query_embeddings,
+                where=kwargs.get("where"),
+                n_results=int(cast(int, kwargs.get("n_results", 10))),
+                include=include,
+            )
+        if native is not None:
+            got = native
+        else:
+            backend_kwargs = self._active_lifecycle_vector_filter(kwargs)
+            got = cast(
+                Mapping[str, JsonValue],
+                run_awaitable_blocking(
+                    self._e.backend.node_query(
+                        *args,
+                        query_embeddings=query_embeddings,
+                        include=include,
+                        **backend_kwargs,
+                    )
+                ),
+            )
+        rows = self.nodes_from_query_result(
             got, node_type=cast(type[TNode], node_type or Node)
         )
+        rows = self._filter_current_stage2_records("node", rows)
+        return [
+            self._e._filter_items_by_resolve_mode(row, "active_only")
+            for row in rows
+        ]
 
     def _coerce_ts_utc(self, raw: object) -> datetime | None:
         if raw is None:
@@ -669,6 +1061,23 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if dt.tzinfo is None:
             return dt.replace(tzinfo=timezone.utc)
         return dt.astimezone(timezone.utc)
+
+    @staticmethod
+    def _active_lifecycle_vector_filter(kwargs: dict[str, object]) -> dict[str, object]:
+        """Keep tombstoned records from consuming active-only vector top-k slots."""
+        result = dict(kwargs)
+        lifecycle_filters = [
+            {"lifecycle_status": {"$ne": "tombstoned"}},
+            {"lifecycle_status": {"$ne": "deleted"}},
+        ]
+        where = result.get("where")
+        if where is None:
+            result["where"] = {"$and": lifecycle_filters}
+        elif isinstance(where, dict):
+            result["where"] = {"$and": [where, *lifecycle_filters]}
+        else:
+            raise TypeError("vector query where filter must be an object")
+        return result
 
     def _is_node_visible_as_of(self, node: Node, as_of: datetime) -> bool:
         meta = getattr(node, "metadata", {}) or {}
@@ -747,6 +1156,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 cache[next_id] = nxt
             current = nxt
 
+    @implementation_selection_bound
     def search_nodes_as_of(
         self,
         *,
@@ -780,6 +1190,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             for node in (hit.node,)
         ]
 
+    @implementation_selection_bound
     def search_nodes_as_of_scored(
         self,
         *,
@@ -836,30 +1247,54 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         }
         # Historical search needs tombstone candidates for redirect/time
         # resolution; ordinary semantic search must continue excluding them.
-        if getattr(self._e.backend, "supports_historical_tombstone_query", False):
+        historical_candidates = getattr(
+            self._e.backend, "supports_historical_tombstone_query", False
+        )
+        if historical_candidates:
             query_kwargs["include_tombstoned"] = True
-        try:
-            got = _json_object(run_awaitable_blocking(self._e.backend.node_query(**query_kwargs)))
-        except Exception as exc:
-            # Chroma's embedded Rust reader can briefly lose an HNSW segment
-            # after a local persistent update. Historical filtering is still
-            # correct over non-semantic node records, so fall back to a
-            # metadata/payload candidate read without retrying the vector path.
-            message = str(exc).lower()
-            is_chroma_hnsw_gap = (
-                self._e.backend.__class__.__name__ in {"ChromaBackend", "AsyncChromaBackend"}
-                and "nothing found on disk" in message
-                and "hnsw segment reader" in message
+        if self._rust_postgres_projection_selected() and (
+            kwargs or historical_candidates
+        ):
+            raise RuntimeError(
+                "Rust-selected PostgreSQL historical query does not support this "
+                "request shape; refusing Python backend fallback"
             )
-            if not is_chroma_hnsw_gap:
-                raise
-            got = _json_object(run_awaitable_blocking(
-                self._e.backend.node_get(
-                    where=where,
-                    limit=max(int(n_results), 10_000),
-                    include=["documents", "metadatas"],
+        native = (
+            self._rust_postgres_projection_query(
+                entity_kind="node",
+                query_embeddings=query_embeddings,
+                where=where,
+                n_results=n_results,
+                include=include,
+            )
+            if not kwargs and not historical_candidates
+            else None
+        )
+        if native is not None:
+            got = native
+        else:
+            try:
+                got = _json_object(run_awaitable_blocking(self._e.backend.node_query(**query_kwargs)))
+            except Exception as exc:
+                # Chroma's embedded Rust reader can briefly lose an HNSW segment
+                # after a local persistent update. Historical filtering is still
+                # correct over non-semantic node records, so fall back to a
+                # metadata/payload candidate read without retrying the vector path.
+                message = str(exc).lower()
+                is_chroma_hnsw_gap = (
+                    self._e.backend.__class__.__name__ in {"ChromaBackend", "AsyncChromaBackend"}
+                    and "nothing found on disk" in message
+                    and "hnsw segment reader" in message
                 )
-            ))
+                if not is_chroma_hnsw_gap:
+                    raise
+                got = _json_object(run_awaitable_blocking(
+                    self._e.backend.node_get(
+                        where=where,
+                        limit=max(int(n_results), 10_000),
+                        include=["documents", "metadatas"],
+                    )
+                ))
         batches = self.nodes_from_query_result(got, node_type=node_type)
         candidates = [node for batch in batches for node in batch] if batches else []
         raw_ids = [item for batch in _json_string_rows(got.get("ids")) for item in batch]
@@ -922,6 +1357,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
         return out
 
+    @implementation_selection_bound
     def query_edges(
         self,
         *args: object,
@@ -943,33 +1379,46 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             normalize_embedding_rows(query_embeddings, allow_empty=False),
         )
 
-        native = (
-            None
-            if args or set(kwargs) - {"where", "n_results"}
-            else self._rust_postgres_projection_query(
-            entity_kind="edge",
-            query_embeddings=query_embeddings,
-            where=kwargs.get("where"),
-            n_results=int(cast(int, kwargs.get("n_results", 10))),
-            include=include,
-            )
-        )
-        got = cast(
-            Mapping[str, JsonValue],
-            native
-            or run_awaitable_blocking(
-                self._e.backend.edge_query(
-                    query_embeddings=query_embeddings,
-                    *args,
-                    include=include,
-                    **kwargs,
+        if args or set(kwargs) - {"where", "n_results"}:
+            if self._rust_postgres_projection_selected():
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL edge query does not support this "
+                    "argument shape; refusing Python backend fallback"
                 )
-            ),
-        )
-        return self.edges_from_query_result(
+            native = None
+        else:
+            native = self._rust_postgres_projection_query(
+                entity_kind="edge",
+                query_embeddings=query_embeddings,
+                where=kwargs.get("where"),
+                n_results=int(cast(int, kwargs.get("n_results", 10))),
+                include=include,
+            )
+        if native is not None:
+            got = native
+        else:
+            backend_kwargs = self._active_lifecycle_vector_filter(kwargs)
+            got = cast(
+                Mapping[str, JsonValue],
+                run_awaitable_blocking(
+                    self._e.backend.edge_query(
+                        query_embeddings=query_embeddings,
+                        *args,
+                        include=include,
+                        **backend_kwargs,
+                    )
+                ),
+            )
+        rows = self.edges_from_query_result(
             got, edge_type=cast(type[TEdge], edge_type or Edge)
         )
+        rows = self._filter_current_stage2_records("edge", rows)
+        return [
+            self._e._filter_items_by_resolve_mode(row, "active_only")
+            for row in rows
+        ]
 
+    @implementation_selection_bound
     def nodes_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -991,22 +1440,24 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             raise Exception("Missing Metadatas")
 
         res: list[TNode] = []
-        for d, emb, metadata in zip(docs, embs, metadatas):
-            json_d = json.loads(d)
-            json_d.update(
-                {
-                    "embedding": normalize_embedding_vector(emb),
-                    "metadata": metadata,
-                }
-            )
-            selected_type = pick_node_type(
-                graph_kind=self._e.kg_graph_type,
-                metadata=metadata,
-                fallback=node_type,
-            )
-            res.append(cast(TNode, selected_type.model_validate(json_d)))
+        with use_mode("backend"):
+            for d, emb, metadata in zip(docs, embs, metadatas):
+                json_d = json.loads(d)
+                json_d.update(
+                    {
+                        "embedding": normalize_embedding_vector(emb),
+                        "metadata": metadata,
+                    }
+                )
+                selected_type = pick_node_type(
+                    graph_kind=self._e.kg_graph_type,
+                    metadata=metadata,
+                    fallback=node_type,
+                )
+                res.append(cast(TNode, selected_type.model_validate(json_d)))
         return res
 
+    @implementation_selection_bound
     def edges_from_single_or_id_query_result(
         self,
         got: Mapping[str, JsonValue],
@@ -1031,57 +1482,67 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             raise Exception("Missing Metadatas")
 
         res = []
-        for d, emb, metadata in zip(docs, embs, metadatas):
-            json_d = json.loads(d)
-            json_d.update(
-                {
-                    "embedding": normalize_embedding_vector(emb),
-                    "metadata": metadata,
-                }
-            )
-            selected_type = pick_edge_type(metadata=metadata, fallback=edge_type)
-            res.append(cast(TEdge, selected_type.model_validate(json_d)))
+        with use_mode("backend"):
+            for d, emb, metadata in zip(docs, embs, metadatas):
+                json_d = json.loads(d)
+                json_d.update(
+                    {
+                        "embedding": normalize_embedding_vector(emb),
+                        "metadata": metadata,
+                    }
+                )
+                selected_type = pick_edge_type(metadata=metadata, fallback=edge_type)
+                res.append(cast(TEdge, selected_type.model_validate(json_d)))
         return res
 
+    @implementation_selection_bound
     def nodes_from_query_result(
         self, gots: Mapping[str, JsonValue], node_type: type[TNode] = Node
     ) -> list[list[TNode]]:
         res: list[list[TNode]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
-        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
+        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [])
         metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
+            embeddings = embedding_rows[index] if index < len(embedding_rows) else []
+            if len(embeddings) < len(ids):
+                embeddings = [*embeddings, *([None] * (len(ids) - len(embeddings)))]
             got = {
                 "documents": document_rows[index] if index < len(document_rows) else [],
-                "embeddings": embedding_rows[index] if index < len(embedding_rows) else [],
+                "embeddings": embeddings,
                 "metadatas": metadata_rows[index] if index < len(metadata_rows) else [],
             }
             res.append(self.nodes_from_single_or_id_query_result(got, node_type=node_type))
         return res
 
+    @implementation_selection_bound
     def edges_from_query_result(
         self, gots: Mapping[str, JsonValue], edge_type: type[TEdge] = Edge
     ) -> list[list[TEdge]]:
         res: list[list[TEdge]] = []
         id_rows = cast(list[list[str]], gots.get("ids") or [])
         document_rows = cast(list[list[str]], gots.get("documents") or [[] for _ in id_rows])
-        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [[] for _ in id_rows])
+        embedding_rows = cast(list[list[list[float] | None]], gots.get("embeddings") or [])
         metadata_rows = cast(list[list[dict[str, JsonValue]]], gots.get("metadatas") or [[] for _ in id_rows])
         for index, ids in enumerate(id_rows):
             if not ids:
                 continue
+            embeddings = embedding_rows[index] if index < len(embedding_rows) else []
+            if len(embeddings) < len(ids):
+                embeddings = [*embeddings, *([None] * (len(ids) - len(embeddings)))]
             got = {
                 "ids": ids,
                 "documents": document_rows[index] if index < len(document_rows) else [],
-                "embeddings": embedding_rows[index] if index < len(embedding_rows) else [],
+                "embeddings": embeddings,
                 "metadatas": metadata_rows[index] if index < len(metadata_rows) else [],
             }
             res.append(self.edges_from_single_or_id_query_result(got, edge_type=edge_type))
         return res
 
+    @implementation_selection_bound
     def where_update_from_resolve_mode(
         self,
         resolve_mode: Literal["active_only", "redirect", "include_tombstones"],
@@ -1101,6 +1562,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         except Exception:
             return None
 
+    @implementation_selection_bound
     def extract_reference_contexts(
         self,
         node_or_id: Node | Edge | str,
@@ -1119,7 +1581,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             )
             doc_list = _json_strings(got.get("documents"))
             if doc_list:
-                obj = Node.model_validate_json(doc_list[0])
+                with use_mode("backend"):
+                    obj = Node.model_validate_json(doc_list[0])
             else:
                 got = _json_object(
                     run_awaitable_blocking(self._e.backend.edge_get(ids=[node_or_id], include=["documents"]))
@@ -1127,7 +1590,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 edoc_list = _json_strings(got.get("documents"))
                 if not edoc_list:
                     raise ValueError(f"Unknown node/edge id: {node_or_id}")
-                obj = Edge.model_validate_json(edoc_list[0])
+                with use_mode("backend"):
+                    obj = Edge.model_validate_json(edoc_list[0])
 
         label = getattr(obj, "label", None)
         out: list[dict[str, object]] = []
@@ -1235,6 +1699,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return out
 
     # Doc-index helpers
+    @implementation_selection_bound
     def node_ids_by_doc(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
@@ -1275,6 +1740,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
+    @implementation_selection_bound
     def edge_ids_by_doc(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
@@ -1306,10 +1772,23 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 ):
                     continue
                 payload = _json_object(row.get("payload"))
-                if _json_object(payload.get("metadata")).get("doc_id") == doc_id:
+                metadata = _json_object(payload.get("metadata"))
+                document = payload.get("document")
+                document_payload: JsonObject = {}
+                if isinstance(document, str):
+                    try:
+                        document_payload = _json_object(json.loads(document))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                indexed_doc_id = payload.get(
+                    "doc_id",
+                    metadata.get("doc_id", document_payload.get("doc_id")),
+                )
+                if indexed_doc_id == doc_id:
                     result.add(str(payload.get("id") or row.get("key")))
         return sorted(result)
 
+    @implementation_selection_bound
     def edges_by_doc(
         self, doc_id: str, where: dict[str, JsonValue] | None = None
     ) -> list[str]:
@@ -1321,6 +1800,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         rows = _json_object(run_awaitable_blocking(self._e.backend.edge_refs_get(where=query_where, include=["documents"])))
         return list({json.loads(d)["edge_id"] for d in _json_strings(rows.get("documents"))})
 
+    @implementation_selection_bound
     def list_edges_with_ref_filter(
         self, doc_id: str, where: dict | None = None
     ) -> list[Edge]:
@@ -1328,8 +1808,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if not ids:
             return []
         got = _json_object(run_awaitable_blocking(self._e.backend.edge_get(ids=ids, include=["documents"])))
-        return [Edge.model_validate_json(js) for js in _json_strings(got.get("documents"))]
+        with use_mode("backend"):
+            return [Edge.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
+    @implementation_selection_bound
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
         where = (
             {"doc_id": doc_id}
@@ -1339,6 +1821,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         rows = _json_object(run_awaitable_blocking(self._e.backend.node_refs_get(where=where, include=["documents"])))
         return list({json.loads(d)["node_id"] for d in _json_strings(rows.get("documents"))})
 
+    @implementation_selection_bound
     def list_nodes_with_ref_filter(
         self, doc_id: str, *, where: dict | None = None
     ) -> list[Node]:
@@ -1346,8 +1829,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if not ids:
             return []
         got = _json_object(run_awaitable_blocking(self._e.backend.node_get(ids=ids, include=["documents"])))
-        return [Node.model_validate_json(js) for js in _json_strings(got.get("documents"))]
+        with use_mode("backend"):
+            return [Node.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
+    @implementation_selection_bound
     def ids_with_insertion_method(
         self,
         *,
@@ -1393,26 +1878,30 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             entity_ids = _json_strings(got.get("ids"))
 
         keep: set[str] = set()
-        for entity_id, blob in zip(entity_ids, documents):
-            ent = model_cls.model_validate_json(blob)
-            for ref in ent.mentions or []:
-                im = getattr(ref, "insertion_method", None)
-                if im == insertion_method and (not doc_id or ref_doc_id(ref) == doc_id):
-                    keep.add(entity_id)
-                    break
+        with use_mode("backend"):
+            for entity_id, blob in zip(entity_ids, documents):
+                ent = model_cls.model_validate_json(blob)
+                for ref in ent.mentions or []:
+                    im = getattr(ref, "insertion_method", None)
+                    if im == insertion_method and (not doc_id or ref_doc_id(ref) == doc_id):
+                        keep.add(entity_id)
+                        break
         return sorted(keep)
 
     # Legacy names retained during migration
+    @implementation_selection_bound
     def nodes_by_doc_index(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.node_ids_by_doc(doc_id, insertion_method=insertion_method)
 
+    @implementation_selection_bound
     def edge_ids_by_doc_index(
         self, doc_id: str, insertion_method: str | None = None
     ) -> list[str]:
         return self.edge_ids_by_doc(doc_id, insertion_method=insertion_method)
 
+    @implementation_selection_bound
     def load_node_map(self, *args: object, **kwargs: object) -> dict[str, Node]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:
@@ -1432,6 +1921,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         return {n.safe_get_id(): n for n in nodes}
 
+    @implementation_selection_bound
     def load_edge_map(self, *args: object, **kwargs: object) -> dict[str, Edge]:
         ids = kwargs.pop("ids", None)
         if ids is None and args:

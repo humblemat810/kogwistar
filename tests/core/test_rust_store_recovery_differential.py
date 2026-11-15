@@ -1,14 +1,37 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_postgres, store_sqlite
+from kogwistar.document_types import Chunk
+from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.models import Document, LLMNode, Node
+from kogwistar.engine_core.subsystems.persist import PersistSubsystem
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+from kogwistar.runtime import (
+    CheckpointedProjectionStore,
+    ProjectionCheckpoint,
+    ProjectionLoadResult,
+    refresh_checkpointed_named_projection,
+)
+from kogwistar.runtime.models import (
+    WorkflowCancelledNode,
+    WorkflowCheckpointNode,
+    WorkflowCompletedNode,
+    WorkflowFailedNode,
+    WorkflowNode,
+    WorkflowStepExecNode,
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.core]
 
@@ -28,12 +51,25 @@ def _postgres(dsn: str | None, schema: str, operation: dict[str, Any]) -> Any:
 
 def _event(*, entity_id: str, revision: int) -> str:
     """Full Node-shaped Python event payload, intentionally not Rust-specific."""
+    source_document = Document.from_text("alpha beta", id="source-doc")
+    source_document.source_map = {
+        "chunk-0": Chunk(
+            doc_id="source-doc", start_char=0, end_char=5, text="alpha"
+        ),
+        "chunk-1": Chunk(
+            doc_id="source-doc", start_char=5, end_char=10, text=" beta"
+        ),
+    }
+    source_map = source_document.model_dump(
+        field_mode="backend", dump_format="json", exclude={"embeddings"}
+    )["source_map"]
     return json.dumps(
         {
             "id": entity_id,
             "document": f"node {entity_id} revision {revision}",
             "metadata": {"revision": revision, "source": "python"},
             "groundings": [],
+            "source_map": source_map,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -76,6 +112,35 @@ def _rebuild(
     }
 
 
+def _python_persisted_llm_node_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Apply Python's LLMNode-to-Node persistence promotion to a wire fixture."""
+    llm_payload = {
+        **payload,
+        "mentions": [
+            {
+                **mention,
+                "spans": [
+                    {**span, "insertion_method": "llm_graph_extraction"}
+                    for span in mention["spans"]
+                ],
+            }
+            for mention in payload["mentions"]
+        ],
+    }
+    llm_node = LLMNode.model_validate(llm_payload)
+    promoted = PersistSubsystem._promote_llm_entity_payload(
+        llm_node, insertion_method="llm_graph_extraction"
+    )
+    promoted["id"] = "11111111-2222-4333-8444-555555555555"
+    persisted_node = Node.model_validate(
+        promoted, context={"insertion_method": "llm_graph_extraction"}
+    )
+    persisted_node.embedding = [0.25, 0.75]
+    return persisted_node.model_dump(
+        field_mode="backend", dump_format="json", exclude={"embedding"}
+    )
+
+
 def _assert_projection_shape(payload: dict[str, Any]) -> None:
     entities = payload["entities"]
     deleted = entities['["node","n1"]']
@@ -84,6 +149,32 @@ def _assert_projection_shape(payload: dict[str, Any]) -> None:
     active = entities['["alien_kind","n2"]']
     assert active["deleted"] is False
     assert active["entity"]["id"] == "n2"
+    expected_source_map = Document.from_text("alpha beta", id="source-doc")
+    expected_source_map.source_map = {
+        "chunk-0": Chunk(
+            doc_id="source-doc", start_char=0, end_char=5, text="alpha"
+        ),
+        "chunk-1": Chunk(
+            doc_id="source-doc", start_char=5, end_char=10, text=" beta"
+        ),
+    }
+    assert active["entity"]["source_map"] == expected_source_map.model_dump(
+        field_mode="backend", dump_format="json", exclude={"embeddings"}
+    )["source_map"]
+
+
+def test_rust_meta_facades_implement_checkpointed_projection_store_protocol(
+    tmp_path: Path,
+) -> None:
+    """Both native metadata facades preserve the shared Python projection seam."""
+
+    sqlite = RustEngineSQLite(tmp_path)
+    postgres = RustEnginePostgresMetaStore(
+        dsn="postgresql://unconfigured.example.invalid/db",
+        schema="contract_only",
+    )
+    assert isinstance(sqlite, CheckpointedProjectionStore)
+    assert isinstance(postgres, CheckpointedProjectionStore)
 
 
 def _run_recovery_contract(
@@ -265,6 +356,652 @@ def test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop(tmp_path
         "alien_kind",
         "node",
     ]
+
+
+def test_sqlite_rebuild_recovers_python_persisted_workflow_run_node(tmp_path: Path) -> None:
+    """Python-authored derived node survives Rust event-log rebuild/reopen."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-run-node-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    event_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id="python-workflow-run-node",
+        entity_kind="node",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=event_payload,
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer="workflow-run-recovery",
+        projection_namespace="derived-node-projection",
+        projection_key="workflow-run",
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
+    assert restored["entities"][entity_key]["entity"] == payload
+
+
+def test_sqlite_rebuild_recovers_python_persisted_workflow_checkpoint_node(
+    tmp_path: Path,
+) -> None:
+    """Python checkpoint payload survives Rust SQLite replay and reopen."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-checkpoint-node-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id="python-workflow-checkpoint-node",
+        entity_kind="node",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer="workflow-checkpoint-recovery",
+        projection_namespace="derived-node-projection",
+        projection_key="workflow-checkpoint",
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
+    assert restored["entities"][entity_key]["entity"] == payload
+
+
+def test_sqlite_rebuild_recovers_python_persisted_workflow_completed_node(
+    tmp_path: Path,
+) -> None:
+    """Python completion payload survives Rust SQLite replay and reopen."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-completed-node-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id="python-workflow-completed-node",
+        entity_kind="node",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer="workflow-completed-recovery",
+        projection_namespace="derived-node-projection",
+        projection_key="workflow-completed",
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
+    assert restored["entities"][entity_key]["entity"] == payload
+
+
+def test_sqlite_rebuild_recovers_python_persisted_workflow_runtime_edge(tmp_path: Path) -> None:
+    """Rust recovery preserves Python WorkflowRuntimeEdge endpoint identity."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "workflow-runtime-edge-model-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    event_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id="python-workflow-runtime-edge",
+        entity_kind="edge",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=event_payload,
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer="workflow-runtime-edge-recovery",
+        projection_namespace="derived-edge-projection",
+        projection_key="workflow-runtime",
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps(["edge", payload["id"]], separators=(",", ":"))
+    recovered_payload = restored["entities"][entity_key]["entity"]
+    assert recovered_payload == payload
+    assert recovered_payload["source_ids"] == ["parity-node"]
+    assert recovered_payload["target_ids"] == ["external:target"]
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "projection_key"),
+    [
+        ("workflow-cancelled-node-model-v1.json", "workflow-cancelled"),
+        ("workflow-failed-node-model-v1.json", "workflow-failed"),
+    ],
+)
+def test_sqlite_rebuild_recovers_python_persisted_workflow_terminal_node(
+    tmp_path: Path,
+    fixture_name: str,
+    projection_key: str,
+) -> None:
+    """Rust SQLite replay preserves Python-authored workflow terminal nodes."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / fixture_name
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id=f"python-{projection_key}-node",
+        entity_kind="node",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer=f"{projection_key}-recovery",
+        projection_namespace="derived-node-projection",
+        projection_key=projection_key,
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
+    restored = json.loads(reopened["canonical_payload"])
+    assert restored["entities"][entity_key]["entity"] == payload
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "projection_key"),
+    [
+        ("acl-node-model-v1.json", "acl-node"),
+        ("conversation-create-start-node-v1.json", "conversation-node"),
+        ("llm-node-model-v1.json", "llm-node"),
+        ("llm-node-extraction-model-v1.json", "llm-node-extraction"),
+        ("llm-node-flattened-model-v1.json", "llm-node-flattened"),
+        ("llm-node-assoc-flattened-model-v1.json", "llm-node-assoc-flattened"),
+    ],
+)
+def test_sqlite_rebuild_recovers_python_persisted_derived_node(
+    tmp_path: Path,
+    fixture_name: str,
+    projection_key: str,
+) -> None:
+    """Rust SQLite replay preserves Python-authored LLM-derived node payloads."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / fixture_name
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    if fixture_name == "llm-node-model-v1.json":
+        payload = _python_persisted_llm_node_payload(payload)
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id=f"python-{projection_key}-node",
+        entity_kind="node",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer=f"{projection_key}-recovery",
+        projection_namespace="derived-node-projection",
+        projection_key=projection_key,
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    entity_key = json.dumps(["node", payload["id"]], separators=(",", ":"))
+    restored = json.loads(reopened["canonical_payload"])
+    recovered_entity = restored["entities"][entity_key]["entity"]
+    assert recovered_entity == payload
+    if fixture_name == "acl-node-model-v1.json":
+        assert type(ACLNode.model_validate(recovered_entity)) is ACLNode
+    elif fixture_name == "conversation-create-start-node-v1.json":
+        assert type(ConversationNode.model_validate(recovered_entity)) is ConversationNode
+    if fixture_name == "llm-node-model-v1.json":
+        python_model = Node.model_validate(restored["entities"][entity_key]["entity"])
+        assert type(python_model) is Node
+        expected_model = Node.model_validate(payload)
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == (
+            expected_model.model_dump(field_mode="backend", dump_format="json")
+        )
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "projection_key"),
+    [
+        ("acl-edge-model-v1.json", "acl-edge"),
+        ("conversation-edge-model-v1.json", "conversation-edge"),
+        ("workflow-edge-model-v1.json", "workflow-edge"),
+        ("llm-edge-model-v1.json", "llm-edge"),
+        ("llm-edge-flattened-model-v1.json", "llm-edge-flattened"),
+        ("llm-edge-assoc-flattened-model-v1.json", "llm-edge-assoc-flattened"),
+    ],
+)
+def test_sqlite_rebuild_recovers_python_persisted_derived_edge(
+    tmp_path: Path,
+    fixture_name: str,
+    projection_key: str,
+) -> None:
+    """Rust SQLite replay preserves Python-authored derived edge payloads."""
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / fixture_name
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    python_store = EngineSQLite(tmp_path)
+    python_store.ensure_initialized()
+    python_store.append_entity_event(
+        namespace="alpha",
+        event_id=f"python-{projection_key}",
+        entity_kind="edge",
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+    )
+
+    operation = _rebuild(
+        namespace="alpha",
+        consumer=f"{projection_key}-recovery",
+        projection_namespace="derived-edge-projection",
+        projection_key=projection_key,
+    )
+    first = _sqlite(python_store.db_path, operation)
+    reopened = _sqlite(python_store.db_path, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    entity_key = json.dumps(["edge", payload["id"]], separators=(",", ":"))
+    restored = json.loads(reopened["canonical_payload"])
+    recovered_entity = restored["entities"][entity_key]["entity"]
+    assert recovered_entity == payload
+    if fixture_name == "acl-edge-model-v1.json":
+        assert type(ACLEdge.model_validate(recovered_entity)) is ACLEdge
+    elif fixture_name == "conversation-edge-model-v1.json":
+        assert type(ConversationEdge.model_validate(recovered_entity)) is ConversationEdge
+
+
+@pytest.mark.parametrize(
+    ("fixture_name", "entity_kind"),
+    [
+        ("acl-node-model-v1.json", "node"),
+        ("conversation-create-start-node-v1.json", "node"),
+        ("workflow-run-node-model-v1.json", "node"),
+        ("workflow-checkpoint-node-model-v1.json", "node"),
+        ("workflow-completed-node-model-v1.json", "node"),
+        ("workflow-cancelled-node-model-v1.json", "node"),
+        ("workflow-failed-node-model-v1.json", "node"),
+        ("workflow-node-model-v1.json", "node"),
+        ("workflow-step-exec-node-model-v1.json", "node"),
+        ("llm-node-model-v1.json", "node"),
+        ("llm-node-extraction-model-v1.json", "node"),
+        ("llm-node-flattened-model-v1.json", "node"),
+        ("llm-node-assoc-flattened-model-v1.json", "node"),
+        ("acl-edge-model-v1.json", "edge"),
+        ("conversation-edge-model-v1.json", "edge"),
+        ("workflow-edge-model-v1.json", "edge"),
+        ("llm-edge-model-v1.json", "edge"),
+        ("llm-edge-flattened-model-v1.json", "edge"),
+        ("llm-edge-assoc-flattened-model-v1.json", "edge"),
+        ("workflow-runtime-edge-model-v1.json", "edge"),
+    ],
+)
+def test_postgres_rebuild_recovers_python_persisted_derived_entity(
+    sa_engine: Any,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    fixture_name: str,
+    entity_kind: str,
+) -> None:
+    """PostgreSQL event authority replays Python-derived graph payload in Rust."""
+    pytest.importorskip("sqlalchemy")
+    if pg_dsn is None or pg_schema is None or sa_engine is None:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / fixture_name
+        ).read_text(encoding="utf-8")
+    )
+    payload = fixture["payload"]
+    if fixture_name == "llm-node-model-v1.json":
+        payload = _python_persisted_llm_node_payload(payload)
+    namespace = f"derived-recovery-{uuid.uuid4().hex}"
+    python_store = EnginePostgresMetaStore(engine=sa_engine, schema=pg_schema)
+    python_store.ensure_initialized()
+    event_payload = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    python_store.append_entity_event(
+        namespace=namespace,
+        event_id=f"python-{uuid.uuid4().hex}",
+        entity_kind=entity_kind,
+        entity_id=payload["id"],
+        op="ADD",
+        payload_json=event_payload,
+    )
+
+    operation = _rebuild(
+        namespace=namespace,
+        consumer=f"consumer-{uuid.uuid4().hex}",
+        projection_namespace=f"projection-{uuid.uuid4().hex}",
+        projection_key="derived",
+    )
+    first = _postgres(pg_dsn, pg_schema, operation)
+    reopened = _postgres(pg_dsn, pg_schema, operation)
+
+    assert first["canonical_payload"] == reopened["canonical_payload"]
+    assert first["digest"] == reopened["digest"]
+    assert (
+        hashlib.sha256(first["canonical_payload"].encode("utf-8")).hexdigest()
+        == first["digest"]
+    )
+    restored = json.loads(reopened["canonical_payload"])
+    entity_key = json.dumps([entity_kind, payload["id"]], separators=(",", ":"))
+    recovered_entity = restored["entities"][entity_key]["entity"]
+    assert recovered_entity == payload
+    if fixture_name == "workflow-checkpoint-node-model-v1.json":
+        python_model = WorkflowCheckpointNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowCheckpointNode
+        assert (
+            python_model.model_dump(field_mode="backend", dump_format="json")
+            == payload
+        )
+    elif fixture_name == "workflow-completed-node-model-v1.json":
+        python_model = WorkflowCompletedNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowCompletedNode
+        assert (
+            python_model.model_dump(field_mode="backend", dump_format="json")
+            == payload
+        )
+    elif fixture_name == "workflow-cancelled-node-model-v1.json":
+        python_model = WorkflowCancelledNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowCancelledNode
+        assert (
+            python_model.model_dump(field_mode="backend", dump_format="json")
+            == payload
+        )
+    elif fixture_name == "workflow-failed-node-model-v1.json":
+        python_model = WorkflowFailedNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowFailedNode
+        assert (
+            python_model.model_dump(field_mode="backend", dump_format="json")
+            == payload
+        )
+    elif fixture_name == "workflow-node-model-v1.json":
+        python_model = WorkflowNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowNode
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "workflow-step-exec-node-model-v1.json":
+        python_model = WorkflowStepExecNode.model_validate(recovered_entity)
+        assert type(python_model) is WorkflowStepExecNode
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "acl-node-model-v1.json":
+        python_model = ACLNode.model_validate(recovered_entity)
+        assert type(python_model) is ACLNode
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "conversation-create-start-node-v1.json":
+        python_model = ConversationNode.model_validate(recovered_entity)
+        assert type(python_model) is ConversationNode
+        expected_model = ConversationNode.model_validate(payload)
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == (
+            expected_model.model_dump(field_mode="backend", dump_format="json")
+        )
+    elif fixture_name == "acl-edge-model-v1.json":
+        python_model = ACLEdge.model_validate(recovered_entity)
+        assert type(python_model) is ACLEdge
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "conversation-edge-model-v1.json":
+        python_model = ConversationEdge.model_validate(recovered_entity)
+        assert type(python_model) is ConversationEdge
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == payload
+    elif fixture_name == "llm-node-model-v1.json":
+        python_model = Node.model_validate(recovered_entity)
+        assert type(python_model) is Node
+        expected_model = Node.model_validate(payload)
+        assert python_model.model_dump(field_mode="backend", dump_format="json") == (
+            expected_model.model_dump(field_mode="backend", dump_format="json")
+        )
+
+
+def _assert_python_projection_recovery_over_rust_owned_store(
+    open_store: Callable[[], RustEngineSQLite],
+) -> None:
+    """Run the shared Python reducer over a Rust-owned durable metadata store."""
+
+    def decode_current(row: dict[str, Any]) -> ProjectionLoadResult[dict[str, int]]:
+        payload = dict(row["payload"])
+        checkpoint = ProjectionCheckpoint(
+            projection_id=str(payload["projection_id"]),
+            workspace_id=str(payload["workspace_id"]),
+            projection_schema_version=int(payload["projection_schema_version"]),
+            source_namespace=str(payload["source_namespace"]),
+            source_from_seq=int(payload["source_from_seq"]),
+            source_to_seq=int(payload["source_to_seq"]),
+            last_authoritative_seq=int(row["last_authoritative_seq"]),
+            last_materialized_seq=int(row["last_materialized_seq"]),
+            projected_at_ms=int(payload["projected_at_ms"]),
+            last_source_event_ts_ms=None,
+            snapshot_id=str(payload["snapshot_id"]),
+            raw_event_count=int(payload["raw_event_count"]),
+            materialization_status=str(row["materialization_status"]),
+            rebuild_reason=(
+                str(payload["rebuild_reason"])
+                if payload.get("rebuild_reason") is not None
+                else None
+            ),
+            processed_event_ids=tuple(str(value) for value in payload.get("processed_event_ids", [])),
+        )
+        return ProjectionLoadResult(
+            state={"total": int(payload["total"])},
+            checkpoint=checkpoint,
+            payload=payload,
+        )
+
+    def decode_event(payload_json: str) -> dict[str, int | str]:
+        value = json.loads(payload_json)
+        assert isinstance(value, dict)
+        return {"event_id": str(value["event_id"]), "delta": int(value["delta"])}
+
+    def build_payload(
+        state: dict[str, int],
+        checkpoint: ProjectionCheckpoint,
+        processed_event_ids: tuple[str, ...],
+    ) -> dict[str, Any]:
+        return {
+            "projection_id": checkpoint.projection_id,
+            "workspace_id": checkpoint.workspace_id,
+            "projection_schema_version": checkpoint.projection_schema_version,
+            "source_namespace": checkpoint.source_namespace,
+            "source_from_seq": checkpoint.source_from_seq,
+            "source_to_seq": checkpoint.source_to_seq,
+            "projected_at_ms": checkpoint.projected_at_ms,
+            "last_source_event_ts_ms": checkpoint.last_source_event_ts_ms,
+            "snapshot_id": checkpoint.snapshot_id,
+            "raw_event_count": checkpoint.raw_event_count,
+            "rebuild_reason": checkpoint.rebuild_reason,
+            "processed_event_ids": list(processed_event_ids),
+            "total": state["total"],
+        }
+
+    def refresh(store: RustEngineSQLite, *, rebuild_from_scratch: bool = False) -> dict[str, Any]:
+        return dict(
+            refresh_checkpointed_named_projection(
+                store,
+                namespace="projection",
+                key="counter",
+                projection_id="counter-v1",
+                workspace_id="workspace",
+                source_namespace="events",
+                projection_schema_version=1,
+                decode_current=decode_current,
+                create_state=lambda: {"total": 0},
+                decode_event=decode_event,
+                event_key=lambda event: str(event["event_id"]),
+                apply_event=lambda state, event, _seq: state.__setitem__(
+                    "total", state["total"] + int(event["delta"])
+                ),
+                build_payload=build_payload,
+                build_snapshot=lambda row: dict(row["payload"]),
+                rebuild_from_scratch=rebuild_from_scratch,
+            )
+        )
+
+    first = open_store()
+    first.ensure_initialized()
+    for event_id, delta in (("rust-1", 2), ("rust-2", 3)):
+        assert (
+            first.append_entity_event(
+                namespace="events",
+                event_id=event_id,
+                entity_kind="counter",
+                entity_id="total",
+                op="ADD",
+                payload_json=json.dumps({"event_id": event_id, "delta": delta}),
+            )
+            > 0
+        )
+    assert refresh(first, rebuild_from_scratch=True)["total"] == 5
+    first.close()
+
+    reopened = open_store()
+    reopened.ensure_initialized()
+    replayed = refresh(reopened, rebuild_from_scratch=True)
+    assert replayed["total"] == 5
+    assert replayed["source_to_seq"] == 2
+
+    assert (
+        reopened.append_entity_event(
+            namespace="events",
+            event_id="rust-3",
+            entity_kind="counter",
+            entity_id="total",
+            op="ADD",
+            payload_json=json.dumps({"event_id": "rust-3", "delta": 7}),
+        )
+        > 0
+    )
+    assert refresh(reopened)["total"] == 12
+    assert refresh(reopened)["total"] == 12
+    reopened.close()
+
+
+def test_python_projection_recovery_over_rust_owned_sqlite_store(tmp_path: Path) -> None:
+    _assert_python_projection_recovery_over_rust_owned_store(
+        lambda: RustEngineSQLite(tmp_path)
+    )
+
+
+def test_python_projection_recovery_over_rust_owned_postgres_store(
+    pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    if pg_dsn is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    _assert_python_projection_recovery_over_rust_owned_store(
+        lambda: RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+    )
 
 
 def test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop(

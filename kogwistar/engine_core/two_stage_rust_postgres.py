@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextlib import AbstractContextManager
 from typing import Protocol, cast
 
 from kogwistar.json_types import JsonObject, JsonValue
@@ -59,6 +60,8 @@ class _RustProjectionEngine(Protocol):
     embed: _RustEmbeddingHelper
     _ef: EmbeddingFunctionLike
 
+    def uow(self) -> AbstractContextManager[object | None]: ...
+
 
 def rust_postgres_two_stage_capability() -> TwoStageProjectionCapability:
     return TwoStageProjectionCapability(
@@ -98,6 +101,57 @@ class RustPostgresTwoStageProjectionAdapter:
         )
         return str(json.loads(payload).get("source_fingerprint") or "")
 
+    def stage1_query(self, **kwargs: object) -> list[dict[str, object]]:
+        """Expose current pending edge payloads for structural traversal."""
+        entity_kind = str(kwargs.get("entity_kind") or "node")
+        if entity_kind != "edge":
+            return []
+        raw_ids = kwargs.get("ids")
+        ids: list[JsonValue] | None = (
+            [cast(JsonValue, value) for value in raw_ids if isinstance(value, str)]
+            if isinstance(raw_ids, list)
+            else None
+        )
+        raw_limit = kwargs.get("limit", 200)
+        limit = raw_limit if isinstance(raw_limit, int) and raw_limit > 0 else 200
+        records = self.meta.graph_projection_records(
+            namespace=self._namespace(),
+            workspace_id=None,
+            graph_space=None,
+            table=self._table("edge"),
+            ids=ids,
+            metadata={},
+            limit=limit,
+        )
+        rows: list[dict[str, object]] = []
+        for record in records:
+            entity_id = record.get("id")
+            metadata = record.get("metadata")
+            document = record.get("document")
+            if (
+                not isinstance(entity_id, str)
+                or not isinstance(metadata, dict)
+                or metadata.get("_kogwistar_stage2_ready") is True
+                or not isinstance(document, str)
+            ):
+                continue
+            fingerprint = metadata.get("_kogwistar_source_fingerprint")
+            if not isinstance(fingerprint, str) or not fingerprint:
+                continue
+            rows.append(
+                {
+                    "key": f"edge:{entity_id}",
+                    "payload": {
+                        "id": entity_id,
+                        "entity_kind": "edge",
+                        "document": document,
+                        "metadata": metadata,
+                        "source_fingerprint": fingerprint,
+                    },
+                }
+            )
+        return rows
+
     def _upsert(
         self,
         *,
@@ -107,6 +161,10 @@ class RustPostgresTwoStageProjectionAdapter:
         metadata: JsonObject,
     ) -> None:
         metadata = dict(metadata or {})
+        metadata["_kogwistar_stage2_ready"] = False
+        metadata["_kogwistar_source_fingerprint"] = self._fingerprint(
+            entity_kind, entity.safe_get_id()
+        )
         # Admission runs inside the parent's native UoW. Do not re-read the
         # event stream here: the current event is already the authority and
         # the job captures its fingerprint after the admission transaction.
@@ -134,6 +192,73 @@ class RustPostgresTwoStageProjectionAdapter:
                 entity_kind=entity_kind, entity_id=entity_id
             ),
         )
+
+    def _clear_embedding_projection(
+        self,
+        *,
+        entity_kind: str,
+        entity_id: str,
+        only_if_inactive: bool = False,
+    ) -> None:
+        """Converge vector state without deleting canonical graph rows."""
+        with self.engine.uow():
+            records = self.meta.graph_projection_records(
+                namespace=self._namespace(),
+                workspace_id=None,
+                graph_space=None,
+                table=self._table(entity_kind),
+                ids=[entity_id],
+                metadata={},
+                limit=1,
+                for_update=True,
+            )
+            if not records:
+                return
+
+            current = self.engine.indexing.canonical_entity_revision(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            record = records[0]
+            if current is not None and current.state == "active":
+                if only_if_inactive:
+                    return
+                raw_metadata = record.get("metadata")
+                metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+                embedding = record.get("embedding")
+                current_fingerprint = self._fingerprint(entity_kind, entity_id)
+                projection_is_current = (
+                    metadata.get("_kogwistar_stage2_ready") is True
+                    and metadata.get("_kogwistar_source_fingerprint") == current_fingerprint
+                    and isinstance(embedding, Sequence)
+                    and not isinstance(embedding, (str, bytes))
+                    and len(embedding) > 0
+                )
+                if projection_is_current:
+                    return
+                # DELETE may have absorbed a later UPSERT while retaining its
+                # operation. Canonical active state wins; queue current work.
+                self.enqueue_embedding_job(
+                    entity_kind=entity_kind, entity_id=entity_id, op="UPSERT"
+                )
+                return
+
+            raw_metadata = record.get("metadata")
+            metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            metadata["_kogwistar_stage2_ready"] = False
+            metadata.pop("_kogwistar_source_fingerprint", None)
+            self.meta.upsert_graph_projection(
+                namespace=self._namespace(),
+                workspace_id=metadata.get("workspace_id"),
+                graph_space=metadata.get("graph_space"),
+                table=self._table(entity_kind),
+                record={
+                    "id": entity_id,
+                    "document": str(record.get("document") or ""),
+                    "metadata": metadata,
+                    "embedding": None,
+                },
+                embedding_dim=int(self.engine.backend.embedding_dim),
+            )
 
     def add_node(self, node: Node, *, doc_id: str | None = None) -> None:
         if doc_id is not None:
@@ -163,12 +288,21 @@ class RustPostgresTwoStageProjectionAdapter:
         if entity_kind not in {"node", "edge"}:
             raise ValueError(f"unsupported Stage-2 entity kind: {entity_kind!r}")
         if op.upper() == "DELETE":
+            self._clear_embedding_projection(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+            )
             return
         expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
         current = self.engine.indexing.canonical_entity_revision(
             entity_kind=entity_kind, entity_id=entity_id
         )
         if current is None or current.state != "active":
+            self._clear_embedding_projection(
+                entity_kind=entity_kind,
+                entity_id=entity_id,
+                only_if_inactive=True,
+            )
             return
         if expected and expected != self._fingerprint(entity_kind, entity_id):
             return
@@ -205,31 +339,60 @@ class RustPostgresTwoStageProjectionAdapter:
         embedding: list[float],
         expected: str,
     ) -> None:
-        raw_metadata = record.get("metadata")
-        metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
-        document = str(record.get("document") or "")
-        stored_fingerprint = metadata.get("_kogwistar_source_fingerprint")
-        if expected and stored_fingerprint and stored_fingerprint != expected:
-            return
-        metadata["_kogwistar_stage2_ready"] = True
-        metadata["_kogwistar_source_fingerprint"] = expected or self._fingerprint(
-            entity_kind, entity_id
-        )
-        # Native meta store joins this operation to the caller's Rust UoW when
-        # present, so vector promotion and the canonical event remain local.
-        self.meta.upsert_graph_projection(
-            namespace=self._namespace(),
-            workspace_id=metadata.get("workspace_id"),
-            graph_space=metadata.get("graph_space"),
-            table=self._table(entity_kind),
-            record=cast(JsonValue, {
-                "id": entity_id,
-                "document": document,
-                "metadata": metadata,
-                "embedding": normalize_embedding_vector(embedding, allow_none=False),
-            }),
-            embedding_dim=int(self.engine.backend.embedding_dim),
-        )
+        # Embedding runs before this point. Lock the projection row first, then
+        # revalidate its source revision and payload in the same native UoW as
+        # the promotion. This prevents a result that passed an earlier check
+        # from overwriting a newer graph mutation.
+        with self.engine.uow():
+            records = self.meta.graph_projection_records(
+                namespace=self._namespace(),
+                workspace_id=None,
+                graph_space=None,
+                table=self._table(entity_kind),
+                ids=[entity_id],
+                metadata={},
+                limit=1,
+                for_update=True,
+            )
+            if not records:
+                raise RuntimeError("current Rust graph projection is missing")
+            current_record = records[0]
+            if (
+                current_record.get("document") != record.get("document")
+                or current_record.get("metadata") != record.get("metadata")
+            ):
+                return
+
+            current = self.engine.indexing.canonical_entity_revision(
+                entity_kind=entity_kind, entity_id=entity_id
+            )
+            if current is None or current.state != "active":
+                return
+            current_fingerprint = self._fingerprint(entity_kind, entity_id)
+            if expected and expected != current_fingerprint:
+                return
+
+            raw_metadata = current_record.get("metadata")
+            metadata = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
+            stored_fingerprint = metadata.get("_kogwistar_source_fingerprint")
+            if expected and stored_fingerprint and stored_fingerprint != expected:
+                return
+            document = str(current_record.get("document") or "")
+            metadata["_kogwistar_stage2_ready"] = True
+            metadata["_kogwistar_source_fingerprint"] = current_fingerprint
+            self.meta.upsert_graph_projection(
+                namespace=self._namespace(),
+                workspace_id=metadata.get("workspace_id"),
+                graph_space=metadata.get("graph_space"),
+                table=self._table(entity_kind),
+                record=cast(JsonValue, {
+                    "id": entity_id,
+                    "document": document,
+                    "metadata": metadata,
+                    "embedding": normalize_embedding_vector(embedding, allow_none=False),
+                }),
+                embedding_dim=int(self.engine.backend.embedding_dim),
+            )
 
     def apply_embedding_jobs_batch(
         self, jobs: Sequence[object]
@@ -252,6 +415,10 @@ class RustPostgresTwoStageProjectionAdapter:
                     str(payload_value) if payload_value is not None else None
                 )
                 if op.upper() == "DELETE":
+                    self._clear_embedding_projection(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                    )
                     outcomes[job_id] = None
                     continue
                 expected = str(json.loads(payload_json or "{}").get("source_fingerprint") or "")
@@ -259,6 +426,11 @@ class RustPostgresTwoStageProjectionAdapter:
                     entity_kind=entity_kind, entity_id=entity_id
                 )
                 if current is None or current.state != "active":
+                    self._clear_embedding_projection(
+                        entity_kind=entity_kind,
+                        entity_id=entity_id,
+                        only_if_inactive=True,
+                    )
                     outcomes[job_id] = None
                     continue
                 if expected and expected != self._fingerprint(entity_kind, entity_id):

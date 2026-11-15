@@ -1,13 +1,34 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+from kogwistar.acl.models import ACLEdge, ACLNode
+from kogwistar.conversation.models import ConversationEdge, ConversationNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
-from kogwistar.engine_core.models import Grounding, Node, Span
+from kogwistar.engine_core.models import (
+    AssocFlattenedLLMEdge,
+    AssocFlattenedLLMNode,
+    Edge,
+    EdgeMixin,
+    FlattenedLLMEdge,
+    FlattenedLLMNode,
+    Grounding,
+    LLMEdge,
+    LLMNode,
+    Node,
+    PureChromaEdge,
+    PureChromaNode,
+    Span,
+)
+from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.utils.refs import backend_update_record_lifecycle
+from kogwistar.runtime.models import WorkflowEdge, WorkflowNode
 from tests._helpers.fake_backend import build_fake_backend
+from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
 
 pytestmark = pytest.mark.regression
 
@@ -34,6 +55,269 @@ class _CountingEmbeddingFunction:
                 "metadata-only lifecycle update tried to recompute an embedding"
             )
         return [[0.1, 0.2, 0.3] for _ in input]
+
+
+def test_edge_model_shares_tombstone_and_level_metadata_contract() -> None:
+    edge = build_relationship_edge(
+        edge_id="edge-contract",
+        src="source",
+        tgt="target",
+        doc_id="doc:edge-contract",
+        metadata={"level_from_root": 2},
+    )
+
+    assert edge.metadata["lifecycle_status"] == "active"
+    assert edge.metadata["redirect_to_id"] is None
+    assert edge.level_from_root == 2
+
+    explicit_level = Edge.model_validate(
+        {
+            **edge.model_dump(field_mode="backend", dump_format="json"),
+            "level_from_root": 3,
+        }
+    )
+    assert explicit_level.level_from_root == 3
+    assert explicit_level.metadata["level_from_root"] == 3
+
+    negative_level = Edge.model_validate(
+        {
+            **edge.model_dump(field_mode="backend", dump_format="json"),
+            "level_from_root": -1,
+        }
+    )
+    assert negative_level.level_from_root == -1
+    assert negative_level.metadata["level_from_root"] == -1
+
+    explicit_null_level = Edge.model_validate(
+        {
+            **edge.model_dump(field_mode="backend", dump_format="json"),
+            "level_from_root": None,
+            "metadata": {**edge.metadata, "level_from_root": 2},
+        }
+    )
+    assert explicit_null_level.level_from_root is None
+    assert explicit_null_level.metadata["level_from_root"] == 2
+
+    for raw_level, expected in [("2", 2), (True, 1), (2.0, 2)]:
+        payload = edge.model_dump(field_mode="backend", dump_format="json")
+        payload.pop("level_from_root")
+        payload["metadata"]["level_from_root"] = raw_level
+        coerced_level = Edge.model_validate(payload)
+        assert coerced_level.level_from_root == expected
+        assert coerced_level.metadata["level_from_root"] == expected
+
+    invalid_level = edge.model_dump(field_mode="backend", dump_format="json")
+    invalid_level.pop("level_from_root")
+    invalid_level["metadata"]["level_from_root"] = 2.5
+    with pytest.raises(ValidationError, match="valid integer"):
+        Edge.model_validate(invalid_level)
+
+    validated = Edge.model_validate(
+        {
+            **edge.model_dump(field_mode="backend", dump_format="json"),
+            "metadata": {"lifecycle_status": "deleted"},
+        }
+    )
+    assert validated.metadata["lifecycle_status"] == "tombstoned"
+    assert validated.metadata["redirect_to_id"] is None
+    with pytest.raises(ValidationError, match="lifecycle_status"):
+        Edge.model_validate(
+            {
+                **edge.model_dump(field_mode="backend", dump_format="json"),
+                "metadata": {"lifecycle_status": "purged"},
+            }
+        )
+
+
+def test_edge_model_extends_node_mixin_contract() -> None:
+    node_mixins = {base for base in Node.__mro__ if base.__name__.endswith("Mixin")}
+    edge_mixins = {base for base in Edge.__mro__ if base.__name__.endswith("Mixin")}
+
+    assert node_mixins <= edge_mixins
+    assert EdgeMixin in edge_mixins
+    assert len(edge_mixins) > len(node_mixins)
+
+
+@pytest.mark.parametrize(
+    ("node_type", "edge_type"),
+    [
+        (Node, Edge),
+        (LLMNode, LLMEdge),
+        (FlattenedLLMNode, FlattenedLLMEdge),
+        (AssocFlattenedLLMNode, AssocFlattenedLLMEdge),
+        (PureChromaNode, PureChromaEdge),
+        (ACLNode, ACLEdge),
+        (ConversationNode, ConversationEdge),
+        (WorkflowNode, WorkflowEdge),
+    ],
+)
+def test_each_node_edge_family_preserves_shared_mixin_contract(
+    node_type: type[object], edge_type: type[object]
+) -> None:
+    """Edges retain shared graph capabilities but may omit node-only semantics."""
+    node_only_mixins = {"ConversationRoleMixin"}
+    node_mixins = {
+        base.__name__
+        for base in node_type.__mro__
+        if base.__name__.endswith("Mixin")
+    }
+    edge_mixins = {
+        base.__name__
+        for base in edge_type.__mro__
+        if base.__name__.endswith("Mixin")
+    }
+
+    assert (node_mixins - node_only_mixins) <= edge_mixins
+    assert "EdgeMixin" in edge_mixins
+    assert edge_mixins > (node_mixins - node_only_mixins)
+
+
+def test_python_edge_reads_follow_redirect_chain(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path), backend_factory=build_fake_backend
+    )
+    try:
+        old_edge = build_relationship_edge(
+            edge_id="redirect-edge-old",
+            src="redirect-source",
+            tgt="redirect-target",
+            doc_id="doc:redirect-edge",
+        )
+        current_edge = build_relationship_edge(
+            edge_id="redirect-edge-current",
+            src="redirect-source",
+            tgt="redirect-target",
+            doc_id="doc:redirect-edge",
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="redirect-source", doc_id="doc:redirect-edge")
+        )
+        engine.write.add_node(
+            build_entity_node(node_id="redirect-target", doc_id="doc:redirect-edge")
+        )
+        engine.write.add_edge(old_edge)
+        engine.write.add_edge(current_edge)
+
+        assert engine.lifecycle.redirect_edge(old_edge.id, current_edge.id)
+        resolved = engine.read.get_edges(ids=[old_edge.id], resolve_mode="redirect")
+
+        assert [edge.id for edge in resolved] == [current_edge.id]
+    finally:
+        engine.close()
+
+
+def test_semantic_queries_filter_tombstones_from_stale_projections(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        backend_factory=build_fake_backend,
+        embedding_function=_CountingEmbeddingFunction(),
+    )
+    node = Node(
+        id="query-node-tombstone",
+        label="query node",
+        type="entity",
+        summary="query node",
+        mentions=[Grounding(spans=[Span.from_dummy_for_document()])],
+        doc_id="doc:query",
+        metadata={},
+        embedding=[1.0, 0.0, 0.0],
+    )
+    edge = build_relationship_edge(
+        edge_id="query-edge-tombstone",
+        src="query-edge-source",
+        tgt="query-edge-target",
+        doc_id="doc:query",
+        metadata={},
+        embedding=[1.0, 0.0, 0.0],
+    )
+
+    engine.write.add_node(node)
+    engine.write.add_node(
+        build_entity_node(
+            node_id="query-edge-source",
+            doc_id="doc:query",
+            embedding=[0.0, 1.0, 0.0],
+        )
+    )
+    engine.write.add_node(
+        build_entity_node(
+            node_id="query-edge-target",
+            doc_id="doc:query",
+            embedding=[0.0, 0.0, 1.0],
+        )
+    )
+    engine.write.add_edge(edge)
+    assert engine.lifecycle.tombstone_node(node.id)
+    assert engine.lifecycle.tombstone_edge(edge.id)
+    assert engine.read.get_nodes(ids=[node.id]) == []
+    assert engine.read.get_edges(ids=[edge.id]) == []
+    node = engine.read.get_nodes(ids=[node.id], resolve_mode="include_tombstones")[0]
+    edge = engine.read.get_edges(ids=[edge.id], resolve_mode="include_tombstones")[0]
+    assert node.metadata["lifecycle_status"] == "tombstoned"
+    assert edge.metadata["lifecycle_status"] == "tombstoned"
+
+    def query_result(item: Node | Edge) -> dict[str, object]:
+        return {
+            "ids": [[item.id]],
+            "documents": [
+                [json.dumps(item.model_dump(field_mode="backend", dump_format="json"))]
+            ],
+            "embeddings": [[[1.0, 0.0, 0.0]]],
+            "metadatas": [[item.metadata]],
+        }
+
+    query_kwargs: dict[str, dict[str, object]] = {}
+
+    def node_query(**kwargs: object) -> dict[str, object]:
+        query_kwargs["node"] = kwargs
+        return query_result(node)
+
+    def edge_query(**kwargs: object) -> dict[str, object]:
+        query_kwargs["edge"] = kwargs
+        return query_result(edge)
+
+    monkeypatch.setattr(engine.backend, "node_query", node_query)
+    monkeypatch.setattr(engine.backend, "edge_query", edge_query)
+    try:
+        assert engine.read.query_nodes(query_embeddings=[[1.0, 0.0, 0.0]]) == [[]]
+        assert engine.read.query_edges(query_embeddings=[[1.0, 0.0, 0.0]]) == [[]]
+        for kind in ("node", "edge"):
+            where = query_kwargs[kind]["where"]
+            assert isinstance(where, dict)
+            assert where["$and"] == [
+                {"lifecycle_status": {"$ne": "tombstoned"}},
+                {"lifecycle_status": {"$ne": "deleted"}},
+            ]
+    finally:
+        engine.close()
+
+
+@pytest.mark.ci_full
+def test_chroma_active_lifecycle_filter_keeps_legacy_missing_status(tmp_path) -> None:
+    chromadb = pytest.importorskip("chromadb")
+    client = chromadb.PersistentClient(path=str(tmp_path / "chroma-lifecycle"))
+    collection = client.create_collection("lifecycle-filter-contract")
+    collection.add(
+        ids=["legacy-missing", "active", "tombstoned", "legacy-deleted"],
+        embeddings=[[1.0, 0.0]] * 4,
+        metadatas=[
+            {"kind": "node"},
+            {"kind": "node", "lifecycle_status": "active"},
+            {"kind": "node", "lifecycle_status": "tombstoned"},
+            {"kind": "node", "lifecycle_status": "deleted"},
+        ],
+    )
+    where = ReadSubsystem._active_lifecycle_vector_filter({})["where"]
+
+    result = collection.query(
+        query_embeddings=[[1.0, 0.0]],
+        n_results=4,
+        where=where,
+    )
+
+    assert set(result["ids"][0]) == {"legacy-missing", "active"}
 
 
 @pytest.mark.ci_full

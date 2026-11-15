@@ -163,7 +163,25 @@ def test_environment_exports_global_and_coarse_capability_modes(tmp_path: Path) 
     env = runner._environment(tmp_path, "shadow", modes)
 
     assert env["KOGWISTAR_IMPL_MODE"] == "shadow"
+    assert env["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] == "python"
     assert {key: env[key] for key in modes} == modes
+
+
+def test_environment_derives_rust_postgres_authority_only_for_aligned_stores(
+    tmp_path: Path,
+) -> None:
+    runner = _runner()
+    modes = {
+        "KOGWISTAR_IMPL_CONTRACTS": "rust",
+        "KOGWISTAR_IMPL_META_STORE": "rust",
+        "KOGWISTAR_IMPL_GRAPH_STORE": "rust",
+        "KOGWISTAR_IMPL_RUNTIME": "python",
+        "KOGWISTAR_IMPL_SERVER": "python",
+    }
+
+    env = runner._environment(tmp_path, "rust", modes)
+
+    assert env["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"] == "rust"
 
 
 def test_server_override_rejects_shadow() -> None:
