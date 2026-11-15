@@ -50,7 +50,8 @@ not a claim of complete parser or backend parity:
 | Mixed | Windows CPython 3.14.6; Python parser/runtime with Rust SQLite metadata authority | Fake-backend ingestion passed; a separate deterministic Chroma smoke completed. This does not verify Rust graph authority. |
 | Rust-native graph | Windows CPython 3.14.3 consumer; Rust HTTP service; PostgreSQL/pgvector 16 | One deterministic source produced one canonical node, then Rust visualization read it back. No multi-node/edge, live LLM, or vector-inference parity claim. |
 
-The 0.6.16 release note describes an unpublished candidate and its PyPy
+The 0.6.17 release note describes an unpublished candidate and its PyPy
 dependency-marker changes. Do not treat that candidate as a PyPI installation
 result until the release workflow publishes it and a clean PyPy 3.11.13/7.3.20
 install/import check passes. Current published PyPI evidence remains 0.6.15.
+
