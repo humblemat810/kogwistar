@@ -48,6 +48,46 @@ impl SqliteUnitOfWork<'_> {
         Ok(latest)
     }
 
+    /// Read one stable keyset page of current canonical entity events.
+    pub fn latest_entity_events_page(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        after_entity_id: Option<&str>,
+        limit: usize,
+    ) -> SqliteStoreResult<Vec<RawEntityEvent>> {
+        if namespace.trim().is_empty() {
+            return Err(SqliteStoreError::EmptyNamespace);
+        }
+        if entity_kind.trim().is_empty() {
+            return Err(StoreError::InvalidIdentifier {
+                identifier: "entity_kind",
+            }
+            .into());
+        }
+        if limit == 0 || limit > 10_000 {
+            return Err(SqliteStoreError::TransactionAborted(
+                "latest event page limit must be between 1 and 10000".to_owned(),
+            ));
+        }
+
+        let mut statement = self.transaction.prepare(
+            "SELECT e.namespace,e.seq,e.event_id,e.entity_kind,e.entity_id,e.op,e.payload_json,e.created_at \
+             FROM entity_events e JOIN ( \
+               SELECT entity_id,MAX(seq) AS seq FROM entity_events \
+               WHERE namespace=?1 AND entity_kind=?2 AND (?3 IS NULL OR entity_id>?3) \
+               GROUP BY entity_id ORDER BY entity_id LIMIT ?4 \
+             ) latest ON e.namespace=?1 AND e.entity_kind=?2 \
+               AND e.entity_id=latest.entity_id AND e.seq=latest.seq \
+             ORDER BY e.entity_id",
+        )?;
+        let rows = statement.query_map(
+            rusqlite::params![namespace, entity_kind, after_entity_id, limit as i64],
+            raw_event_from_row,
+        )?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
     /// Read current entity events whose canonical payload contains a metadata
     /// field value. The lookup is transaction-scoped and never consults a
     /// derived graph/vector projection.

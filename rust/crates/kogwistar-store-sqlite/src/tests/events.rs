@@ -80,6 +80,56 @@ fn latest_entity_events_are_batched_and_scoped_by_namespace_and_kind() {
 }
 
 #[test]
+fn latest_entity_events_page_is_keyset_ordered_and_returns_current_revisions() {
+    let (store, path) = store("latest-entity-events-page");
+    for (namespace, kind, id, event_id, op, revision) in [
+        ("scope", "node", "n2", "n2-v1", "ADD", 1),
+        ("scope", "node", "n1", "n1-v1", "ADD", 1),
+        ("scope", "node", "n1", "n1-v2", "REPLACE", 2),
+        ("scope", "edge", "e1", "e1-v1", "ADD", 1),
+        ("other", "node", "n0", "other-v1", "ADD", 1),
+    ] {
+        store
+            .append_raw_entity_event(
+                namespace,
+                NewRawEntityEvent {
+                    event_id: event_id.to_owned(),
+                    entity_kind: kind.to_owned(),
+                    entity_id: id.to_owned(),
+                    op: op.to_owned(),
+                    payload_json: serde_json::json!({"revision": revision}).to_string(),
+                },
+            )
+            .unwrap();
+    }
+
+    store
+        .immediate_transaction(|uow| {
+            let first = uow.latest_entity_events_page("scope", "node", None, 1)?;
+            assert_eq!(first.len(), 1);
+            assert_eq!(first[0].entity_id, "n1");
+            assert_eq!(first[0].event_id, "n1-v2");
+            let second = uow.latest_entity_events_page("scope", "node", Some("n1"), 1)?;
+            assert_eq!(second.len(), 1);
+            assert_eq!(second[0].entity_id, "n2");
+            assert_eq!(second[0].event_id, "n2-v1");
+            assert!(
+                uow.latest_entity_events_page("scope", "node", Some("n2"), 1)?
+                    .is_empty()
+            );
+            assert!(
+                uow.latest_entity_events_page("scope", "node", None, 0)
+                    .is_err()
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store
