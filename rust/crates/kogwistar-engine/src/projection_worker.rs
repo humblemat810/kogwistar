@@ -280,12 +280,14 @@ where
     run_graph_projection_jobs_once_inner(
         queue,
         graph,
-        limit,
-        lease_seconds,
-        namespace,
-        None,
-        false,
-        false,
+        ProjectionWorkerOptions {
+            limit,
+            lease_seconds,
+            namespace,
+            claim_filter: None,
+            measure_stages: false,
+            measure_transfer: false,
+        },
         move |jobs| {
             let calls = jobs
                 .into_iter()
@@ -326,12 +328,14 @@ where
     run_graph_projection_jobs_once_inner(
         queue,
         graph,
-        limit,
-        lease_seconds,
-        namespace,
-        None,
-        false,
-        false,
+        ProjectionWorkerOptions {
+            limit,
+            lease_seconds,
+            namespace,
+            claim_filter: None,
+            measure_stages: false,
+            measure_transfer: false,
+        },
         move |jobs| {
             let calls = jobs
                 .into_iter()
@@ -373,12 +377,14 @@ where
     run_graph_projection_jobs_once_inner(
         queue,
         graph,
-        limit,
-        lease_seconds,
-        namespace,
-        None,
-        false,
-        false,
+        ProjectionWorkerOptions {
+            limit,
+            lease_seconds,
+            namespace,
+            claim_filter: None,
+            measure_stages: false,
+            measure_transfer: false,
+        },
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -454,12 +460,14 @@ where
     run_graph_projection_jobs_once_inner(
         queue,
         graph,
-        limit,
-        lease_seconds,
-        None,
-        Some(filter),
-        false,
-        false,
+        ProjectionWorkerOptions {
+            limit,
+            lease_seconds,
+            namespace: None,
+            claim_filter: Some(filter),
+            measure_stages: false,
+            measure_transfer: false,
+        },
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -491,12 +499,14 @@ where
     run_graph_projection_jobs_once_inner(
         queue,
         graph,
-        limit,
-        lease_seconds,
-        namespace,
-        None,
-        true,
-        false,
+        ProjectionWorkerOptions {
+            limit,
+            lease_seconds,
+            namespace,
+            claim_filter: None,
+            measure_stages: true,
+            measure_transfer: false,
+        },
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -529,12 +539,14 @@ where
         run_graph_projection_jobs_once_inner(
             queue,
             graph,
-            limit,
-            lease_seconds,
-            namespace,
-            None,
-            true,
-            true,
+            ProjectionWorkerOptions {
+                limit,
+                lease_seconds,
+                namespace,
+                claim_filter: None,
+                measure_stages: true,
+                measure_transfer: true,
+            },
             move |jobs| {
                 let inputs = jobs
                     .iter()
@@ -577,12 +589,14 @@ where
     run_graph_projection_jobs_once_inner(
         queue,
         graph,
-        limit,
-        lease_seconds,
-        None,
-        Some(filter),
-        true,
-        false,
+        ProjectionWorkerOptions {
+            limit,
+            lease_seconds,
+            namespace: None,
+            claim_filter: Some(filter),
+            measure_stages: true,
+            measure_transfer: false,
+        },
         move |jobs| {
             let inputs = jobs
                 .iter()
@@ -595,15 +609,19 @@ where
     .map(|(summary, timing, _)| (summary, timing))
 }
 
-async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
-    queue: &Q,
-    graph: &G,
+struct ProjectionWorkerOptions<'a> {
     limit: usize,
     lease_seconds: i64,
-    namespace: Option<&str>,
+    namespace: Option<&'a str>,
     claim_filter: Option<IndexJobClaimFilter>,
     measure_stages: bool,
     measure_transfer: bool,
+}
+
+async fn run_graph_projection_jobs_once_inner<Q, G, F, Fut>(
+    queue: &Q,
+    graph: &G,
+    options: ProjectionWorkerOptions<'_>,
     mut provider: F,
 ) -> StoreResult<(ProjectionWorkerSummary, ProjectionWorkerTiming, u128)>
 where
@@ -612,6 +630,14 @@ where
     F: FnMut(Vec<IndexJob>) -> Fut,
     Fut: Future<Output = StoreResult<Vec<(String, StoreResult<GraphRecord>)>>>,
 {
+    let ProjectionWorkerOptions {
+        limit,
+        lease_seconds,
+        namespace,
+        claim_filter,
+        measure_stages,
+        measure_transfer,
+    } = options;
     let mut timing = ProjectionWorkerTiming::default();
     let mut worker_transfer_elapsed_ns = 0;
     let jobs = measure_worker_transfer(measure_transfer, &mut worker_transfer_elapsed_ns, async {
