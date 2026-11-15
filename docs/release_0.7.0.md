@@ -1,4 +1,15 @@
-# Kogwistar 0.6.17
+# Kogwistar 0.7.0
+
+## Dual-language runtime and graph capabilities
+
+- Add the Rust-native runtime, graph API, and storage paths while retaining
+  Python-authority and mixed Python/Rust execution modes.
+- Define cross-language contracts and parity fixtures for graph models,
+  workflow/runtime behavior, persistence, MCP/HTTP operations, and tracing.
+- Add backend coverage for in-memory, SQLite-backed projections, Chroma vector
+  projection, and PostgreSQL/pgvector, with backend-specific durability rules.
+- Add benchmark and verification tooling for native, Python, and mixed-stack
+  execution paths.
 
 ## PyPy 3.11 package compatibility
 
