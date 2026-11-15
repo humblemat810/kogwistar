@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from contextlib import closing
 import hashlib
 import hmac
 import json
@@ -768,7 +769,9 @@ def test_python_stage1_is_promoted_by_rust_native_worker(
         def all_projection_jobs_done() -> bool:
             database_uri = (data_path / "meta.sqlite").resolve().as_uri() + "?mode=ro"
             try:
-                with sqlite3.connect(database_uri, uri=True, timeout=0.2) as connection:
+                with closing(
+                    sqlite3.connect(database_uri, uri=True, timeout=0.2)
+                ) as connection:
                     rows = connection.execute(
                         "SELECT entity_id, status FROM index_jobs "
                         "WHERE namespace = ? AND entity_id IN (?, ?, ?)",
