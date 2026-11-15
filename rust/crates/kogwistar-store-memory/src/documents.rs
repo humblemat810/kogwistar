@@ -952,6 +952,64 @@ mod tests {
     }
 
     #[test]
+    fn rollback_revisits_earlier_sorted_edges_after_upstream_tombstone() {
+        let store = InMemoryStore::new();
+        let graph_scope = GraphScope {
+            namespace: "rollback-edge-cascade".to_owned(),
+            workspace_id: Some("tenant-a".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let mut node = parity_fixture("node");
+        node["mentions"][0]["spans"][0]["doc_id"] = Value::String("doc-remove".to_owned());
+        let mut upstream = parity_fixture("edge");
+        upstream["id"] = Value::String("z-upstream".to_owned());
+        upstream["source_ids"] = serde_json::json!(["node-old"]);
+        upstream["target_ids"] = serde_json::json!(["external:target"]);
+        upstream["mentions"] = serde_json::json!([]);
+        let mut downstream = parity_fixture("edge");
+        downstream["id"] = Value::String("a-downstream".to_owned());
+        downstream["source_ids"] = serde_json::json!([]);
+        downstream["target_ids"] = serde_json::json!(["external:target"]);
+        downstream["source_edge_ids"] = serde_json::json!(["z-upstream"]);
+        downstream["mentions"] = serde_json::json!([]);
+
+        for (kind, id, payload) in [
+            ("node", "node-old", node),
+            ("edge", "a-downstream", downstream),
+            ("edge", "z-upstream", upstream),
+        ] {
+            block_on(store.apply_graph_mutation(graph_mutation(&graph_scope, kind, id, payload)))
+                .expect("seed graph entity");
+        }
+
+        let result = block_on(store.rollback_document(DocumentRollbackRequest {
+            scope: graph_scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-edge-cascade-1".to_owned(),
+            deleted_at: "2026-11-16T00:00:00Z".to_owned(),
+            page_size: 1,
+        }))
+        .expect("edge cascade converges");
+        assert!(result.removed_edge_ids.contains("z-upstream"));
+        assert!(result.removed_edge_ids.contains("a-downstream"));
+        assert!(result.edge_passes >= 2);
+
+        let records = block_on(store.graph_projection_records(GraphProjectionRead {
+            scope: graph_scope,
+            table: "gke_edges".to_owned(),
+            ids: Some(vec!["a-downstream".to_owned(), "z-upstream".to_owned()]),
+            metadata: MetadataFilter::default(),
+            limit: 10,
+        }))
+        .expect("read cascaded edges");
+        assert!(
+            records
+                .iter()
+                .all(|record| { record.metadata["lifecycle_status"] == "tombstoned" })
+        );
+    }
+
+    #[test]
     fn invalid_document_projection_does_not_create_scope_state() {
         let store = InMemoryStore::new();
         let mut invalid = write(scope("docs-invalid", None), "bad", "bad");
