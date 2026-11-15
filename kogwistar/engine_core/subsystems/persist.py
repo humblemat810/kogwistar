@@ -1087,6 +1087,11 @@ class PersistSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     elif op in ("TOMBSTONE", "DELETE"):
                         self._e.lifecycle.tombstone_edge(str(eid))
 
+                elif ek == "document" and op in ("TOMBSTONE", "DELETE"):
+                    run_awaitable_blocking(
+                        self._e.backend.document_delete(ids=[str(eid)])
+                    )
+
                 elif ek == "search_index":
                     if op == "search_index.upsert":
                         from ..search_index.models import IndexingItem

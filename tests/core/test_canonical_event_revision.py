@@ -95,6 +95,41 @@ def test_canonical_revision_tombstone_is_deleted() -> None:
     assert revision.is_deleted
 
 
+@pytest.mark.parametrize("op", ["TOMBSTONE", "DELETE"])
+def test_replay_removes_tombstoned_source_document_projection(tmp_path, op) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path),
+        embedding_function=FakeEmbeddingFunction(dim=3),
+        backend_factory=build_fake_backend,
+    )
+    engine.backend.document_upsert(
+        ids=["source-row"],
+        documents=["source text"],
+        metadatas=[{"doc_id": "source-doc"}],
+    )
+    engine.metadata.append_entity_event(
+        namespace=engine.namespace,
+        event_id=f"source-document-{op.lower()}",
+        entity_kind="document",
+        entity_id="source-row",
+        op=op,
+        payload_json=json.dumps({"doc_id": "source-doc"}),
+    )
+
+    replayed_through = engine.replay_namespace(
+        namespace=engine.namespace,
+        apply_indexes=False,
+    )
+
+    assert replayed_through == 1
+    assert engine.backend.document_get(ids=["source-row"]) == {
+        "ids": [],
+        "documents": [],
+        "metadatas": [],
+        "embeddings": [],
+    }
+
+
 @pytest.mark.parametrize(
     "events, match",
     [
