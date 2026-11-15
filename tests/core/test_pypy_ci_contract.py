@@ -380,11 +380,23 @@ def test_pypi_release_artifact_audit_requires_pypy_wheel_and_native_matrix(
 def test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    assert "Set up PyPy 3.11 for mixed-worker interoperability" in workflow
-    assert "Verify PyPy worker with Rust-native server execution" in workflow
+    assert "rust-python-interop:" in workflow
+    assert "label: pypy311" in workflow
+    assert "python-version: pypy-3.11-v7.3.20" in workflow
+    assert "Install PyPy interoperability dependencies" in workflow
+    assert "Verify mixed-worker backend matrix" in workflow
     assert "tests/runtime/test_rust_runtime_authority.py" in workflow
     assert (
-        '-k "python_worker_and_rust_native_step_interoperate_over_real_server"'
-    ) in workflow
-    assert 'report="$RUNNER_TEMP/pypy-rust-worker-interop.xml"' in workflow
-    assert "if tests != 3 or skipped:" in workflow
+        "test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]"
+        in workflow
+    )
+    assert (
+        "test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]"
+        in workflow
+    )
+    assert (
+        "test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]"
+        in workflow
+    )
+    assert 'report="$RUNNER_TEMP/${{ matrix.label }}-worker-interop.xml"' in workflow
+    assert "if tests != 3 or skipped or failures or errors:" in workflow

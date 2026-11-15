@@ -241,6 +241,7 @@ jobs:
 
   rust:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
+    needs: rust-interop-server
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -304,8 +305,14 @@ jobs:
           docker ps -a
           exit 1
 
-      - name: Build Rust API server for PostgreSQL integration tests
-        run: cargo build -p kogwistar-api --bin kogwistar-server --locked
+      - name: Download Rust API server
+        uses: actions/download-artifact@v4
+        with:
+          name: kogwistar-server-linux
+          path: rust/target/debug
+
+      - name: Make Rust API server executable
+        run: chmod +x target/debug/kogwistar-server
 
       - name: Test Rust workspace
         env:
@@ -316,209 +323,6 @@ jobs:
           --skip runtime_serving_lookup_scale_probe
           --skip postgres_queue_projects_to_chroma_without_cross_store_transaction
           --skip python_mcp_sdk_receives_rust_server_initiated_notification
-
-      - name: Set up Python for live Chroma interoperability
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.13"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: Install live Chroma interoperability dependencies
-        working-directory: .
-        run: python -m pip install -e ".[test,server,chroma,pgvector]"
-
-      - name: Verify CPython 3.13 mixed-worker backend matrix
-        working-directory: .
-        shell: bash
-        env:
-          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
-          KOGWISTAR_IMPL_MODE: python
-          ANONYMIZED_TELEMETRY: "FALSE"
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/cpython313-worker-interop.xml"
-          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]' \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]' \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]'
-          python - "$report" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
-          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
-          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
-          if tests != 3 or skipped or failures or errors:
-              raise SystemExit(
-                  f"CPython 3.13 mixed-worker backend matrix incomplete: "
-                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
-              )
-          PY
-
-      - name: Set up CPython 3.12 for mixed-worker interoperability
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: Install CPython 3.12 interoperability dependencies
-        working-directory: .
-        run: python -m pip install -e ".[test,server,chroma,pgvector]"
-
-      - name: Verify CPython 3.12 mixed-worker backend matrix
-        working-directory: .
-        shell: bash
-        env:
-          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
-          KOGWISTAR_IMPL_MODE: python
-          ANONYMIZED_TELEMETRY: "FALSE"
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/cpython312-worker-interop.xml"
-          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]' \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]' \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]'
-          python - "$report" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
-          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
-          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
-          if tests != 3 or skipped or failures or errors:
-              raise SystemExit(
-                  f"CPython 3.12 mixed-worker backend matrix incomplete: "
-                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
-              )
-          PY
-
-      - name: Set up CPython 3.14 for mixed-worker interoperability
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.14"
-          cache: pip
-          cache-dependency-path: pyproject.toml
-
-      - name: Install CPython 3.14 interoperability dependencies
-        working-directory: .
-        run: python -m pip install -e ".[test,server,chroma,pgvector]"
-
-      - name: Verify CPython 3.14 mixed-worker backend matrix
-        working-directory: .
-        shell: bash
-        env:
-          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
-          KOGWISTAR_IMPL_MODE: python
-          ANONYMIZED_TELEMETRY: "FALSE"
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/cpython314-worker-interop.xml"
-          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]' \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]' \
-            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]'
-          python - "$report" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
-          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
-          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
-          if tests != 3 or skipped or failures or errors:
-              raise SystemExit(
-                  f"CPython 3.14 mixed-worker backend matrix incomplete: "
-                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
-              )
-          PY
-
-      - name: Verify PostgreSQL facade and transaction ownership contracts
-        working-directory: .
-        env:
-          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
-          KOGWISTAR_TEST_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
-          ANONYMIZED_TELEMETRY: "FALSE"
-          KOGWISTAR_LOG_LEVEL: "WARNING"
-        run: |
-          python -m pytest tests/core/test_rust_postgres_session_facade.py \
-            -m "ci and core" -q -p no:cacheprovider
-          python -m pytest \
-            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_session_commit_rollback_and_fail_closed \
-            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_session_reconnects_after_backend_termination \
-            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_sessions_are_isolated_by_schema \
-            -m ci_full -q -p no:cacheprovider
-
-      - name: Verify sequential Python-Rust backend handoffs
-        working-directory: .
-        shell: bash
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/rust-backend-interop.xml"
-          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
-            tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server \
-            tests/server/test_rust_api_chroma_interop_live.py::test_python_stage1_is_promoted_by_rust_native_worker \
-            tests/server/test_rust_api_postgres_worker_interop_live.py::test_rust_native_promotion_and_python_recovery_are_both_available
-          python - "$report" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
-          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-          if tests != 3 or skipped:
-              raise SystemExit(
-                  f"all live backend interop tests must run without skips: "
-                  f"tests={tests}, skipped={skipped}"
-              )
-          PY
-
-      - name: Set up PyPy 3.11 for mixed-worker interoperability
-        uses: actions/setup-python@v7
-        with:
-          python-version: pypy-3.11-v7.3.20
-          cache: pip
-          cache-dependency-path: requirements-pypy-3.11-experimental.txt
-
-      - name: Install PyPy 3.11 mixed-worker dependencies
-        working-directory: .
-        run: python -m pip install -r requirements-pypy-3.11-experimental.txt
-
-      - name: Verify PyPy worker with Rust-native server execution
-        working-directory: .
-        shell: bash
-        env:
-          KOGWISTAR_IMPL_MODE: python
-          ANONYMIZED_TELEMETRY: "FALSE"
-          KOGWISTAR_LOG_LEVEL: WARNING
-          LOG_LEVEL: WARNING
-          GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
-        run: |
-          set -euo pipefail
-          report="$RUNNER_TEMP/pypy-rust-worker-interop.xml"
-          python -m pytest tests/runtime/test_rust_runtime_authority.py \
-            -q -p no:cacheprovider --junitxml="$report" \
-            -k "python_worker_and_rust_native_step_interoperate_over_real_server"
-          python - "$report" <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
-
-          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
-          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
-          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
-          if tests != 3 or skipped:
-              raise SystemExit(
-                  f"all PyPy mixed-worker backends must run without skips: "
-                  f"tests={tests}, skipped={skipped}"
-              )
-          PY
 
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -534,6 +338,182 @@ jobs:
         with:
           manifest-path: rust/Cargo.toml
           command: check licenses sources
+
+  rust-interop-server:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Build Rust API server for mixed-runtime interoperability
+        run: cargo build -p kogwistar-api --bin kogwistar-server --locked
+
+      - name: Upload Rust API server
+        uses: actions/upload-artifact@v4
+        with:
+          name: kogwistar-server-linux
+          path: rust/target/debug/kogwistar-server
+          if-no-files-found: error
+          retention-days: 1
+
+  rust-python-interop:
+    if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
+    needs: rust-interop-server
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: cpython312
+            python-version: "3.12"
+            is_pypy: false
+          - label: cpython313
+            python-version: "3.13"
+            is_pypy: false
+          - label: cpython314
+            python-version: "3.14"
+            is_pypy: false
+          - label: pypy311
+            python-version: pypy-3.11-v7.3.20
+            is_pypy: true
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_DB: kogwistar
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: kogwistar
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d kogwistar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      chroma:
+        image: chromadb/chroma:1.5.9
+        ports:
+          - 8000:8000
+    env:
+      GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+      KOGWISTAR_TEST_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+      KOGWISTAR_TEST_CHROMA_URL: http://localhost:8000
+      KOGWISTAR_IMPL_MODE: python
+      ANONYMIZED_TELEMETRY: "FALSE"
+      KOGWISTAR_LOG_LEVEL: WARNING
+      LOG_LEVEL: WARNING
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download Rust API server
+        uses: actions/download-artifact@v4
+        with:
+          name: kogwistar-server-linux
+          path: rust/target/debug
+
+      - name: Make Rust API server executable
+        run: chmod +x rust/target/debug/kogwistar-server
+
+      - name: Wait for Chroma service
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..60}; do
+            if curl --silent --fail http://127.0.0.1:8000/api/v2/heartbeat >/dev/null; then
+              echo "Chroma service is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Chroma service did not become ready" >&2
+          docker ps -a
+          exit 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: ${{ matrix.is_pypy && 'requirements-pypy-3.11-experimental.txt' || 'pyproject.toml' }}
+
+      - name: Install CPython interoperability dependencies
+        if: matrix.is_pypy == false
+        env:
+          PIP_DEFAULT_TIMEOUT: "60"
+          PIP_RETRIES: "10"
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,server,chroma,pgvector]"
+
+      - name: Install PyPy interoperability dependencies
+        if: matrix.is_pypy
+        run: python -m pip install -r requirements-pypy-3.11-experimental.txt
+
+      - name: Verify mixed-worker backend matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/${{ matrix.label }}-worker-interop.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite-chroma]' \
+            'tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server[pg]'
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
+          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
+          if tests != 3 or skipped or failures or errors:
+              raise SystemExit(
+                  f"${{ matrix.label }} mixed-worker matrix incomplete: "
+                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
+              )
+          PY
+
+      - name: Verify PostgreSQL facade and sequential handoff contracts
+        if: matrix.label == 'cpython314'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pytest tests/core/test_rust_postgres_session_facade.py \
+            -m "ci and core" -q -p no:cacheprovider
+          python -m pytest \
+            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_session_commit_rollback_and_fail_closed \
+            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_session_reconnects_after_backend_termination \
+            tests/core/test_rust_postgres_transaction_session.py::test_native_postgres_sessions_are_isolated_by_schema \
+            -m ci_full -q -p no:cacheprovider
+          report="$RUNNER_TEMP/sequential-backend-handoffs.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server \
+            tests/server/test_rust_api_chroma_interop_live.py::test_python_stage1_is_promoted_by_rust_native_worker \
+            tests/server/test_rust_api_postgres_worker_interop_live.py::test_rust_native_promotion_and_python_recovery_are_both_available
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          if tests != 3 or skipped:
+              raise SystemExit(
+                  f"all live backend handoff tests must run without skips: "
+                  f"tests={tests}, skipped={skipped}"
+              )
+          PY
 
   native-wheel-smoke:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)

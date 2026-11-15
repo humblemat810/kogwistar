@@ -105,7 +105,7 @@ def test_rust_backend_interop_ci_node_ids_exist() -> None:
     workflow = WORKFLOW.read_text(encoding="utf-8")
     handoff_step = _between(
         workflow,
-        "      - name: Verify sequential Python-Rust backend handoffs",
+        '          report="$RUNNER_TEMP/sequential-backend-handoffs.xml"',
         '          python - "$report" <<\'PY\'',
     )
     selectors = re.findall(r"(tests/[^\s]+)::(test_[A-Za-z0-9_]+)", handoff_step)
@@ -122,6 +122,19 @@ def test_rust_backend_interop_ci_node_ids_exist() -> None:
         assert test_name in test_names, (
             f"Rust backend interop CI selects missing test {relative_path}::{test_name}"
         )
+
+
+def test_rust_python_interop_uses_parallel_supported_runtime_matrix() -> None:
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    interop_job = _between(workflow, "  rust-python-interop:\n", "  native-wheel-smoke:")
+
+    assert "fail-fast: false" in interop_job
+    assert 'label: cpython312\n            python-version: "3.12"' in interop_job
+    assert 'label: cpython313\n            python-version: "3.13"' in interop_job
+    assert 'label: cpython314\n            python-version: "3.14"' in interop_job
+    assert "label: pypy311\n            python-version: pypy-3.11-v7.3.20" in interop_job
+    assert "tests != 3 or skipped or failures or errors" in interop_job
+    assert "if: matrix.label == 'cpython314'" in interop_job
 
 
 def test_sqlite_native_extension_cases_are_marked_requires_rust() -> None:
