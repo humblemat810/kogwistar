@@ -193,12 +193,13 @@ jobs:
           python - "$wheel" <<'PY'
           import sys
           from email.parser import Parser
+          from pathlib import Path
           from zipfile import ZipFile
 
           from packaging.utils import parse_wheel_filename
 
           wheel = sys.argv[1]
-          _, version, _, tags = parse_wheel_filename(wheel)
+          _, version, _, tags = parse_wheel_filename(Path(wheel).name)
           if not any(str(tag) == "py3-none-any" for tag in tags):
               raise SystemExit(f"expected a pure Python wheel, got {tags}")
           with ZipFile(wheel) as archive:
