@@ -1813,12 +1813,12 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
                 == checkpoints_before_rejection.json()["checkpoints"]
             )
             assert graph_sqlalchemy_engine is not None
-            from kogwistar.engine_core.rust_postgres_session import (
-                RustEnginePostgresMetaStore,
+            from kogwistar.engine_core.engine_postgres_meta import (
+                EnginePostgresMetaStore,
             )
 
-            graph_store = RustEnginePostgresMetaStore(
-                dsn=pg_dsn, schema=f"{pg_schema}_knowledge"
+            graph_store = EnginePostgresMetaStore(
+                engine=graph_sqlalchemy_engine, schema=f"{pg_schema}_knowledge"
             )
             assert list(
                 graph_store.iter_entity_events(namespace=graph_namespace)
@@ -1908,12 +1908,13 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
             assert graph_namespace is not None and graph_entity_id is not None
             if backend == "pg":
                 assert pg_dsn is not None and pg_schema is not None
-                from kogwistar.engine_core.rust_postgres_session import (
-                    RustEnginePostgresMetaStore,
+                from kogwistar.engine_core.engine_postgres_meta import (
+                    EnginePostgresMetaStore,
                 )
 
-                graph_store = RustEnginePostgresMetaStore(
-                    dsn=pg_dsn, schema=f"{pg_schema}_knowledge"
+                graph_store = EnginePostgresMetaStore(
+                    engine=graph_sqlalchemy_engine,
+                    schema=f"{pg_schema}_knowledge",
                 )
                 graph_events = list(
                     graph_store.iter_entity_events(namespace=graph_namespace)
