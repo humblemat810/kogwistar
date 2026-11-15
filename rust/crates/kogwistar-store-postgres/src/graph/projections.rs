@@ -224,6 +224,38 @@ where
     Ok(true)
 }
 
+pub(crate) async fn delete_source_document_projection<C>(
+    client: &C,
+    tables: &Tables,
+    scope: &GraphScope,
+    document_id: &str,
+) -> PostgresStoreResult<bool>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&scope.namespace)?;
+    if document_id.trim().is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    let table = graph_table(tables, "gke_documents")?;
+    let deleted = client
+        .execute(
+            &format!(
+                "DELETE FROM {table} WHERE id = $1 AND {}",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &document_id,
+                &scope.namespace,
+                &scope.workspace_id.as_deref().unwrap_or(""),
+                &scope.graph_space.as_deref().unwrap_or(""),
+            ],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(deleted > 0)
+}
+
 pub(crate) async fn patch_graph_projection_metadata<C>(
     client: &C,
     tables: &Tables,

@@ -16,6 +16,14 @@ impl SqliteUnitOfWork<'_> {
         replace_source_document_projection(self.transaction, write)
     }
 
+    pub fn delete_source_document_projection(
+        &mut self,
+        scope: &GraphScope,
+        document_id: &str,
+    ) -> SqliteStoreResult<bool> {
+        delete_source_document_projection(self.transaction, scope, document_id)
+    }
+
     pub fn replace_named_projection(
         &mut self,
         namespace: &str,

@@ -32,6 +32,10 @@ pub trait DocumentStore: Send + Sync {
         false
     }
 
+    fn supports_document_projection_delete(&self) -> bool {
+        false
+    }
+
     fn document_projection_ids(
         &self,
         _scope: GraphScope,
@@ -53,6 +57,21 @@ pub trait DocumentStore: Send + Sync {
             Err(StoreError::Backend {
                 backend: "document".to_owned(),
                 message: "document projection is not supported by this store".to_owned(),
+            })
+        }
+    }
+
+    /// Delete one source-document projection by its canonical document ID.
+    /// Implementations must scope the delete and make repeated deletes safe.
+    fn delete_document_projection(
+        &self,
+        _scope: GraphScope,
+        _document_id: String,
+    ) -> impl Future<Output = StoreResult<bool>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "document projection deletion is not supported by this store".to_owned(),
             })
         }
     }

@@ -5,6 +5,10 @@ impl DocumentStore for SqliteStore {
         true
     }
 
+    fn supports_document_projection_delete(&self) -> bool {
+        true
+    }
+
     async fn document_projection_ids(
         &self,
         scope: GraphScope,
@@ -40,5 +44,14 @@ impl DocumentStore for SqliteStore {
             });
         }
         SqliteStore::upsert_source_document_projection(self, write).map_err(trait_error)
+    }
+
+    async fn delete_document_projection(
+        &self,
+        scope: GraphScope,
+        document_id: String,
+    ) -> StoreResult<bool> {
+        SqliteStore::delete_source_document_projection(self, &scope, &document_id)
+            .map_err(trait_error)
     }
 }

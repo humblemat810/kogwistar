@@ -18,6 +18,14 @@ impl SqliteStore {
         self.immediate_transaction(|uow| uow.upsert_source_document_projection(write))
     }
 
+    pub fn delete_source_document_projection(
+        &self,
+        scope: &GraphScope,
+        document_id: &str,
+    ) -> SqliteStoreResult<bool> {
+        self.immediate_transaction(|uow| uow.delete_source_document_projection(scope, document_id))
+    }
+
     pub fn get_named_projection(
         &self,
         namespace: &str,

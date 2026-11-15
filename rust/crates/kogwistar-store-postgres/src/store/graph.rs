@@ -138,6 +138,26 @@ impl PostgresStore {
         .await
     }
 
+    /// Remove one source-document projection in a scoped PostgreSQL transaction.
+    pub async fn delete_document_projection(
+        &self,
+        scope: GraphScope,
+        document_id: String,
+    ) -> PostgresStoreResult<bool> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                delete_source_document_projection(
+                    &uow.transaction,
+                    &uow.tables,
+                    &scope,
+                    &document_id,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     pub async fn patch_graph_projection_metadata(
         &self,
         patch: GraphProjectionMetadataPatch,

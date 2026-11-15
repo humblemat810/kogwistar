@@ -66,6 +66,81 @@ fn source_documents_round_trip_and_remain_storage_scope_isolated() {
 }
 
 #[test]
+fn source_document_projection_delete_is_scoped_and_idempotent() {
+    let (store, path) = store("source-document-delete");
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let other_scope = GraphScope {
+        graph_space: Some("wisdom".to_owned()),
+        ..scope.clone()
+    };
+    store
+        .upsert_source_document_projection(source_document(
+            scope.clone(),
+            "doc-1",
+            "knowledge text",
+        ))
+        .unwrap();
+    store
+        .upsert_source_document_projection(source_document(
+            other_scope.clone(),
+            "doc-1",
+            "wisdom text",
+        ))
+        .unwrap();
+
+    assert!(DocumentStore::supports_document_projection_delete(&store));
+    assert!(
+        !block_on(DocumentStore::delete_document_projection(
+            &store,
+            GraphScope {
+                namespace: "tenant-b".to_owned(),
+                ..scope.clone()
+            },
+            "doc-1".to_owned(),
+        ))
+        .unwrap()
+    );
+    assert!(
+        block_on(DocumentStore::delete_document_projection(
+            &store,
+            scope.clone(),
+            "doc-1".to_owned(),
+        ))
+        .unwrap()
+    );
+    assert!(
+        !block_on(DocumentStore::delete_document_projection(
+            &store,
+            scope.clone(),
+            "doc-1".to_owned(),
+        ))
+        .unwrap()
+    );
+    assert!(
+        store
+            .source_document_projection(&scope, "doc-1")
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        store
+            .source_document_projection(&other_scope, "doc-1")
+            .unwrap()
+            .unwrap()
+            .document
+            .as_deref(),
+        Some("wisdom text")
+    );
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn source_document_write_participates_in_the_sqlite_unit_of_work() {
     let (store, path) = store("source-document-uow");
     let scope = GraphScope {

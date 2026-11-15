@@ -254,8 +254,36 @@ async fn document_projection_upsert_reopens_and_retries_idempotently_when_dsn_av
     assert!(exhausted_page.is_empty());
 
     let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
-    let reopened_rows = reopened.graph_projection_records(read).await?;
+    let reopened_rows = reopened.graph_projection_records(read.clone()).await?;
     assert_eq!(reopened_rows, rows);
+    assert!(DocumentStore::supports_document_projection_delete(
+        &reopened
+    ));
+    let other_scope = GraphScope {
+        graph_space: Some("wisdom".to_owned()),
+        ..scope.clone()
+    };
+    assert!(
+        !DocumentStore::delete_document_projection(
+            &reopened,
+            other_scope,
+            "document-1".to_owned(),
+        )
+        .await?
+    );
+    assert!(
+        DocumentStore::delete_document_projection(
+            &reopened,
+            scope.clone(),
+            "document-1".to_owned(),
+        )
+        .await?
+    );
+    assert!(
+        !DocumentStore::delete_document_projection(&reopened, scope, "document-1".to_owned(),)
+            .await?
+    );
+    assert!(reopened.graph_projection_records(read).await?.is_empty());
 
     let cleanup = reopened.client().await?;
     cleanup

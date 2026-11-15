@@ -74,6 +74,10 @@ impl DocumentStore for PostgresStore {
         true
     }
 
+    fn supports_document_projection_delete(&self) -> bool {
+        true
+    }
+
     async fn document_projection_ids(
         &self,
         scope: GraphScope,
@@ -109,5 +113,15 @@ impl DocumentStore for PostgresStore {
         })
         .await
         .map_err(trait_error)
+    }
+
+    async fn delete_document_projection(
+        &self,
+        scope: GraphScope,
+        document_id: String,
+    ) -> StoreResult<bool> {
+        PostgresStore::delete_document_projection(self, scope, document_id)
+            .await
+            .map_err(trait_error)
     }
 }

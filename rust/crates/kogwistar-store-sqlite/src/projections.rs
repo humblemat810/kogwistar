@@ -269,6 +269,19 @@ pub(super) fn replace_source_document_projection(
     )
 }
 
+pub(super) fn delete_source_document_projection(
+    conn: &Connection,
+    scope: &GraphScope,
+    document_id: &str,
+) -> SqliteStoreResult<bool> {
+    let key = source_document_projection_key(scope, document_id)?;
+    let deleted = conn.execute(
+        "DELETE FROM named_projections WHERE namespace = ?1 AND key = ?2",
+        rusqlite::params![SOURCE_DOCUMENT_PROJECTION_NAMESPACE, key],
+    )?;
+    Ok(deleted > 0)
+}
+
 pub(super) fn replace_named_projection(
     conn: &Connection,
     namespace: &str,
