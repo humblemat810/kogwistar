@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import tomllib
 from pathlib import Path
 
@@ -22,16 +21,16 @@ def test_package_metadata_matches_the_supported_interpreter_matrix() -> None:
         assert f"Programming Language :: Python :: {minor}" in classifiers
 
 
-def test_release_candidate_version_matches_dl17_documentation() -> None:
+def test_published_release_version_matches_dl17_documentation() -> None:
+    metadata = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    published_version = metadata["version"]
     support_doc = (ROOT / "docs" / "python-runtime-support.md").read_text(
         encoding="utf-8"
     )
-    candidate_match = re.search(
-        r"The (\d+\.\d+\.\d+) release note describes an unpublished candidate",
-        support_doc,
-    )
-    assert candidate_match is not None
-    candidate_version = candidate_match.group(1)
+    assert f"PyPI `kogwistar=={published_version}`" in support_doc
+    assert f"Kogwistar {published_version} was published" in support_doc
 
     worklist = (
         ROOT
@@ -49,6 +48,6 @@ def test_release_candidate_version_matches_dl17_documentation() -> None:
         row = next(
             line for line in worklist.splitlines() if line.startswith(f"| {item_id} |")
         )
-        assert candidate_version in row, (
-            f"{item_id} must reference support-doc candidate {candidate_version}"
+        assert published_version in row, (
+            f"{item_id} must reference published version {published_version}"
         )

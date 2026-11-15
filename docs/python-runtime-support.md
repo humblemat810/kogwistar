@@ -31,12 +31,16 @@ The filename retains its historical `experimental` suffix for compatibility
 with existing CI and local scripts; the PyPy 3.11 compatibility profile itself
 is now supported.
 
-## Package metadata note
+## Published package metadata
 
-The current published package metadata declares `Requires-Python >=3.12`.
-Therefore, PyPy 3.11 support is currently documented and tested from a source
-checkout. Lowering the package requirement so that pip accepts PyPy 3.11 from
-PyPI should be included in a future package release.
+PyPI `kogwistar==0.7.0` declares `Requires-Python >=3.11` and publishes a pure
+Python wheel that installs on PyPy 3.11. The clean PyPy 3.11.13/7.3.20 install
+and import smoke passed from the new environment's `site-packages`.
+
+This package profile uses Python authorities and does not imply PyPy support
+for native Rust extensions, MCP on Windows, or every optional server/auth
+extra. The PyPy 3.11 dependency markers intentionally omit `mcp` and
+`python-jose[cryptography]` on Windows.
 
 ## Verified downstream paths
 
@@ -50,9 +54,12 @@ not a claim of complete parser or backend parity:
 | Mixed | Windows CPython 3.14.6; Python parser/runtime with Rust SQLite metadata authority | Fake-backend ingestion passed; a separate deterministic Chroma smoke completed. This does not verify Rust graph authority. |
 | Rust-native graph | Windows CPython 3.14.3 consumer; Rust HTTP service; PostgreSQL/pgvector 16 | One deterministic source produced one canonical node, then Rust visualization read it back. No multi-node/edge, live LLM, or vector-inference parity claim. |
 
-The 0.7.0 release note describes an unpublished candidate and its PyPy
-dependency-marker changes. Do not treat that candidate as a PyPI installation
-result until the tag-triggered release workflow publishes it and a clean PyPy
-3.11.13/7.3.20 install/import check passes. Current published PyPI evidence
-remains 0.6.15.
+Kogwistar 0.7.0 was published from tag `v0.7.0`. GitHub Actions release run
+`43706093143` passed release verification, artifact audit, trusted publication,
+and all wheel/source-distribution jobs. A fresh PyPy 3.11.13/7.3.20 virtual
+environment installed `kogwistar==0.7.0` and 36 dependencies from PyPI;
+`scripts/pypy311_pure_wheel_smoke.py --expected-version 0.7.0` confirmed the
+installed module path, version, and `Node` import. This verifies package
+metadata and the Python-authority compatibility profile only, not whole-stack
+Rust/Python parity or the optional features excluded above.
 

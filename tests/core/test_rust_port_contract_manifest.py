@@ -1165,15 +1165,23 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
 
     inventory = re.search(
         r"Current inventory: \*\*(\d+) items\*\* "
-        r"\(\*\*(\d+) PASS, (\d+) IN PROGRESS;",
+        r"\(\*\*(\d+) PASS, (\d+) IN PROGRESS, (\d+) NOT STARTED, "
+        r"(\d+) FAIL, (\d+) BLOCKED; ([\d.]+)% PASS\*\*\)",
         scope,
     )
     assert inventory is not None
-    assert tuple(map(int, inventory.groups())) == (
+    total, passes, in_progress, not_started, failures, blocked = map(
+        int, inventory.groups()[:6]
+    )
+    assert (total, passes, in_progress, not_started, failures, blocked) == (
         len(current),
         sum(status == "PASS" for status in current.values()),
         sum(status == "IN PROGRESS" for status in current.values()),
+        sum(status == "NOT STARTED" for status in current.values()),
+        sum(status == "FAIL" for status in current.values()),
+        sum(status == "BLOCKED" for status in current.values()),
     )
+    assert float(inventory.group(7)) == round(100 * passes / total, 1)
 
     baseline = subprocess.run(
         [
