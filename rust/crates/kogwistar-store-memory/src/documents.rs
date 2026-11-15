@@ -131,6 +131,7 @@ fn metadata_matches_scope(metadata: &serde_json::Map<String, Value>, scope: &Gra
     })
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/documents.rs#apply_document_rollback; python=kogwistar/engine_core/subsystems/rollback.py#RollbackSubsystem.rollback_document; fixture=contracts/golden/python-graph-model-payloads-v1.json
 fn apply_document_rollback(
     state: &mut super::State,
     request: &DocumentRollbackRequest,
