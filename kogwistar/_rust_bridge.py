@@ -241,6 +241,7 @@ _LOSSLESS_POSTGRES_GRAPH_OPERATIONS = frozenset(
         "upsert_graph_projection",
         "patch_graph_projection_metadata",
         "graph_projection_records",
+        "delete_document_projections_by_source_id",
         "graph_projection_vector_query",
         "graph_projection_vector_query_batch",
     }

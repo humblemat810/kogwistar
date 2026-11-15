@@ -65,4 +65,20 @@ impl PostgresUnitOfWork<'_> {
     pub async fn clear_projection_namespace(&mut self, namespace: &str) -> PostgresStoreResult<()> {
         clear_projection_namespace(&self.transaction, &self.tables, namespace).await
     }
+
+    /// Delete source-document rows within this unit of work.
+    /// Python parity: `PgVectorBackend.document_delete(where={"doc_id": ...})`.
+    pub async fn delete_document_projections_by_source_id(
+        &mut self,
+        scope: GraphScope,
+        source_document_id: String,
+    ) -> PostgresStoreResult<Vec<String>> {
+        crate::graph::delete_source_document_projections_by_source_id(
+            &self.transaction,
+            &self.tables,
+            &scope,
+            &source_document_id,
+        )
+        .await
+    }
 }

@@ -186,3 +186,88 @@ def test_postgres_rust_created_projection_schema_python_reads_and_atomic_batch(s
     finally:
         with sa_engine.begin() as conn:
             conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_postgres_source_document_group_delete_crosses_python_rust_session(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, _ = _require_pg(pg_dsn, pg_schema)
+    schema = f"gke_document_delete_{uuid.uuid4().hex}"
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.json_types import JsonValue
+
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    rust_store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        backend.ensure_schema()
+        rust_store.ensure_initialized()
+        ids = [
+            "source-doc",
+            "source-doc::chunk-1",
+            "source-doc::chunk-2",
+            "unrelated-doc",
+            "source-doc::other-workspace",
+        ]
+        metadatas: list[dict[str, JsonValue]] = [
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "unrelated-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-b",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+        ]
+        backend.document_upsert(
+            ids=ids,
+            documents=[f"text-{item}" for item in ids],
+            metadatas=metadatas,
+        )
+
+        with rust_store.native_session.transaction():
+            deleted = rust_store.delete_document_projections_by_source_id(
+                source_document_id="source-doc",
+                namespace="docs",
+                workspace_id="workspace-a",
+                graph_space="knowledge",
+            )
+        assert deleted == ["source-doc", "source-doc::chunk-1", "source-doc::chunk-2"]
+        assert rust_store.delete_document_projections_by_source_id(
+            source_document_id="source-doc",
+            namespace="docs",
+            workspace_id="workspace-a",
+            graph_space="knowledge",
+        ) == []
+
+        remaining = backend.document_get(include=["metadatas"])
+        assert sorted(remaining["ids"]) == [
+            "source-doc::other-workspace",
+            "unrelated-doc",
+        ]
+    finally:
+        rust_store.close()
+        with sa_engine.begin() as conn:
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

@@ -186,6 +186,14 @@ enum PostgresStoreOperation {
         #[serde(default)]
         for_update: bool,
     },
+    DeleteDocumentProjectionsBySourceId {
+        namespace: String,
+        #[serde(default)]
+        workspace_id: Option<String>,
+        #[serde(default)]
+        graph_space: Option<String>,
+        source_document_id: String,
+    },
     GraphIncidentEdges {
         namespace: String,
         #[serde(default)]

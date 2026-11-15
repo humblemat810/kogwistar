@@ -413,6 +413,28 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
             raise RuntimeError("native graph projection read returned invalid records")
         return [cast(JsonObject, record) for record in result]
 
+    def delete_document_projections_by_source_id(
+        self,
+        *,
+        source_document_id: str,
+        namespace: str,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> list[str]:
+        """Delete one source document and its chunks through the Rust UoW."""
+        result = self._call(
+            "delete_document_projections_by_source_id",
+            namespace=namespace,
+            workspace_id=workspace_id,
+            graph_space=graph_space,
+            source_document_id=source_document_id,
+        )
+        if not isinstance(result, list) or not all(
+            isinstance(item, str) and item for item in result
+        ):
+            raise RuntimeError("native source-document deletion returned invalid IDs")
+        return result
+
     def graph_incident_edges(self, **values: JsonValue) -> list[JsonObject]:
         result = self._call("graph_incident_edges", **values)
         if not isinstance(result, list) or not all(
