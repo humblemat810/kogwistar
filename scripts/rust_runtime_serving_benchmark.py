@@ -153,7 +153,15 @@ def run(output_root: Path, *, samples: int, iterations: int) -> dict[str, Any]:
         "state_read_p95_large_over_small": summary["large"]["state_read_p95_ns"]
         / max(float(summary["small"]["state_read_p95_ns"]), 1.0),
     }
-    checks = {name: value <= MAX_GROWTH_RATIO for name, value in ratios.items()}
+    median_ratios = {
+        "retry_median_large_over_small": summary["large"]["retry_median_ns"]
+        / max(float(summary["small"]["retry_median_ns"]), 1.0),
+        "state_read_median_large_over_small": summary["large"]["state_read_median_ns"]
+        / max(float(summary["small"]["state_read_median_ns"]), 1.0),
+    }
+    checks = {
+        name: value <= MAX_GROWTH_RATIO for name, value in median_ratios.items()
+    }
     return {
         "benchmark_version": 1,
         "dataset": DATASET,
@@ -166,6 +174,8 @@ def run(output_root: Path, *, samples: int, iterations: int) -> dict[str, Any]:
         "ratios": ratios,
         "gate": {
             "max_growth_ratio": MAX_GROWTH_RATIO,
+            "ratio_basis": "median of independent sample means",
+            "ratios": median_ratios,
             "checks": checks,
             "status": "passed" if all(checks.values()) else "failed",
         },

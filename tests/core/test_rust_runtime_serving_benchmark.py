@@ -22,8 +22,8 @@ def test_runtime_serving_benchmark_smoke_preserves_near_constant_lookup(tmp_path
     pytest.importorskip("kogwistar._rust")
     benchmark = _benchmark()
 
-    report = benchmark.run(tmp_path, samples=2, iterations=3)
+    report = benchmark.run(tmp_path, samples=5, iterations=10)
 
     assert report["history_multiplier"] == 100
-    assert report["gate"]["status"] == "passed"
+    assert report["gate"]["status"] == "passed", report
     assert all(report["gate"]["checks"].values())
