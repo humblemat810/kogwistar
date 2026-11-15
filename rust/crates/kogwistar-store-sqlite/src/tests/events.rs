@@ -636,6 +636,78 @@ fn document_rollback_reaches_edge_dependency_fixed_point_before_projection_delet
 }
 
 #[test]
+fn sqlite_store_document_rollback_wrapper_uses_one_transaction() {
+    let (store, path) = store("document-rollback-store-wrapper");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    store
+        .immediate_transaction(|uow| {
+            uow.upsert_source_document_projection(DocumentProjectionUpsert {
+                scope: scope.clone(),
+                record: GraphRecord {
+                    id: "doc-remove".to_owned(),
+                    document: Some("source document".to_owned()),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            })?;
+            uow.append_restored_raw_entity_event(
+                "scope",
+                RestoredRawEntityEvent {
+                    seq: 1,
+                    event_id: "seed-node-remove".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "node-remove".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: serde_json::json!({
+                        "id": "node-remove",
+                        "mentions": [{"spans": [{"doc_id": "doc-remove"}]}],
+                        "metadata": {
+                            "workspace_id": "workspace-a",
+                            "graph_space": "knowledge",
+                            "lifecycle_status": "active"
+                        }
+                    })
+                    .to_string(),
+                    created_at: 1,
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    let result = store
+        .rollback_document(
+            scope.clone(),
+            "doc-remove".to_owned(),
+            "rollback-store-wrapper".to_owned(),
+            "2026-11-15T00:00:00Z".to_owned(),
+            1,
+        )
+        .unwrap();
+    assert!(result.removed_node_ids.contains("node-remove"));
+    assert!(result.deleted_document_projection);
+    store
+        .immediate_transaction(|uow| {
+            let snapshots = uow.canonical_graph_entities_page("scope", "node", None, 10)?;
+            assert_eq!(snapshots[0].state, "deleted");
+            assert!(
+                uow.source_document_projection(&scope, "doc-remove")?
+                    .is_none()
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store
