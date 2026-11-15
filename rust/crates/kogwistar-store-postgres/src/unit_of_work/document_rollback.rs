@@ -13,6 +13,7 @@ const MAX_EDGE_PASSES: usize = 4096;
 impl PostgresUnitOfWork<'_> {
     /// Roll back source-document contributions and delete its projection in the
     /// caller's transaction. Python parity: `RollbackSubsystem.rollback_document`.
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/unit_of_work/document_rollback.rs#apply_document_rollback; python=kogwistar/engine_core/subsystems/rollback.py#RollbackSubsystem.rollback_document; fixture=contracts/golden/python-graph-model-payloads-v1.json
     pub async fn apply_document_rollback(
         &mut self,
         scope: &GraphScope,

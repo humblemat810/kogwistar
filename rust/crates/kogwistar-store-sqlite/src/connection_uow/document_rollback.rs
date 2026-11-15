@@ -185,6 +185,7 @@ impl SqliteUnitOfWork<'_> {
     /// in one SQLite transaction. Python parity: `RollbackSubsystem.rollback_document`.
     /// Edge passes repeat because a dependent edge can sort before the edge whose
     /// redirect makes its endpoint repair possible.
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-sqlite/src/connection_uow/document_rollback.rs#apply_document_rollback; python=kogwistar/engine_core/subsystems/rollback.py#RollbackSubsystem.rollback_document; fixture=contracts/golden/python-graph-model-payloads-v1.json
     pub fn apply_document_rollback(
         &mut self,
         scope: &GraphScope,
