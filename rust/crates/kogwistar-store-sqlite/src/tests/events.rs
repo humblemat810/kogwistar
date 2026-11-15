@@ -190,6 +190,76 @@ fn canonical_graph_entity_page_reconstructs_lifecycle_delta_from_event_history()
 }
 
 #[test]
+fn canonical_graph_entity_pages_are_keyset_stable_and_scope_isolated() {
+    let (store, path) = store("canonical-graph-entity-pages");
+    store
+        .immediate_transaction(|uow| {
+            for (namespace, seq, entity_kind, entity_id) in [
+                ("scope", 1, "node", "n-a"),
+                ("scope", 2, "node", "n-b"),
+                ("scope", 3, "node", "n-c"),
+                ("scope", 4, "edge", "e-a"),
+                ("other", 1, "node", "n-b"),
+            ] {
+                let payload = if entity_kind == "node" {
+                    serde_json::json!({
+                        "id": entity_id,
+                        "label": format!("label-{entity_id}"),
+                        "metadata": {"lifecycle_status": "active"}
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": entity_id,
+                        "relation": "links",
+                        "metadata": {"lifecycle_status": "active"}
+                    })
+                };
+                uow.append_restored_raw_entity_event(
+                    namespace,
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("{namespace}-{entity_id}"),
+                        entity_kind: entity_kind.to_owned(),
+                        entity_id: entity_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let first = uow.canonical_graph_entities_page("scope", "node", None, 2)?;
+            assert_eq!(
+                first
+                    .iter()
+                    .map(|snapshot| snapshot.entity_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["n-a", "n-b"]
+            );
+            assert_eq!(first[0].payload.as_ref().unwrap()["label"], "label-n-a");
+
+            let second =
+                uow.canonical_graph_entities_page("scope", "node", Some(&first[1].entity_id), 2)?;
+            assert_eq!(second.len(), 1);
+            assert_eq!(second[0].entity_id, "n-c");
+            assert!(
+                uow.canonical_graph_entities_page("scope", "edge", None, 10)?
+                    .iter()
+                    .all(|snapshot| snapshot.entity_id == "e-a")
+            );
+            assert_eq!(
+                uow.canonical_graph_entities_page("other", "node", None, 10)?[0].entity_id,
+                "n-b"
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store
