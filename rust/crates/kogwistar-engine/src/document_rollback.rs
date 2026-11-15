@@ -365,6 +365,7 @@ pub fn plan_node_rollback(
 ///
 /// The input is the persisted model payload, not Chroma metadata: source
 /// mentions in the canonical graph record remain the rollback authority.
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-engine/src/document_rollback.rs#filter_mentions_for_document; python=kogwistar/engine_core/subsystems/rollback.py#RollbackSubsystem._filter_mentions_for_document; fixture=contracts/golden/document-rollback-span-filter-v1.json; rust_test=rust/crates/kogwistar-engine/src/document_rollback.rs#span_filter_matches_shared_python_fixture; python_test=tests/primitives/test_document_rollback.py#test_rollback_span_filter_matches_shared_python_fixture
 pub fn filter_mentions_for_document(
     mentions: &[Value],
     document_id: &str,
@@ -457,6 +458,43 @@ mod tests {
         ))
         .unwrap();
         fixture["cases"][1]["payload"].clone()
+    }
+
+    #[test]
+    fn span_filter_matches_shared_python_fixture() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/document-rollback-span-filter-v1.json"
+        ))
+        .expect("shared rollback span fixture parses");
+        let mentions = fixture["mentions"].as_array().expect("mentions array");
+
+        let (actual, changed) = filter_mentions_for_document(
+            mentions,
+            fixture["document_id"].as_str().expect("document ID"),
+        )
+        .expect("fixture is valid");
+
+        let actual_doc_ids: Vec<Vec<String>> = actual
+            .iter()
+            .map(|mention| {
+                mention["spans"]
+                    .as_array()
+                    .expect("surviving span array")
+                    .iter()
+                    .map(|span| {
+                        span["doc_id"]
+                            .as_str()
+                            .expect("span document ID")
+                            .to_owned()
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            serde_json::to_value(actual_doc_ids).expect("serialize span IDs"),
+            fixture["expected_span_doc_ids"]
+        );
+        assert_eq!(changed, fixture["changed"].as_bool().expect("changed flag"));
     }
 
     #[test]

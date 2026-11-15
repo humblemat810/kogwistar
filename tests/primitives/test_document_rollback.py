@@ -1,8 +1,12 @@
 
+import json
+from pathlib import Path
+
 import pytest
 
 from kogwistar.engine_core.models import (
     Document,
+    Grounding,
     LLMGraphExtraction,
     Node,
     Span,
@@ -22,6 +26,28 @@ from tests._kg_factories import kg_document, kg_grounding
 from tests._helpers.graph_builders import build_relationship_edge
 
 pytestmark = pytest.mark.core
+
+
+def test_rollback_span_filter_matches_shared_python_fixture(engine) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-rollback-span-filter-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    mentions = [Grounding.model_validate(item) for item in fixture["mentions"]]
+
+    actual, changed = engine.rollback._filter_mentions_for_document(
+        mentions, fixture["document_id"]
+    )
+
+    assert [
+        [span.doc_id for span in item.spans]
+        for item in actual
+    ] == fixture["expected_span_doc_ids"]
+    assert [span.excerpt for item in actual for span in item.spans] == ["kept"]
+    assert changed is fixture["changed"]
 
 
 def _fake_llm_tasks() -> LLMTaskSet:
