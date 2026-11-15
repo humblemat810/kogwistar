@@ -260,6 +260,137 @@ fn canonical_graph_entity_pages_are_keyset_stable_and_scope_isolated() {
 }
 
 #[test]
+fn document_node_rollback_page_is_atomic_scoped_and_retry_safe() {
+    let (store, path) = store("document-node-rollback-page");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    store
+        .immediate_transaction(|uow| {
+            for (seq, entity_id, workspace_id, mentions) in [
+                (
+                    1,
+                    "a-replace",
+                    "workspace-a",
+                    serde_json::json!([{
+                        "multimodal_spans": [],
+                        "spans": [
+                            {"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-remove","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}},
+                            {"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-keep","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}}
+                        ]
+                    }]),
+                ),
+                (
+                    2,
+                    "b-tombstone",
+                    "workspace-a",
+                    serde_json::json!([{
+                        "multimodal_spans": [],
+                        "spans": [{"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-remove","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}}]
+                    }]),
+                ),
+                (
+                    3,
+                    "c-other-workspace",
+                    "workspace-b",
+                    serde_json::json!([{
+                        "multimodal_spans": [],
+                        "spans": [{"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-remove","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}}]
+                    }]),
+                ),
+            ] {
+                let mut payload = fixture["cases"][0]["payload"].clone();
+                payload["id"] = serde_json::json!(entity_id);
+                payload["label"] = serde_json::json!(entity_id);
+                payload["doc_id"] = serde_json::json!("doc-remove");
+                payload["mentions"] = mentions;
+                payload["metadata"]["workspace_id"] = serde_json::json!(workspace_id);
+                payload["metadata"]["graph_space"] = serde_json::json!("knowledge");
+                payload["metadata"]["lifecycle_status"] = serde_json::json!("active");
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("seed-{entity_id}"),
+                        entity_kind: "node".to_owned(),
+                        entity_id: entity_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let first = uow.apply_document_node_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+            )?;
+            assert_eq!(first.scanned_through.as_deref(), Some("c-other-workspace"));
+            assert!(!first.has_more);
+            assert_eq!(first.mutations.len(), 3);
+            assert!(first.mutations.iter().all(|mutation| mutation.inserted));
+
+            let retry = uow.apply_document_node_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+            )?;
+            assert!(retry.mutations.is_empty());
+
+            let nodes = uow.canonical_graph_entities_page("scope", "node", None, 10)?;
+            let by_id = nodes
+                .iter()
+                .map(|snapshot| (snapshot.entity_id.as_str(), snapshot))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(by_id["a-replace"].state, "deleted");
+            assert_eq!(
+                by_id["a-replace"].payload.as_ref().unwrap()["metadata"]["redirect_to_id"],
+                first.mutations[0].event.payload["id"]
+            );
+            assert_eq!(by_id["b-tombstone"].state, "deleted");
+            assert_eq!(by_id["c-other-workspace"].state, "active");
+            assert_eq!(
+                nodes
+                    .iter()
+                    .filter(|snapshot| {
+                        snapshot.state == "active"
+                            && snapshot
+                                .payload
+                                .as_ref()
+                                .and_then(|payload| payload["mentions"].as_array())
+                                .is_some_and(|mentions| {
+                                    mentions.iter().any(|mention| {
+                                        mention["spans"].as_array().is_some_and(|spans| {
+                                            spans.iter().any(|span| span["doc_id"] == "doc-keep")
+                                        })
+                                    })
+                                })
+                    })
+                    .count(),
+                1
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store
