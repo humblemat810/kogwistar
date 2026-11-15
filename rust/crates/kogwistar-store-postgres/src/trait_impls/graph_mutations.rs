@@ -78,6 +78,10 @@ impl DocumentStore for PostgresStore {
         true
     }
 
+    fn supports_document_rollback(&self) -> bool {
+        true
+    }
+
     async fn document_projection_ids(
         &self,
         scope: GraphScope,
@@ -133,5 +137,21 @@ impl DocumentStore for PostgresStore {
         PostgresStore::delete_document_projections_by_source_id(self, scope, source_document_id)
             .await
             .map_err(trait_error)
+    }
+
+    async fn rollback_document(
+        &self,
+        request: DocumentRollbackRequest,
+    ) -> StoreResult<AppliedDocumentRollback> {
+        PostgresStore::rollback_document(
+            self,
+            request.scope,
+            request.document_id,
+            request.operation_id,
+            request.deleted_at,
+            request.page_size,
+        )
+        .await
+        .map_err(trait_error)
     }
 }

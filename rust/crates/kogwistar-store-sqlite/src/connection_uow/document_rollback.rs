@@ -3,6 +3,7 @@ use kogwistar_contracts::stable_id;
 use kogwistar_engine::document_rollback::{
     EdgeRollbackDecision, NodeRollbackDecision, plan_edge_rollback, plan_node_rollback,
 };
+pub use kogwistar_store::AppliedDocumentRollback;
 use serde_json::{Map, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -27,18 +28,6 @@ pub struct AppliedDocumentEdgeRollbackPage {
     pub mutations: Vec<AppliedGraphMutation>,
     pub edge_redirects: BTreeMap<String, String>,
     pub removed_edge_ids: BTreeSet<String>,
-}
-
-/// Result of a complete SQLite document rollback, committed by the caller's
-/// transaction only after node and edge references reach a fixed point.
-#[derive(Clone, Debug, PartialEq)]
-pub struct AppliedDocumentRollback {
-    pub node_redirects: BTreeMap<String, String>,
-    pub removed_node_ids: BTreeSet<String>,
-    pub edge_redirects: BTreeMap<String, String>,
-    pub removed_edge_ids: BTreeSet<String>,
-    pub deleted_document_projection: bool,
-    pub edge_passes: usize,
 }
 
 const MAX_DOCUMENT_ROLLBACK_EDGE_PASSES: usize = 4096;

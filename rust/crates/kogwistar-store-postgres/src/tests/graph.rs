@@ -248,15 +248,18 @@ async fn postgres_document_rollback_updates_canonical_graph_and_indexes_atomical
         .await
         .map_err(backend)?;
 
-    let result = store
-        .rollback_document(
-            scope.clone(),
-            "doc-remove".to_owned(),
-            "rollback-op".to_owned(),
-            "2026-11-15T00:00:00Z".to_owned(),
-            2,
-        )
-        .await?;
+    assert!(DocumentStore::supports_document_rollback(&store));
+    let result = DocumentStore::rollback_document(
+        &store,
+        DocumentRollbackRequest {
+            scope: scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-op".to_owned(),
+            deleted_at: "2026-11-15T00:00:00Z".to_owned(),
+            page_size: 2,
+        },
+    )
+    .await?;
     assert!(result.node_redirects.contains_key("node-keep"));
     assert!(result.removed_node_ids.contains("node-remove"));
     assert!(result.removed_edge_ids.contains("edge-remove"));

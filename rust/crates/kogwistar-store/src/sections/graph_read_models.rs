@@ -11,6 +11,28 @@ pub struct DocumentProjectionUpsert {
     pub embedding_dim: usize,
 }
 
+/// Transaction-scoped source-document rollback request. Python parity:
+/// `RollbackSubsystem.rollback_document`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DocumentRollbackRequest {
+    pub scope: GraphScope,
+    pub document_id: String,
+    pub operation_id: String,
+    pub deleted_at: String,
+    pub page_size: usize,
+}
+
+/// Canonical graph effects committed by one source-document rollback.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AppliedDocumentRollback {
+    pub node_redirects: BTreeMap<String, String>,
+    pub removed_node_ids: BTreeSet<String>,
+    pub edge_redirects: BTreeMap<String, String>,
+    pub removed_edge_ids: BTreeSet<String>,
+    pub deleted_document_projection: bool,
+    pub edge_passes: usize,
+}
+
 /// Deterministic adjacency result shared by native graph-read adapters.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GraphNeighbors {

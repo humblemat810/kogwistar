@@ -192,6 +192,8 @@ mod tests {
             store.document_authority_capability(),
             DocumentAuthorityCapability::ProjectionUpsert
         );
+        assert!(DocumentStore::supports_document_projection_delete(&store));
+        assert!(!DocumentStore::supports_document_rollback(&store));
         block_on(store.upsert_document_projection(write(tenant.clone(), "chunk-1", "source-1")))
             .expect("upsert source projection");
         block_on(store.upsert_document_projection(write(

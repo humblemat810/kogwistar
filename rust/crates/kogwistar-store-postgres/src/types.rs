@@ -36,17 +36,6 @@ pub enum PostgresStoreError {
 
 pub type PostgresStoreResult<T> = Result<T, PostgresStoreError>;
 
-/// Graph effects produced by a canonical document rollback transaction.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct AppliedDocumentRollback {
-    pub node_redirects: std::collections::BTreeMap<String, String>,
-    pub removed_node_ids: std::collections::BTreeSet<String>,
-    pub edge_redirects: std::collections::BTreeMap<String, String>,
-    pub removed_edge_ids: std::collections::BTreeSet<String>,
-    pub deleted_document_projection: bool,
-    pub edge_passes: usize,
-}
-
 /// Unscoped `node_docs` index hit; never authoritative for entity visibility.
 /// Consumers must load each `node_id` through a scope- and ACL-filtered graph read.
 #[derive(Clone, Debug, PartialEq, Eq)]

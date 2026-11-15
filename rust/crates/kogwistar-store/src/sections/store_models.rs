@@ -36,6 +36,10 @@ pub trait DocumentStore: Send + Sync {
         false
     }
 
+    fn supports_document_rollback(&self) -> bool {
+        false
+    }
+
     fn document_projection_ids(
         &self,
         _scope: GraphScope,
@@ -87,6 +91,20 @@ pub trait DocumentStore: Send + Sync {
             Err(StoreError::Backend {
                 backend: "document".to_owned(),
                 message: "source-document group deletion is not supported by this store".to_owned(),
+            })
+        }
+    }
+
+    /// Remove document-grounded graph contributions and its source projection
+    /// within the backend's declared transaction/atomicity boundary.
+    fn rollback_document(
+        &self,
+        _request: DocumentRollbackRequest,
+    ) -> impl Future<Output = StoreResult<AppliedDocumentRollback>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "document rollback is not supported by this store".to_owned(),
             })
         }
     }

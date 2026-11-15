@@ -680,15 +680,18 @@ fn sqlite_store_document_rollback_wrapper_uses_one_transaction() {
         })
         .unwrap();
 
-    let result = store
-        .rollback_document(
-            scope.clone(),
-            "doc-remove".to_owned(),
-            "rollback-store-wrapper".to_owned(),
-            "2026-11-15T00:00:00Z".to_owned(),
-            1,
-        )
-        .unwrap();
+    assert!(DocumentStore::supports_document_rollback(&store));
+    let result = block_on(DocumentStore::rollback_document(
+        &store,
+        DocumentRollbackRequest {
+            scope: scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-store-wrapper".to_owned(),
+            deleted_at: "2026-11-15T00:00:00Z".to_owned(),
+            page_size: 1,
+        },
+    ))
+    .unwrap();
     assert!(result.removed_node_ids.contains("node-remove"));
     assert!(result.deleted_document_projection);
     store
