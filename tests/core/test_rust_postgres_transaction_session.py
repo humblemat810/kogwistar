@@ -905,6 +905,60 @@ def test_rust_authority_reconciles_metadata_join_jobs_natively(
     ).status == "DONE"
 
 
+def test_public_rust_postgres_multi_id_node_get_uses_native_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    pg_dsn: str | None,
+    pg_schema: str | None,
+    sa_engine: Any,
+) -> None:
+    _, schema = _require_pg(pg_dsn, pg_schema)
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    backend.ensure_schema()
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    monkeypatch.setenv("KOGWISTAR_IMPL_GRAPH_STORE", "rust")
+    engine = GraphKnowledgeEngine(
+        backend=backend,
+        embedding_function=lambda texts: [[1.0, 0.0, 0.0] for _ in texts],
+    )
+    assert isinstance(engine.meta_sqlite, RustEnginePostgresMetaStore)
+    monkeypatch.setattr(engine, "reconcile_indexes", lambda **kwargs: 0)
+
+    engine.write.add_node(
+        build_entity_node(
+            node_id="multi-read-a",
+            doc_id="doc-a",
+            metadata={"read_group": "selected"},
+        )
+    )
+    engine.write.add_node(
+        build_entity_node(
+            node_id="multi-read-b",
+            doc_id="doc-b",
+            metadata={"read_group": "selected"},
+        )
+    )
+    engine.write.add_node(
+        build_entity_node(
+            node_id="multi-read-filtered",
+            doc_id="doc-c",
+            metadata={"read_group": "other"},
+        )
+    )
+
+    def reject_python_read(**_values: Any) -> None:
+        raise AssertionError("multi-ID Rust graph read used Python backend")
+
+    with monkeypatch.context() as native_read_guard:
+        native_read_guard.setattr(backend, "node_get", reject_python_read)
+        nodes = engine.read.get_nodes(
+            ids=["multi-read-b", "missing-id", "multi-read-a", "multi-read-filtered"],
+            where={"read_group": "selected"},
+        )
+
+    assert {node.id for node in nodes} == {"multi-read-a", "multi-read-b"}
+    assert {node.doc_id for node in nodes} == {"doc-a", "doc-b"}
+
+
 def test_public_rust_postgres_node_add_is_atomic_with_event_and_jobs(
     monkeypatch: pytest.MonkeyPatch,
     pg_dsn: str | None,

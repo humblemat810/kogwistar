@@ -546,12 +546,15 @@ deployment canary evidence required to make Rust its live default writer.
   node-ref/endpoint tables remain disposable Python adapters driven by native
   index jobs. `graph-pgvector` remains not ready pending capability-specific
   production canaries. Chroma remains a Python single-writer adapter.
-- Coordinated sync PostgreSQL now routes exact singleton base node/edge/document reads
-  through the native projection ABI. Rust projection reads accept legacy Python
-  default-scope rows lacking scope metadata. Single-vector node/edge queries
-  with exact-equality metadata filters also use the native projection ABI;
-  multi-row gets, complex-filter queries, and derived-index reads remain Python
-  adapters pending ordering and filter contract cutover.
+- Coordinated sync PostgreSQL routes base node/edge/document reads, including
+  multi-ID gets with exact-equality metadata filters, through the native
+  projection ABI. Rust projection reads accept legacy Python default-scope rows
+  lacking scope metadata. A live pgvector test verifies multi-ID node selection,
+  missing-ID omission, metadata filtering, and no Python backend fallback. Rust
+  orders projection rows by ID while Python PostgreSQL leaves row order
+  unspecified; ordering parity is not yet frozen, so this evidence does not
+  close the `graph-pgvector` cutover gate. Complex-filter queries and
+  derived-index reads remain Python adapters.
 - Rust runtime owns recorded durable reducer/scheduler slices, not the full
   public `WorkflowRuntime` resolver and side-effect lifecycle.
   `ADR-015-runtime-semantics-contract.md` now freezes the bounded Python
