@@ -298,6 +298,123 @@ async fn document_projection_upsert_reopens_and_retries_idempotently_when_dsn_av
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn document_source_group_delete_is_scoped_atomic_and_idempotent() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("document_group_delete");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let scope = GraphScope {
+        namespace: "docs-group-delete".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let other_scope = GraphScope {
+        graph_space: Some("wisdom".to_owned()),
+        ..scope.clone()
+    };
+    for (id, doc_id) in [
+        ("source-doc", "source-doc"),
+        ("source-doc::chunk-1", "source-doc"),
+        ("source-doc::chunk-2", "source-doc"),
+        ("other-source::chunk-1", "other-source"),
+    ] {
+        let mut metadata = Map::new();
+        metadata.insert("doc_id".to_owned(), Value::String(doc_id.to_owned()));
+        store
+            .upsert_graph_projection(GraphProjectionUpsert {
+                scope: scope.clone(),
+                table: "gke_documents".to_owned(),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some("chunk text".to_owned()),
+                    metadata,
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            })
+            .await?;
+    }
+    let mut other_scope_metadata = Map::new();
+    other_scope_metadata.insert("doc_id".to_owned(), Value::String("source-doc".to_owned()));
+    store
+        .upsert_graph_projection(GraphProjectionUpsert {
+            scope: other_scope.clone(),
+            table: "gke_documents".to_owned(),
+            record: GraphRecord {
+                id: "other-scope::chunk-1".to_owned(),
+                document: Some("other scope chunk".to_owned()),
+                metadata: other_scope_metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
+        })
+        .await?;
+
+    let deleted = DocumentStore::delete_document_projections_by_source_id(
+        &store,
+        scope.clone(),
+        "source-doc".to_owned(),
+    )
+    .await?;
+    assert_eq!(
+        deleted,
+        ["source-doc", "source-doc::chunk-1", "source-doc::chunk-2"]
+    );
+    assert!(
+        DocumentStore::delete_document_projections_by_source_id(
+            &store,
+            scope.clone(),
+            "source-doc".to_owned(),
+        )
+        .await?
+        .is_empty()
+    );
+    let remaining = store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_documents".to_owned(),
+            ids: None,
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 20,
+        })
+        .await?;
+    assert_eq!(
+        remaining
+            .iter()
+            .map(|row| row.id.as_str())
+            .collect::<Vec<_>>(),
+        ["other-source::chunk-1"]
+    );
+    let other_scope_rows = store
+        .graph_projection_records(GraphProjectionRead {
+            scope: other_scope,
+            table: "gke_documents".to_owned(),
+            ids: None,
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 20,
+        })
+        .await?;
+    assert_eq!(other_scope_rows.len(), 1);
+    assert_eq!(other_scope_rows[0].id, "other-scope::chunk-1");
+
+    let cleanup = store.client().await?;
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn graph_projection_identity_is_scoped_and_legacy_rows_survive_schema_upgrade()
 -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")

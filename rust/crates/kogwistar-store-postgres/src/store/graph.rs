@@ -158,6 +158,26 @@ impl PostgresStore {
         .await
     }
 
+    /// Remove every document chunk associated with a source ID in one scoped transaction.
+    pub async fn delete_document_projections_by_source_id(
+        &self,
+        scope: GraphScope,
+        source_document_id: String,
+    ) -> PostgresStoreResult<Vec<String>> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                delete_source_document_projections_by_source_id(
+                    &uow.transaction,
+                    &uow.tables,
+                    &scope,
+                    &source_document_id,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     pub async fn patch_graph_projection_metadata(
         &self,
         patch: GraphProjectionMetadataPatch,

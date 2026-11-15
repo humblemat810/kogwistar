@@ -54,4 +54,17 @@ impl DocumentStore for SqliteStore {
         SqliteStore::delete_source_document_projection(self, &scope, &document_id)
             .map_err(trait_error)
     }
+
+    async fn delete_document_projections_by_source_id(
+        &self,
+        scope: GraphScope,
+        source_document_id: String,
+    ) -> StoreResult<Vec<String>> {
+        SqliteStore::delete_source_document_projections_by_source_id(
+            self,
+            &scope,
+            &source_document_id,
+        )
+        .map_err(trait_error)
+    }
 }

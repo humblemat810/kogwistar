@@ -76,6 +76,21 @@ pub trait DocumentStore: Send + Sync {
         }
     }
 
+    /// Delete source-document rows identified by their record ID or `metadata.doc_id`.
+    /// The operation must apply the full graph scope in one backend transaction.
+    fn delete_document_projections_by_source_id(
+        &self,
+        _scope: GraphScope,
+        _source_document_id: String,
+    ) -> impl Future<Output = StoreResult<Vec<String>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "source-document group deletion is not supported by this store".to_owned(),
+            })
+        }
+    }
+
     fn document_authority_capability(&self) -> DocumentAuthorityCapability {
         DocumentAuthorityCapability::Unsupported
     }

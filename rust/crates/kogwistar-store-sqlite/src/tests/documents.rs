@@ -141,6 +141,88 @@ fn source_document_projection_delete_is_scoped_and_idempotent() {
 }
 
 #[test]
+fn source_document_group_delete_removes_all_matching_chunks_within_scope() {
+    let (store, path) = store("source-document-group-delete");
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let other_scope = GraphScope {
+        graph_space: Some("wisdom".to_owned()),
+        ..scope.clone()
+    };
+    for id in ["source-doc", "source-doc::chunk-1", "source-doc::chunk-2"] {
+        let mut projection = source_document(scope.clone(), id, "chunk text");
+        projection
+            .record
+            .metadata
+            .insert("doc_id".to_owned(), serde_json::json!("source-doc"));
+        store.upsert_source_document_projection(projection).unwrap();
+    }
+    store
+        .upsert_source_document_projection(source_document(
+            scope.clone(),
+            "other-source::chunk-1",
+            "unrelated text",
+        ))
+        .unwrap();
+    let mut other_scope_row = source_document(
+        other_scope.clone(),
+        "other-scope::chunk-1",
+        "other scope text",
+    );
+    other_scope_row
+        .record
+        .metadata
+        .insert("doc_id".to_owned(), serde_json::json!("source-doc"));
+    store
+        .upsert_source_document_projection(other_scope_row)
+        .unwrap();
+
+    let deleted = block_on(DocumentStore::delete_document_projections_by_source_id(
+        &store,
+        scope.clone(),
+        "source-doc".to_owned(),
+    ))
+    .unwrap();
+    assert_eq!(
+        deleted,
+        ["source-doc", "source-doc::chunk-1", "source-doc::chunk-2"]
+    );
+    assert!(
+        block_on(DocumentStore::delete_document_projections_by_source_id(
+            &store,
+            scope.clone(),
+            "source-doc".to_owned(),
+        ))
+        .unwrap()
+        .is_empty()
+    );
+    assert!(
+        store
+            .source_document_projection(&scope, "source-doc::chunk-1")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        store
+            .source_document_projection(&scope, "other-source::chunk-1")
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .source_document_projection(&other_scope, "other-scope::chunk-1")
+            .unwrap()
+            .is_some()
+    );
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn source_document_write_participates_in_the_sqlite_unit_of_work() {
     let (store, path) = store("source-document-uow");
     let scope = GraphScope {

@@ -26,6 +26,16 @@ impl SqliteStore {
         self.immediate_transaction(|uow| uow.delete_source_document_projection(scope, document_id))
     }
 
+    pub fn delete_source_document_projections_by_source_id(
+        &self,
+        scope: &GraphScope,
+        source_document_id: &str,
+    ) -> SqliteStoreResult<Vec<String>> {
+        self.immediate_transaction(|uow| {
+            uow.delete_source_document_projections_by_source_id(scope, source_document_id)
+        })
+    }
+
     pub fn get_named_projection(
         &self,
         namespace: &str,

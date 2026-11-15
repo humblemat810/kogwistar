@@ -124,4 +124,14 @@ impl DocumentStore for PostgresStore {
             .await
             .map_err(trait_error)
     }
+
+    async fn delete_document_projections_by_source_id(
+        &self,
+        scope: GraphScope,
+        source_document_id: String,
+    ) -> StoreResult<Vec<String>> {
+        PostgresStore::delete_document_projections_by_source_id(self, scope, source_document_id)
+            .await
+            .map_err(trait_error)
+    }
 }
