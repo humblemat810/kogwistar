@@ -87,3 +87,7 @@ mod index_jobs;
 mod lane_messages;
 mod projections;
 mod recorded_runtime;
+
+pub use document_rollback::{
+    AppliedDocumentEdgeRollbackPage, AppliedDocumentNodeRollbackPage, AppliedDocumentRollback,
+};
