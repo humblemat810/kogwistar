@@ -77,11 +77,12 @@ def _rust_graph_tool(
     namespace: str,
     tool_name: str,
     arguments: dict[str, object],
+    namespaces: list[str] | None = None,
 ) -> dict[str, object]:
     now = int(time.time())
     claims = {
         "sub": "interop-reader",
-        "ns": ["knowledge"],
+        "ns": namespaces or ["knowledge"],
         "storage_ns": namespace,
         "capabilities": ["read_graph"],
         "roles": ["reader"],
@@ -491,6 +492,7 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
                     namespace=namespace,
                     tool_name="kg_semantic_seed_then_expand_text",
                     arguments={"text": "source concept", "top_k": 10, "hops": 0},
+                        namespaces=["docs"],
                 )
             except AssertionError as error:
                 rust_log.flush()
