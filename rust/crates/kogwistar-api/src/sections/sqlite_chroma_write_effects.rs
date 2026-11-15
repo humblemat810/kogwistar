@@ -619,10 +619,12 @@ impl SqliteRunApplicationService {
                 std::slice::from_ref(&mutation),
                 targets,
                 existing,
-                "conversation",
-                &owner_acl_id,
-                acl_scope.as_deref(),
-                &event_id,
+                AclDefaultsContext {
+                    truth_graph: "conversation",
+                    owner_id: &owner_acl_id,
+                    security_scope: acl_scope.as_deref(),
+                    effect_id: &event_id,
+                },
             )
             .map_err(SqliteStoreError::TransactionAborted)?;
             index_jobs.push(NewIndexJob {

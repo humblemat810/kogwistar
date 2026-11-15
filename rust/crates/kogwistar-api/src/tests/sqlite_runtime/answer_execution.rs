@@ -314,7 +314,7 @@
             )
             .to_string();
             let snapshot_events = sqlite
-                .latest_entity_events("conversation", "node", &[snapshot_id.clone()])
+                .latest_entity_events("conversation", "node", std::slice::from_ref(&snapshot_id))
                 .unwrap();
             assert!(snapshot_events
                 .get(&snapshot_id)
@@ -414,7 +414,7 @@
         .to_string();
         let selection_snapshot_events = service
             .store
-            .latest_entity_events("conversation", "node", &[selection_snapshot_id.clone()])
+            .latest_entity_events("conversation", "node", std::slice::from_ref(&selection_snapshot_id))
             .unwrap();
         assert!(selection_snapshot_events
             .get(&selection_snapshot_id)
@@ -475,7 +475,7 @@
         assert!(rejected.is_err());
         assert!(service
             .store
-            .latest_entity_events("conversation", "node", &[snapshot_id.clone()])
+            .latest_entity_events("conversation", "node", std::slice::from_ref(&snapshot_id))
             .unwrap()
             .is_empty(), "unsupported operation version must fail before snapshot persistence");
         let result = service.execute_sqlite_native_answer_generation(

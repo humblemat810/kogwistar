@@ -835,10 +835,12 @@ impl SqliteRunApplicationService {
                 &new_mutations,
                 acl_targets_for_graph_mutations(&new_mutations).0,
                 acl_records,
-                "wisdom",
-                &owner_id,
-                security_scope.as_deref(),
-                &uuid::Uuid::new_v4().to_string(),
+                AclDefaultsContext {
+                    truth_graph: "wisdom",
+                    owner_id: &owner_id,
+                    security_scope: security_scope.as_deref(),
+                    effect_id: &uuid::Uuid::new_v4().to_string(),
+                },
             )
             .map_err(SqliteStoreError::TransactionAborted)?;
             let mut all_mutations = mutations.clone();
@@ -1354,10 +1356,12 @@ impl PostgresRunApplicationService {
                         uow,
                         &scope,
                         &new_mutations,
-                        "wisdom",
-                        &owner_id,
-                        security_scope.as_deref(),
-                        &effect_id,
+                        AclDefaultsContext {
+                            truth_graph: "wisdom",
+                            owner_id: &owner_id,
+                            security_scope: security_scope.as_deref(),
+                            effect_id: &effect_id,
+                        },
                     )
                     .await?;
                     for mutation in mutations.into_iter().chain(acl_mutations) {

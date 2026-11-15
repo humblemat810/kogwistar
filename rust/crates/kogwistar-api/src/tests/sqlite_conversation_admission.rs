@@ -872,7 +872,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     assert!(
         service
             .store
-            .latest_entity_events("conversation", "node", &[projected_pointer.clone()])
+            .latest_entity_events("conversation", "node", std::slice::from_ref(&projected_pointer))
             .unwrap()
             .contains_key(&projected_pointer)
     );
@@ -882,7 +882,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         .to_owned();
     let assistant = service
         .store
-        .latest_entity_events("conversation", "node", &[assistant_id.clone()])
+        .latest_entity_events("conversation", "node", std::slice::from_ref(&assistant_id))
         .unwrap();
     assert!(
         assistant.contains_key(&assistant_id),
@@ -908,9 +908,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     {
         let actual = path
             .split('.')
-            .fold(Some(&assistant_payload), |value, key| {
-                value.and_then(|value| value.get(key))
-            });
+            .try_fold(&assistant_payload, |value, key| value.get(key));
         assert_eq!(actual, Some(expected), "assistant projection mismatch at {path}");
     }
     let edges = service
@@ -955,9 +953,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     {
         let actual = path
             .split('.')
-            .fold(Some(&generated_edge), |value, key| {
-                value.and_then(|value| value.get(key))
-            });
+            .try_fold(&generated_edge, |value, key| value.get(key));
         assert_eq!(actual, Some(expected), "generated edge projection mismatch at {path}");
     }
 
@@ -1348,7 +1344,7 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     assert!(
         service
             .store
-            .latest_entity_events("conversation", "node", &[agentic_assistant_id.clone()],)
+            .latest_entity_events("conversation", "node", std::slice::from_ref(&agentic_assistant_id),)
             .unwrap()
             .contains_key(&agentic_assistant_id)
     );

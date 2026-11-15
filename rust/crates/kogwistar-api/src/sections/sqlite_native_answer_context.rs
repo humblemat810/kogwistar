@@ -17,11 +17,10 @@ impl SqliteRunApplicationService {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
-        if let Some(caller) = caller {
-            if authenticated_run_owner_id(caller) != Some(owner_id) {
+        if let Some(caller) = caller
+            && authenticated_run_owner_id(caller) != Some(owner_id) {
                 return Err(NativeEvidenceContextError::CallerNotRunOwner);
             }
-        }
         let mut principal = self
             .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
             .await
@@ -83,11 +82,10 @@ impl SqliteRunApplicationService {
             .as_deref()
             .filter(|value| !value.trim().is_empty())
             .ok_or(NativeEvidenceContextError::OwnerAuthorization)?;
-        if let Some(caller) = caller {
-            if authenticated_run_owner_id(caller) != Some(owner_id) {
+        if let Some(caller) = caller
+            && authenticated_run_owner_id(caller) != Some(owner_id) {
                 return Err(NativeEvidenceContextError::CallerNotRunOwner);
             }
-        }
         let mut principal = self
             .resolve_inline_native_owner_principal(&request.run_id, "read_graph")
             .await
@@ -829,10 +827,12 @@ impl SqliteRunApplicationService {
                     &mutations,
                     acl_targets,
                     existing,
-                    "conversation",
-                    &owner_acl_id,
-                    acl_scope.as_deref(),
-                    &effect_id,
+                    AclDefaultsContext {
+                        truth_graph: "conversation",
+                        owner_id: &owner_acl_id,
+                        security_scope: acl_scope.as_deref(),
+                        effect_id: &effect_id,
+                    },
                 )
                 .map_err(SqliteStoreError::TransactionAborted)?;
                 let mut all_mutations = mutations;
@@ -1001,12 +1001,14 @@ impl SqliteRunApplicationService {
                     uow.graph_acl_records_for_entities(
                         &scope,
                         "conversation",
-                        &[message_id.clone()],
+                        std::slice::from_ref(&message_id),
                     )?,
-                    "conversation",
-                    &owner_acl_id,
-                    acl_scope.as_deref(),
-                    &publication.event.event_id,
+                    AclDefaultsContext {
+                        truth_graph: "conversation",
+                        owner_id: &owner_acl_id,
+                        security_scope: acl_scope.as_deref(),
+                        effect_id: &publication.event.event_id,
+                    },
                 )
                 .map_err(SqliteStoreError::TransactionAborted)?;
                 let mut graph_mutations = mutations;

@@ -124,7 +124,7 @@ async fn postgres_hybrid_search_is_available_over_authenticated_http() {
         service.embedding_provider.as_ref().unwrap().as_ref(),
         &namespace,
         "gke_node_index",
-        &[entry.clone()],
+        std::slice::from_ref(&entry),
     )
     .await
     .unwrap();

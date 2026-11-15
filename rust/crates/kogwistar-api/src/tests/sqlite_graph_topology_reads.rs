@@ -316,13 +316,14 @@
             .with_search_index_path(&search_index_path)
             .unwrap()
             .with_embedding_provider(Arc::new(TestTextEmbedder));
-        let fts = service.search_index_fts.as_ref().unwrap().lock().unwrap();
-        let lexical_candidates = crate::search_index_fts::search_fts(&fts, "review", 10).unwrap();
-        assert!(
-            lexical_candidates.iter().any(|hit| hit.node_id == "n7"),
-            "private-span node must be a real lexical candidate: {lexical_candidates:?}"
-        );
-        drop(fts);
+        {
+            let fts = service.search_index_fts.as_ref().unwrap().lock().unwrap();
+            let lexical_candidates = crate::search_index_fts::search_fts(&fts, "review", 10).unwrap();
+            assert!(
+                lexical_candidates.iter().any(|hit| hit.node_id == "n7"),
+                "private-span node must be a real lexical candidate: {lexical_candidates:?}"
+            );
+        }
         let graph = service.chroma_graph.as_ref().unwrap();
         let filter = MetadataFilter::default();
         let (nodes, edges) = tokio::try_join!(

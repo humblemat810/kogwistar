@@ -118,6 +118,7 @@ fn parse_unique_json_object(input: &str) -> Result<serde_json::Map<String, Value
 /// Normalizes OpenAI-compatible Chat Completions SSE into the shared event contract.
 /// It deliberately does not execute tool calls; streamed tool arguments need a
 /// separate authorization and completion boundary before they can be dispatched.
+#[derive(Default)]
 pub(crate) struct ChatCompletionEventStream {
     buffer: Vec<u8>,
     response_bytes: usize,
@@ -131,25 +132,6 @@ pub(crate) struct ChatCompletionEventStream {
     tool_calls: std::collections::BTreeMap<usize, ToolCallBuffer>,
     tool_argument_bytes: usize,
     finish_reason: Option<String>,
-}
-
-impl Default for ChatCompletionEventStream {
-    fn default() -> Self {
-        Self {
-            buffer: Vec::new(),
-            response_bytes: 0,
-            sequence: 0,
-            response_id: None,
-            text: String::new(),
-            completed_fields: BTreeSet::new(),
-            field_scanner: JsonFieldScanner::default(),
-            started: false,
-            completed: false,
-            tool_calls: std::collections::BTreeMap::new(),
-            tool_argument_bytes: 0,
-            finish_reason: None,
-        }
-    }
 }
 
 impl ChatCompletionEventStream {

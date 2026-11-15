@@ -1140,8 +1140,7 @@ impl PostgresRunApplicationService {
             && (tail.is_empty()
                 || (tail.as_slice() == ["steps"]
                     && request.path_and_query.starts_with("/api/workflow/runs/")))
-        {
-            if let (Some(auth_store), Some(user_id)) = (
+            && let (Some(auth_store), Some(user_id)) = (
                 self.owner_auth_store.as_ref(),
                 authenticated_run_owner_id(&request.principal),
             ) {
@@ -1166,7 +1165,6 @@ impl PostgresRunApplicationService {
                     }
                 }
             }
-        }
         if request.method == "GET" && tail == ["lineage"] {
             let user_id = request
                 .principal

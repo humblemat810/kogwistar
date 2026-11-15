@@ -514,31 +514,33 @@ where
     }
 
     let mut events_projected = 0;
-    while target_seq > 0 {
-        let prior = event_store
-            .replay_cursor(namespace, "search-index-fts-vector-v1")
+    if target_seq > 0 {
+        loop {
+            let prior = event_store
+                .replay_cursor(namespace, "search-index-fts-vector-v1")
+                .await?;
+            if prior.last_seq >= target_seq {
+                break;
+            }
+            let replay = replay_search_index_events(
+                event_store,
+                vector_store,
+                fts,
+                provider,
+                namespace,
+                vector_index,
+                "search-index-fts-vector-v1",
+                1000,
+            )
             .await?;
-        if prior.last_seq >= target_seq {
-            break;
+            if replay.new_cursor <= prior.last_seq {
+                return Err(StoreError::InvalidEntityEventPayload {
+                    message: "search-index replay made no progress toward the admitted events"
+                        .to_owned(),
+                });
+            }
+            events_projected += replay.events_read;
         }
-        let replay = replay_search_index_events(
-            event_store,
-            vector_store,
-            fts,
-            provider,
-            namespace,
-            vector_index,
-            "search-index-fts-vector-v1",
-            1000,
-        )
-        .await?;
-        if replay.new_cursor <= prior.last_seq {
-            return Err(StoreError::InvalidEntityEventPayload {
-                message: "search-index replay made no progress toward the admitted events"
-                    .to_owned(),
-            });
-        }
-        events_projected += replay.events_read;
     }
     Ok(SearchIndexAdmissionSummary {
         entries_admitted: entries.len(),
@@ -550,6 +552,10 @@ where
 /// Replay canonical search-index events into the disposable FTS and vector
 /// projections. The cursor advances only after both projections succeed;
 /// therefore a failure between writes safely retries idempotent upserts.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Public replay API keeps explicit stores and replay controls for compatibility"
+)]
 ///
 /// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/search_index_fts.rs#replay_search_index_events; python=kogwistar/engine_core/subsystems/persist.py#PersistSubsystem.replay_namespace; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/search_index_fts.rs#search_index_admission_is_durable_idempotent_and_retryable; python_test=tests/cdc/test_search_index_cdc.py#test_search_index_replay
 pub async fn replay_search_index_events<E, V>(
@@ -788,7 +794,6 @@ mod tests {
     };
     use kogwistar_store_memory::InMemoryStore;
     use serde_json::Value;
-    use std::path::PathBuf;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -1394,7 +1399,7 @@ mod tests {
     #[test]
     fn index_reopen_and_upsert_keep_fts_projection_in_sync() {
         let (request, _) = fixture();
-        let path = PathBuf::from(std::env::temp_dir()).join(format!(
+        let path = std::env::temp_dir().join(format!(
             "kogwistar-search-index-{}.sqlite3",
             uuid::Uuid::new_v4()
         ));

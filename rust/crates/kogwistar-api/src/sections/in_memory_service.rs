@@ -528,16 +528,16 @@ impl InMemoryGraphApplicationService {
             return Err("provider-event graph scope changed before acknowledgement".to_owned());
         }
         let workflow_node_id = handoff.step_id.as_str();
-        let mut mutations = provider_event_ack_graph_mutations(
-            &acknowledgement.event_id,
-            &handoff.run_id,
+        let mut mutations = provider_event_ack_graph_mutations(ProviderEventAckGraphInput {
+            event_id: &acknowledgement.event_id,
+            run_id: &handoff.run_id,
             conversation_id,
             workflow_id,
             workflow_node_id,
             step_seq,
-            &effect.effect_id,
-            &scope,
-        );
+            effect_id: &effect.effect_id,
+            scope: &scope,
+        });
         mutations.extend(provider_event_step_link_mutations(
             &acknowledgement.event_id,
             &handoff.run_id,
@@ -582,10 +582,12 @@ impl InMemoryGraphApplicationService {
             &mutations,
             targets,
             existing_acl,
-            "conversation",
-            &graph_acl_principal_id(&principal),
-            security_scope["security_scope"].as_str(),
-            &acknowledgement.event_id,
+            AclDefaultsContext {
+                truth_graph: "conversation",
+                owner_id: &graph_acl_principal_id(&principal),
+                security_scope: security_scope["security_scope"].as_str(),
+                effect_id: &acknowledgement.event_id,
+            },
         )?;
         mutations.extend(acl_mutations);
 
@@ -974,10 +976,12 @@ impl InMemoryGraphApplicationService {
             &mutations,
             acl_targets_for_graph_mutations(&mutations).0,
             existing_acl,
-            "conversation",
-            &graph_acl_principal_id(&commit_principal),
-            security_scope["security_scope"].as_str(),
-            &durable.event_id,
+            AclDefaultsContext {
+                truth_graph: "conversation",
+                owner_id: &graph_acl_principal_id(&commit_principal),
+                security_scope: security_scope["security_scope"].as_str(),
+                effect_id: &durable.event_id,
+            },
         )?;
         mutations.extend(acl_mutations);
         let event_payload = serde_json::to_string(&durable)
@@ -1585,13 +1589,12 @@ impl InMemoryGraphApplicationService {
                     .to_owned(),
             );
         }
-        if let Some(where_filter) = input.where_filter.as_ref() {
-            if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+        if let Some(where_filter) = input.where_filter.as_ref()
+            && let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
                 &json!({"metadata": {}, "where": where_filter}).to_string(),
             ) {
                 return invalid_graph_request(error.to_string());
             }
-        }
         let (all_nodes, all_edges) = match self.graph_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
@@ -2621,10 +2624,12 @@ impl InMemoryGraphApplicationService {
             std::slice::from_ref(&mutation),
             targets,
             existing_acl,
-            "conversation",
-            &owner_acl_id,
-            acl_scope.as_deref(),
-            &event_id,
+            AclDefaultsContext {
+                truth_graph: "conversation",
+                owner_id: &owner_acl_id,
+                security_scope: acl_scope.as_deref(),
+                effect_id: &event_id,
+            },
         ) {
             Ok(effects) => effects,
             Err(error) => {

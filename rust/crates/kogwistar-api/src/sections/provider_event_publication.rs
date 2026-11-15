@@ -213,7 +213,7 @@ fn provider_event_graph_mutations(
     let recipient_id = "agent-event-consumer";
     let conversation_anchor = stable_id(
         "lane_message_conversation",
-        &[publication.conversation_id.clone()],
+        std::slice::from_ref(&publication.conversation_id),
     )
     .to_string();
     let inbox_anchor = stable_id("lane_message_inbox", &[inbox_id.to_owned()]).to_string();
@@ -414,16 +414,28 @@ fn provider_event_node_mutation(
     }
 }
 
-fn provider_event_ack_graph_mutations(
-    event_id: &str,
-    run_id: &str,
-    conversation_id: &str,
-    workflow_id: &str,
-    workflow_node_id: &str,
+struct ProviderEventAckGraphInput<'a> {
+    event_id: &'a str,
+    run_id: &'a str,
+    conversation_id: &'a str,
+    workflow_id: &'a str,
+    workflow_node_id: &'a str,
     step_seq: i64,
-    effect_id: &str,
-    scope: &GraphScope,
-) -> Vec<GraphMutation> {
+    effect_id: &'a str,
+    scope: &'a GraphScope,
+}
+
+fn provider_event_ack_graph_mutations(input: ProviderEventAckGraphInput<'_>) -> Vec<GraphMutation> {
+    let ProviderEventAckGraphInput {
+        event_id,
+        run_id,
+        conversation_id,
+        workflow_id,
+        workflow_node_id,
+        step_seq,
+        effect_id,
+        scope,
+    } = input;
     let step_node_id = format!("wf_step|{run_id}|{step_seq}");
     let step_metadata = json!({
         "entity_type": "workflow_step_exec",
@@ -1062,10 +1074,12 @@ impl PostgresRunApplicationService {
                         &conversation_schema,
                         &scope,
                         std::slice::from_ref(&message_mutation),
-                        "conversation",
-                        &current_acl_owner_id,
-                        current_acl_scope.as_deref(),
-                        &publication.event.event_id,
+                        AclDefaultsContext {
+                            truth_graph: "conversation",
+                            owner_id: &current_acl_owner_id,
+                            security_scope: current_acl_scope.as_deref(),
+                            effect_id: &publication.event.event_id,
+                        },
                     )
                     .await?;
                     for mutation in mutations {

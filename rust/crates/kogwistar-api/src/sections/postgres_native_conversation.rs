@@ -643,10 +643,12 @@ impl PostgresRunApplicationService {
                         &conversation_schema,
                         &scope,
                         &mutations,
-                        "conversation",
-                        &owner_id,
-                        acl_scope.as_deref(),
-                        &effect_id,
+                        AclDefaultsContext {
+                            truth_graph: "conversation",
+                            owner_id: &owner_id,
+                            security_scope: acl_scope.as_deref(),
+                            effect_id: &effect_id,
+                        },
                     )
                     .await?;
                     for mutation in mutations {
@@ -1284,10 +1286,12 @@ impl PostgresRunApplicationService {
                         uow,
                         &scope,
                         std::slice::from_ref(&mutation),
-                        "conversation",
-                        &owner_id,
-                        security_scope.as_deref(),
-                        &event_id,
+                        AclDefaultsContext {
+                            truth_graph: "conversation",
+                            owner_id: &owner_id,
+                            security_scope: security_scope.as_deref(),
+                            effect_id: &event_id,
+                        },
                     )
                     .await?;
                     uow.apply_graph_mutation(mutation).await?;

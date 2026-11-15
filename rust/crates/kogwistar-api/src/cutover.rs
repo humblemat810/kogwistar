@@ -56,6 +56,7 @@ fn native_runtime_registry_is_complete(registered: &[(String, String)]) -> bool 
         })
 }
 
+#[cfg(test)]
 fn pending_server_routes_are_valid() -> bool {
     pending_server_routes_are_valid_for(PENDING_SERVER_CUTOVER_ROUTES, FROZEN_OPENAPI_ROUTES)
 }

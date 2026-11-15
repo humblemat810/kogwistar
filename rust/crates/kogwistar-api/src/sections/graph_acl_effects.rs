@@ -4,24 +4,26 @@ use kogwistar_store_postgres::{PostgresStoreError, PostgresUnitOfWork};
 type AclTargetKey = (String, String, String);
 type AclMutationTarget = (String, AclTargetKey);
 
+#[derive(Clone, Copy)]
+struct AclDefaultsContext<'a> {
+    truth_graph: &'a str,
+    owner_id: &'a str,
+    security_scope: Option<&'a str>,
+    effect_id: &'a str,
+}
+
 async fn resolve_default_acl_graph_effects(
     uow: &PostgresUnitOfWork<'_>,
     scope: &GraphScope,
     mutations: &[GraphMutation],
-    truth_graph: &str,
-    owner_id: &str,
-    security_scope: Option<&str>,
-    effect_id: &str,
+    context: AclDefaultsContext<'_>,
 ) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
     resolve_default_acl_graph_effects_with_schema(
         uow,
         None,
         scope,
         mutations,
-        truth_graph,
-        owner_id,
-        security_scope,
-        effect_id,
+        context,
     )
     .await
 }
@@ -31,20 +33,14 @@ async fn resolve_default_acl_graph_effects_in_schema(
     schema: &str,
     scope: &GraphScope,
     mutations: &[GraphMutation],
-    truth_graph: &str,
-    owner_id: &str,
-    security_scope: Option<&str>,
-    effect_id: &str,
+    context: AclDefaultsContext<'_>,
 ) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
     resolve_default_acl_graph_effects_with_schema(
         uow,
         Some(schema),
         scope,
         mutations,
-        truth_graph,
-        owner_id,
-        security_scope,
-        effect_id,
+        context,
     )
     .await
 }
@@ -54,10 +50,7 @@ async fn resolve_default_acl_graph_effects_with_schema(
     schema: Option<&str>,
     scope: &GraphScope,
     mutations: &[GraphMutation],
-    truth_graph: &str,
-    owner_id: &str,
-    security_scope: Option<&str>,
-    effect_id: &str,
+    context: AclDefaultsContext<'_>,
 ) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), PostgresStoreError> {
     let (targets, lock_targets) = acl_targets_for_graph_mutations(mutations);
 
@@ -79,13 +72,13 @@ async fn resolve_default_acl_graph_effects_with_schema(
             uow.graph_acl_records_for_entities_in_schema(
                 schema,
                 scope,
-                truth_graph,
+                context.truth_graph,
                 &target_entity_ids,
             )
             .await?
         }
         None => {
-            uow.graph_acl_records_for_entities(scope, truth_graph, &target_entity_ids)
+            uow.graph_acl_records_for_entities(scope, context.truth_graph, &target_entity_ids)
                 .await?
         }
     };
@@ -94,10 +87,7 @@ async fn resolve_default_acl_graph_effects_with_schema(
         mutations,
         targets,
         existing,
-        truth_graph,
-        owner_id,
-        security_scope,
-        effect_id,
+        context,
     )
     .map_err(PostgresStoreError::Backend)
 }
@@ -165,10 +155,7 @@ fn derive_default_acl_graph_effects_from_records(
     mutations: &[GraphMutation],
     targets: BTreeSet<AclMutationTarget>,
     existing: Vec<GraphRecord>,
-    truth_graph: &str,
-    owner_id: &str,
-    security_scope: Option<&str>,
-    effect_id: &str,
+    context: AclDefaultsContext<'_>,
 ) -> Result<(Vec<GraphMutation>, Vec<NewIndexJob>), String> {
     if targets.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -195,8 +182,8 @@ fn derive_default_acl_graph_effects_from_records(
             if previous.is_some_and(|record| {
                 default_acl_matches(
                     record,
-                    owner_id,
-                    security_scope,
+                    context.owner_id,
+                    context.security_scope,
                     &mode,
                     &shared_principals,
                     &shared_groups,
@@ -212,33 +199,33 @@ fn derive_default_acl_graph_effects_from_records(
                 .ok_or_else(|| "ACL version overflow".to_owned())?;
             let acl_node = acl_record_mutation(
                 scope,
-                truth_graph,
+                context.truth_graph,
                 grain,
                 entity_id,
                 target_item_id,
                 version,
-                owner_id,
-                security_scope,
+                context.owner_id,
+                context.security_scope,
                 &mode,
                 &shared_principals,
                 &shared_groups,
-                effect_id,
+                context.effect_id,
             );
-            derived_jobs.extend(acl_index_jobs(scope, &acl_node, effect_id));
+            derived_jobs.extend(acl_index_jobs(scope, &acl_node, context.effect_id));
             derived_mutations.push(acl_node);
             if let Some(previous) = previous {
                 let current_id = derived_mutations.last().expect("just appended ACL node").record.id.clone();
                 let supersedes = acl_supersedes_mutation(
                     scope,
-                    truth_graph,
+                    context.truth_graph,
                     entity_id,
                     grain,
                     target_item_id,
                     &current_id,
                     &previous.id,
-                    effect_id,
+                    context.effect_id,
                 );
-                derived_jobs.extend(acl_index_jobs(scope, &supersedes, effect_id));
+                derived_jobs.extend(acl_index_jobs(scope, &supersedes, context.effect_id));
                 derived_mutations.push(supersedes);
             }
         }
@@ -686,10 +673,12 @@ mod graph_acl_effects_unit_tests {
             std::slice::from_ref(&mutation),
             targets.clone(),
             Vec::new(),
-            "wisdom",
-            "owner-a",
-            Some("tenant-a"),
-            "effect-1",
+            AclDefaultsContext {
+                truth_graph: "wisdom",
+                owner_id: "owner-a",
+                security_scope: Some("tenant-a"),
+                effect_id: "effect-1",
+            },
         )
         .unwrap();
         assert_eq!(derived.len(), 1);
@@ -703,10 +692,12 @@ mod graph_acl_effects_unit_tests {
             std::slice::from_ref(&mutation),
             targets,
             vec![existing],
-            "wisdom",
-            "owner-a",
-            Some("tenant-a"),
-            "effect-2",
+            AclDefaultsContext {
+                truth_graph: "wisdom",
+                owner_id: "owner-a",
+                security_scope: Some("tenant-a"),
+                effect_id: "effect-2",
+            },
         )
         .unwrap();
         assert!(unchanged.is_empty());
@@ -747,10 +738,12 @@ mod graph_acl_effects_unit_tests {
             &mutations,
             targets,
             Vec::new(),
-            "knowledge",
-            "writer",
-            None,
-            "effect-same-id",
+            AclDefaultsContext {
+                truth_graph: "knowledge",
+                owner_id: "writer",
+                security_scope: None,
+                effect_id: "effect-same-id",
+            },
         )
         .unwrap();
 
@@ -812,10 +805,12 @@ mod graph_acl_effects_unit_tests {
             std::slice::from_ref(&mutation),
             targets,
             Vec::new(),
-            "knowledge",
-            "owner-a",
-            None,
-            "effect-public",
+            AclDefaultsContext {
+                truth_graph: "knowledge",
+                owner_id: "owner-a",
+                security_scope: None,
+                effect_id: "effect-public",
+            },
         )
         .unwrap();
         assert_eq!(derived[0].record.metadata["acl_mode"], "public");

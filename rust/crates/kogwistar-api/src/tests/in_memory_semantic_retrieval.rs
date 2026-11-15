@@ -898,14 +898,15 @@ async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
         2,
         "an HTTP retry must not duplicate search-index events"
     );
-    let fts = service.search_index_fts.as_ref().unwrap().lock().unwrap();
-    let lexical_hits = crate::search_index_fts::search_fts(&fts, "permit", 10).unwrap();
-    assert_eq!(
-        lexical_hits.len(),
-        2,
-        "both entries should enter the FTS projection"
-    );
-    drop(fts);
+    {
+        let fts = service.search_index_fts.as_ref().unwrap().lock().unwrap();
+        let lexical_hits = crate::search_index_fts::search_fts(&fts, "permit", 10).unwrap();
+        assert_eq!(
+            lexical_hits.len(),
+            2,
+            "both entries should enter the FTS projection"
+        );
+    }
     let key = kogwistar_contracts::make_search_index_key(
         &request.index[0].node_id,
         &request.index[0].canonical_title,

@@ -717,9 +717,11 @@ async fn sqlite_chroma_wisdom_semantic_retrieval_requires_scope_and_embedding() 
         .collect::<Vec<_>>();
     assert_eq!(first_layer_edges, [json!(edge_id)]);
     assert_eq!(embedding_calls.lock().unwrap().as_slice(), ["a relevant memory"]);
-    let queries = queries.lock().unwrap();
-    assert_eq!(queries.len(), 1);
-    assert_eq!(queries[0]["n_results"], 10);
+    {
+        let queries = queries.lock().unwrap();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0]["n_results"], 10);
+    }
 
     drop(service);
     server.await.unwrap();
@@ -928,11 +930,10 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     let mut legacy_edges = extraction["edges"].as_array().unwrap().clone();
     for entity in legacy_nodes.iter_mut().chain(legacy_edges.iter_mut()) {
         let object = entity.as_object_mut().unwrap();
-        if !object.contains_key("id") {
-            if let Some(local_id) = object.get("local_id").cloned() {
+        if !object.contains_key("id")
+            && let Some(local_id) = object.get("local_id").cloned() {
                 object.insert("id".to_owned(), local_id);
             }
-        }
         object.remove("local_id");
     }
     let legacy_tree = json!({

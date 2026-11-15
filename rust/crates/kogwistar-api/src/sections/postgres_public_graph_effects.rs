@@ -435,10 +435,12 @@ impl PostgresRunApplicationService {
                         uow,
                         &endpoint_scope,
                         &mutations,
-                        &graph_role,
-                        &owner_id,
-                        acl_security_scope.as_deref(),
-                        &acl_effect_id,
+                        AclDefaultsContext {
+                            truth_graph: &graph_role,
+                            owner_id: &owner_id,
+                            security_scope: acl_security_scope.as_deref(),
+                            effect_id: &acl_effect_id,
+                        },
                     )
                     .await?;
                     if let Some(expected_document) = existing_document {

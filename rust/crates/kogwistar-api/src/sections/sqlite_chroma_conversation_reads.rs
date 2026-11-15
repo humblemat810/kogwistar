@@ -36,7 +36,7 @@ impl SqliteRunApplicationService {
         };
         let nodes = graph_snapshot.nodes();
         let transcript =
-            match conversation_transcript_from_visible_records(&nodes, conversation_id, 10_000) {
+            match conversation_transcript_from_visible_records(nodes, conversation_id, 10_000) {
                 Ok(transcript) => transcript,
                 Err(error) => {
                     return effect_error(
@@ -109,7 +109,7 @@ impl SqliteRunApplicationService {
         };
         let nodes = graph_snapshot.nodes();
         let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
-            &nodes,
+            nodes,
             conversation_id,
             run_id.as_deref(),
             stage.as_deref(),
@@ -170,7 +170,7 @@ impl SqliteRunApplicationService {
         };
         let nodes = graph_snapshot.nodes();
         let transcript =
-            match conversation_transcript_from_visible_records(&nodes, &conversation_id, 10_000) {
+            match conversation_transcript_from_visible_records(nodes, &conversation_id, 10_000) {
                 Ok(transcript) => transcript,
                 Err(error) => {
                     return effect_error(
@@ -233,7 +233,7 @@ impl SqliteRunApplicationService {
             Err(response) => return response,
         };
         let nodes = graph_snapshot.nodes();
-        let summary = match conversation_summary_from_visible_records(&nodes, &conversation_id) {
+        let summary = match conversation_summary_from_visible_records(nodes, &conversation_id) {
             Ok(summary) => summary,
             Err(error) => {
                 return effect_error(
@@ -296,7 +296,7 @@ impl SqliteRunApplicationService {
             Err(response) => return response,
         };
         let nodes = graph_snapshot.nodes();
-        let candidates = compact_conversation_list_candidates(&nodes);
+        let candidates = compact_conversation_list_candidates(nodes);
         let mut conversations = ConversationListAccumulator::new(user_id);
         conversations.extend_visible_records(&candidates);
         let conversations = conversations

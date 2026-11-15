@@ -716,10 +716,10 @@ impl AuthStore {
         let Some(role) = self.workflow_acl_role(workflow_id, user_id).await? else {
             return Ok(false);
         };
-        Ok(match (role.as_str(), required_role) {
-            ("rw", "ro" | "rw") | ("ro", "ro") => true,
-            _ => false,
-        })
+        Ok(matches!(
+            (role.as_str(), required_role),
+            ("rw", "ro" | "rw") | ("ro", "ro")
+        ))
     }
 }
 

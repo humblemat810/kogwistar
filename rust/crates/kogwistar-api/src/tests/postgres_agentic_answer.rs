@@ -1757,9 +1757,7 @@
         {
             let actual = path
                 .split('.')
-                .fold(Some(&assistant_document), |value, key| {
-                    value.and_then(|value| value.get(key))
-                });
+                .try_fold(&assistant_document, |value, key| value.get(key));
             assert_eq!(actual, Some(expected), "assistant projection mismatch at {path}");
         }
         assert_eq!(
@@ -1836,9 +1834,7 @@
         {
             let actual = path
                 .split('.')
-                .fold(Some(&generated), |value, key| {
-                    value.and_then(|value| value.get(key))
-                });
+                .try_fold(&generated, |value, key| value.get(key));
             assert_eq!(actual, Some(expected), "generated edge projection mismatch at {path}");
         }
         let lanes = service

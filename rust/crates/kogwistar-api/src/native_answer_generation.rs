@@ -2142,19 +2142,21 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.0["text"], "streamed answer");
-        let observed = observed.lock().unwrap();
-        assert!(observed.iter().any(|event| {
-            event["kind"] == "field_completed" && event["details"]["field_name"] == "text"
-        }));
-        assert!(
-            observed
-                .iter()
-                .any(|event| event["kind"] == "response_completed")
-        );
-        let encoded = serde_json::to_string(&*observed).unwrap();
-        assert!(!encoded.contains("streamed answer"));
-        assert!(!encoded.contains("brief rationale"));
-        assert!(!encoded.contains("text_delta"));
+        {
+            let observed = observed.lock().unwrap();
+            assert!(observed.iter().any(|event| {
+                event["kind"] == "field_completed" && event["details"]["field_name"] == "text"
+            }));
+            assert!(
+                observed
+                    .iter()
+                    .any(|event| event["kind"] == "response_completed")
+            );
+            let encoded = serde_json::to_string(&*observed).unwrap();
+            assert!(!encoded.contains("streamed answer"));
+            assert!(!encoded.contains("brief rationale"));
+            assert!(!encoded.contains("text_delta"));
+        }
         server.await.unwrap();
     }
 
@@ -2391,25 +2393,27 @@ mod tests {
             result.is_err(),
             "length-terminated structured JSON is not a successful answer"
         );
-        let observed = observed.lock().unwrap();
-        let failures = observed
-            .iter()
-            .filter(|event| event["kind"] == "response_failed")
-            .collect::<Vec<_>>();
-        assert_eq!(failures.len(), 3, "each bounded retry reports its failure");
-        assert!(
-            failures
+        {
+            let observed = observed.lock().unwrap();
+            let failures = observed
                 .iter()
-                .all(|event| { event["details"]["error_code"] == "provider_output_truncated" })
-        );
-        assert!(
-            observed
-                .iter()
-                .all(|event| event["kind"] != "response_completed")
-        );
-        let serialized = serde_json::to_string(&*observed).unwrap();
-        assert!(!serialized.contains("must not be accepted"));
-        assert!(!serialized.contains("truncated rationale"));
+                .filter(|event| event["kind"] == "response_failed")
+                .collect::<Vec<_>>();
+            assert_eq!(failures.len(), 3, "each bounded retry reports its failure");
+            assert!(
+                failures
+                    .iter()
+                    .all(|event| { event["details"]["error_code"] == "provider_output_truncated" })
+            );
+            assert!(
+                observed
+                    .iter()
+                    .all(|event| event["kind"] != "response_completed")
+            );
+            let serialized = serde_json::to_string(&*observed).unwrap();
+            assert!(!serialized.contains("must not be accepted"));
+            assert!(!serialized.contains("truncated rationale"));
+        }
         server.await.unwrap();
     }
 
@@ -2499,29 +2503,29 @@ mod tests {
             result.is_err(),
             "a truncated HTTP body is not a valid answer"
         );
-        let observed = observed.lock().unwrap();
-        let failures = observed
-            .iter()
-            .filter(|event| event["kind"] == "response_failed")
-            .collect::<Vec<_>>();
-        assert_eq!(
-            failures.len(),
-            1,
-            "the failed provider call is reported once"
-        );
-        assert!(
-            failures.iter().all(|event| {
-                event["details"]["error_code"] == "provider_stream_transport_error"
-            })
-        );
-        assert!(
-            observed
+        {
+            let observed = observed.lock().unwrap();
+            let failures = observed
                 .iter()
-                .all(|event| event["kind"] != "response_completed")
-        );
-        let serialized = serde_json::to_string(&*observed).unwrap();
-        assert!(!serialized.contains("transient answer must not persist"));
-        assert!(!serialized.contains("transient rationale"));
+                .filter(|event| event["kind"] == "response_failed")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                failures.len(),
+                1,
+                "the failed provider call is reported once"
+            );
+            assert!(failures.iter().all(|event| {
+                event["details"]["error_code"] == "provider_stream_transport_error"
+            }));
+            assert!(
+                observed
+                    .iter()
+                    .all(|event| event["kind"] != "response_completed")
+            );
+            let serialized = serde_json::to_string(&*observed).unwrap();
+            assert!(!serialized.contains("transient answer must not persist"));
+            assert!(!serialized.contains("transient rationale"));
+        }
         server.await.unwrap();
     }
 

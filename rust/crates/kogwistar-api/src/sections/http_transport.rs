@@ -368,11 +368,10 @@ async fn mcp_handler(
         response = mcp_tool_call_error_result(response, tool_call_id).await;
     }
     if response.status().is_success() {
-        if let Some(session_id) = session_id_to_return.as_deref() {
-            if let Ok(value) = HeaderValue::from_str(session_id) {
+        if let Some(session_id) = session_id_to_return.as_deref()
+            && let Ok(value) = HeaderValue::from_str(session_id) {
                 response.headers_mut().insert("mcp-session-id", value);
             }
-        }
     } else if created_new_session && let Some(session_id) = session_id_to_return.as_deref() {
         let _ = state.mcp_sessions.close(session_id, &session_owner, None);
     }

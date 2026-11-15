@@ -561,16 +561,28 @@ fn sqlite_native_candidate_values(
     Value::Array(projected)
 }
 
+struct SqliteProviderEventAckContext<'a> {
+    run_id: &'a str,
+    state: &'a RecordedRuntimeState,
+    effect_id: &'a str,
+    scope: &'a GraphScope,
+    owner_id: &'a str,
+    principal: &'a Value,
+}
+
 fn apply_sqlite_provider_event_acknowledgement(
     uow: &mut SqliteUnitOfWork<'_>,
     acknowledgement: &kogwistar_runtime::ProviderEventAcknowledgementV1,
-    run_id: &str,
-    state: &RecordedRuntimeState,
-    effect_id: &str,
-    scope: &GraphScope,
-    owner_id: &str,
-    principal: &Value,
+    context: SqliteProviderEventAckContext<'_>,
 ) -> Result<(), kogwistar_store_sqlite::SqliteStoreError> {
+    let SqliteProviderEventAckContext {
+        run_id,
+        state,
+        effect_id,
+        scope,
+        owner_id,
+        principal,
+    } = context;
     let lane = uow
         .get_projected_lane_message(&acknowledgement.message_id)?
         .ok_or_else(|| {
@@ -687,16 +699,16 @@ fn apply_sqlite_provider_event_acknowledgement(
             ),
         );
     }
-    let mut causal_mutations = provider_event_ack_graph_mutations(
-        &acknowledgement.event_id,
+    let mut causal_mutations = provider_event_ack_graph_mutations(ProviderEventAckGraphInput {
+        event_id: &acknowledgement.event_id,
         run_id,
-        &lane.conversation_id,
-        &state.workflow_id,
+        conversation_id: &lane.conversation_id,
+        workflow_id: &state.workflow_id,
         workflow_node_id,
         step_seq,
         effect_id,
         scope,
-    );
+    });
     causal_mutations.extend(provider_event_step_link_mutations(
         &acknowledgement.event_id,
         run_id,
@@ -718,10 +730,12 @@ fn apply_sqlite_provider_event_acknowledgement(
         &causal_mutations,
         targets,
         existing,
-        "conversation",
-        &graph_acl_principal_id(principal),
-        security_scope["security_scope"].as_str(),
-        &acknowledgement.event_id,
+        AclDefaultsContext {
+            truth_graph: "conversation",
+            owner_id: &graph_acl_principal_id(principal),
+            security_scope: security_scope["security_scope"].as_str(),
+            effect_id: &acknowledgement.event_id,
+        },
     )
     .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
     causal_mutations.extend(acl_mutations);

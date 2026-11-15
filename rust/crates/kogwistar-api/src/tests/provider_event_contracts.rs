@@ -165,16 +165,16 @@ fn provider_event_ack_graph_mutations_link_event_to_ack_step() {
         workspace_id: Some("workspace-a".to_owned()),
         graph_space: Some("conversation".to_owned()),
     };
-    let mutations = provider_event_ack_graph_mutations(
-        "event-a",
-        "run-a",
-        "conversation-a",
-        "agent.event.v1",
-        "handle-event",
-        7,
-        "effect-a",
-        &scope,
-    );
+    let mutations = provider_event_ack_graph_mutations(ProviderEventAckGraphInput {
+        event_id: "event-a",
+        run_id: "run-a",
+        conversation_id: "conversation-a",
+        workflow_id: "agent.event.v1",
+        workflow_node_id: "handle-event",
+        step_seq: 7,
+        effect_id: "effect-a",
+        scope: &scope,
+    });
 
     assert_eq!(mutations.len(), 2);
     let step = &mutations[0];
@@ -201,16 +201,16 @@ fn provider_event_ack_graph_mutations_link_event_to_ack_step() {
     assert_eq!(edge.record.metadata["step_seq"], 7);
     assert_eq!(edge.scope, scope);
 
-    let replay = provider_event_ack_graph_mutations(
-        "event-a",
-        "run-a",
-        "conversation-a",
-        "agent.event.v1",
-        "handle-event",
-        7,
-        "effect-a",
-        &scope,
-    );
+    let replay = provider_event_ack_graph_mutations(ProviderEventAckGraphInput {
+        event_id: "event-a",
+        run_id: "run-a",
+        conversation_id: "conversation-a",
+        workflow_id: "agent.event.v1",
+        workflow_node_id: "handle-event",
+        step_seq: 7,
+        effect_id: "effect-a",
+        scope: &scope,
+    });
     assert_eq!(
         mutations, replay,
         "replay uses deterministic graph identities"

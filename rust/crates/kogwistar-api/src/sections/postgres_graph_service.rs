@@ -531,8 +531,8 @@ impl PostgresRunApplicationService {
                 "pair_kind, document IDs, where, or limit_per_bucket are invalid or exceed their bounds",
             );
         }
-        if let Some(where_filter) = input.where_filter.as_ref() {
-            if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+        if let Some(where_filter) = input.where_filter.as_ref()
+            && let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
                 &json!({"metadata": {}, "where": where_filter}).to_string(),
             ) {
                 return effect_error(
@@ -541,7 +541,6 @@ impl PostgresRunApplicationService {
                     error.to_string(),
                 );
             }
-        }
 
         let scope_value = security_scope_value(&request.principal);
         let scope = GraphScope {
@@ -621,7 +620,7 @@ impl PostgresRunApplicationService {
                         }
                     }
                     let mut docs = match input.allowed_docs.as_ref().filter(|docs| !docs.is_empty()) {
-                        Some(docs) => docs.iter().cloned().collect::<Vec<_>>(),
+                        Some(docs) => docs.to_vec(),
                         None => node_ids_by_doc
                             .keys()
                             .chain(edge_ids_by_doc.keys())
@@ -708,13 +707,13 @@ impl PostgresRunApplicationService {
                                     && row.materialization_status == "pending"
                                     && row.metadata.get("doc_id").and_then(Value::as_str)
                                         .is_some_and(|doc_id| docs.iter().any(|doc| doc == doc_id))
-                                    && scope.workspace_id.as_ref().map_or(true, |workspace| {
+                                    && scope.workspace_id.as_ref().is_none_or(|workspace| {
                                         row.metadata
                                             .get("workspace_id")
                                             .and_then(Value::as_str)
                                             == Some(workspace)
                                     })
-                                    && scope.graph_space.as_ref().map_or(true, |graph_space| {
+                                    && scope.graph_space.as_ref().is_none_or(|graph_space| {
                                         row.metadata
                                             .get("graph_space")
                                             .and_then(Value::as_str)
@@ -982,11 +981,10 @@ impl PostgresRunApplicationService {
                         let index_filter = |with_method: bool| {
                             let mut equals = BTreeMap::new();
                             equals.insert("doc_id".to_owned(), json!(doc_id));
-                            if with_method {
-                                if let Some(method) = insertion_method.as_ref() {
+                            if with_method
+                                && let Some(method) = insertion_method.as_ref() {
                                     equals.insert("insertion_method".to_owned(), json!(method));
                                 }
-                            }
                             MetadataFilter { equals }
                         };
                         let node_table = if insertion_method.is_some() {

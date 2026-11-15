@@ -581,7 +581,6 @@ async fn node_index_operations_match_shared_python_fixture() -> PostgresStoreRes
         limit: query_contract["limit"].as_u64().unwrap() as usize,
         metadata: MetadataFilter {
             equals: serde_json::from_value(query_contract["metadata"].clone())?,
-            ..MetadataFilter::default()
         },
         metric: DistanceMetric::Cosine,
     };
@@ -1619,13 +1618,11 @@ async fn graph_mutation_batch_rolls_back_event_when_projection_fails_when_dsn_av
         .client()
         .await?
         .batch_execute(&format!(
-            "CREATE FUNCTION {}.reject_graph_projection() RETURNS trigger \
+            "CREATE FUNCTION {0}.reject_graph_projection() RETURNS trigger \
                  LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = 'projection-rollback-failing-node' THEN \
                  RAISE EXCEPTION 'injected graph projection failure'; END IF; RETURN NEW; \
-                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {} \
-                 FOR EACH ROW EXECUTE FUNCTION {}.reject_graph_projection();",
-            tables.quoted_schema,
-            format!("{}.gke_nodes", tables.quoted_schema),
+                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {0}.gke_nodes \
+                 FOR EACH ROW EXECUTE FUNCTION {0}.reject_graph_projection();",
             tables.quoted_schema
         ))
         .await
@@ -1757,14 +1754,12 @@ async fn committed_graph_state_survives_reopen_after_injected_graph_failure_when
         .client()
         .await?
         .batch_execute(&format!(
-            "CREATE FUNCTION {}.reject_graph_projection() RETURNS trigger \
+            "CREATE FUNCTION {0}.reject_graph_projection() RETURNS trigger \
                  LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '{failed_id}' THEN \
                  RAISE EXCEPTION 'injected graph projection failure'; END IF; RETURN NEW; \
-                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {} \
-                 FOR EACH ROW EXECUTE FUNCTION {}.reject_graph_projection();",
+                 END; $$; CREATE TRIGGER reject_graph_projection BEFORE INSERT OR UPDATE ON {0}.gke_nodes \
+                 FOR EACH ROW EXECUTE FUNCTION {0}.reject_graph_projection();",
             tables.quoted_schema,
-            format!("{}.gke_nodes", tables.quoted_schema),
-            tables.quoted_schema
         ))
         .await
         .map_err(backend)?;

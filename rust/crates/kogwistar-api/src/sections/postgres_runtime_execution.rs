@@ -486,10 +486,12 @@ impl PostgresRunApplicationService {
                                 &conversation_schema,
                                 &admission.scope,
                                 &graph_mutations,
-                                "conversation",
-                                &admission.owner_id,
-                                admission.acl_principal.security_scope.as_deref(),
-                                &run_id,
+                                AclDefaultsContext {
+                                    truth_graph: "conversation",
+                                    owner_id: &admission.owner_id,
+                                    security_scope: admission.acl_principal.security_scope.as_deref(),
+                                    effect_id: &run_id,
+                                },
                             )
                             .await?;
                         for (mutation, envelope) in &admission.mutations {
@@ -1240,10 +1242,12 @@ impl PostgresRunApplicationService {
                                 graph_schema,
                                 &scope,
                                 &mutations,
-                                &truth_graph,
-                                &owner_id,
-                                security_scope.as_deref(),
-                                &effect_id,
+                                AclDefaultsContext {
+                                    truth_graph: &truth_graph,
+                                    owner_id: &owner_id,
+                                    security_scope: security_scope.as_deref(),
+                                    effect_id: &effect_id,
+                                },
                             ).await?;
                             mutations.extend(acl_mutations);
                             index_jobs.extend(acl_jobs);
@@ -1520,14 +1524,16 @@ impl PostgresRunApplicationService {
                                 );
                             }
                             let mut causal_mutations = provider_event_ack_graph_mutations(
-                                &acknowledgement.event_id,
-                                &runtime_run_id,
-                                &lane.conversation_id,
-                                &applied.reduced.state.workflow_id,
-                                workflow_node_id,
-                                step_seq,
-                                &effect_id,
-                                &graph_scope,
+                                ProviderEventAckGraphInput {
+                                    event_id: &acknowledgement.event_id,
+                                    run_id: &runtime_run_id,
+                                    conversation_id: &lane.conversation_id,
+                                    workflow_id: &applied.reduced.state.workflow_id,
+                                    workflow_node_id,
+                                    step_seq,
+                                    effect_id: &effect_id,
+                                    scope: &graph_scope,
+                                },
                             );
                             causal_mutations.extend(provider_event_step_link_mutations(
                                 &acknowledgement.event_id,
@@ -1547,10 +1553,12 @@ impl PostgresRunApplicationService {
                                 &conversation_schema,
                                 &graph_scope,
                                 &causal_mutations,
-                                "conversation",
-                                &graph_acl_principal_id(&current_principal),
-                                current_scope["security_scope"].as_str(),
-                                &acknowledgement.event_id,
+                                AclDefaultsContext {
+                                    truth_graph: "conversation",
+                                    owner_id: &graph_acl_principal_id(&current_principal),
+                                    security_scope: current_scope["security_scope"].as_str(),
+                                    effect_id: &acknowledgement.event_id,
+                                },
                             )
                             .await?;
                             for mutation in causal_mutations {

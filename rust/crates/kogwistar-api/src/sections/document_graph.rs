@@ -1086,10 +1086,12 @@ impl SqliteRunApplicationService {
                     &new_mutations,
                     acl_targets_for_graph_mutations(&new_mutations).0,
                     acl_records,
-                    &graph_role,
-                    &owner_id,
-                    acl_security_scope.as_deref(),
-                    &effect_id,
+                    AclDefaultsContext {
+                        truth_graph: &graph_role,
+                        owner_id: &owner_id,
+                        security_scope: acl_security_scope.as_deref(),
+                        effect_id: &effect_id,
+                    },
                 )
                 .map_err(SqliteStoreError::TransactionAborted)?;
                 let mut all_mutations = mutations;

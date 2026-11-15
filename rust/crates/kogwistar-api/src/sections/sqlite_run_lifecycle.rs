@@ -470,10 +470,12 @@ impl SqliteRunApplicationService {
                     &graph_mutations,
                     acl_targets,
                     existing_acl,
-                    "conversation",
-                    &admission.owner_id.to_ascii_lowercase(),
-                    admission.acl_principal.security_scope.as_deref(),
-                    &run_id,
+                    AclDefaultsContext {
+                        truth_graph: "conversation",
+                        owner_id: &admission.owner_id.to_ascii_lowercase(),
+                        security_scope: admission.acl_principal.security_scope.as_deref(),
+                        effect_id: &run_id,
+                    },
                 )
                 .map_err(SqliteStoreError::TransactionAborted)?;
                 for (mutation, envelope) in &admission.mutations {
@@ -1048,10 +1050,12 @@ impl SqliteRunApplicationService {
                         &batch.mutations,
                         targets,
                         existing,
-                        truth_graph,
-                        &owner_id.to_ascii_lowercase(),
-                        security_scope.as_deref(),
-                        effect_id,
+                        AclDefaultsContext {
+                            truth_graph,
+                            owner_id: &owner_id.to_ascii_lowercase(),
+                            security_scope: security_scope.as_deref(),
+                            effect_id,
+                        },
                     )
                     .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
                     batch.mutations.extend(acl_mutations);
@@ -1176,8 +1180,8 @@ impl SqliteRunApplicationService {
                     },
                 )
             };
-            if !applied.idempotent {
-                if let Some((scope, owner_id, principal)) = provider_event_ack_scope.as_ref() {
+            if !applied.idempotent
+                && let Some((scope, owner_id, principal)) = provider_event_ack_scope.as_ref() {
                     if !capability_allowed_for_principal(
                         principal,
                         &self.capabilities,
@@ -1200,16 +1204,17 @@ impl SqliteRunApplicationService {
                         apply_sqlite_provider_event_acknowledgement(
                             uow,
                             acknowledgement,
-                            &runtime_run_id,
-                            &applied.reduced.state,
-                            &transition.transition_id,
-                            scope,
-                            owner_id,
-                            principal,
+                            SqliteProviderEventAckContext {
+                                run_id: &runtime_run_id,
+                                state: &applied.reduced.state,
+                                effect_id: &transition.transition_id,
+                                scope,
+                                owner_id,
+                                principal,
+                            },
                         )?;
                     }
                 }
-            }
             if applied.idempotent {
                 return Ok(applied);
             }

@@ -142,8 +142,8 @@ impl SqliteRunApplicationService {
                 "pair_kind, document IDs, where, or limit_per_bucket are invalid or exceed their bounds",
             );
         }
-        if let Some(where_filter) = input.where_filter.as_ref() {
-            if let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
+        if let Some(where_filter) = input.where_filter.as_ref()
+            && let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
                 &json!({"metadata": {}, "where": where_filter}).to_string(),
             ) {
                 return effect_error(
@@ -152,7 +152,6 @@ impl SqliteRunApplicationService {
                     error.to_string(),
                 );
             }
-        }
         let graph_snapshot = match self.chroma_graph_snapshot(request, "knowledge").await {
             Ok(snapshot) => snapshot,
             Err(response) => return response,
@@ -398,7 +397,7 @@ impl SqliteRunApplicationService {
         json_effect(
             StatusCode::OK,
             rust_native_attested(json!({
-                "edges": graph_find_edges_from_records(&query, &nodes, &edges),
+                "edges": graph_find_edges_from_records(&query, nodes, edges),
             })),
         )
     }
@@ -447,7 +446,7 @@ impl SqliteRunApplicationService {
         json_effect(
             StatusCode::OK,
             rust_native_attested(json!({
-                "path": graph_shortest_path_from_records(&query, &nodes, &edges),
+                "path": graph_shortest_path_from_records(&query, nodes, edges),
             })),
         )
     }
@@ -495,7 +494,7 @@ impl SqliteRunApplicationService {
             k: input.k,
             doc_id: input.doc_id,
         };
-        let layers = graph_k_hop_from_records(&query, &nodes, &edges)
+        let layers = graph_k_hop_from_records(&query, nodes, edges)
             .into_iter()
             .map(|layer| {
                 json!({
@@ -543,16 +542,16 @@ impl SqliteRunApplicationService {
         let edges = graph_snapshot.edges();
         let result = if cytoscape {
             graph_viz_cytoscape_from_records(
-                &nodes,
-                &edges,
+                nodes,
+                edges,
                 input.doc_id.as_deref(),
                 &input.mode,
                 input.insertion_method.as_deref(),
             )
         } else {
             graph_viz_d3_from_records(
-                &nodes,
-                &edges,
+                nodes,
+                edges,
                 input.doc_id.as_deref(),
                 &input.mode,
                 input.insertion_method.as_deref(),
