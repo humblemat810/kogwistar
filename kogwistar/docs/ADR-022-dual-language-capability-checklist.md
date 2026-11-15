@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Capability Checklist
 
-**Updated:** 2026-11-14
+**Updated:** 2026-11-16
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 A `PASS` requires implementation evidence. Each row records the current gate, status, and concise evidence; chronological change history belongs in Git commits.
 
@@ -8,7 +8,7 @@ A `PASS` requires implementation evidence. Each row records the current gate, st
 
 DL-08C is closed: Python and Rust now have evidenced graph/vector read parity across in-memory, SQLite+Chroma, and PostgreSQL paths for ACL/scope, provenance, lifecycle/ranking, and traversal behavior. All four public graph types retain independent ACL truth and graph-space scope. Shared Python fixtures cover vector ranking and graph traversal; Rust operation-level MCP checks cover neighbors, edge search, k-hop, and shortest path across the three backends. Mutation admission and source-span authorization are covered separately per backend. Python historical/as-of redirect following remains a distinct API and is not claimed as Rust parity. See the mapped evidence in the fine worklist.
 
-Current inventory: **177 items** (**177 PASS, 0 IN PROGRESS, 0 NOT STARTED, 0 FAIL, 0 BLOCKED; 100% PASS**).
+Current evidence inventory: **177 items** (**177 PASS, 0 IN PROGRESS, 0 NOT STARTED, 0 FAIL, 0 BLOCKED; 100% PASS**). This is closure of this inventory only, not overall migration completion. The authoritative Rust cutover ledger is `contracts/rust-port-v1.json`: **2/8 Rust-targeted capabilities ready; 6 not ready** (`postgres-sequence-event-log`, `projections-snapshots-run-registry`, `queues-leases-lanes`, `graph-pgvector`, `workflow-runtime`, `server-rest-sse-mcp-cli`). `chroma-adapter` remains intentionally Python-owned and is excluded from the Rust-targeted denominator. Therefore the overall dual-language migration remains **NOT COMPLETE**.
 
 Detailed execution tracker: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Its bounded fine-grained tasks map to the coarse gates and do not change this inventory or denominator.
 

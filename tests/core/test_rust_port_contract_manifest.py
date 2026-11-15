@@ -312,11 +312,13 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
 
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
     coarse_snapshot = re.search(
-        r"\*\*Coarse checklist:\*\* \*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*\.",
+        r"\*\*Coarse evidence inventory:\*\* "
+        r"\*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*\.",
         worklist,
     )
     fine_snapshot = re.search(
-        r"\*\*Fine worklist:\*\* \*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*; "
+        r"\*\*Fine evidence worklist:\*\* "
+        r"\*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*; "
         r"\*\*(\d+) IN PROGRESS\*\*, \*\*(\d+) NOT STARTED\*\*, "
         r"\*\*(\d+) FAIL\*\*, \*\*(\d+) BLOCKED\*\*\.",
         worklist,
@@ -1164,7 +1166,7 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(current) == len(row_pattern.findall(checklist))
 
     inventory = re.search(
-        r"Current inventory: \*\*(\d+) items\*\* "
+        r"Current (?:evidence )?inventory: \*\*(\d+) items\*\* "
         r"\(\*\*(\d+) PASS, (\d+) IN PROGRESS, (\d+) NOT STARTED, "
         r"(\d+) FAIL, (\d+) BLOCKED; ([\d.]+)% PASS\*\*\)",
         scope,
@@ -1203,6 +1205,45 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(baseline_rows) == 130
     assert set(baseline_rows) <= set(current)
     assert all(current[item_id] == "PASS" for item_id, status in baseline_rows.items() if status == "PASS")
+
+
+def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() -> None:
+    checklist = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
+    ).read_text(encoding="utf-8")
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    manifest = json.loads(
+        (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    rust_targets = [
+        item
+        for item in manifest["capability_ownership"]
+        if item["target_authoritative_writer"] == "rust"
+    ]
+    ready = [
+        item["capability"] for item in rust_targets if item["rust_cutover_ready"]
+    ]
+    not_ready = [
+        item["capability"] for item in rust_targets if not item["rust_cutover_ready"]
+    ]
+
+    assert len(ready) == 2
+    assert set(ready) == {"deterministic-contracts", "sqlite-meta"}
+    assert len(not_ready) == 6
+    assert set(not_ready) == {
+        "postgres-sequence-event-log",
+        "projections-snapshots-run-registry",
+        "queues-leases-lanes",
+        "graph-pgvector",
+        "workflow-runtime",
+        "server-rest-sse-mcp-cli",
+    }
+    assert "not overall migration completion" in checklist
+    assert "overall dual-language migration remains **NOT COMPLETE**" in checklist
+    assert "not whole-goal or release-readiness percentages" in worklist
+    assert "**Overall Rust cutover:** **NOT COMPLETE**" in worklist
+
+
 def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:
     matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     entries = {item["id"]: item for item in matrix["capabilities"]}
