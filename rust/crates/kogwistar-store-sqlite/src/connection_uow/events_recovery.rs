@@ -88,6 +88,76 @@ impl SqliteUnitOfWork<'_> {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    /// Reconstruct a bounded canonical Node/Edge snapshot page from event
+    /// history, including metadata-only lifecycle deltas.
+    pub fn canonical_graph_entities_page(
+        &self,
+        namespace: &str,
+        entity_kind: &str,
+        after_entity_id: Option<&str>,
+        limit: usize,
+    ) -> SqliteStoreResult<Vec<kogwistar_engine::canonical_revision::CanonicalGraphEntitySnapshot>>
+    {
+        if !matches!(entity_kind, "node" | "edge") {
+            return Err(StoreError::InvalidEntityEventPayload {
+                message: format!("unsupported canonical graph entity kind {entity_kind:?}"),
+            }
+            .into());
+        }
+        let page =
+            self.latest_entity_events_page(namespace, entity_kind, after_entity_id, limit)?;
+        if page.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let entity_ids = page
+            .iter()
+            .map(|event| event.entity_id.clone())
+            .collect::<Vec<_>>();
+        let mut histories = std::collections::BTreeMap::<String, Vec<EntityEvent>>::new();
+        for ids in entity_ids.chunks(400) {
+            let placeholders = (0..ids.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT namespace,seq,event_id,entity_kind,entity_id,op,payload_json,created_at \
+                 FROM entity_events WHERE namespace=? AND entity_kind=? \
+                   AND entity_id IN ({placeholders}) ORDER BY entity_id,seq"
+            );
+            let mut values: Vec<&dyn ToSql> = vec![&namespace, &entity_kind];
+            values.extend(ids.iter().map(|id| id as &dyn ToSql));
+            let mut statement = self.transaction.prepare(&sql)?;
+            let rows = statement.query_map(params_from_iter(values), raw_event_from_row)?;
+            for row in rows {
+                let raw = row?;
+                histories
+                    .entry(raw.entity_id.clone())
+                    .or_default()
+                    .push(raw_to_entity_event(raw)?);
+            }
+        }
+
+        entity_ids
+            .iter()
+            .map(|entity_id| {
+                let history = histories.get(entity_id).ok_or_else(|| {
+                    SqliteStoreError::TransactionAborted(format!(
+                        "canonical event history missing for {entity_kind}:{entity_id}"
+                    ))
+                })?;
+                kogwistar_engine::canonical_revision::reconstruct_canonical_graph_entity(
+                    history,
+                    namespace,
+                    entity_kind,
+                    entity_id,
+                )?
+                .ok_or_else(|| {
+                    SqliteStoreError::TransactionAborted(format!(
+                        "canonical graph snapshot missing for {entity_kind}:{entity_id}"
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()
+    }
+
     /// Read current entity events whose canonical payload contains a metadata
     /// field value. The lookup is transaction-scoped and never consults a
     /// derived graph/vector projection.

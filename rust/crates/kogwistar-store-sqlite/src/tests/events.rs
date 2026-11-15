@@ -130,6 +130,66 @@ fn latest_entity_events_page_is_keyset_ordered_and_returns_current_revisions() {
 }
 
 #[test]
+fn canonical_graph_entity_page_reconstructs_lifecycle_delta_from_event_history() {
+    let (store, path) = store("canonical-graph-entity-page");
+    store
+        .immediate_transaction(|uow| {
+            for (seq, event_id, op, payload) in [
+                (
+                    1,
+                    "node-add",
+                    "ADD",
+                    serde_json::json!({
+                        "id": "n1",
+                        "label": "entity",
+                        "metadata": {"lifecycle_status": "active", "keep": true},
+                        "mentions": [{"spans": [{"doc_id": "doc-a"}]}]
+                    }),
+                ),
+                (
+                    2,
+                    "node-tombstone",
+                    "TOMBSTONE",
+                    serde_json::json!({
+                        "entity_id": "n1",
+                        "lifecycle_patch": {
+                            "lifecycle_status": "tombstoned",
+                            "redirect_to_id": null
+                        }
+                    }),
+                ),
+            ] {
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: event_id.to_owned(),
+                        entity_kind: "node".to_owned(),
+                        entity_id: "n1".to_owned(),
+                        op: op.to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+            let snapshots = uow.canonical_graph_entities_page("scope", "node", None, 10)?;
+            assert_eq!(snapshots.len(), 1);
+            assert_eq!(snapshots[0].revision, 2);
+            assert_eq!(snapshots[0].state, "deleted");
+            let payload = snapshots[0].payload.as_ref().unwrap();
+            assert_eq!(payload["label"], "entity");
+            assert_eq!(payload["metadata"]["keep"], true);
+            assert_eq!(payload["metadata"]["lifecycle_status"], "tombstoned");
+            assert!(payload["mentions"].is_array());
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store
