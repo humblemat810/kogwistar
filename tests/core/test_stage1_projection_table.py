@@ -104,8 +104,9 @@ def test_stage1_projection_stats_support_explicit_high_churn_cleanup(tmp_path) -
     assert store.get_named_projection("tenant-a", "workflow-1") is not None
 
 
-def test_stage1_query_has_portable_metadata_and_id_contract(tmp_path) -> None:
-    store = EngineSQLite(tmp_path)
+@pytest.mark.parametrize("store_type", [EngineSQLite, RustEngineSQLite])
+def test_stage1_query_has_portable_metadata_and_id_contract(tmp_path, store_type) -> None:
+    store = store_type(tmp_path)
     store.ensure_initialized()
     _replace_stage1(
         store,
@@ -124,8 +125,14 @@ def test_stage1_query_has_portable_metadata_and_id_contract(tmp_path) -> None:
     assert [row["key"] for row in rows] == ["node-1"]
     assert store.query_stage1_node_projections("tenant-a", ids=["node-2"])[0]["key"] == "node-2"
     assert store.query_stage1_node_projections("tenant-a", metadata={"kind": "missing"}) == []
+    assert [row["key"] for row in store.query_stage1_node_projections(
+        "tenant-a", metadata={"$and": [{"kind": "person"}, {"active": True}]}
+    )] == ["node-1"]
+    assert store.query_stage1_node_projections(
+        "tenant-a", metadata={"$and": [{"kind": "person"}, {"kind": "place"}]}
+    ) == []
 
-    with pytest.raises(ValueError, match="flat equality"):
+    with pytest.raises(ValueError, match=r"equality and \$and"):
         store.query_stage1_node_projections("tenant-a", metadata={"kind": {"$eq": "person"}})
     assert store.query_stage1_node_projections("tenant-a", limit=0) == []
 

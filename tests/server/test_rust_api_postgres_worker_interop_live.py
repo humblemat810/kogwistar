@@ -74,7 +74,9 @@ def test_rust_native_promotion_and_python_recovery_are_both_available(
     else:
         sqlalchemy_dsn = dsn
 
-    schema = f"duallang_interop_{uuid.uuid4().hex[:16]}"
+    schema_base = f"duallang_interop_{uuid.uuid4().hex[:16]}"
+    # Rust API maps the configured base to a dedicated knowledge graph schema.
+    schema = f"{schema_base}_knowledge"
     namespace = f"duallang-{uuid.uuid4().hex}"
     entity_id = f"{namespace}-node"
     sql_engine = sa.create_engine(sqlalchemy_dsn, pool_pre_ping=True)
@@ -191,7 +193,7 @@ def test_rust_native_promotion_and_python_recovery_are_both_available(
                 "JWT_ALG": "HS256",
                 "KOGWISTAR_BACKEND": "pg",
                 "KOGWISTAR_PG_DSN": dsn,
-                "KOGWISTAR_PG_SCHEMA_BASE": schema,
+                "KOGWISTAR_PG_SCHEMA_BASE": schema_base,
                 "KOGWISTAR_EMBEDDING_WORKER_INLINE": "true",
                 "KOGWISTAR_EMBEDDING_PROVIDER": "ollama",
                 "KOGWISTAR_EMBEDDING_MODEL": "fixture-embedding-v1",
@@ -446,5 +448,13 @@ def test_rust_native_promotion_and_python_recovery_are_both_available(
         embedding_thread.join(timeout=5)
         log_file.close()
         with sql_engine.begin() as connection:
-            connection.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+            for graph_schema in (
+                f"{schema_base}_knowledge",
+                f"{schema_base}_conversation",
+                f"{schema_base}_workflow",
+                f"{schema_base}_wisdom",
+            ):
+                connection.execute(
+                    sa.text(f'DROP SCHEMA IF EXISTS "{graph_schema}" CASCADE')
+                )
         sql_engine.dispose()

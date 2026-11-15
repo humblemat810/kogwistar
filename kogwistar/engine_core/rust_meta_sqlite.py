@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, NoReturn, Protocol, TYPE_CHECKING, TypeVar, cast
 
 from kogwistar._rust_bridge import store_sqlite
-from kogwistar.engine_core.engine_sqlite import IndexJobRow, ProjectedLaneMessageSqlRow
+from kogwistar.engine_core.engine_sqlite import (
+    IndexJobRow,
+    ProjectedLaneMessageSqlRow,
+    _stage1_equality_filter,
+)
 from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.implementation_selection import assert_transaction_entry_allowed
 
@@ -636,17 +640,12 @@ class RustEngineSQLite:
         metadata: dict[str, Any] | None = None,
         limit: int | None = 200,
     ) -> list[dict[str, Any]]:
-        if metadata is not None and not isinstance(metadata, dict):
-            raise TypeError("metadata must be a dict or None")
-        if any(
-            str(key).startswith("$") or isinstance(value, dict)
-            for key, value in (metadata or {}).items()
-        ):
-            raise ValueError("Stage-1 metadata query supports flat equality only")
+        wanted_metadata, impossible_filter = _stage1_equality_filter(metadata)
+        if impossible_filter:
+            return []
         if limit is not None and int(limit) <= 0:
             return []
         wanted_ids = {str(value) for value in ids} if ids is not None else None
-        wanted_metadata = dict(metadata or {})
         result: list[dict[str, Any]] = []
         for row in self.list_stage1_node_projections(namespace):
             payload = row.get("payload")

@@ -26,6 +26,32 @@ from .sqlite_context import SQLiteDatabaseLease, acquire_sqlite_database
 JsonObject: TypeAlias = dict[str, JsonValue]
 SQLITE_METADATA_SCHEMA_VERSION = 1
 
+
+def _stage1_equality_filter(
+    metadata: JsonObject | None,
+) -> tuple[dict[str, JsonValue], bool]:
+    """Flatten portable equality clauses used by ACL reads during Stage-1 fallback."""
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError("metadata must be a dict or None")
+    flattened: dict[str, JsonValue] = {}
+    pending: list[JsonObject] = [metadata or {}]
+    while pending:
+        clause = pending.pop()
+        for key, value in clause.items():
+            if key == "$and":
+                if not isinstance(value, list) or not all(
+                    isinstance(item, dict) for item in value
+                ):
+                    raise ValueError("Stage-1 metadata query supports equality and $and only")
+                pending.extend(value)
+            elif key.startswith("$") or isinstance(value, dict):
+                raise ValueError("Stage-1 metadata query supports equality and $and only")
+            elif key in flattened and flattened[key] != value:
+                return flattened, True
+            else:
+                flattened[key] = value
+    return flattened, False
+
 _active_sqlite_conn: contextvars.ContextVar[sqlite3.Connection | None] = (
     contextvars.ContextVar("gke_sqlite_active_conn", default=None)
 )
@@ -2365,20 +2391,15 @@ class EngineSQLite(LaneMessageMetaStoreMixin):
         Filtering is deliberately performed after JSON decoding. SQLite JSON
         operators are an implementation detail; this keeps the Stage-1 query
         contract portable to a separate staging file and other adapters.
-        Only flat metadata equality is supported in this first seam.
+        Flat equality and conjunctions of equality clauses are supported.
         """
-        if metadata is not None and not isinstance(metadata, dict):
-            raise TypeError("metadata must be a dict or None")
-        if any(
-            str(key).startswith("$") or isinstance(value, dict)
-            for key, value in (metadata or {}).items()
-        ):
-            raise ValueError("Stage-1 metadata query supports flat equality only")
+        wanted_metadata, impossible_filter = _stage1_equality_filter(metadata)
+        if impossible_filter:
+            return []
         if limit is not None and int(limit) <= 0:
             return []
         rows = self.list_stage1_node_projections(namespace)
         wanted_ids = {str(value) for value in ids} if ids is not None else None
-        wanted_metadata = dict(metadata or {})
         result: list[JsonObject] = []
         for row in rows:
             payload = row.get("payload")

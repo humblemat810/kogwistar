@@ -377,8 +377,8 @@ cleanup; delete propagation; stale-worker rejection; and crash reconciliation.
 | Backend | Physical support now | Stage 1 / metadata-query basis | Stage 2 basis | Current complete capability |
 | --- | --- | --- | --- | --- |
 | PostgreSQL/pgvector | dedicated `gke_stage1_projections` for Python adapter; nullable relational projection for Rust authority | Stage-1 flat metadata equality for Python; native relational read for Rust | pgvector HNSW | supported for synchronous/async Python arrangement and Rust-PG authority, subject to live backend tests |
-| SQLite | `entity_events`, `index_jobs`, JSON-capable SQLite, FTS tables | dedicated `stage1_node_projections` table with narrow equality query seam | current FTS is search projection, not Stage 1 | unsupported pending promotion/read routing/reconciliation |
-| ChromaDB | Chroma collections plus engine-owned `meta.sqlite` | dedicated SQLite `stage1_node_projections` table; narrow flat-metadata query | Chroma/HNSW via explicit embedding promotion | supported for the standard Chroma engine arrangement; standalone Chroma without the SQLite coordinator is not a complete arrangement |
+| SQLite | `entity_events`, `index_jobs`, JSON-capable SQLite, FTS tables | dedicated `stage1_node_projections` table with flat equality and `$and` equality query seam | current FTS is search projection, not Stage 1 | unsupported pending promotion/read routing/reconciliation |
+| ChromaDB | Chroma collections plus engine-owned `meta.sqlite` | dedicated SQLite `stage1_node_projections` table; flat equality and `$and` equality metadata query | Chroma/HNSW via explicit embedding promotion | supported for the standard Chroma engine arrangement; standalone Chroma without the SQLite coordinator is not a complete arrangement |
 | In-memory | same volatile row: `embedding=None` then update | row storage/get | in-memory vector query with readiness exclusion | complete test arrangement; volatile only, not durable recovery |
 | Rust/native PostgreSQL | native nullable graph projection plus native index-job queue | native relational read; no transient Stage-1 table | native pgvector projection and revision-gated promotion | supported for sync Rust authority and async thread-bridge arrangement; native async ABI not yet present |
 
@@ -402,9 +402,10 @@ SQLite currently serves metadata/event/job infrastructure. Its `semantic_index`
 and FTS5 tables are derived text-search projections; they are not a general
 node Stage-1 metadata store. A dedicated high-churn
 `stage1_node_projections` table now provides ID/namespace and flat metadata
-equality querying through `query_stage1_node_projections()`. Nested operators
-are explicitly rejected; this is a narrow adapter seam, not yet full parity
-with backend `where` semantics. JSON support alone does not define equality,
+equality querying through `query_stage1_node_projections()`, including `$and`
+conjunctions of scalar equality clauses needed by ACL fallback reads. Other
+nested operators remain rejected; this is a narrow adapter seam, not full
+parity with backend `where` semantics. JSON support alone does not define equality,
 scalar, nested, array, namespace/tenant, or filtering semantics compatible with
 existing backend `where` APIs.
 
