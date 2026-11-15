@@ -522,6 +522,120 @@ fn document_edge_rollback_page_is_atomic_scoped_and_retry_safe() {
 }
 
 #[test]
+fn document_rollback_reaches_edge_dependency_fixed_point_before_projection_delete() {
+    let (store, path) = store("document-rollback-fixed-point");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    store
+        .immediate_transaction(|uow| {
+            uow.upsert_source_document_projection(DocumentProjectionUpsert {
+                scope: scope.clone(),
+                record: GraphRecord {
+                    id: "doc-remove".to_owned(),
+                    document: Some("source document".to_owned()),
+                    metadata: serde_json::json!({"doc_type": "text"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            })?;
+
+            for (seq, edge_id) in [(1, "a-dependent"), (2, "z-support"), (3, "unrelated-edge")] {
+                let mut payload = fixture["cases"][1]["payload"].clone();
+                payload["id"] = serde_json::json!(edge_id);
+                payload["metadata"]["workspace_id"] = serde_json::json!("workspace-a");
+                payload["metadata"]["graph_space"] = serde_json::json!("knowledge");
+                payload["metadata"]["lifecycle_status"] = serde_json::json!("active");
+                payload["source_ids"] = if edge_id == "z-support" {
+                    serde_json::json!(["node-source"])
+                } else {
+                    serde_json::json!([])
+                };
+                payload["target_ids"] = serde_json::json!(["node-target"]);
+                payload["source_edge_ids"] = if edge_id == "a-dependent" {
+                    serde_json::json!(["z-support"])
+                } else {
+                    serde_json::json!([])
+                };
+                payload["target_edge_ids"] = serde_json::json!([]);
+                match edge_id {
+                    "a-dependent" => {
+                        payload["mentions"][0]["spans"][0]["doc_id"] =
+                            serde_json::json!("doc-keep");
+                    }
+                    "z-support" => {
+                        payload["doc_id"] = serde_json::json!("doc-remove");
+                        let mut keep_span = payload["mentions"][0]["spans"][0].clone();
+                        payload["mentions"][0]["spans"][0]["doc_id"] =
+                            serde_json::json!("doc-remove");
+                        keep_span["doc_id"] = serde_json::json!("doc-keep");
+                        payload["mentions"][0]["spans"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(keep_span);
+                    }
+                    _ => payload["mentions"] = serde_json::json!([]),
+                }
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("seed-{edge_id}"),
+                        entity_kind: "edge".to_owned(),
+                        entity_id: edge_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let result = uow.apply_document_rollback(
+                &scope,
+                "doc-remove",
+                "rollback-fixed-point-1",
+                "2026-11-15T00:00:00Z",
+                1,
+            )?;
+            assert!(result.edge_passes >= 2);
+            let dependent_id = result.edge_redirects.get("a-dependent").unwrap();
+            let support_id = result.edge_redirects.get("z-support").unwrap();
+            assert!(result.deleted_document_projection);
+            assert!(
+                uow.source_document_projection(&scope, "doc-remove")?
+                    .is_none()
+            );
+
+            let snapshots = uow.canonical_graph_entities_page("scope", "edge", None, 20)?;
+            let by_id = snapshots
+                .iter()
+                .map(|snapshot| (snapshot.entity_id.as_str(), snapshot))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(by_id["unrelated-edge"].state, "active");
+            assert_eq!(by_id[dependent_id.as_str()].state, "active");
+            assert_eq!(by_id[support_id.as_str()].state, "active");
+            assert_eq!(
+                by_id[dependent_id.as_str()].payload.as_ref().unwrap()["source_edge_ids"],
+                serde_json::json!([support_id])
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store

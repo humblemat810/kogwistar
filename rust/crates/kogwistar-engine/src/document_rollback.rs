@@ -142,6 +142,10 @@ pub fn plan_edge_rollback(
         }
     }
 
+    if !mentions_changed && !endpoints_changed {
+        return Ok(None);
+    }
+
     let has_source = !source_ids.is_empty() || !mapped_source_edge_ids.is_empty();
     let has_target = !target_ids.is_empty() || !mapped_target_edge_ids.is_empty();
     if surviving_mentions.is_empty() || !has_source || !has_target {
@@ -150,10 +154,6 @@ pub fn plan_edge_rollback(
             revision: snapshot.revision,
         }));
     }
-    if !mentions_changed && !endpoints_changed {
-        return Ok(None);
-    }
-
     let mut replacement_payload = payload.clone();
     let metadata = replacement_payload
         .get_mut("metadata")
@@ -753,6 +753,28 @@ mod tests {
                 entity_id: "old-edge".to_owned(),
                 revision: 11,
             })
+        );
+    }
+
+    #[test]
+    fn unrelated_unmentioned_edge_is_not_tombstoned_by_full_graph_scan() {
+        let mut payload = edge_fixture();
+        payload["id"] = json!("old-edge");
+        payload["mentions"] = json!([]);
+        let snapshot = edge_snapshot(payload);
+
+        assert_eq!(
+            plan_edge_rollback(
+                &snapshot,
+                "doc-remove",
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+            )
+            .unwrap(),
+            None
         );
     }
 }

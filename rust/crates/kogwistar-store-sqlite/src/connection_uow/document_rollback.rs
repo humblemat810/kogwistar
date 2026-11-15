@@ -13,6 +13,9 @@ pub struct AppliedDocumentNodeRollbackPage {
     pub scanned_through: Option<String>,
     pub has_more: bool,
     pub mutations: Vec<AppliedGraphMutation>,
+    pub node_redirects: BTreeMap<String, String>,
+    pub removed_node_ids: BTreeSet<String>,
+    pub canonical_entity_ids: BTreeMap<String, String>,
 }
 
 /// Edge maps produced by one rollback page feed later passes until endpoint
@@ -25,6 +28,20 @@ pub struct AppliedDocumentEdgeRollbackPage {
     pub edge_redirects: BTreeMap<String, String>,
     pub removed_edge_ids: BTreeSet<String>,
 }
+
+/// Result of a complete SQLite document rollback, committed by the caller's
+/// transaction only after node and edge references reach a fixed point.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AppliedDocumentRollback {
+    pub node_redirects: BTreeMap<String, String>,
+    pub removed_node_ids: BTreeSet<String>,
+    pub edge_redirects: BTreeMap<String, String>,
+    pub removed_edge_ids: BTreeSet<String>,
+    pub deleted_document_projection: bool,
+    pub edge_passes: usize,
+}
+
+const MAX_DOCUMENT_ROLLBACK_EDGE_PASSES: usize = 4096;
 
 impl SqliteUnitOfWork<'_> {
     /// Apply one bounded document rollback page inside the current SQLite
@@ -55,6 +72,9 @@ impl SqliteUnitOfWork<'_> {
         let scanned_through = snapshots.last().map(|snapshot| snapshot.entity_id.clone());
         let has_more = snapshots.len() == limit;
         let mut graph_mutations = Vec::new();
+        let mut node_redirects = BTreeMap::new();
+        let mut removed_node_ids = BTreeSet::new();
+        let mut canonical_entity_ids = BTreeMap::new();
 
         for snapshot in snapshots {
             if snapshot.state != "active" {
@@ -78,6 +98,13 @@ impl SqliteUnitOfWork<'_> {
             if !metadata_matches_scope(metadata, scope) {
                 continue;
             }
+            if let Some(canonical_id) = payload
+                .get("canonical_entity_id")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+            {
+                canonical_entity_ids.insert(snapshot.entity_id.clone(), canonical_id.to_owned());
+            }
 
             let decision = plan_node_rollback(&snapshot, document_id)
                 .map_err(|error| SqliteStoreError::TransactionAborted(error.to_string()))?;
@@ -87,6 +114,7 @@ impl SqliteUnitOfWork<'_> {
                     entity_id,
                     revision,
                 }) => {
+                    removed_node_ids.insert(entity_id.clone());
                     let mut tombstone_payload = payload.clone();
                     tombstone_payload["lifecycle_patch"] = json!({
                         "lifecycle_status": "tombstoned",
@@ -109,6 +137,15 @@ impl SqliteUnitOfWork<'_> {
                     replacement_id,
                     replacement_payload,
                 }) => {
+                    node_redirects.insert(entity_id.clone(), replacement_id.clone());
+                    if let Some(canonical_id) = replacement_payload
+                        .get("canonical_entity_id")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                    {
+                        canonical_entity_ids
+                            .insert(replacement_id.clone(), canonical_id.to_owned());
+                    }
                     graph_mutations.push(graph_mutation(
                         scope,
                         "node",
@@ -149,6 +186,100 @@ impl SqliteUnitOfWork<'_> {
             scanned_through,
             has_more,
             mutations,
+            node_redirects,
+            removed_node_ids,
+            canonical_entity_ids,
+        })
+    }
+
+    /// Roll back graph contributions and remove the matching source projection
+    /// in one SQLite transaction. Python parity: `RollbackSubsystem.rollback_document`.
+    /// Edge passes repeat because a dependent edge can sort before the edge whose
+    /// redirect makes its endpoint repair possible.
+    pub fn apply_document_rollback(
+        &mut self,
+        scope: &GraphScope,
+        document_id: &str,
+        operation_id: &str,
+        deleted_at: &str,
+        page_size: usize,
+    ) -> SqliteStoreResult<AppliedDocumentRollback> {
+        if page_size == 0 {
+            return Err(SqliteStoreError::TransactionAborted(
+                "document rollback page size must be greater than zero".to_owned(),
+            ));
+        }
+
+        let mut node_redirects = BTreeMap::new();
+        let mut removed_node_ids = BTreeSet::new();
+        let mut canonical_entity_ids = BTreeMap::new();
+        let mut cursor = None;
+        loop {
+            let page = self.apply_document_node_rollback_page(
+                scope,
+                document_id,
+                operation_id,
+                deleted_at,
+                cursor.as_deref(),
+                page_size,
+            )?;
+            node_redirects.extend(page.node_redirects);
+            removed_node_ids.extend(page.removed_node_ids);
+            canonical_entity_ids.extend(page.canonical_entity_ids);
+            if !page.has_more {
+                break;
+            }
+            cursor = page.scanned_through;
+        }
+
+        let mut edge_redirects = BTreeMap::new();
+        let mut removed_edge_ids = BTreeSet::new();
+        let mut edge_passes = 0;
+        loop {
+            if edge_passes == MAX_DOCUMENT_ROLLBACK_EDGE_PASSES {
+                return Err(SqliteStoreError::TransactionAborted(format!(
+                    "document rollback did not converge within {MAX_DOCUMENT_ROLLBACK_EDGE_PASSES} edge passes"
+                )));
+            }
+            edge_passes += 1;
+            let previous_redirects = edge_redirects.clone();
+            let previous_removed = removed_edge_ids.clone();
+            let mut cursor = None;
+            loop {
+                let page = self.apply_document_edge_rollback_page(
+                    scope,
+                    document_id,
+                    operation_id,
+                    deleted_at,
+                    cursor.as_deref(),
+                    page_size,
+                    &node_redirects,
+                    &removed_node_ids,
+                    &edge_redirects,
+                    &removed_edge_ids,
+                    &canonical_entity_ids,
+                )?;
+                edge_redirects.extend(page.edge_redirects);
+                removed_edge_ids.extend(page.removed_edge_ids);
+                if !page.has_more {
+                    break;
+                }
+                cursor = page.scanned_through;
+            }
+            if edge_redirects == previous_redirects && removed_edge_ids == previous_removed {
+                break;
+            }
+        }
+
+        let deleted_document_projection =
+            self.delete_source_document_projection(scope, document_id)?;
+        Ok(AppliedDocumentRollback {
+            node_redirects,
+            removed_node_ids,
+            edge_redirects,
+            removed_edge_ids,
+            deleted_document_projection,
+            edge_passes,
         })
     }
 

@@ -122,8 +122,11 @@ use authority::{ProcessAuthorityLock, database_initialization_lock, is_private_m
 #[cfg(test)]
 use authority_identity::ACTIVE_DATABASE_IDENTITIES;
 use authority_identity::{register_active_database_identity, unregister_active_database_identity};
-pub use connection_uow::SqliteUnitOfWork;
 use connection_uow::*;
+pub use connection_uow::{
+    AppliedDocumentEdgeRollbackPage, AppliedDocumentNodeRollbackPage, AppliedDocumentRollback,
+    SqliteUnitOfWork,
+};
 use events_recovery::*;
 use index_jobs::*;
 use lane_messages::*;
