@@ -18,5 +18,9 @@
   "expected_ids": {
     "node": ["node-a", "node-z"],
     "edge": ["edge-a", "edge-z"]
+  },
+  "expected_document_ids": {
+    "node": ["node-a", "node-other-method", "node-z"],
+    "edge": ["edge-a", "edge-other-method", "edge-z"]
   }
 }

@@ -219,11 +219,45 @@ def test_rust_postgres_reference_filters_match_python_backend(
                 embeddings=None,
             )
 
+    document_node_ids = [
+        record["id"]
+        for record in fixture["nodes"]
+        if record["namespace"] == namespace
+    ]
+    backend.node_docs_upsert(
+        ids=[f"{node_id}::document-reference" for node_id in document_node_ids],
+        documents=[json.dumps({"node_id": node_id}) for node_id in document_node_ids],
+        metadatas=[
+            {"namespace": namespace, "doc_id": doc_id, "node_id": node_id}
+            for node_id in document_node_ids
+        ],
+        embeddings=None,
+    )
+    document_edge_ids = [
+        record["id"]
+        for record in fixture["edges"]
+        if record["namespace"] == namespace
+    ]
+    backend.edge_endpoints_upsert(
+        ids=[f"{edge_id}::src::node::source-node" for edge_id in document_edge_ids],
+        documents=[json.dumps({"edge_id": edge_id}) for edge_id in document_edge_ids],
+        metadatas=[
+            {"namespace": namespace, "doc_id": doc_id, "edge_id": edge_id}
+            for edge_id in document_edge_ids
+        ],
+        embeddings=None,
+    )
+
     rust_store = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
     try:
         rust_store.ensure_initialized()
         python_reader = ReadSubsystem(
-            SimpleNamespace(backend=backend, metadata=None, namespace=namespace)
+            SimpleNamespace(
+                backend=backend,
+                metadata=None,
+                namespace=namespace,
+                node_docs_collection=object(),
+            )
         )
         monkeypatch.setattr(python_reader, "_rust_postgres_projection_selected", lambda: False)
         python_results = {
@@ -249,6 +283,10 @@ def test_rust_postgres_reference_filters_match_python_backend(
                 ids=["edge-other-method"],
                 doc_id=doc_id,
             ),
+        }
+        python_document_ids = {
+            "node": python_reader.node_ids_by_doc(doc_id),
+            "edge": python_reader.edge_ids_by_doc(doc_id),
         }
 
         rust_reader = ReadSubsystem(
@@ -297,6 +335,10 @@ def test_rust_postgres_reference_filters_match_python_backend(
                 doc_id=doc_id,
             ),
         }
+        rust_document_ids = {
+            "node": rust_reader.node_ids_by_doc(doc_id),
+            "edge": rust_reader.edge_ids_by_doc(doc_id),
+        }
 
         for entity_kind, expected_ids in fixture["expected_ids"].items():
             python_entities = python_results[entity_kind]
@@ -312,6 +354,7 @@ def test_rust_postgres_reference_filters_match_python_backend(
             "node": ["node-other-method"],
             "edge": ["edge-other-method"],
         }
+        assert python_document_ids == rust_document_ids == fixture["expected_document_ids"]
     finally:
         rust_store.close()
 
