@@ -425,6 +425,208 @@
     }
 
     #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_admin_document_delete_enforces_scope_and_commits_rollback() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::Request,
+        };
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+        use kogwistar_store_postgres::GraphTableNames;
+
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_api_admin_delete_{}", uuid::Uuid::new_v4().simple());
+        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            .await
+            .unwrap();
+
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let doc_id = "postgres-admin-delete-document";
+        let node_id = "postgres-admin-delete-node";
+        let scope = GraphScope {
+            namespace: "docs".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            graph_space: Some("knowledge-a".to_owned()),
+        };
+        DocumentStore::upsert_document_projection(
+            &service.store,
+            DocumentProjectionUpsert {
+                scope: scope.clone(),
+                record: GraphRecord {
+                    id: doc_id.to_owned(),
+                    document: Some("source document".to_owned()),
+                    metadata: serde_json::from_value(json!({"namespace": "docs"})).unwrap(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+        )
+        .await
+        .unwrap();
+        let metadata = json!({
+            "entity_type": "node",
+            "label": "PostgreSQL rollback node",
+            "namespace": "docs",
+            "workspace_id": "workspace-a",
+            "graph_space": "knowledge-a",
+            "doc_id": doc_id,
+            "lifecycle_status": "active"
+        });
+        service
+            .store
+            .apply_graph_mutation(GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "postgres-admin-delete-add-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({
+                    "id": node_id,
+                    "label": "PostgreSQL rollback node",
+                    "type": "entity",
+                    "summary": "Scope fixture for live rollback route",
+                    "doc_id": doc_id,
+                    "domain_id": null,
+                    "level_from_root": 0,
+                    "properties": {},
+                    "embedding": null,
+                    "mentions": [{"spans": [{"doc_id": doc_id}], "multimodal_spans": []}],
+                    "metadata": metadata
+                }),
+                record: GraphRecord {
+                    id: node_id.to_owned(),
+                    document: Some("source-grounded node".to_owned()),
+                    metadata: serde_json::from_value(metadata).unwrap(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            })
+            .await
+            .unwrap();
+        let initial_events = service.store.replay_raw_events("docs", 0, 10).await.unwrap();
+        assert_eq!(initial_events.len(), 1);
+
+        let secret = "postgres-admin-document-delete-http-test-secret";
+        let token_for = |role: &str, namespaces: Vec<&str>, workspace: &str, graph_space: &str| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub": "postgres-admin-delete-test",
+                    "role": role,
+                    "ns": namespaces,
+                    "storage_ns": "docs",
+                    "workspace_id": workspace,
+                    "graph_space": graph_space,
+                    "exp": 4102444800_u64
+                }),
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let request = |role: &str, namespaces: Vec<&str>, workspace: &str, graph_space: &str| {
+            let token = token_for(role, namespaces, workspace, graph_space);
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/doc/{doc_id}"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        let denied_role = app
+            .clone()
+            .oneshot(request("ro", vec!["docs"], "workspace-a", "knowledge-a"))
+            .await
+            .unwrap();
+        assert_eq!(denied_role.status(), StatusCode::FORBIDDEN);
+        let denied_namespace = app
+            .clone()
+            .oneshot(request("rw", vec!["other"], "workspace-a", "knowledge-a"))
+            .await
+            .unwrap();
+        assert_eq!(denied_namespace.status(), StatusCode::FORBIDDEN);
+
+        for (workspace, graph_space) in [
+            ("workspace-b", "knowledge-a"),
+            ("workspace-a", "knowledge-b"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request("rw", vec!["docs"], workspace, graph_space))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 8192).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(body["deleted"], json!({"nodes": 0, "edges": 0}));
+        }
+        assert_eq!(
+            service.store.replay_raw_events("docs", 0, 10).await.unwrap(),
+            initial_events,
+            "denied and foreign-scope requests must not mutate canonical events"
+        );
+
+        let response = app
+            .oneshot(request("rw", vec!["docs"], "workspace-a", "knowledge-a"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["deleted"], json!({"nodes": 1, "edges": 0}));
+        let events = service.store.replay_raw_events("docs", 0, 10).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].op, "TOMBSTONE");
+        assert!(DocumentStore::document_projection_ids(
+            &service.store,
+            scope,
+            vec![doc_id.to_owned()],
+        )
+        .await
+        .unwrap()
+        .is_empty());
+
+        drop(service);
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; DROP SCHEMA IF EXISTS \"{schema}\" CASCADE;"
+            ))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn metadata_only_sqlite_mcp_discovery_hides_graph_operations() {
         use axum::{
             body::{Body, to_bytes},
