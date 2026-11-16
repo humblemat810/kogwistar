@@ -178,3 +178,47 @@ def test_pgvector_scope_ignores_credentials_and_driver() -> None:
     second = make("postgresql+asyncpg://bob:other@db.example:5432/wiki?sslmode=require")
 
     assert first.embedding_storage_scope() == second.embedding_storage_scope()
+
+
+def test_pgvector_get_orders_rows_by_id_for_python_rust_parity() -> None:
+    from contextlib import contextmanager
+
+    engine = sa.create_engine("sqlite:///:memory:")
+    metadata = sa.MetaData()
+    table = sa.Table(
+        "gke_nodes",
+        metadata,
+        sa.Column("id", sa.Text, primary_key=True),
+        sa.Column("document", sa.Text, nullable=False),
+        sa.Column("metadata", sa.JSON, nullable=False),
+    )
+    metadata.create_all(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            table.insert(),
+            [
+                {"id": "z-node", "document": "z", "metadata": {}},
+                {"id": "a-node", "document": "a", "metadata": {}},
+            ],
+        )
+
+    backend = _backend_for_dimension_check(2)
+    backend._is_async_engine = False
+
+    @contextmanager
+    def connection_scope():
+        with engine.connect() as connection:
+            yield connection
+
+    backend._conn = connection_scope
+    result = backend._get_flat(
+        table,
+        ids=None,
+        where=None,
+        include=["documents", "metadatas"],
+        limit=None,
+    )
+
+    assert result["ids"] == ["a-node", "z-node"]
+    assert result["documents"] == ["a", "z"]
+    engine.dispose()

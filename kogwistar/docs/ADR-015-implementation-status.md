@@ -552,11 +552,11 @@ deployment canary evidence required to make Rust its live default writer.
   multi-ID gets with exact-equality metadata filters, through the native
   projection ABI. Rust projection reads accept legacy Python default-scope rows
   lacking scope metadata. A live pgvector test verifies multi-ID node selection,
-  missing-ID omission, metadata filtering, and no Python backend fallback. Rust
-  orders projection rows by ID while Python PostgreSQL leaves row order
-  unspecified; ordering parity is not yet frozen, so this evidence does not
-  close the `graph-pgvector` cutover gate. Complex-filter queries and some
-  derived-index reads remain Python adapters. Under Rust PostgreSQL authority,
+  missing-ID omission, metadata filtering, and no Python backend fallback.
+  Native Rust reads and Python PostgreSQL collection reads both order by entity
+  ID; a regression test verifies deterministic Python get ordering. Complex-
+  filter queries and some derived-index reads remain Python adapters. Under
+  Rust PostgreSQL authority,
   document-to-node ID lookup uses the native graph projection read,
   document-to-edge ID lookup reuses the native endpoint projection reader, and
   `nodes_by_doc`, `edges_by_doc`, and insertion-method lookups use native
