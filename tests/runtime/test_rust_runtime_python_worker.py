@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -212,6 +213,29 @@ def test_worker_rejects_callback_telemetry_over_budget(overflow, caplog) -> None
 
     with pytest.raises(RustWorkerError, match="telemetry exceeds worker effect limits"):
         RustStepResolverAdapter(resolver)(_adapter_work())
+
+
+def test_callback_telemetry_buffer_limits_hold_under_concurrent_emits() -> None:
+    from kogwistar.runtime.rust_worker import _BufferedEventSink
+
+    sink = _BufferedEventSink()
+
+    def emit(index: int) -> None:
+        sink.emit(
+            {
+                "event_id": f"event-{index}",
+                "type": "resolver.progress",
+                "payload_json": "{}",
+            }
+        )
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        list(executor.map(emit, range(1024)))
+
+    assert sink.overflowed
+    assert len(sink.events) == 256
+    assert len({event["event_id"] for event in sink.events}) == 256
+    assert 0 < sink.serialized_bytes <= 1024 * 1024
 
 
 def test_python_worker_application_operation_matches_shared_native_effect_golden() -> None:

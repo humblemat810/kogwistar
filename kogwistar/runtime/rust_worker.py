@@ -16,6 +16,7 @@ import json
 import os
 import queue
 import sqlite3
+import threading
 from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
@@ -92,23 +93,25 @@ class _BufferedEventSink:
         self.events: list[dict[str, Any]] = []
         self.serialized_bytes = 0
         self.overflowed = False
+        self._lock = threading.Lock()
 
     def emit(self, event: dict[str, Any]) -> None:
-        if self.overflowed:
-            return
-        try:
-            event_bytes = len(strict_json_dumps(event).encode("utf-8"))
-        except (TypeError, ValueError):
-            self.overflowed = True
-            return
-        if (
-            len(self.events) >= _MAX_CALLBACK_TRACE_EVENTS
-            or self.serialized_bytes + event_bytes > _MAX_CALLBACK_TRACE_BYTES
-        ):
-            self.overflowed = True
-            return
-        self.events.append(dict(event))
-        self.serialized_bytes += event_bytes
+        with self._lock:
+            if self.overflowed:
+                return
+            try:
+                event_bytes = len(strict_json_dumps(event).encode("utf-8"))
+            except (TypeError, ValueError):
+                self.overflowed = True
+                return
+            if (
+                len(self.events) >= _MAX_CALLBACK_TRACE_EVENTS
+                or self.serialized_bytes + event_bytes > _MAX_CALLBACK_TRACE_BYTES
+            ):
+                self.overflowed = True
+                return
+            self.events.append(dict(event))
+            self.serialized_bytes += event_bytes
 
     def flush(self, timeout: float = 1.0) -> bool:
         del timeout

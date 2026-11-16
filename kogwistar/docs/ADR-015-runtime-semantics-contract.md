@@ -44,7 +44,9 @@ callback telemetry per invocation, includes it in the worker effect's
 The buffer is not shared across workers and emits no independent durable write.
 It is bounded to 256 events and 1 MiB serialized; exceeding either limit rejects
 the whole worker effect rather than silently dropping telemetry. The byte cap
-leaves headroom under Rust's 2 MiB worker-result request limit.
+leaves headroom under Rust's 2 MiB worker-result request limit. Buffer admission
+and accounting are lock-protected so concurrent callback threads, including
+no-GIL CPython, cannot exceed either limit.
 
 Async callbacks are represented by `worker_protocol="async-v2"`. This changes
 only Python callback execution: the callback is awaited outside the store
