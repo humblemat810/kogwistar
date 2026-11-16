@@ -3,6 +3,9 @@
   "namespace": "reference-parity-target",
   "doc_id": "reference-parity-document",
   "insertion_method": "parser",
+  "source_text": "0123456789abcdef",
+  "context_window_chars": 2,
+  "expected_context": "23456789",
   "nodes": [
     {"id": "node-z", "namespace": "reference-parity-target", "insertion_method": "parser"},
     {"id": "node-a", "namespace": "reference-parity-target", "insertion_method": "parser"},
