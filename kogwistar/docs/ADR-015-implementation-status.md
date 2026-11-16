@@ -182,9 +182,12 @@ Only these local items remain in scope before production rollout:
   sync/async success/error cells pass; the shared query parser unit test and
   public SQLite synchronous-resume test pass. `cargo check`, server build,
   formatting, and Ruff pass. A writable Linux `rust:1.97.1-bookworm` container
-  also passed the query-policy and durable SQLite suspend/resume tests (**1
-  each**). The broad 440-test Rust API run did not complete cleanly in this
-  Windows session, so it is not counted as current full-suite evidence.
+  passed the query-policy and durable SQLite suspend/resume tests (**1 each**).
+  The same two focused tests also pass in a clean Ubuntu 24.04 container using
+  Rust 1.97.1 (**2 passed**); this adds an OS image check, not a separate
+  production/dev behavior contract. The broad 440-test Rust API run did not
+  complete cleanly in this Windows session, so it is not counted as current
+  full-suite evidence.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
