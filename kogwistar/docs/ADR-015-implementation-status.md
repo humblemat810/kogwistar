@@ -563,8 +563,8 @@ deployment canary evidence required to make Rust its live default writer.
   node/edge reference projections. Ref-filter entity lists and
   `extract_reference_contexts` hydrate entities and source text through the
   native base projection path. Legacy `nodes_by_ids`, `edges_by_ids`, and
-  node/edge vector-search facades use the same native projection read/query
-  boundary.
+  node/edge vector-search facades, and `check_document_exist` use the same
+  native projection read/query boundary.
   When the insertion-method reference index has no match, its primary-record
   fallback also stays native; both selectors inspect nested grounding spans
   with shared insertion-method normalization. Python authority remains on its

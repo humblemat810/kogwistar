@@ -2328,7 +2328,17 @@ class GraphKnowledgeEngine:
 
     def check_document_exist(self, document_id: str | list[str]) -> set[str]:
         doc_ids = [document_id] if isinstance(document_id, str) else list(document_id)
-        got = run_awaitable_blocking(self.backend.document_get(ids=doc_ids, include=[]))
+        got = cast(ReadSubsystem, self.read)._rust_postgres_projection_get(
+            entity_kind="document",
+            ids=doc_ids,
+            where=None,
+            limit=len(doc_ids),
+            include=[],
+        )
+        if got is None:
+            got = run_awaitable_blocking(
+                self.backend.document_get(ids=doc_ids, include=[])
+            )
         stored_ids = _decode_backend_ids_response(got)
         if stored_ids is None:
             return set(doc_ids)

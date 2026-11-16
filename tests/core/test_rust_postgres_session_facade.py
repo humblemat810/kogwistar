@@ -1607,6 +1607,9 @@ def test_legacy_engine_graph_reads_use_native_projection_helpers_when_selected()
             return {"ids": [["hit"]]}
 
     class Backend:
+        def document_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected document ID read used Python backend")
+
         def node_get(self, **_values: object) -> None:
             raise AssertionError("Rust-selected node ID read used Python backend")
 
@@ -1620,6 +1623,9 @@ def test_legacy_engine_graph_reads_use_native_projection_helpers_when_selected()
             raise AssertionError("Rust-selected edge search used Python backend")
 
     engine = SimpleNamespace(read=NativeRead(), backend=Backend())
+    assert GraphKnowledgeEngine.check_document_exist(engine, ["document-1"]) == {
+        "document-1"
+    }
     assert GraphKnowledgeEngine.nodes_by_ids(engine, ["node-1"]) == {
         "ids": ["node-1"]
     }
@@ -1633,6 +1639,7 @@ def test_legacy_engine_graph_reads_use_native_projection_helpers_when_selected()
         "ids": [["hit"]]
     }
     assert [(kind, values["entity_kind"]) for kind, values in calls] == [
+        ("get", "document"),
         ("get", "node"),
         ("get", "edge"),
         ("query", "node"),
