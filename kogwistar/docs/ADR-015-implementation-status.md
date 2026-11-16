@@ -203,6 +203,11 @@ Only these local items remain in scope before production rollout:
   `implementation_authority=rust` and `seam_crossings=[]`. Production/development
   labels are not separate gates when behavior and configuration match; this
   local test is not deployment canary evidence or full store-cutover evidence.
+  The same source and six-cell matrix also passed inside Linux Docker
+  `rust:1.97.1-bookworm` with a Linux-built server (**6 passed**, 24.87s),
+  including the existing pgvector container over `host.docker.internal`. This
+  confirms cross-OS execution behavior, not a distinct production-vs-development
+  contract; Docker build used a dedicated Cargo target volume.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
