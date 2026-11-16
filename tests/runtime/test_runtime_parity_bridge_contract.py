@@ -4,6 +4,7 @@ import asyncio
 import copy
 import gc
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -1727,6 +1728,200 @@ def test_runtime_parity_bridge_join_barrier_waits_for_all_arrivals(monkeypatch):
 
     assert sync_out == {"parts": ["a", "b"], "join_calls": 1, "done": True}
     assert async_out == sync_out
+
+
+def test_rust_shadow_join_accounting_matches_python_runtime(monkeypatch):
+    pytest.importorskip("kogwistar._rust")
+    python_out = _run_sync_join_bridge()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "shadow")
+    shadow_out = _run_sync_join_bridge()
+
+    assert shadow_out == python_out == {
+        "parts": ["a", "b"],
+        "join_calls": 1,
+        "done": True,
+    }
+
+
+def _run_sync_join_retry_cancel_bridge() -> dict:
+    workflow_id = "wf_join_retry_cancel"
+    nodes, edges = _seed_join_bridge_graph(workflow_id)
+    edges.append(
+        _join_edge(
+            "e-retry-b",
+            workflow_id=workflow_id,
+            src="b",
+            dst="b",
+            is_default=False,
+        )
+    )
+    joined = threading.Event()
+    retry_started = threading.Event()
+    release_retry = threading.Event()
+    cancel = {"requested": False}
+    retry_attempts = {"count": 0}
+
+    class _CancelAfterJoinWaiting(EventEmitter):
+        def emit(self, *, type, ctx, payload=None):
+            event_id = super().emit(type=type, ctx=ctx, payload=payload)
+            if type == "join_waiting":
+                joined.set()
+                cancel["requested"] = True
+                release_retry.set()
+            return event_id
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("a")
+    def _a(_ctx):
+        assert retry_started.wait(timeout=5)
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("a", {"parts": "a"})]
+        )
+
+    @resolver.register("b")
+    def _b(_ctx):
+        retry_attempts["count"] += 1
+        if retry_attempts["count"] == 1:
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[],
+                errors=["retry branch once"],
+                next_step_names=["b"],
+            )
+        retry_started.set()
+        assert release_retry.wait(timeout=5)
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("join")
+    def _join(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = WorkflowRuntime(
+        workflow_engine=_JoinWorkflowEngine(nodes, edges),
+        conversation_engine=_JoinConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        events=_CancelAfterJoinWaiting(),
+        cancel_requested=lambda _run_id: cancel["requested"],
+        max_workers=2,
+    )
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-join-retry-cancel",
+        turn_node_id="turn-join-retry-cancel",
+        run_id="run-join-retry-cancel",
+        initial_state={},
+    )
+    assert joined.is_set()
+    join_state = out.final_state["_rt_join"]
+    return {
+        "status": out.status,
+        "retry_attempts": retry_attempts["count"],
+        "frontier": {
+            "pending": join_state["pending"],
+            "suspended": join_state["suspended"],
+            "join_node_ids": join_state["join_node_ids"],
+            "join_outstanding": join_state["join_outstanding"],
+            "join_waiters": join_state["join_waiters"],
+        },
+    }
+
+
+def test_rust_shadow_join_retry_cancel_matches_python_terminal_frontier(monkeypatch):
+    pytest.importorskip("kogwistar._rust")
+    python_out = _run_sync_join_retry_cancel_bridge()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "shadow")
+    shadow_out = _run_sync_join_retry_cancel_bridge()
+
+    assert shadow_out == python_out
+    assert python_out["status"] == "cancelled"
+    assert python_out["retry_attempts"] == 2
+    assert python_out["frontier"] == {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": ["join"],
+        "join_outstanding": [0],
+        "join_waiters": {"join": []},
+    }
+
+
+def test_cancelled_fanout_clears_queued_join_obligations():
+    workflow_id = "wf_cancel_queued_join_branch"
+    nodes, edges = _seed_join_bridge_graph(workflow_id)
+    branch_started = threading.Event()
+    release_branch = threading.Event()
+    cancel = {"requested": False}
+    queued_branch_runs = {"count": 0}
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("a")
+    def _a(_ctx):
+        branch_started.set()
+        assert release_branch.wait(timeout=5)
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("b")
+    def _b(_ctx):
+        queued_branch_runs["count"] += 1
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("join")
+    def _join(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    def request_cancel() -> None:
+        assert branch_started.wait(timeout=5)
+        cancel["requested"] = True
+        release_branch.set()
+
+    cancel_thread = threading.Thread(target=request_cancel)
+    cancel_thread.start()
+    runtime = WorkflowRuntime(
+        workflow_engine=_JoinWorkflowEngine(nodes, edges),
+        conversation_engine=_JoinConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        cancel_requested=lambda _run_id: cancel["requested"],
+        max_workers=1,
+    )
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-cancel-queued-branch",
+        turn_node_id="turn-cancel-queued-branch",
+        run_id="run-cancel-queued-branch",
+        initial_state={},
+    )
+    cancel_thread.join(timeout=5)
+
+    assert not cancel_thread.is_alive()
+    assert out.status == "cancelled"
+    assert queued_branch_runs["count"] == 0
+    assert out.final_state["_rt_join"] == {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": ["join"],
+        "join_outstanding": [0],
+        "join_waiters": {"join": []},
+    }
 
 
 def test_runtime_parity_bridge_trace_sink_parallel_nested_minimal(monkeypatch):

@@ -28,7 +28,7 @@ class JoinWaiter(TypedDict):
 class JoinArrivalResult(TypedDict):
     join_outstanding: list[int]
     waiters: list[JoinWaiter]
-    released: PlannedToken | None
+    released: JoinWaiter | None
     collapsed_work_items: int
     outstanding: int
 
@@ -92,27 +92,17 @@ def successor_plan(value: JsonObject) -> tuple[list[PlannedToken], list[int]]:
 
 def join_arrival_result(value: JsonObject) -> JoinArrivalResult:
     released_value = value.get("released")
-    released = None if released_value is None else _token(released_value, field="released")
+    released = (
+        None
+        if released_value is None
+        else _join_waiter(released_value, field="released")
+    )
     raw_waiters = value.get("waiters")
     if not isinstance(raw_waiters, list):
         raise RuntimeError("native runtime result field 'waiters' must be a list")
     waiters: list[JoinWaiter] = []
     for index, raw_waiter in enumerate(raw_waiters):
-        waiter = _object(raw_waiter, field=f"waiters[{index}]")
-        waiters.append(
-            {
-                "join_mask": _required_int(
-                    waiter.get("join_mask"), field=f"waiters[{index}].join_mask"
-                ),
-                "token_id": _required_text(
-                    waiter.get("token_id"), field=f"waiters[{index}].token_id"
-                ),
-                "parent_token_id": _optional_text(
-                    waiter.get("parent_token_id"),
-                    field=f"waiters[{index}].parent_token_id",
-                ),
-            }
-        )
+        waiters.append(_join_waiter(raw_waiter, field=f"waiters[{index}]"))
     return {
         "join_outstanding": _int_list(
             value.get("join_outstanding"), field="join_outstanding"
@@ -123,4 +113,17 @@ def join_arrival_result(value: JsonObject) -> JoinArrivalResult:
             value.get("collapsed_work_items"), field="collapsed_work_items"
         ),
         "outstanding": _required_int(value.get("outstanding"), field="outstanding"),
+    }
+
+
+def _join_waiter(value: JsonValue | None, *, field: str) -> JoinWaiter:
+    waiter = _object(value, field=field)
+    return {
+        "join_mask": _required_int(
+            waiter.get("join_mask"), field=f"{field}.join_mask"
+        ),
+        "token_id": _required_text(waiter.get("token_id"), field=f"{field}.token_id"),
+        "parent_token_id": _optional_text(
+            waiter.get("parent_token_id"), field=f"{field}.parent_token_id"
+        ),
     }

@@ -753,9 +753,23 @@ class WorkflowRuntime(
                         pending_tokens.discard(
                             (str(nid), int(mask), str(tok), parent_tok)
                         )
+                        _dec(int(mask))
                         _work_done(1)
                     except queue.Empty:
                         break
+
+                for _nid, mask, _tok, _parent_tok in suspended_tokens.values():
+                    _dec(int(mask))
+                suspended_tokens.clear()
+
+                for join_id in join_node_ids:
+                    waiters = list(_join_waiters.get(join_id, []))
+                    if not waiters:
+                        continue
+                    _join_waiters[join_id] = []
+                    _work_done(len(waiters))
+                    for waiter_mask, _waiter_token, _waiter_parent in waiters:
+                        _dec(int(waiter_mask))
                 _persist_rt_join_runtime()
                 try:
                     tc_cancel = _lifecycle_trace_context(
