@@ -38,7 +38,10 @@ impl SqliteRunApplicationService {
         let authenticated_owner = authenticated_run_owner_id(&request.principal);
         if input.user_id.as_deref().is_some_and(|requested| {
             authenticated_owner.is_none_or(|owner| owner != requested.trim())
-        }) {
+        }) || !expected_run_owner_matches(
+            input.expected_run_owner_id.as_deref(),
+            authenticated_owner,
+        ) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_RUN_OWNER_FORBIDDEN",

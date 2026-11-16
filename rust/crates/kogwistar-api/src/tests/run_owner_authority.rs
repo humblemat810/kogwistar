@@ -201,6 +201,25 @@
         let body: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(body["code"], "KOGWISTAR_RUN_OWNER_FORBIDDEN");
 
+        let expected_owner_mismatch = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "workflow_id": "wf",
+                    "conversation_id": "conv",
+                    "expected_run_owner_id": "victim"
+                }))
+                .unwrap(),
+                principal: json!({"user_id":"attacker", "sub":"attacker", "role":"rw"}),
+            })
+            .await;
+        assert_eq!(expected_owner_mismatch.status, StatusCode::FORBIDDEN.as_u16());
+        let mismatch_body: Value =
+            serde_json::from_slice(&expected_owner_mismatch.body).unwrap();
+        assert_eq!(mismatch_body["code"], "KOGWISTAR_RUN_OWNER_FORBIDDEN");
+
         let anonymous_claim = service
             .execute(ApiEffectRequest {
                 contract_version: 1,

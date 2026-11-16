@@ -2852,6 +2852,10 @@ impl InMemoryGraphApplicationService {
             .user_id
             .as_deref()
             .is_some_and(|requested| requested.trim() != owner_id)
+            || !expected_run_owner_matches(
+                input.expected_run_owner_id.as_deref(),
+                Some(owner_id),
+            )
         {
             return effect_error(
                 StatusCode::FORBIDDEN,

@@ -481,7 +481,6 @@ class WorkflowRuntime(
                 validate_rust_run_context(
                     run_metadata=_run_metadata,
                     parent_lease_renew=_parent_lease_renew,
-                    run_owner_id=_run_owner_id,
                 )
                 if _resume_step_seq is not None or _resume_last_exec_node is not None:
                     raise NotImplementedError(
@@ -499,6 +498,7 @@ class WorkflowRuntime(
                     run_id=str(run_id),
                     cache_dir=cache_dir,
                     trace_context=_trace_context,
+                    run_owner_id=_run_owner_id,
                 )
 
             ownership: RunOwnership | None = None

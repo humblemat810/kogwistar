@@ -43,15 +43,13 @@ def validate_rust_run_context(
     *,
     run_metadata: Mapping[str, Any] | None = None,
     parent_lease_renew: Callable[[], None] | None = None,
-    run_owner_id: str | None = None,
 ) -> None:
-    """Reject Python-only run context instead of silently losing lineage/ownership."""
+    """Reject Python-only run context that the Rust boundary cannot preserve."""
     unsupported = [
         name
         for name, value in (
             ("run metadata", run_metadata),
             ("parent lease renewal", parent_lease_renew),
-            ("run owner", run_owner_id),
         )
         if value is not None
     ]
@@ -808,6 +806,7 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
         initial_state: Mapping[str, Any],
         run_id: str,
         trace_context: TraceContext | None = None,
+        run_owner_id: str | None = None,
     ) -> RunResult:
 
         if initial_state.get("dream_deps"):
@@ -832,6 +831,11 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
             "turn_node_id": turn_node_id,
             "initial_state": durable_initial,
             "runtime_kind": "sync",
+            **(
+                {"expected_run_owner_id": run_owner_id}
+                if run_owner_id is not None
+                else {}
+            ),
             **(
                 {"trace_context": _runtime_trace_context_payload(trace_context)}
                 if trace_context is not None
@@ -951,6 +955,7 @@ def run_with_rust_authority(
     run_id: str,
     cache_dir: str | os.PathLike[str] | None,
     trace_context: TraceContext | None = None,
+    run_owner_id: str | None = None,
 ) -> RunResult:
     url = rust_runtime_authority_url()
     if url is None:
@@ -968,6 +973,7 @@ def run_with_rust_authority(
             initial_state=initial_state,
             run_id=run_id,
             trace_context=trace_context,
+            run_owner_id=run_owner_id,
         )
     finally:
         authority.close()
@@ -1198,6 +1204,7 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
         initial_state: Mapping[str, Any],
         run_id: str,
         trace_context: TraceContext | None = None,
+        run_owner_id: str | None = None,
     ) -> RunResult:
         if initial_state.get("dream_deps"):
             raise RustRuntimeAuthorityError(
@@ -1221,6 +1228,11 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
             "turn_node_id": turn_node_id,
             "initial_state": durable_initial,
             "runtime_kind": "async",
+            **(
+                {"expected_run_owner_id": run_owner_id}
+                if run_owner_id is not None
+                else {}
+            ),
             **(
                 {"trace_context": _runtime_trace_context_payload(trace_context)}
                 if trace_context is not None
@@ -1344,6 +1356,7 @@ async def run_with_rust_authority_async(
     run_id: str,
     cache_dir: str | os.PathLike[str] | None,
     trace_context: TraceContext | None = None,
+    run_owner_id: str | None = None,
 ) -> RunResult:
     url = rust_runtime_authority_url()
     if url is None:
@@ -1361,6 +1374,7 @@ async def run_with_rust_authority_async(
             initial_state=initial_state,
             run_id=run_id,
             trace_context=trace_context,
+            run_owner_id=run_owner_id,
         )
     finally:
         await authority.aclose()

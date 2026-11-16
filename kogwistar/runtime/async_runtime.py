@@ -261,17 +261,11 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         if rust_runtime_authority_selected():
             validate_rust_run_context(
                 run_metadata=_run_metadata,
-                run_owner_id=_run_owner_id,
             )
             if _resume_step_seq is not None or _resume_last_exec_node is not None:
                 raise NotImplementedError(
                     "Rust async authority does not support ordinary checkpoint "
                     "continuation; use the versioned Rust resume contract"
-                )
-            if _run_owner_id is not None:
-                raise NotImplementedError(
-                    "Rust async authority owns its run lease; Python owner IDs "
-                    "cannot cross the authority boundary"
                 )
             return await run_with_rust_authority_async(
                 self,
@@ -282,6 +276,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 run_id=run_id or f"run|{uuid.uuid4()}",
                 cache_dir=cache_dir,
                 trace_context=_trace_context,
+                run_owner_id=_run_owner_id,
             )
         return await self._run_native_async(
             workflow_id=workflow_id,

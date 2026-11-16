@@ -208,20 +208,22 @@ Only these local items remain in scope before production rollout:
   including the existing pgvector container over `host.docker.internal`. This
   confirms cross-OS execution behavior, not a distinct production-vs-development
   contract; Docker build used a dedicated Cargo target volume.
-  The Python sync/async runtime entry points now reject Rust-authority runs when
-  Python-only run metadata, parent lease renewal, or run-owner context would
-  otherwise be silently discarded. Trace context now crosses the Python
-  sync/async authority adapter as typed `RuntimeTraceContextV1`; each Rust
-  backend strips caller-supplied `_rt_trace_context` and installs only the
-  validated admission seed. Native Rust steps and Python callbacks inherit the
-  same parent trace/span from the shared
-  `contracts/golden/runtime-trace-context-v1.json` fixture. Focused Python
-  coverage passed (**9 passed**), Rust runtime trace tests passed (**2 passed**),
-  and Rust API reserved-state/DTO test passed (**1 passed**). The same Rust
-  runtime and API tests passed in Ubuntu Docker (`rust:1.97.1-bookworm`: 2 and
-  1 passed respectively). Run metadata,
-  parent lease renewal, and owner context remain fail-closed; this closes one
-  trace propagation seam, not public owner routing.
+  Python-only run metadata and parent lease-renewal callbacks remain fail-closed
+  at the Python/Rust authority boundary. `_run_owner_id` now crosses as the
+  non-authoritative `expected_run_owner_id` assertion; Rust compares it with
+  the authenticated principal in memory, SQLite, and PostgreSQL admission. The
+  shared Rust submit DTO fixture covers this optional wire field.
+  The principal remains the sole source of persisted owner/ACL identity, and a
+  mismatch is rejected before run persistence. Trace context crosses sync and
+  async adapters as typed `RuntimeTraceContextV1`; each Rust backend strips
+  caller-supplied `_rt_trace_context` and installs only the validated admission
+  seed. Native Rust steps and Python callbacks inherit the same parent trace/span
+  from `contracts/golden/runtime-trace-context-v1.json`. Focused Python owner and
+  trace tests passed (**6 passed**); Ubuntu Docker Rust tests passed for the
+  shared owner assertion, in-memory admission, SQLite run service, and
+  PostgreSQL pre-storage rejection (**1 each**). Rust runtime trace tests passed
+  (**2 passed**) and reserved-state/DTO test passed (**1 passed**). These close
+  two context transport seams only, not the public runtime-owner/canary gate.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the

@@ -14,6 +14,7 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
         "run_id": "memory-http-run",
         "workflow_id": "memory-http-workflow",
         "conversation_id": "memory-http-conversation",
+        "expected_run_owner_id": "owner",
         "initial_state": {
             "seed": 7,
             "_rt_run_owner_id": "forged-owner",
@@ -38,6 +39,31 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
             .await
             .unwrap()
             .is_none()
+    );
+
+    let mut wrong_expected_owner = body.clone();
+    wrong_expected_owner["run_id"] = json!("memory-wrong-expected-owner");
+    wrong_expected_owner["expected_run_owner_id"] = json!("attacker");
+    let owner_mismatch = service
+        .execute(request(
+            json!({
+                "sub":"owner",
+                "role":"rw",
+                "ns":["workflow"],
+                "capabilities":["spawn_process", "workflow.run.write", "workflow.run.read"]
+            }),
+            wrong_expected_owner,
+        ))
+        .await;
+    assert_eq!(owner_mismatch.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(
+        kogwistar_store::ServerRunReadStore::server_run(
+            &service.store,
+            "memory-wrong-expected-owner"
+        )
+        .await
+        .unwrap()
+        .is_none()
     );
 
     for missing_capability in admission_contract["required_capabilities"]

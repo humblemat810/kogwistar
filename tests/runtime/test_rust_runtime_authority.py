@@ -752,7 +752,6 @@ def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
     [
         ("_run_metadata", {"parent_run_id": "parent-run"}),
         ("_parent_lease_renew", lambda: None),
-        ("_run_owner_id", "parent-owner"),
     ],
 )
 def test_public_sync_rust_runtime_rejects_unforwarded_python_context(
@@ -842,6 +841,7 @@ def test_sync_rust_authority_submit_serializes_trace_context(monkeypatch) -> Non
         initial_state={},
         run_id="child-run",
         trace_context=context,
+        run_owner_id="owner-42",
     )
 
     assert result is expected
@@ -850,6 +850,7 @@ def test_sync_rust_authority_submit_serializes_trace_context(monkeypatch) -> Non
         "span_id": "span-child",
         "parent_span_id": "span-parent",
     }
+    assert captured["expected_run_owner_id"] == "owner-42"
 
 
 def test_public_sync_rust_runtime_forwards_trace_context(monkeypatch) -> None:
@@ -881,10 +882,12 @@ def test_public_sync_rust_runtime_forwards_trace_context(monkeypatch) -> None:
         initial_state={},
         run_id="child-run",
         _trace_context=context,
+        _run_owner_id="owner-42",
     )
 
     assert result is sentinel
     assert captured["trace_context"] is context
+    assert captured["run_owner_id"] == "owner-42"
 
 
 def test_authority_pumps_only_target_run_and_restores_process_local_deps(
@@ -4555,7 +4558,6 @@ def test_async_runtime_rust_mode_without_authority_url_fails_closed(
     ("context_field", "context_value"),
     [
         ("_run_metadata", {"parent_run_id": "parent-run"}),
-        ("_run_owner_id", "parent-owner"),
     ],
 )
 def test_async_rust_runtime_rejects_unforwarded_python_context(
@@ -4619,10 +4621,12 @@ def test_public_async_rust_runtime_forwards_trace_context(monkeypatch) -> None:
             initial_state={},
             run_id="child-run",
             _trace_context=context,
+            _run_owner_id="owner-42",
         )
 
     assert asyncio.run(invoke()) is sentinel
     assert captured["trace_context"] is context
+    assert captured["run_owner_id"] == "owner-42"
 
 
 def test_public_resume_dispatches_to_rust_authority(monkeypatch) -> None:

@@ -4,6 +4,15 @@
     }
 
     #[test]
+    fn expected_run_owner_is_only_an_authenticated_identity_assertion() {
+        assert!(expected_run_owner_matches(None, None));
+        assert!(expected_run_owner_matches(Some(" alice "), Some("alice")));
+        assert!(!expected_run_owner_matches(Some("mallory"), Some("alice")));
+        assert!(!expected_run_owner_matches(Some("alice"), None));
+        assert!(!expected_run_owner_matches(Some(""), Some("alice")));
+    }
+
+    #[test]
     fn runtime_trace_context_is_server_installed_not_caller_state() {
         let mut state = serde_json::Map::from_iter([(
             "_rt_trace_context".to_owned(),
@@ -38,6 +47,13 @@
         )))
         .unwrap();
         let submit: RuntimeSubmitRun = serde_json::from_value(vectors["submit"].clone()).unwrap();
+        let mut legacy_submit = vectors["submit"].clone();
+        legacy_submit
+            .as_object_mut()
+            .unwrap()
+            .remove("expected_run_owner_id");
+        let legacy_submit: RuntimeSubmitRun = serde_json::from_value(legacy_submit).unwrap();
+        assert!(legacy_submit.expected_run_owner_id.is_none());
         let claim: RuntimeClaimRequest = serde_json::from_value(vectors["claim"].clone()).unwrap();
         let result: RuntimeWorkerResultRequest =
             serde_json::from_value(vectors["result_effect"].clone()).unwrap();
