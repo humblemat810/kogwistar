@@ -1881,7 +1881,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if native_ids is not None:
             return native_ids
         rows = _json_object(run_awaitable_blocking(self._e.backend.edge_refs_get(where=query_where, include=["documents"])))
-        return list({json.loads(d)["edge_id"] for d in _json_strings(rows.get("documents"))})
+        return sorted({json.loads(d)["edge_id"] for d in _json_strings(rows.get("documents"))})
 
     @implementation_selection_bound
     def list_edges_with_ref_filter(
@@ -1908,7 +1908,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if native_ids is not None:
             return native_ids
         rows = _json_object(run_awaitable_blocking(self._e.backend.node_refs_get(where=where, include=["documents"])))
-        return list({json.loads(d)["node_id"] for d in _json_strings(rows.get("documents"))})
+        return sorted({json.loads(d)["node_id"] for d in _json_strings(rows.get("documents"))})
 
     @implementation_selection_bound
     def list_nodes_with_ref_filter(
