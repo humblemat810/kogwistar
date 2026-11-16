@@ -1759,6 +1759,131 @@ def test_latest_snapshot_uses_python_defaults_and_checks_namespace(
         assert namespace_denied.status_code == 403
 
 
+def test_mount_memory_acl_and_payload_survive_python_engine_reopen(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    root = tmp_path / "mount-memory-reopen"
+
+    def open_engines():
+        return build_engine_triplet(
+            root=root,
+            embedding_function=FakeEmbeddingFunction(),
+        )
+
+    engines = open_engines()
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        with TestClient(server.app) as client:
+            owner_headers = _token_header(
+                client, role="rw", ns="conversation", username="snapshot-owner"
+            )
+            created = client.post(
+                "/api/conversations",
+                json={"user_id": "snapshot-owner"},
+                headers=owner_headers,
+            )
+            created.raise_for_status()
+            conversation_id = created.json()["conversation_id"]
+            service = ConversationService.from_engine(
+                conversation_engine,
+                knowledge_engine=engine,
+                workflow_engine=workflow_engine,
+            )
+            snapshot_id = service.persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id="reopen-run",
+                run_step_seq=0,
+                stage="draft_answer",
+                view=SimpleNamespace(
+                    messages=[{"role": "user", "content": "persisted private snapshot"}],
+                    items=[],
+                    cost=None,
+                    token_budget=32,
+                ),
+                model_name="fake-model",
+                budget_tokens=32,
+            )
+            conversation_engine.acl.record_acl(
+                grain="node",
+                truth_graph="conversation",
+                entity_id=snapshot_id,
+                version=2,
+                mode="private",
+                owner_id="snapshot-owner",
+                supersedes_version=1,
+            )
+            args = {
+                "version": "v1",
+                "op": "mount_memory",
+                "args": {
+                    "conversation_id": conversation_id,
+                    "run_id": "reopen-run",
+                    "stage": "draft_answer",
+                },
+            }
+            mounted = client.post(
+                "/api/syscall/v1/mount_memory", json=args, headers=owner_headers
+            )
+            assert mounted.status_code == 200, mounted.text
+            expected_result = mounted.json()["result"]
+            assert expected_result["snapshot_node_id"] == snapshot_id
+    finally:
+        for engine in engines:
+            engine.close()
+
+    reopened_engines = open_engines()
+    try:
+        engine, conversation_engine, workflow_engine = reopened_engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        with TestClient(server.app) as client:
+            owner_headers = _token_header(
+                client, role="ro", ns="conversation", username="snapshot-owner"
+            )
+            outsider_headers = _token_header(
+                client, role="ro", ns="conversation", username="unrelated-reader"
+            )
+            args = {
+                "version": "v1",
+                "op": "mount_memory",
+                "args": {
+                    "conversation_id": conversation_id,
+                    "run_id": "reopen-run",
+                    "stage": "draft_answer",
+                },
+            }
+            mounted = client.post(
+                "/api/syscall/v1/mount_memory", json=args, headers=owner_headers
+            )
+            assert mounted.status_code == 200, mounted.text
+            assert mounted.json()["result"] == expected_result
+
+            denied = client.post(
+                "/api/syscall/v1/mount_memory", json=args, headers=outsider_headers
+            )
+            assert denied.status_code == 404
+            assert snapshot_id not in denied.text
+            assert "persisted private snapshot" not in denied.text
+    finally:
+        for engine in reopened_engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
