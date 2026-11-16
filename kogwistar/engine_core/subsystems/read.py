@@ -40,6 +40,9 @@ TNode = TypeVar("TNode", bound=Node)
 TEdge = TypeVar("TEdge", bound=Edge)
 TGraphEntity = TypeVar("TGraphEntity", bound=Node | Edge)
 
+# Match Python backend's unbounded reference enumeration in PostgreSQL's BIGINT LIMIT.
+_POSTGRES_UNBOUNDED_READ_LIMIT = (1 << 63) - 1
+
 
 def _json_object(value: object) -> JsonObject:
     """Narrow backend payloads at the graph read boundary."""
@@ -1728,7 +1731,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             table=refs.name,
             ids=None,
             metadata=metadata,
-            limit=200,
+            limit=_POSTGRES_UNBOUNDED_READ_LIMIT,
         )
         return sorted(
             {

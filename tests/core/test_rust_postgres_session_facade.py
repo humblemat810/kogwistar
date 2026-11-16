@@ -1321,6 +1321,26 @@ def test_insertion_method_reads_use_native_postgres_reference_projections_when_d
                     ).format(sql.Identifier(schema, table)),
                     (f"{entity_id}::reference", "{}", json.dumps(metadata)),
                 )
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    sql.SQL(
+                        "INSERT INTO {} (id, document, metadata) VALUES (%s, %s, %s::jsonb)"
+                    ).format(sql.Identifier(schema, "gke_node_refs")),
+                    [
+                        (
+                            f"large-node-{index:03d}::reference",
+                            "{}",
+                            json.dumps(
+                                {
+                                    "namespace": "doc-ref-test",
+                                    "doc_id": "large-doc",
+                                    "node_id": f"large-node-{index:03d}",
+                                }
+                            ),
+                        )
+                        for index in range(205)
+                    ],
+                )
 
         class Backend:
             nodes = SimpleNamespace(name="gke_nodes")
@@ -1372,6 +1392,9 @@ def test_insertion_method_reads_use_native_postgres_reference_projections_when_d
             assert reader.edges_by_doc(
                 "doc-1", {"insertion_method": "parser"}
             ) == ["edge-1"]
+            assert reader.nodes_by_doc("large-doc") == [
+                f"large-node-{index:03d}" for index in range(205)
+            ]
             assert [node.id for node in reader.list_nodes_with_ref_filter("doc-1")] == [
                 "node-1"
             ]
@@ -1426,6 +1449,15 @@ def test_rust_selected_document_reference_reads_and_hydration_are_native(
     def graph_projection_records(**values: object) -> list[dict[str, object]]:
         calls.append(values)
         if values["table"] == "gke_node_refs":
+            if values["metadata"] == {"doc_id": "large-doc"}:
+                return [
+                    {
+                        "id": f"large-ref-{index:03d}",
+                        "document": "{}",
+                        "metadata": {"node_id": f"large-node-{index:03d}"},
+                    }
+                    for index in range(205)
+                ]
             return [
                 {"id": "node-ref-1", "document": "{}", "metadata": {"node_id": "node-1"}}
             ]
@@ -1481,6 +1513,13 @@ def test_rust_selected_document_reference_reads_and_hydration_are_native(
     ]
     assert reader.edges_by_doc("doc-1", {"insertion_method": "parser"}) == [
         "edge-1"
+    ]
+    assert reader.nodes_by_doc("large-doc") == [
+        f"large-node-{index:03d}" for index in range(205)
+    ]
+    assert [call["limit"] for call in calls if call["table"] == "gke_node_refs"] == [
+        (1 << 63) - 1,
+        (1 << 63) - 1,
     ]
     assert [node.id for node in reader.list_nodes_with_ref_filter("doc-1")] == [
         "node-1"
