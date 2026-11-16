@@ -51,11 +51,12 @@ and retrieval checks. Temporary schemas were removed by fixture teardown. This
 proves this bounded mixed-language path in UAT, not whole-stack or production
 cutover readiness.
 The opt-in local Chroma interop suite also passed on this source:
-`tests/server/test_rust_api_chroma_interop_live.py` (**3 passed**, 98.74s).
-It covers Python Chroma projection read/reconciliation by Rust, Python Stage-1
-promotion by the Rust-native worker, and Rust metadata Stage-1 promotion by the
-Python worker. These are isolated local UAT handoffs, not production cutover
-evidence.
+`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**, 99.98s).
+It covers Python Chroma projection read/reconciliation by Rust, Rust-authenticated
+graph mutation projected to Chroma and read after Python engine reopen, Python
+Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1 promotion
+by the Python worker. These are isolated local UAT handoffs, not production
+cutover evidence.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
@@ -132,7 +133,13 @@ gates remain separate evidence.
 - [ ] `workflow-runtime`: readiness remains false.
 - [ ] `server-rest-sse-mcp-cli`: readiness remains false.
 
-`chroma-adapter` is intentionally Python-owned and is not a Rust-port blocker.
+`chroma-adapter` in the authority manifest refers to Python's embedded
+`persist_directory` adapter; it does not mean Rust lacks Chroma support. Rust
+also implements an HTTP `GraphReadStore`/`GraphWriteStore` adapter. In the
+SQLite+Chroma composition, SQLite remains canonical for events and index jobs;
+Chroma remains an eventual, non-transactional projection. Python and Rust
+interoperability is covered by the current-source local UAT above. This does
+not establish concurrent multi-writer guarantees or production promotion.
 LLM SDKs, OCR, LangGraph conversion, and user-authored Python callback bodies
 remain integrations/workers as allowed by ADR-015; they are not to be rewritten
 for language purity.

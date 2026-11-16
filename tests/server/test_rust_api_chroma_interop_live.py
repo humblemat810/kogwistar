@@ -576,6 +576,279 @@ def test_python_chroma_projection_is_read_and_reconciled_by_rust_server(
 @pytest.mark.manual
 @pytest.mark.integration
 @pytest.mark.e2e
+def test_rust_graph_mutation_is_readable_by_python_over_chroma(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rust commits graph data and Python reopens its Chroma projection."""
+    script_name = "chroma.exe" if os.name == "nt" else "chroma"
+    interpreter_chroma = Path(sysconfig.get_path("scripts")) / script_name
+    chroma_command = (
+        str(interpreter_chroma)
+        if interpreter_chroma.is_file()
+        else shutil.which("chroma")
+    )
+    if chroma_command is None:
+        pytest.skip("install the Chroma extra and CLI to run this manual integration")
+    if not _server_is_current():
+        pytest.skip("build the current Rust kogwistar-server binary first")
+
+    class EmbeddingHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            if self.path != "/api/embed":
+                self.send_error(404)
+                return
+            size = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(size))
+            texts = request.get("input")
+            if not isinstance(texts, list):
+                self.send_error(400)
+                return
+            body = json.dumps({"embeddings": [[0.6, 0.8] for _ in texts]}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *_args: object) -> None:
+            return
+
+    chroma_port = _port()
+    chroma_endpoint = f"http://127.0.0.1:{chroma_port}"
+    chroma_process = subprocess.Popen(
+        [
+            chroma_command,
+            "run",
+            "--path",
+            str(tmp_path / "chroma-data"),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(chroma_port),
+        ],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    embedding_server = ThreadingHTTPServer(("127.0.0.1", 0), EmbeddingHandler)
+    embedding_thread = threading.Thread(
+        target=embedding_server.serve_forever, daemon=True
+    )
+    embedding_thread.start()
+    embedding_endpoint = f"http://127.0.0.1:{embedding_server.server_port}"
+    rust_process: subprocess.Popen[bytes] | None = None
+    rust_log_path = tmp_path / "rust-graph-mutation.log"
+    rust_log = rust_log_path.open("wb")
+    try:
+        _wait_for_http_process(
+            chroma_process, f"{chroma_endpoint}/api/v2/heartbeat", "Chroma"
+        )
+
+        import chromadb
+        from chromadb.config import Settings
+
+        import kogwistar.engine_core.engine as engine_module
+        from kogwistar.engine_core.engine import GraphKnowledgeEngine
+        from kogwistar.engine_core.graph_contracts import build_graph_model_envelope
+        from kogwistar.engine_core.models import Edge, Node
+        from tests._helpers.graph_builders import (
+            build_entity_node,
+            build_relationship_edge,
+        )
+
+        monkeypatch.setattr(
+            engine_module,
+            "_import_chroma_client",
+            lambda: (
+                lambda _settings: chromadb.HttpClient(host="127.0.0.1", port=chroma_port),
+                Settings,
+            ),
+        )
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
+        namespace = f"rust-python-chroma-{uuid.uuid4().hex}"
+        data_path = tmp_path / "shared-meta"
+        source_id, target_id, edge_id = (
+            f"{namespace}-source",
+            f"{namespace}-target",
+            f"{namespace}-edge",
+        )
+        preparer = GraphKnowledgeEngine(
+            persist_directory=str(data_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_profile_mode="inspect",
+            embedding_function=lambda documents_or_texts: [
+                [0.6, 0.8] for _ in documents_or_texts
+            ],
+        )
+        try:
+            source = build_entity_node(
+                node_id=source_id,
+                doc_id="rust-chroma-write",
+                label="Rust source",
+                embedding=[0.6, 0.8],
+                metadata={"visibility": "public"},
+            )
+            target = build_entity_node(
+                node_id=target_id,
+                doc_id="rust-chroma-write",
+                label="Rust target",
+                embedding=[0.6, 0.8],
+                metadata={"visibility": "public"},
+            )
+            edge = build_relationship_edge(
+                edge_id=edge_id,
+                src=source_id,
+                tgt=target_id,
+                doc_id="rust-chroma-write",
+                label="Rust relation",
+                embedding=[0.6, 0.8],
+                metadata={"visibility": "public"},
+            )
+
+            def mutation_for(entity: Node | Edge) -> dict[str, object]:
+                if isinstance(entity, Node):
+                    document, metadata = preparer.write.node_doc_and_meta(entity)
+                    table = "gke_nodes"
+                    kind = "node"
+                else:
+                    document = entity.model_dump_json(field_mode="backend")
+                    metadata = preparer.write.enrich_edge_meta(entity)
+                    table = "gke_edges"
+                    kind = "edge"
+                return {
+                    "scope": {"namespace": namespace},
+                    "table": table,
+                    "entity_kind": kind,
+                    "event_id": f"{entity.id}-rust-chroma-event",
+                    "op": "ADD",
+                    "payload": entity.model_dump(
+                        field_mode="backend", exclude=["embedding"], dump_format="json"
+                    ),
+                    "record": {
+                        "id": entity.id,
+                        "document": document,
+                        "metadata": metadata,
+                        "embedding": list(entity.embedding or []),
+                    },
+                    "embedding_dim": 2,
+                    "model_envelope": build_graph_model_envelope(
+                        entity, exclude=["embedding"]
+                    ),
+                }
+
+            batch = {
+                "contract_version": 1,
+                "atomic": True,
+                "mutations": [
+                    mutation_for(source),
+                    mutation_for(target),
+                    mutation_for(edge),
+                ],
+            }
+        finally:
+            preparer.close()
+
+        rust_port = _port()
+        secret = uuid.uuid4().hex
+        env = os.environ.copy()
+        for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
+            env.pop(name, None)
+        env.update(
+            {
+                "AUTH_MODE": "jwt",
+                "JWT_SECRET": secret,
+                "JWT_ALG": "HS256",
+                "KOGWISTAR_BACKEND": "sqlite",
+                "KOGWISTAR_META_SQLITE_PATH": str(data_path / "meta.sqlite"),
+                "KOGWISTAR_CHROMA_ENDPOINT": chroma_endpoint,
+                "KOGWISTAR_CHROMA_NODE_COLLECTION": "nodes",
+                "KOGWISTAR_CHROMA_EDGE_COLLECTION": "edges",
+                "KOGWISTAR_EMBEDDING_WORKER_INLINE": "true",
+                "KOGWISTAR_EMBEDDING_PROVIDER": "ollama",
+                "KOGWISTAR_EMBEDDING_MODEL": "interop-fixture-v1",
+                "KOGWISTAR_EMBEDDING_DIMENSION": "2",
+                "KOGWISTAR_EMBEDDING_ENDPOINT": embedding_endpoint,
+                "KOGWISTAR_SERVER_HOST": "127.0.0.1",
+                "KOGWISTAR_SERVER_PORT": str(rust_port),
+                "RUST_LOG": "warn",
+            }
+        )
+        rust_process = subprocess.Popen(
+            [str(SERVER)], cwd=ROOT, env=env, stdout=rust_log, stderr=subprocess.STDOUT
+        )
+        base = f"http://127.0.0.1:{rust_port}"
+        _wait_for_http_process(rust_process, f"{base}/health", "Rust API")
+        claims = {
+            "sub": "rust-chroma-writer",
+            "role": "rw",
+            "ns": ["knowledge"],
+            "storage_ns": namespace,
+            "capabilities": ["write_graph"],
+            "exp": int(time.time()) + 300,
+        }
+        response = httpx.post(
+            f"{base}/internal/graph/mutations",
+            headers={"Authorization": f"Bearer {_token(secret, claims)}"},
+            json=batch,
+            timeout=20,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json().get("projection_consistency") == "eventual"
+        assert all(item["mutated"] for item in response.json()["results"])
+
+        client = chromadb.HttpClient(host="127.0.0.1", port=chroma_port)
+        deadline = time.monotonic() + 30
+        expected = {"nodes": {source_id, target_id}, "edges": {edge_id}}
+        observed: dict[str, set[str]] = {}
+        while time.monotonic() < deadline:
+            observed = {
+                name: set(client.get_collection(name).get(ids=sorted(ids))["ids"])
+                for name, ids in expected.items()
+            }
+            if observed == expected:
+                break
+            if rust_process.poll() is not None:
+                raise AssertionError("Rust server exited before Chroma projection")
+            time.sleep(0.1)
+        assert observed == expected, observed
+
+        rust_process.terminate()
+        rust_process.wait(timeout=10)
+        rust_process = None
+        verifier = GraphKnowledgeEngine(
+            persist_directory=str(data_path),
+            namespace=namespace,
+            persistence_mode="two_stage",
+            embedding_profile_mode="inspect",
+            embedding_function=lambda documents_or_texts: [
+                [0.6, 0.8] for _ in documents_or_texts
+            ],
+        )
+        try:
+            python_nodes = verifier.read.get_nodes(ids=[source_id, target_id])
+            python_edges = verifier.read.get_edges(ids=[edge_id])
+            assert {node.id for node in python_nodes} == {source_id, target_id}
+            assert len(python_edges) == 1
+            assert python_edges[0].source_ids == [source_id]
+            assert python_edges[0].target_ids == [target_id]
+        finally:
+            verifier.close()
+    finally:
+        if rust_process is not None:
+            rust_process.terminate()
+            rust_process.wait(timeout=10)
+        embedding_server.shutdown()
+        embedding_server.server_close()
+        embedding_thread.join(timeout=5)
+        rust_log.close()
+        chroma_process.terminate()
+        chroma_process.wait(timeout=10)
+
+
+@pytest.mark.manual
+@pytest.mark.integration
+@pytest.mark.e2e
 def test_python_stage1_is_promoted_by_rust_native_worker(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
