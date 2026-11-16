@@ -1504,6 +1504,10 @@ def test_rust_selected_document_reference_reads_and_hydration_are_native(
             metadata=store,
             namespace="alpha",
             kg_graph_type="knowledge",
+            extract=SimpleNamespace(
+                fetch_document_text=lambda _doc_id: None,
+                coerce_pages=lambda _document: [],
+            ),
         )
     )
     monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
@@ -1524,6 +1528,7 @@ def test_rust_selected_document_reference_reads_and_hydration_are_native(
     assert [node.id for node in reader.list_nodes_with_ref_filter("doc-1")] == [
         "node-1"
     ]
+    assert len(reader.extract_reference_contexts("node-1")) == 1
     with pytest.raises(RuntimeError, match="equality filters only.*refusing Python"):
         reader.nodes_by_doc("doc-1", where={"tags": {"$in": ["blue"]}})
     assert all(call["table"] != "gke_edges" for call in calls)

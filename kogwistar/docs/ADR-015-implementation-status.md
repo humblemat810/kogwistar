@@ -560,12 +560,13 @@ deployment canary evidence required to make Rust its live default writer.
   document-to-node ID lookup uses the native graph projection read,
   document-to-edge ID lookup reuses the native endpoint projection reader, and
   `nodes_by_doc`, `edges_by_doc`, and insertion-method lookups use native
-  node/edge reference projections. Ref-filter entity lists hydrate through the
-  native base projection path. When the insertion-method reference index has no
-  match, its primary-record fallback also stays native; both selectors inspect
-  nested grounding spans with shared insertion-method normalization. Python
-  authority remains on its Python backend. These bounded seam reductions do not
-  close the `graph-pgvector` gate.
+  node/edge reference projections. Ref-filter entity lists and
+  `extract_reference_contexts` hydrate through the native base projection path.
+  When the insertion-method reference index has no match, its primary-record
+  fallback also stays native; both selectors inspect nested grounding spans
+  with shared insertion-method normalization. Python authority remains on its
+  Python backend. These bounded seam reductions do not close the
+  `graph-pgvector` gate.
 - Rust runtime owns recorded durable reducer/scheduler slices, not the full
   public `WorkflowRuntime` resolver and side-effect lifecycle.
   `ADR-015-runtime-semantics-contract.md` now freezes the bounded Python

@@ -1580,7 +1580,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             obj = node_or_id
         else:
             got = _json_object(
-                run_awaitable_blocking(self._e.backend.node_get(ids=[node_or_id], include=["documents"]))
+                self._node_get_raw(ids=[node_or_id], include=["documents"])
             )
             doc_list = _json_strings(got.get("documents"))
             if doc_list:
@@ -1588,7 +1588,7 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     obj = Node.model_validate_json(doc_list[0])
             else:
                 got = _json_object(
-                    run_awaitable_blocking(self._e.backend.edge_get(ids=[node_or_id], include=["documents"]))
+                    self._edge_get_raw(ids=[node_or_id], include=["documents"])
                 )
                 edoc_list = _json_strings(got.get("documents"))
                 if not edoc_list:
