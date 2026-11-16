@@ -300,14 +300,16 @@ Only these local items remain in scope before production rollout:
   protocol authority, and required exit evidence.
 - [x] Phase 5: pass current-candidate local route/auth/capability/error,
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
-  `scripts/server_contract_gate.py` produced
-  `.codex/adr015-phase5-server-gate.json` for source
-  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`:
+  `scripts/server_contract_gate.py` re-run produced local report
+  `.tmp/adr015-runtime-refresh/server-contract.json` for source
+  `9fe77b950f687394cf2570f78c619dcb448c682917af94e7e0c5762b10422fe7`:
   REST/SSE 4, auth/syscall 54, MCP 130, frozen contracts 3, and live async
-  Chroma/PostgreSQL SSE 6 passed with zero failures, errors, or skips. The gate
+  Chroma/PostgreSQL SSE 6 passed (197 total) with zero failures, errors, or
+  skips. The gate
   exposed and fixed a PostgreSQL startup `Engine` NameError; MCP capability
   coverage now uses each registered tool's actual namespace without weakening
-  authorization.
+  authorization. This is current local contract evidence, not production
+  rollout/canary evidence.
 - [ ] Phase 5: pass mixed-version/rolling-upgrade and operational
   implementation/parity/queue/replay/schema telemetry gates in a production
   canary. Local gate deliberately records this as unproven rather than
