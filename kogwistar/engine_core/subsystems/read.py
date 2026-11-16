@@ -28,7 +28,7 @@ from ...utils.embedding_vectors import (
 from ..async_compat import run_awaitable_blocking
 from ..models import Document, Edge, Node
 from ..types import GraphEntityKind
-from ..utils.refs import ref_doc_id
+from ..utils.refs import ref_doc_id, ref_insertion_method
 from ..vector_search import VectorSearchHit, similarity_from_distance
 from ...implementation_selection import implementation_selection_bound
 from .base import NamespaceProxy
@@ -1893,31 +1893,94 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         if ids:
             where[key] = {"$in": list(ids)}
 
-        get_refs = self._e.backend.node_refs_get if kind == "node" else self._e.backend.edge_refs_get
-        rows = _json_object(run_awaitable_blocking(get_refs(where=where, include=["metadatas"])))
-        picked = {
-            str(m.get(key)) for m in _json_objects(rows.get("metadatas")) if m.get(key)
-        }
+        rust_pg = self._rust_postgres_projection_selected()
+        if rust_pg:
+            from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+            meta = getattr(self._e, "metadata", None)
+            if not isinstance(meta, RustEnginePostgresMetaStore):
+                raise RuntimeError(
+                    "Rust-selected insertion-method lookup requires the native "
+                    "PostgreSQL metadata store; refusing Python backend fallback"
+                )
+            backend = cast(ProjectionBackendLike, self._e.backend)
+            refs = backend.node_refs if kind == "node" else backend.edge_refs
+            scope = {
+                "namespace": getattr(self._e, "namespace", "default"),
+                "workspace_id": None,
+                "graph_space": None,
+                "table": refs.name,
+                "ids": None,
+            }
+            reference_records = []
+            if ids:
+                for entity_id in dict.fromkeys(ids):
+                    reference_records.extend(
+                        meta.graph_projection_records(
+                            **scope,
+                            metadata={**where, key: entity_id},
+                            limit=1,
+                        )
+                    )
+            else:
+                reference_records = meta.graph_projection_records(
+                    **scope, metadata=where, limit=200
+                )
+            picked = {
+                str(metadata[key])
+                for record in reference_records
+                if (metadata := _json_object(record.get("metadata"))).get(key)
+            }
+        else:
+            get_refs = self._e.backend.node_refs_get if kind == "node" else self._e.backend.edge_refs_get
+            rows = _json_object(run_awaitable_blocking(get_refs(where=where, include=["metadatas"])))
+            picked = {
+                str(m.get(key)) for m in _json_objects(rows.get("metadatas")) if m.get(key)
+            }
         if picked:
             return sorted(picked)
 
-        get_primary = self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
-        if ids:
-            got = _json_object(run_awaitable_blocking(get_primary(ids=list(ids), include=["documents"])))
-            documents = _json_strings(got.get("documents"))
-            entity_ids = _json_strings(got.get("ids"))
+        if rust_pg:
+            from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+            native_meta = getattr(self._e, "metadata", None)
+            if not isinstance(native_meta, RustEnginePostgresMetaStore):
+                raise RuntimeError(
+                    "Rust-selected insertion-method fallback requires the native "
+                    "PostgreSQL metadata store; refusing Python backend fallback"
+                )
+            backend = cast(ProjectionBackendLike, self._e.backend)
+            primary = backend.nodes if kind == "node" else backend.edges
+            primary_records = native_meta.graph_projection_records(
+                namespace=getattr(self._e, "namespace", "default"),
+                workspace_id=None,
+                graph_space=None,
+                table=primary.name,
+                ids=list(ids) if ids else None,
+                metadata={},
+                limit=200,
+            )
+            documents = [str(record["document"]) for record in primary_records]
+            entity_ids = [str(record["id"]) for record in primary_records]
         else:
-            got = _json_object(run_awaitable_blocking(get_primary(include=["documents"])))
-            documents = _json_strings(got.get("documents"))
-            entity_ids = _json_strings(got.get("ids"))
+            get_primary = self._e.backend.node_get if kind == "node" else self._e.backend.edge_get
+            if ids:
+                got = _json_object(run_awaitable_blocking(get_primary(ids=list(ids), include=["documents"])))
+                documents = _json_strings(got.get("documents"))
+                entity_ids = _json_strings(got.get("ids"))
+            else:
+                got = _json_object(run_awaitable_blocking(get_primary(include=["documents"])))
+                documents = _json_strings(got.get("documents"))
+                entity_ids = _json_strings(got.get("ids"))
 
         keep: set[str] = set()
         with use_mode("backend"):
             for entity_id, blob in zip(entity_ids, documents):
                 ent = model_cls.model_validate_json(blob)
-                for ref in ent.mentions or []:
-                    im = getattr(ref, "insertion_method", None)
-                    if im == insertion_method and (not doc_id or ref_doc_id(ref) == doc_id):
+                for ref in ent.iter_span():
+                    if ref_insertion_method(ref) == insertion_method and (
+                        not doc_id or ref_doc_id(ref) == doc_id
+                    ):
                         keep.add(entity_id)
                         break
         return sorted(keep)
