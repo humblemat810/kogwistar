@@ -421,6 +421,57 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
         .await;
     assert_eq!(denied_snapshot.status, StatusCode::FORBIDDEN.as_u16());
 
+    let memory_fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/mount-memory-result-v1.json"
+    ))
+    .unwrap();
+    let snapshot_scope = GraphScope {
+        namespace: "conversation".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let snapshot_metadata = json!({
+        "entity_type":"context_snapshot",
+        "conversation_id":memory_fixture["conversation_id"],
+        "snapshot_seq":memory_fixture["properties"]["snapshot_seq"]
+    });
+    let acl_metadata = json!({
+        "entity_type":"acl_record",
+        "acl_truth_graph":"conversation",
+        "acl_target_grain":"node",
+        "acl_target_entity_id":memory_fixture["snapshot_node_id"],
+        "acl_version":1,
+        "acl_mode":"public"
+    });
+    let snapshot_mutation = |id: &str, metadata: Value, document: String| GraphMutation {
+        scope: snapshot_scope.clone(),
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: json!({"id":id,"metadata":metadata}),
+        record: GraphRecord {
+            id: id.to_owned(),
+            document: Some(document),
+            metadata: serde_json::from_value(metadata).unwrap(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    GraphMutationStore::apply_graph_mutations_atomic(
+        &service.store,
+        vec![
+            snapshot_mutation(
+                memory_fixture["snapshot_node_id"].as_str().unwrap(),
+                snapshot_metadata,
+                memory_fixture.to_string(),
+            ),
+            snapshot_mutation("acl-snapshot-1", acl_metadata.clone(), acl_metadata.to_string()),
+        ],
+    )
+    .await
+    .unwrap();
+
     let fixture: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/invoke-tool-results-v1.json"
     ))
@@ -442,6 +493,41 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
             .iter()
             .map(|field| field.as_str().unwrap().to_owned())
             .collect()
+    );
+
+    let latest_request = ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: path.to_owned(),
+        body: json!({
+            "version":"v1",
+            "args":{
+                "tool_name":"latest_snapshot",
+                "conversation_id":memory_fixture["conversation_id"]
+            }
+        })
+        .to_string()
+        .into_bytes(),
+        principal: json!({
+            "sub":"alice",
+            "role":"rw",
+            "storage_ns":"conversation",
+            "workspace_id":"workspace-a",
+            "graph_space":"conversation",
+            "ns":["conversation"],
+            "capabilities":["invoke_tool","project_view"]
+        }),
+    };
+    let latest = service.execute(latest_request).await;
+    assert_eq!(latest.status, StatusCode::OK.as_u16());
+    let latest: Value = serde_json::from_slice(&latest.body).unwrap();
+    assert_eq!(
+        latest["result"],
+        json!({
+            "tool_name":"latest_snapshot",
+            "conversation_id":memory_fixture["conversation_id"],
+            "snapshot":memory_fixture
+        })
     );
 
     for tool_name in ["capability_snapshot", "resource_snapshot"] {
@@ -491,4 +577,115 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
         .execute(request("not_registered", &["invoke_tool"]))
         .await;
     assert_eq!(unknown.status, StatusCode::NOT_FOUND.as_u16());
+}
+
+#[tokio::test]
+async fn in_memory_invoke_tool_is_available_through_authenticated_rest() {
+    use axum::body::to_bytes;
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
+    let secret = "in-memory-invoke-tool-rest-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let bearer = |capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"alice",
+                "user_id":"alice",
+                "role":"rw",
+                "ns":["conversation"],
+                "storage_ns":"conversation",
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation",
+                "capabilities":capabilities,
+                "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: HealthSnapshot {
+                backend: "memory".to_owned(),
+                persist_directory: "memory".to_owned(),
+                conversation_persist_directory: "memory".to_owned(),
+                workflow_persist_directory: "memory".to_owned(),
+                wisdom_persist_directory: "memory".to_owned(),
+                pg_schema_base: None,
+            },
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(InMemoryGraphApplicationService::default()),
+    );
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/invoke_tool")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", bearer(&["invoke_tool"])),
+                )
+                .body(Body::from(
+                    json!({
+                        "version":"v1",
+                        "op":"invoke_tool",
+                        "args":{"tool_name":"list_transcript","conversation_id":"c1"}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/invoke_tool")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        bearer(&["invoke_tool", "read_graph"])
+                    ),
+                )
+                .body(Body::from(
+                    json!({
+                        "version":"v1",
+                        "op":"invoke_tool",
+                        "args":{"tool_name":"list_transcript","conversation_id":"c1"}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
+    assert_eq!(payload["version"], "v1");
+    assert_eq!(payload["op"], "invoke_tool");
+    assert_eq!(payload["result"]["tool_name"], "list_transcript");
+    assert_eq!(payload["result"]["messages"], json!([]));
 }

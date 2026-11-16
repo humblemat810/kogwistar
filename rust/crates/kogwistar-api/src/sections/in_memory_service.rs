@@ -2944,7 +2944,7 @@ impl InMemoryGraphApplicationService {
                 json!({
                     "tool_name": tool_name,
                     "conversation_id": conversation_id,
-                    "snapshot": serde_json::to_value(snapshot).expect("snapshot serializes"),
+                    "snapshot": public_context_snapshot_value(snapshot),
                 })
             }
             "capability_snapshot" => {
