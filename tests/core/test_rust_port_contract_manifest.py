@@ -317,7 +317,7 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
         worklist,
     )
     fine_snapshot = re.search(
-        r"\*\*Fine evidence worklist:\*\* "
+        r"\*\*Fine evidence inventory:\*\* "
         r"\*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*; "
         r"\*\*(\d+) IN PROGRESS\*\*, \*\*(\d+) NOT STARTED\*\*, "
         r"\*\*(\d+) FAIL\*\*, \*\*(\d+) BLOCKED\*\*\.",
