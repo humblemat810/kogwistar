@@ -162,7 +162,11 @@ Only these local items remain in scope before production rollout:
   (**4 passed**, 25.55s). Current-source fail-closed coverage also passed for
   public sync/async run selection without an authority URL, sync resume without
   an authority URL, and Python transaction entry across generic, PostgreSQL,
-  SQLite/memory, and engine metadata paths (**7 passed**, 3.09s).
+  SQLite/memory, and engine metadata paths (**7 passed**, 3.09s). The mixed
+  Python-worker/Rust-native callback recovery integration also passed on that
+  candidate (`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
+  **1 passed**, 62.24s), including event durability, failed-result recovery,
+  async callback delivery, and checkpoint inspection.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
