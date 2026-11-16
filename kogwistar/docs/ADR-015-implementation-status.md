@@ -153,6 +153,11 @@ Only these local items remain in scope before production rollout:
   (`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
   **1 passed**): event is visible through the durable run-event API exactly
   once after worker restart and result-ACK loss/recovery.
+  The current packaged-server native path also passes all four SQLite and
+  SQLite+Chroma external-worker/inline-server combinations
+  (`test_rust_native_workflow_runs_through_real_server_without_python_worker`,
+  **4 passed**); the workflow event traces attest `implementation_authority=rust`
+  and `seam_crossings=[]`.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
