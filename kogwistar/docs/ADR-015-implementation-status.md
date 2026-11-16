@@ -195,6 +195,13 @@ Only these local items remain in scope before production rollout:
   Thus the earlier stall was the test runner's socket boundary, not a
   production/dev mode difference. Ignored tests remain outside these results;
   neither OS suite is production canary evidence.
+  Rebuilt HEAD `d11951781f4ee1b604e528fcaaa39bfce34362d5` and reran the native
+  HTTP workflow matrix (**4 passed, 2 PostgreSQL cells skipped**, 34.01s).
+  SQLite and SQLite+Chroma passed in external-worker and inline-server modes;
+  traces reported `implementation_authority=rust` and `seam_crossings=[]`.
+  PostgreSQL was skipped because no DSN was configured. Production/development
+  labels are not separate gates when behavior and configuration match; this
+  local test is not deployment canary evidence.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
