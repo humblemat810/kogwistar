@@ -112,16 +112,17 @@ Only these local items remain in scope before production rollout:
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
-  one broad store flag from a narrow test. Refreshed current-source local run
-  used `scripts/host_native_wheel_builder.py` and
+  one broad store flag from a narrow test. Current-source local evidence used
+  `scripts/host_native_wheel_builder.py` and
   `scripts/durable_store_capability_gate.py`, CPython 3.13, and live
   `pgvector/pgvector:pg16`. Native wheel/SQLite transaction ABI smoke passed;
   all four capability groups passed with zero failures, errors, or skips:
   PostgreSQL sequence/event-log 4, projection/snapshot/run-registry 6,
   queue/lease/lane 3, and graph/pgvector 47 (**60 total**). Candidate source
   SHA-256 is
-  `9fe77b950f687394cf2570f78c619dcb448c682917af94e7e0c5762b10422fe7`;
-  reports are under `.tmp/adr015-current-native/`. This is current-source
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`;
+  report: `.tmp/adr015-runtime-refresh-pg/phase3-capability-after.json`.
+  This is current-source
   local evidence only; each `rust_cutover_ready` remains false until its
   same-candidate staged canary and rollback evidence exists. Remaining rollout
   tasklets are tracked in `ADR-015-cutover-worklist.md`.
