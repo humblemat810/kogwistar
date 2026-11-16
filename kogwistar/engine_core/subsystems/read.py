@@ -1709,6 +1709,38 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 insertion_method=insertion_method,
                 doc_id=doc_id,
             )
+        if self._rust_postgres_projection_selected():
+            native = self._rust_postgres_projection_get(
+                entity_kind="node",
+                ids=None,
+                where={"doc_id": doc_id},
+                limit=200,
+                include=["metadatas"],
+            )
+            if native is None:
+                raise RuntimeError(
+                    "Rust-selected PostgreSQL document-node lookup has no native "
+                    "projection reader; refusing Python backend fallback"
+                )
+            result = set(_json_strings(native.get("ids")))
+            adapter = getattr(self._e, "two_stage_projection_adapter", None)
+            query = getattr(adapter, "stage1_query", None)
+            if callable(query):
+                rows = query(entity_kind="node", limit=10000) or []
+                if not isinstance(rows, Iterable):
+                    rows = []
+                for raw_row in rows:
+                    if not isinstance(raw_row, Mapping):
+                        continue
+                    row = cast(Mapping[str, JsonValue], raw_row)
+                    if not stage1_row_is_current(
+                        self._e, entity_kind="node", row=raw_row
+                    ):
+                        continue
+                    payload = _json_object(row.get("payload"))
+                    if _json_object(payload.get("metadata")).get("doc_id") == doc_id:
+                        result.add(str(payload.get("id") or row.get("key")))
+            return sorted(result)
         if hasattr(self._e, "node_docs_collection"):
             rows = _json_object(run_awaitable_blocking(self._e.backend.node_docs_get(
                 where={"doc_id": doc_id}, include=["metadatas"]
@@ -1750,9 +1782,11 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 insertion_method=insertion_method,
                 doc_id=doc_id,
             )
-        eps = _json_object(run_awaitable_blocking(self._e.backend.edge_endpoints_get(
-            where={"doc_id": doc_id}, include=["metadatas"]
-        )))
+        eps = _json_object(
+            self.get_edge_endpoints(
+                where={"doc_id": doc_id}, include=["metadatas"], limit=200
+            )
+        )
         result = set()
         for m in _json_objects(eps.get("metadatas")):
             if m.get("edge_id"):

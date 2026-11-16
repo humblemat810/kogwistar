@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from contextlib import contextmanager
@@ -1022,6 +1023,86 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
             connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
+def test_document_id_reads_use_native_postgres_projections_when_dsn_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set KOGWISTAR_TEST_PG_DSN to run the native PostgreSQL boundary test")
+    psycopg = pytest.importorskip("psycopg")
+    schema = f"rust_doc_ids_{uuid.uuid4().hex}"
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        store.ensure_initialized()
+        store._call("create_graph_schema", embedding_dim=2)
+        store.upsert_graph_projection(
+            namespace="doc-id-test",
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            record={
+                "id": "node-1",
+                "document": "node body",
+                "metadata": {"doc_id": "doc-1", "entity_type": "node"},
+                "embedding": None,
+            },
+            embedding_dim=2,
+        )
+        from psycopg import sql
+
+        endpoint_metadata = {
+            "namespace": "doc-id-test",
+            "doc_id": "doc-1",
+            "edge_id": "edge-1",
+            "endpoint_id": "node-1",
+        }
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL(
+                    "INSERT INTO {} (id, document, metadata) VALUES (%s, %s, %s::jsonb)"
+                ).format(sql.Identifier(schema, "gke_edge_endpoints")),
+                (
+                    "edge-1::src::node::node-1",
+                    "edge endpoint",
+                    json.dumps(endpoint_metadata),
+                ),
+            )
+
+        class Backend:
+            nodes = SimpleNamespace(name="gke_nodes")
+            edges = SimpleNamespace(name="gke_edges")
+            documents = SimpleNamespace(name="gke_documents")
+            edge_endpoints = SimpleNamespace(name="gke_edge_endpoints")
+
+            def node_get(self, **_values: object) -> None:
+                raise AssertionError("Rust-selected document lookup used Python node read")
+
+            def edge_endpoints_get(self, **_values: object) -> None:
+                raise AssertionError(
+                    "Rust-selected document lookup used Python endpoint read"
+                )
+
+        reader = ReadSubsystem(
+            SimpleNamespace(
+                backend=Backend(),
+                metadata=store,
+                namespace="doc-id-test",
+                kg_graph_type="knowledge",
+            )
+        )
+        monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+        with implementation_selection_scope(capture_implementation_selection()):
+            assert reader.node_ids_by_doc("doc-1") == ["node-1"]
+            assert reader.edge_ids_by_doc("doc-1") == ["edge-1"]
+            assert reader.node_ids_by_doc("missing-doc") == []
+            assert reader.edge_ids_by_doc("missing-doc") == []
+    finally:
+        store.close()
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
 def test_native_vector_filter_accepts_only_lossless_supported_forms():
     assert ReadSubsystem._native_vector_filter(
         {"$and": [{"team": "red"}, {"entity_type": {"$ne": "acl_record"}}]}
@@ -1584,6 +1665,7 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
         nodes = SimpleNamespace(name="gke_nodes")
         edges = SimpleNamespace(name="gke_edges")
         documents = SimpleNamespace(name="gke_documents")
+        edge_endpoints = SimpleNamespace(name="gke_edge_endpoints")
         embedding_dim = 3
         distance = "cosine"
 
@@ -1598,6 +1680,11 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
 
         def edge_query(self, **_values):
             return {"ids": [["python-edge-query"]]}
+
+        def edge_endpoints_get(self, **_values):
+            raise AssertionError(
+                "Rust-selected document lookup used Python endpoint read"
+            )
 
         def document_get(self, **_values):
             raise AssertionError("exact document read used Python backend")
@@ -1741,6 +1828,62 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     assert acl_filter_calls[-1]["metadata_not_equals"] == {
         "entity_type": "acl_record"
     }
+
+    document_read_calls: list[dict] = []
+
+    def native_document_records(**values):
+        document_read_calls.append(values)
+        if values["table"] == "gke_nodes":
+            return [
+                {
+                    "id": "n1",
+                    "document": native_document,
+                    "metadata": {"doc_id": "doc-1"},
+                    "embedding": None,
+                }
+            ]
+        if values["table"] == "gke_edge_endpoints":
+            return [
+                {
+                    "id": "endpoint-1",
+                    "document": None,
+                    "metadata": {"doc_id": "doc-1", "edge_id": "e1"},
+                    "embedding": None,
+                }
+            ]
+        raise AssertionError(
+            f"unexpected native document-index table: {values['table']}"
+        )
+
+    monkeypatch.setattr(store, "graph_projection_records", native_document_records)
+
+    def reject_python_node_document_read(**_values):
+        raise AssertionError("Rust-selected document lookup used Python node read")
+
+    monkeypatch.setattr(engine.backend, "node_get", reject_python_node_document_read)
+    assert reader.node_ids_by_doc("doc-1") == ["n1"]
+    assert reader.edge_ids_by_doc("doc-1") == ["e1"]
+    assert document_read_calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "ids": None,
+            "metadata": {"doc_id": "doc-1"},
+            "limit": 200,
+            "for_update": False,
+        },
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_edge_endpoints",
+            "ids": None,
+            "metadata": {"doc_id": "doc-1"},
+            "limit": 200,
+        },
+    ]
 
     batch_query_calls: list[dict] = []
 

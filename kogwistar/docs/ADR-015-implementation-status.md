@@ -555,8 +555,12 @@ deployment canary evidence required to make Rust its live default writer.
   missing-ID omission, metadata filtering, and no Python backend fallback. Rust
   orders projection rows by ID while Python PostgreSQL leaves row order
   unspecified; ordering parity is not yet frozen, so this evidence does not
-  close the `graph-pgvector` cutover gate. Complex-filter queries and
-  derived-index reads remain Python adapters.
+  close the `graph-pgvector` cutover gate. Complex-filter queries,
+  insertion-method/reference-index scans, and some derived-index reads remain
+  Python adapters. Under Rust PostgreSQL authority, document-to-node ID lookup
+  now uses the native graph projection read, and document-to-edge ID lookup
+  reuses the native endpoint projection reader. Python authority is unchanged;
+  this bounded seam reduction does not close the `graph-pgvector` gate.
 - Rust runtime owns recorded durable reducer/scheduler slices, not the full
   public `WorkflowRuntime` resolver and side-effect lifecycle.
   `ADR-015-runtime-semantics-contract.md` now freezes the bounded Python
