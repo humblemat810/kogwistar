@@ -4,6 +4,8 @@
 **Status vocabulary:** `NOT STARTED`, `IN PROGRESS`, `PASS`, `FAIL`, `BLOCKED`.
 A `PASS` requires implementation evidence. Each row records the current gate, status, and concise evidence; chronological change history belongs in Git commits.
 
+**Evidence boundary:** `implementation_authority="rust"` and `seam_crossings=[]` are response annotations emitted by the selected Rust handler; the shared annotation helper does not independently observe process execution or discover uninstrumented language calls. Treat these fields as handler-level declarations, not proof of process-wide zero crossings. Only named tests that instrument/count the relevant seam or exercise a Rust-only execution path support that narrower claim. No ADR-022 PASS implies whole-stack Rust cutover; the separate ADR-015 readiness/canary ledger remains authoritative.
+
 ## Scope Accounting
 
 DL-08C is closed: Python and Rust now have evidenced graph/vector read parity across in-memory, SQLite+Chroma, and PostgreSQL paths for ACL/scope, provenance, lifecycle/ranking, and traversal behavior. All four public graph types retain independent ACL truth and graph-space scope. Shared Python fixtures cover vector ranking and graph traversal; Rust operation-level MCP checks cover neighbors, edge search, k-hop, and shortest path across the three backends. Mutation admission and source-span authorization are covered separately per backend. Python historical/as-of redirect following remains a distinct API and is not claimed as Rust parity. See the mapped evidence in the fine worklist.
