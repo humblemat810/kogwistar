@@ -29,8 +29,9 @@ Re-run relevant gates against the current source before making those claims.
 Release workflow design is tracked in
 [`ADR-015-library-release.md`](ADR-015-library-release.md).
 
-Latest current-source Windows verification: HEAD `246b2501`, candidate source
-SHA-256 `bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`.
+Latest current-source Windows verification: code commit `246b2501` (subsequent
+commits updated only this status document); candidate source SHA-256
+`bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`.
 The rebuilt PyO3 wheel passed its SQLite transaction ABI smoke. Rust API tests
 passed **409**, with **40 ignored**. Across the same source/native identity, all
 five Phase 4 runtime-authority groups passed: durable-worker **185**, bijection
