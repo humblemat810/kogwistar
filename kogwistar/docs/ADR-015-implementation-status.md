@@ -106,8 +106,8 @@ Only these local items remain in scope before production rollout:
   current candidate; prove fault rollback, lease/CAS/sequence concurrency,
   Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
   `scripts/durable_store_gate.py` produced
-  `.codex/adr015-phase3-store-gate.json` for source
-  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`:
+  `.tmp/adr015-runtime-refresh-pg/phase3-store-after.json` for source
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`:
   memory 17, SQLite 90, and live pgvector PostgreSQL 83 tests passed, with zero
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
@@ -129,15 +129,13 @@ Only these local items remain in scope before production rollout:
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
-  native evidence is `.codex/adr015-phase4-runtime-gate.json` for source
-  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`.
+  native evidence is `.tmp/adr015-runtime-refresh-pg/native-report.json` for
+  source `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`.
 - [x] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
   terminal suites; recorded state/event/terminal-result parity; crash/restart;
   cancellation/backpressure; and Python-worker restart gates. The persisted
-  gate passed durable-worker 169 (10 intentionally skipped non-live cases),
-  sync/async bijection 72, bridge parity 22, suspend/terminal 23, and live
-  PostgreSQL 10 tests; all groups had zero failures/errors, and the live
-  PostgreSQL group had zero skips. Async authority now has a bounded `async-v2` callback
+  gate's current-source result and exact group counts are recorded in the
+  current-source Phase-4 entry below. Async authority has a bounded `async-v2` callback
   worker protocol, evidenced separately below; it was intentionally
   fail-closed under the earlier `sync-v1` worker protocol.
 - [ ] Phase 4: route the public runtime owner through the proven Rust durable
@@ -233,15 +231,8 @@ Only these local items remain in scope before production rollout:
   PostgreSQL pre-storage rejection (**1 each**). Rust runtime trace tests passed
   (**2 passed**) and reserved-state/DTO test passed (**1 passed**). These close
   two context transport seams only, not the public runtime-owner/canary gate.
-  Full current-source Phase-4 gate re-run passed at source SHA
-  `9fe77b950f687394cf2570f78c619dcb448c682917af94e7e0c5762b10422fe7`:
-  durable worker 184 tests (10 skipped), sync/async bijection 72, bridge 22,
-  suspend/terminal 23, and live PostgreSQL 10 (**301 passed, 10 skipped, zero
-  failures/errors**). Report: `.tmp/adr015-runtime-refresh/runtime-authority.json`.
-  The first run exposed two stale exact-call expectations for explicit null
-  `trace_context` and `run_owner_id`; the assertions now match the existing
-  dispatcher contract, and the full gate passes. No runtime implementation
-  behavior changed in that correction.
+  Prior candidate-level Phase-4 reports are superseded by the single latest
+  current-source gate record below.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
