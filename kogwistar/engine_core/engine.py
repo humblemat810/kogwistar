@@ -2523,9 +2523,27 @@ class GraphKnowledgeEngine:
         return self.read.list_edges_with_ref_filter(doc_id, where=where)
 
     def nodes_by_ids(self, node_ids: Sequence[str]) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_get(
+            entity_kind="node",
+            ids=node_ids,
+            where=None,
+            limit=200,
+            include=["documents", "metadatas"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(self.backend.node_get(ids=node_ids))
 
     def edges_by_ids(self, edge_ids: Sequence[str]) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_get(
+            entity_kind="edge",
+            ids=edge_ids,
+            where=None,
+            limit=400,
+            include=["documents", "metadatas"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(self.backend.edge_get(ids=edge_ids))
 
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
@@ -2553,11 +2571,29 @@ class GraphKnowledgeEngine:
     # Vector queries
     # ----------------------------
     def vector_search_nodes(self, embedding: list[float], top_k: int = 5) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_query(
+            entity_kind="node",
+            query_embeddings=[embedding],
+            where=None,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(
             self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
         )
 
     def vector_search_edges(self, embedding: list[float], top_k: int = 5) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_query(
+            entity_kind="edge",
+            query_embeddings=[embedding],
+            where=None,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(
             self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
         )

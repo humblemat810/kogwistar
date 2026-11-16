@@ -18,6 +18,7 @@ from kogwistar.engine_core.rust_postgres_session import (
     RustPostgresSession,
     _RustPostgresTransactionToken,
 )
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Document, PureChromaNode
 from kogwistar.engine_core.subsystems.extract import ExtractSubsystem
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
@@ -1588,6 +1589,54 @@ def test_rust_selected_reference_context_document_text_reads_are_native(
         ["document-1"],
         ["legacy-document"],
         None,
+    ]
+
+
+def test_legacy_engine_graph_reads_use_native_projection_helpers_when_selected() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class NativeRead:
+        def _rust_postgres_projection_get(self, **values: object) -> dict[str, object]:
+            calls.append(("get", values))
+            return {"ids": list(values["ids"] or [])}
+
+        def _rust_postgres_projection_query(
+            self, **values: object
+        ) -> dict[str, object]:
+            calls.append(("query", values))
+            return {"ids": [["hit"]]}
+
+    class Backend:
+        def node_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected node ID read used Python backend")
+
+        def edge_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected edge ID read used Python backend")
+
+        def node_query(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected node search used Python backend")
+
+        def edge_query(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected edge search used Python backend")
+
+    engine = SimpleNamespace(read=NativeRead(), backend=Backend())
+    assert GraphKnowledgeEngine.nodes_by_ids(engine, ["node-1"]) == {
+        "ids": ["node-1"]
+    }
+    assert GraphKnowledgeEngine.edges_by_ids(engine, ["edge-1"]) == {
+        "ids": ["edge-1"]
+    }
+    assert GraphKnowledgeEngine.vector_search_nodes(engine, [0.25, 0.75], 3) == {
+        "ids": [["hit"]]
+    }
+    assert GraphKnowledgeEngine.vector_search_edges(engine, [0.25, 0.75], 4) == {
+        "ids": [["hit"]]
+    }
+    assert [(kind, values["entity_kind"]) for kind, values in calls] == [
+        ("get", "node"),
+        ("get", "edge"),
+        ("query", "node"),
+        ("query", "edge"),
     ]
 
 
