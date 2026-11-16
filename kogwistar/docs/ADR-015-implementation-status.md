@@ -42,6 +42,14 @@ inline-server modes. The PostgreSQL cells used unique temporary schemas and
 cleaned them after each run. A restricted Windows attempt failed at loopback
 with OS error 10013; the elevated UAT rerun passed all six, so that first result
 is an environment-permission failure, not application evidence.
+The same rebuilt server also passed
+`tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
+(**1 passed**, 134.36s) against disposable pgvector:pg16. Rust HTTP/MCP graph
+operations and persisted records were read and parity-checked through Python's
+`GraphKnowledgeEngine` against the same PostgreSQL state, including scoped ACL
+and retrieval checks. Temporary schemas were removed by fixture teardown. This
+proves this bounded mixed-language path in UAT, not whole-stack or production
+cutover readiness.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
