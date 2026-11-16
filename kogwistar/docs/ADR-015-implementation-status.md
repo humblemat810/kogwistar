@@ -33,8 +33,10 @@ Latest current-source Windows verification: code commit `246b2501` (subsequent
 commits updated only this status document); candidate source SHA-256
 `bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`.
 The rebuilt PyO3 wheel passed its SQLite transaction ABI smoke. Rust API tests
-passed **409**, with **40 ignored**. Across the same source/native identity, all
-five Phase 4 runtime-authority groups passed: durable-worker **185**, bijection
+passed **409**, with **40 ignored**, on Windows and again in the isolated Linux
+Docker UAT using Rust 1.97.1 (Linux run: **2m40s** build, **9.25s** tests).
+Across the same source/native identity, all five Phase 4 runtime-authority groups
+passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
 zero skips, failures, or errors. PostgreSQL variants in the durable-worker
 group were rerun against the existing pgvector container with a DSN, not
