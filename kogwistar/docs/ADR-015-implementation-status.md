@@ -144,10 +144,11 @@ Only these local items remain in scope before production rollout:
   selected without a URL, matching async resume and preventing Python checkpoint
   fallback; focused dispatch/fail-closed tests pass. `StepContext.events.emit()`
   is buffered per callback invocation and included in the accepted worker
-  effect's `trace_events`; the Rust result transaction remains the durable
-  owner. Sync/async adapter regressions and the complete worker-adapter file
-  pass (**80 passed**, `.venv\Scripts\python.exe -m pytest
-  tests\runtime\test_rust_runtime_python_worker.py -q -p no:cacheprovider`).
+  effect's `trace_events`; the buffer is capped at 256 events/1 MiB, rejecting
+  the effect on overflow; the Rust result transaction remains the durable
+  owner. The complete worker-adapter file passed (**80 passed** before the
+  buffer-cap follow-up); sync/async event and count/byte overflow regressions
+  pass (**4 passed**).
   The real Rust SQLite server integration also passes
   (`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
   **1 passed**): event is visible through the durable run-event API exactly

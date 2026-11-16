@@ -5,6 +5,7 @@ import base64
 import copy
 import hashlib
 import json
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -185,6 +186,32 @@ def test_async_worker_buffers_context_events_into_durable_effect() -> None:
     assert emitted[0]["run_id"] == "run-1"
     assert emitted[0]["node_id"] == "start"
     assert json.loads(emitted[0]["payload_json"]) == {"phase": "prepared"}
+
+
+@pytest.mark.parametrize("overflow", ["count", "bytes"])
+def test_worker_rejects_callback_telemetry_over_budget(overflow, caplog) -> None:
+    caplog.set_level(logging.CRITICAL, logger="workflow.telemetry")
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        if overflow == "count":
+            for index in range(257):
+                ctx.events.emit(
+                    type="resolver.progress",
+                    ctx=ctx.trace_ctx,
+                    payload={"index": index},
+                )
+        else:
+            ctx.events.emit(
+                type="resolver.progress",
+                ctx=ctx.trace_ctx,
+                payload={"text": "x" * (1024 * 1024)},
+            )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with pytest.raises(RustWorkerError, match="telemetry exceeds worker effect limits"):
+        RustStepResolverAdapter(resolver)(_adapter_work())
 
 
 def test_python_worker_application_operation_matches_shared_native_effect_golden() -> None:

@@ -49,6 +49,8 @@ JsonObject = dict[str, JsonValue]
 # A missing target is legacy-compatible; when present, Python workers must
 # never accept work explicitly addressed to another executor.
 PYTHON_EXECUTOR_TARGET = "python-worker"
+_MAX_CALLBACK_TRACE_EVENTS = 256
+_MAX_CALLBACK_TRACE_BYTES = 1024 * 1024
 
 if TYPE_CHECKING:
     from kogwistar.runtime.runtime import StepContext
@@ -88,9 +90,25 @@ class _BufferedEventSink:
 
     def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
+        self.serialized_bytes = 0
+        self.overflowed = False
 
     def emit(self, event: dict[str, Any]) -> None:
+        if self.overflowed:
+            return
+        try:
+            event_bytes = len(strict_json_dumps(event).encode("utf-8"))
+        except (TypeError, ValueError):
+            self.overflowed = True
+            return
+        if (
+            len(self.events) >= _MAX_CALLBACK_TRACE_EVENTS
+            or self.serialized_bytes + event_bytes > _MAX_CALLBACK_TRACE_BYTES
+        ):
+            self.overflowed = True
+            return
         self.events.append(dict(event))
+        self.serialized_bytes += event_bytes
 
     def flush(self, timeout: float = 1.0) -> bool:
         del timeout
@@ -658,7 +676,7 @@ class RustStepResolverAdapter:
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
             trace_context=ctx.trace_ctx,
-            callback_trace_events=event_sink.events,
+            callback_event_sink=event_sink,
         )
 
     def _effect_from_result(
@@ -672,7 +690,7 @@ class RustStepResolverAdapter:
         message_queue: queue.Queue[JsonObject],
         lane_message_attempts: list[JsonObject],
         trace_context: TraceContext,
-        callback_trace_events: Sequence[Mapping[str, Any]],
+        callback_event_sink: _BufferedEventSink,
     ) -> JsonObject:
         """Apply v1 result restrictions shared by sync-v1 and async-v2 workers."""
         from kogwistar.runtime.base_runtime import (
@@ -687,6 +705,8 @@ class RustStepResolverAdapter:
         )
         from kogwistar.runtime.routing import compute_route_next
 
+        if callback_event_sink.overflowed:
+            raise RustWorkerError("callback telemetry exceeds worker effect limits")
         if lane_message_attempts:
             raise RustWorkerError("ctx.send_lane_message is not in worker contract v1")
         if not isinstance(result, (RunSuccess, RunFailure, RunSuspended)):
@@ -827,7 +847,7 @@ class RustStepResolverAdapter:
         if not isinstance(result_trace_events, list):
             raise RustWorkerError("result.trace_events must be an array")
         buffered_trace_events = _json_copy(
-            list(callback_trace_events), field="callback trace events"
+            callback_event_sink.events, field="callback trace events"
         )
         if not isinstance(buffered_trace_events, list):
             raise RustWorkerError("callback trace events must be an array")
@@ -1015,7 +1035,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
             trace_context=ctx.trace_ctx,
-            callback_trace_events=event_sink.events,
+            callback_event_sink=event_sink,
         )
 
 
