@@ -21,7 +21,7 @@ async fn in_memory_native_provider_request_persists_semantic_events_and_keeps_de
     .unwrap();
     drop(auth);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = bind_reachable_loopback_listener().await;
     let address = listener.local_addr().unwrap();
     let provider_task = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
