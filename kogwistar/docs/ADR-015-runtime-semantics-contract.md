@@ -1,6 +1,6 @@
 # ADR-015 runtime semantics contract
 
-Updated: 2026-07-21
+Updated: 2026-11-16
 
 This document freezes the Python runtime behavior that the ADR-015 durable Rust
 runtime must preserve. It is intentionally narrower than a full description of
@@ -36,10 +36,12 @@ predicate routing handles a failure; otherwise `_enter_failed()` drains pending
 and join work before terminal persistence.
 
 Nested `workflow_invocations`, sandboxed resolver execution, lane-message
-sends, and direct trace/event emission are not silently degraded. Until each
-has a versioned worker protocol embedding, the Rust worker adapter must
-reject it before executing the callback (when discoverable from the resolver)
-or reject the returned effect before persistence.
+sends, and lane-message lifecycle event sinks are not silently degraded. They
+remain fail-closed until a versioned worker protocol represents their effects.
+`StepContext.events.emit()` is supported separately: the Rust worker buffers
+callback telemetry per invocation, includes it in the worker effect's
+`trace_events`, and lets the Rust authority persist it with the accepted effect.
+The buffer is not shared across workers and emits no independent durable write.
 
 Async callbacks are represented by `worker_protocol="async-v2"`. This changes
 only Python callback execution: the callback is awaited outside the store

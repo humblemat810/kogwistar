@@ -133,6 +133,60 @@ def test_python_worker_increment_counter_matches_shared_native_effect_golden() -
     } == fixture
 
 
+def test_sync_worker_buffers_context_events_into_durable_effect() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        ctx.events.emit(
+            type="resolver.progress",
+            ctx=ctx.trace_ctx,
+            payload={"phase": "prepared"},
+        )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    effect = RustStepResolverAdapter(resolver)(_adapter_work())
+    emitted = [
+        event
+        for event in effect["trace_events"]
+        if event.get("type") == "resolver.progress"
+    ]
+
+    assert len(emitted) == 1
+    assert emitted[0]["run_id"] == "run-1"
+    assert emitted[0]["node_id"] == "start"
+    assert json.loads(emitted[0]["payload_json"]) == {"phase": "prepared"}
+
+
+def test_async_worker_buffers_context_events_into_durable_effect() -> None:
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def execute(ctx):
+        ctx.events.emit(
+            type="resolver.progress",
+            ctx=ctx.trace_ctx,
+            payload={"phase": "prepared"},
+        )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work()
+    work["payload"]["worker_protocol"] = "async-v2"
+    effect = asyncio.run(AsyncRustStepResolverAdapter(resolver).execute(work))
+    emitted = [
+        event
+        for event in effect["trace_events"]
+        if event.get("type") == "resolver.progress"
+    ]
+
+    assert len(emitted) == 1
+    assert emitted[0]["run_id"] == "run-1"
+    assert emitted[0]["node_id"] == "start"
+    assert json.loads(emitted[0]["payload_json"]) == {"phase": "prepared"}
+
+
 def test_python_worker_application_operation_matches_shared_native_effect_golden() -> None:
     fixture = json.loads(
         (

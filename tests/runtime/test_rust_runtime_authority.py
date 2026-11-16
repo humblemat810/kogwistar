@@ -1997,6 +1997,34 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         )
         assert recovered.returncode == 0, recovered.stderr
         assert callback_marker.read_text(encoding="utf-8").splitlines() == ["callback"]
+        persisted_events = httpx.get(
+            f"{base_url}/api/workflow/runs/mixed-live-run/events?after_seq=0",
+            headers=headers,
+            timeout=10,
+        )
+        assert persisted_events.status_code == 200, persisted_events.text
+        callback_traces: list[dict[str, Any]] = []
+        for frame in persisted_events.text.split("\n\n"):
+            data_line = next(
+                (line[6:] for line in frame.splitlines() if line.startswith("data: ")),
+                None,
+            )
+            if data_line is None:
+                continue
+            event_payload = json.loads(data_line)
+            trace = event_payload.get("trace")
+            if (
+                event_payload.get("event_type") == "workflow.trace.v1"
+                and isinstance(trace, dict)
+                and trace.get("type") == "resolver.progress"
+            ):
+                callback_traces.append(trace)
+        assert len(callback_traces) == 1
+        assert callback_traces[0]["run_id"] == "mixed-live-run"
+        assert callback_traces[0]["node_id"] == "python-before"
+        assert json.loads(callback_traces[0]["payload_json"]) == {
+            "phase": "callback-complete"
+        }
         if graph_enabled:
             assert graph_namespace is not None and graph_entity_id is not None
             if backend == "pg":

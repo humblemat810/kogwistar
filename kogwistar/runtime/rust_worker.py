@@ -20,7 +20,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol, cast
+from typing import Any, TYPE_CHECKING, Callable, Protocol, cast
 
 import httpx
 from pydantic import ValidationError
@@ -38,7 +38,7 @@ from kogwistar.implementation_selection import (
 )
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.models import StepRunResult
-from kogwistar.runtime.telemetry import TraceContext
+from kogwistar.runtime.telemetry import EventEmitter, TraceContext
 from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
 
 from .contract import Predicate
@@ -81,6 +81,23 @@ class AsyncRustWorkerExecutor(Protocol):
 
 class RustWorkerError(RuntimeError):
     """Rust worker protocol or transport failure."""
+
+
+class _BufferedEventSink:
+    """Hold callback telemetry until its worker effect is durably accepted."""
+
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    def emit(self, event: dict[str, Any]) -> None:
+        self.events.append(dict(event))
+
+    def flush(self, timeout: float = 1.0) -> bool:
+        del timeout
+        return True
+
+    def close(self, timeout: float = 1.0) -> None:
+        del timeout
 
 
 class AmbiguousWorkerExecution(RustWorkerError):
@@ -589,6 +606,7 @@ class RustStepResolverAdapter:
         resolver = self._resolve_sync_handler(op, op_version)
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
+        event_sink = _BufferedEventSink()
 
         def record_lane_message(**kwargs: JsonValue) -> dict[str, str]:
             lane_message_attempts.append(dict(kwargs))
@@ -611,6 +629,7 @@ class RustStepResolverAdapter:
             trace_context=_claimed_work_trace_context(work, payload, node_id),
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
+            events=EventEmitter(sink=event_sink),
             state=state,
             authority_context={"effective_capabilities": ()},
         )
@@ -639,6 +658,7 @@ class RustStepResolverAdapter:
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
             trace_context=ctx.trace_ctx,
+            callback_trace_events=event_sink.events,
         )
 
     def _effect_from_result(
@@ -652,6 +672,7 @@ class RustStepResolverAdapter:
         message_queue: queue.Queue[JsonObject],
         lane_message_attempts: list[JsonObject],
         trace_context: TraceContext,
+        callback_trace_events: Sequence[Mapping[str, Any]],
     ) -> JsonObject:
         """Apply v1 result restrictions shared by sync-v1 and async-v2 workers."""
         from kogwistar.runtime.base_runtime import (
@@ -797,11 +818,21 @@ class RustStepResolverAdapter:
             effect["resume_payload"] = _json_copy(
                 result.resume_payload, field="result.resume_payload"
             )
-        for field in ("usage", "trace_events"):
-            value = getattr(result, field, None)
-            if value is not None:
-                effect[field] = _json_copy(value, field=f"result.{field}")
-        trace_events = effect.setdefault("trace_events", [])
+        usage = getattr(result, "usage", None)
+        if usage is not None:
+            effect["usage"] = _json_copy(usage, field="result.usage")
+        result_trace_events = _json_copy(
+            getattr(result, "trace_events", []), field="result.trace_events"
+        )
+        if not isinstance(result_trace_events, list):
+            raise RustWorkerError("result.trace_events must be an array")
+        buffered_trace_events = _json_copy(
+            list(callback_trace_events), field="callback trace events"
+        )
+        if not isinstance(buffered_trace_events, list):
+            raise RustWorkerError("callback trace events must be an array")
+        trace_events = [*buffered_trace_events, *result_trace_events]
+        effect["trace_events"] = trace_events
         if not isinstance(trace_events, list):
             raise RustWorkerError("worker effect trace_events must be an array")
         trace_events.append(
@@ -932,6 +963,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
         resolver = self._resolve_async_handler(op, op_version)
         message_queue: queue.Queue[JsonObject] = queue.Queue()
         lane_message_attempts: list[JsonObject] = []
+        event_sink = _BufferedEventSink()
 
         def record_lane_message(**kwargs: JsonValue) -> dict[str, str]:
             lane_message_attempts.append(dict(kwargs))
@@ -954,6 +986,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             trace_context=_claimed_work_trace_context(work, payload, node_id),
             message_queue=message_queue,
             lane_message_sender=record_lane_message,
+            events=EventEmitter(sink=event_sink),
             state=state,
             authority_context={"effective_capabilities": ()},
         )
@@ -982,6 +1015,7 @@ class AsyncRustStepResolverAdapter(RustStepResolverAdapter):
             message_queue=message_queue,
             lane_message_attempts=lane_message_attempts,
             trace_context=ctx.trace_ctx,
+            callback_trace_events=event_sink.events,
         )
 
 

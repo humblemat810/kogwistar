@@ -182,6 +182,11 @@ def main() -> None:
     def before(ctx):
         with Path(args.marker).open("a", encoding="utf-8") as marker:
             marker.write("callback\n")
+        ctx.events.emit(
+            type="resolver.progress",
+            ctx=ctx.trace_ctx,
+            payload={"phase": "callback-complete"},
+        )
         if args.failure_result:
             return RunFailure(
                 conversation_node_id=None,

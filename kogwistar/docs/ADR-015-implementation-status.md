@@ -142,7 +142,17 @@ Only these local items remain in scope before production rollout:
   scheduler round trip; service-triggered SQLite/PostgreSQL runs preserve the
   same protocol. Sync `resume_run` now also fails closed when Rust authority is
   selected without a URL, matching async resume and preventing Python checkpoint
-  fallback; focused dispatch/fail-closed tests pass. This line remains unchecked:
+  fallback; focused dispatch/fail-closed tests pass. `StepContext.events.emit()`
+  is buffered per callback invocation and included in the accepted worker
+  effect's `trace_events`; the Rust result transaction remains the durable
+  owner. Sync/async adapter regressions and the complete worker-adapter file
+  pass (**80 passed**, `.venv\Scripts\python.exe -m pytest
+  tests\runtime\test_rust_runtime_python_worker.py -q -p no:cacheprovider`).
+  The real Rust SQLite server integration also passes
+  (`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
+  **1 passed**): event is visible through the durable run-event API exactly
+  once after worker restart and result-ACK loss/recovery.
+  This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
 - [x] Phase 5: explicitly version/defer the 1 currently frozen Python-owned
