@@ -5186,11 +5186,22 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         mcp_result = _mcp_response_payload(mcp_events)["result"]
         event_list = mcp_result["structuredContent"]["events"]
         assert any(event["event_type"] == "run.created" for event in event_list)
-        native_traces = [
+        run_traces = [
             event["payload"]["trace"]
             for event in event_list
             if event["event_type"] == "workflow.trace.v1"
-            and "runtime.native.step.completed" in json.dumps(event["payload"])
+            and isinstance(event.get("payload", {}).get("trace"), dict)
+        ]
+        assert not [
+            trace
+            for trace in run_traces
+            if str(trace.get("event", "")).startswith("runtime.python_worker.")
+            or trace.get("executor_target") == "python-worker"
+        ], "Rust-native run must have no Python-worker handoff trace"
+        native_traces = [
+            trace
+            for trace in run_traces
+            if "runtime.native.step.completed" in json.dumps(trace)
         ]
         assert len(native_traces) == 2
         expected_completed_steps = workflow_contract["expected_completed_steps"]
