@@ -769,6 +769,177 @@ def test_python_workflow_success_matches_rust_durable_successor_admission(
     assert len(rust_events) == contract["expected_event_count"]
 
 
+def test_python_handled_failure_matches_rust_durable_recovery_admission(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar._rust_bridge import store_sqlite
+    from kogwistar.runtime.rust_runtime_adapter import apply_recorded_transition
+
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/runtime-worker-failure-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    case = contract["cases"]["handled"]
+    workflow_id = "wf_worker_handled_failure_parity"
+    run_id = "run_worker_handled_failure_parity"
+    conversation_id = "conv_worker_handled_failure_parity"
+    turn_id = "turn_worker_handled_failure_parity"
+    nodes = [
+        _join_node("exec", workflow_id=workflow_id, op="exec", start=True),
+        _join_node("recover", workflow_id=workflow_id, op="recover"),
+        _join_node("end", workflow_id=workflow_id, op="end", terminal=True),
+    ]
+    edges = [
+        _join_edge(
+            "e-recover",
+            workflow_id=workflow_id,
+            src="exec",
+            dst="recover",
+            predicate="if_failure",
+        ),
+        _join_edge(
+            "e-default",
+            workflow_id=workflow_id,
+            src="exec",
+            dst="end",
+            is_default=True,
+        ),
+        _join_edge("e-end", workflow_id=workflow_id, src="recover", dst="end"),
+    ]
+    workflow_engine = _JoinWorkflowEngine(nodes, edges)
+    conversation_engine = _JoinConversationEngine()
+    resolver = MappingStepResolver()
+
+    @resolver.register("exec")
+    def _exec(_ctx):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[(mode, payload) for mode, payload in case["state_update"]],
+            errors=case["errors"],
+        )
+
+    @resolver.register("recover")
+    def _recover(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"recovered": True})],
+        )
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"ended": True})],
+        )
+
+    python_run = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={
+            "if_failure": lambda _edge, _state, result: result.status == "failure"
+        },
+        trace=True,
+        events=_TraceEmitter(),
+    ).run(
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+        turn_node_id=turn_id,
+        run_id=run_id,
+        initial_state={"answer": "seed"},
+    )
+    python_failure_step = next(
+        node
+        for node in conversation_engine.nodes
+        if node.metadata.get("entity_type") == "workflow_step_exec"
+        and node.metadata.get("workflow_node_id") == "exec"
+    )
+    python_failure_result = json.loads(python_failure_step.metadata["result_json"])
+    assert python_failure_step.metadata["status"] == "failure"
+    assert python_run.status == "succeeded"
+    assert python_run.final_state["recovered"] is True
+    assert python_run.final_state["ended"] is True
+
+    database = tmp_path / "python-rust-handled-failure-parity.sqlite"
+    empty_frontier = {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+    }
+    apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-start",
+            "expected_event_seq": 0,
+            "kind": "start",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "user_id": "user-1",
+            "user_turn_node_id": turn_id,
+            "step_seq": 0,
+            "node_id": "exec",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "initial_state": {"answer": "seed"},
+            "frontier": {
+                **empty_frontier,
+                "pending": [["exec", 0, "token-1", None]],
+            },
+        },
+    )
+    rust_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-failure",
+            "expected_event_seq": 1,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 0,
+            "node_id": "exec",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": case["state_update"],
+            "result": {"workflow_status": "failure"},
+            "errors": case["errors"],
+            "frontier": {
+                **empty_frontier,
+                "pending": [["recover", 1, "token-1", None]],
+            },
+        },
+    )
+    rust_events = store_sqlite(
+        path=database,
+        operation={
+            "kind": "list_server_run_events",
+            "run_id": run_id,
+            "after_seq": 0,
+            "limit": 10,
+        },
+    )
+    rust_failure_event = rust_events[-1]["payload"]["reduced"]
+
+    assert python_failure_step.metadata["step_seq"] == rust_failure_event["state"][
+        "last_step_seq"
+    ]
+    assert python_failure_result["state_update"] == rust_failure_event["state_update"]
+    assert python_failure_result["errors"] == rust_failure_event["errors"]
+    assert rust_result["state"]["status"] == "running"
+    assert rust_failure_event["state"]["frontier"]["pending"] == [
+        ["recover", 1, "token-1", None]
+    ]
+    assert len(rust_events) == case["expected_event_count"]
+
+
 def _seed_join_bridge_graph(workflow_id: str):
     nodes = [
         _join_node(
