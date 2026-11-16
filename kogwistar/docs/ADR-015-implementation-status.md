@@ -35,6 +35,10 @@ commits updated only this status document); candidate source SHA-256
 The rebuilt PyO3 wheel passed its SQLite transaction ABI smoke. Rust API tests
 passed **409**, with **40 ignored**, on Windows and again in the isolated Linux
 Docker UAT using Rust 1.97.1 (Linux run: **2m40s** build, **9.25s** tests).
+The Rust server binary was rebuilt from this checkout; its real HTTP/MCP
+no-Python workflow matrix passed **4** SQLite and SQLite+Chroma cells across
+external-worker and inline-server modes. The two PostgreSQL cells were skipped
+because no test DSN was configured; they are not counted as passing.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
