@@ -1653,7 +1653,9 @@ def test_latest_snapshot_uses_python_defaults_and_checks_namespace(
 
     with TestClient(server.app) as client:
         conv_headers = _token_header(client, role="rw", ns="conversation")
-        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        workflow_headers = _token_header(
+            client, role="ro", ns="workflow", username="snapshot-owner"
+        )
         denied_headers = _token_header(client, role="ro", ns="wisdom")
         created = client.post(
             "/api/conversations", json={"user_id": "snapshot-owner"}, headers=conv_headers
@@ -1681,6 +1683,15 @@ def test_latest_snapshot_uses_python_defaults_and_checks_namespace(
             model_name="fake-model",
             budget_tokens=32,
         )
+        conversation_engine.acl.record_acl(
+            grain="node",
+            truth_graph="conversation",
+            entity_id=snapshot_id,
+            version=2,
+            mode="private",
+            owner_id="snapshot-owner",
+            supersedes_version=1,
+        )
 
         response = client.get(
             f"/api/conversations/{conversation_id}/snapshots/latest",
@@ -1706,6 +1717,46 @@ def test_latest_snapshot_uses_python_defaults_and_checks_namespace(
         assert denied.status_code == 403
         assert snapshot_id not in denied.text
         assert conversation_id not in denied.text
+
+        mount_args = {
+            "version": "v1",
+            "op": "mount_memory",
+            "args": {
+                "conversation_id": conversation_id,
+                "run_id": "python-only-snapshot-run",
+                "stage": "draft_answer",
+            },
+        }
+        mounted = client.post(
+            "/api/syscall/v1/mount_memory",
+            json=mount_args,
+            headers=_token_header(
+                client, role="ro", ns="conversation", username="snapshot-owner"
+            ),
+        )
+        assert mounted.status_code == 200, mounted.text
+        assert mounted.json()["result"]["snapshot_node_id"] == snapshot_id
+        assert mounted.json()["result"]["metadata"].get("summary") != "snapshot fixture"
+
+        private_denied = client.post(
+            "/api/syscall/v1/mount_memory",
+            json=mount_args,
+            headers=_token_header(
+                client, role="ro", ns="conversation", username="unrelated-reader"
+            ),
+        )
+        assert private_denied.status_code == 404
+        assert snapshot_id not in private_denied.text
+        assert "snapshot fixture" not in private_denied.text
+
+        namespace_denied = client.post(
+            "/api/syscall/v1/mount_memory",
+            json=mount_args,
+            headers=_token_header(
+                client, role="ro", ns="wisdom", username="snapshot-owner"
+            ),
+        )
+        assert namespace_denied.status_code == 403
 
 
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
