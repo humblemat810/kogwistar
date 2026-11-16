@@ -1418,6 +1418,11 @@ impl ApplicationService for PostgresRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "DELETE" && admin_document_delete_id(path).is_some() {
+            return DocumentStore::supports_document_rollback(
+                self.graph_store_for_type(&self.graph_role),
+            );
+        }
         if method == "POST" && path == "/api/add_index_entries" {
             return self.embedding_provider.is_some()
                 && self.search_index_fts.is_some()

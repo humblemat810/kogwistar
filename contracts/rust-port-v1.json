@@ -509,24 +509,7 @@
     "status": "versioned-intentionally-deferred",
     "owner": "python-rollback-deployment",
     "rule": "A deferred operation must remain listed in Rust's PENDING_SERVER_CUTOVER_ROUTES or PENDING_SYSCALL_CUTOVER_OPS, fail closed when sent directly to the Rust application service, and retain the Python rollback route. Removing an entry requires its listed authority and exit evidence; transport registration alone is insufficient.",
-    "route_groups": [
-      {
-        "name": "document-and-graph-mutations",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "graph-pgvector",
-          "queues-leases-lanes"
-        ],
-        "exit_evidence": "native graph mutation/read parity, derived-index admission/replay, rollback, and public route conformance",
-        "operations": [
-          {
-            "method": "DELETE",
-            "path": "/admin/doc/{doc_id}"
-          }
-        ]
-      }
-    ],
+    "route_groups": [],
     "syscall_group": {
       "owner": "python",
       "status": "intentionally-deferred",

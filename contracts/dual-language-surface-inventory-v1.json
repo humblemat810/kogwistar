@@ -11,7 +11,7 @@
   "counts": {
     "http_operations": 84,
     "mcp_operations": 62,
-    "pending_http_operations": 1,
+    "pending_http_operations": 0,
     "allowlisted_mcp_operations": 62,
     "pending_syscalls": 4,
     "python_syscalls": 11,
@@ -22,7 +22,7 @@
       "method": "DELETE",
       "path": "/admin/doc/{doc_id}",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "POST",

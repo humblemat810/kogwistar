@@ -242,8 +242,8 @@ def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
         if item["capability"] in _gate().REQUIRED_RUST_OWNERS:
             item["rust_cutover_ready"] = True
     manifest["current_persistent_evidence"]["gate_status"] = "passed"
-    manifest["server_operation_deferrals"]["route_groups"][0]["operations"].append(
-        manifest["server_operation_deferrals"]["route_groups"][0]["operations"][0]
+    manifest["server_operation_deferrals"]["syscall_group"]["operations"].append(
+        manifest["server_operation_deferrals"]["syscall_group"]["operations"][0]
     )
 
     result = _gate().evaluate_release_gate(
@@ -259,7 +259,7 @@ def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
     assert result["status"] == "blocked"
     assert result["server_operation_deferrals"] == {"status": "blocked"}
     details = {row["detail"] for row in result["blockers"]}
-    assert "duplicate deferred route DELETE /admin/doc/{doc_id}" in details
+    assert "syscall_group.operations must not contain duplicates" in details
 
 
 def test_gate_rejects_historical_compatibility_report_after_source_changes() -> None:

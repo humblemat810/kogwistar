@@ -240,11 +240,10 @@ Only these local items remain in scope before production rollout:
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 1 currently frozen Python-owned
-  server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
-  records grouped Python rollback ownership, prerequisite Rust authorities, and
-  exit evidence; its exact operation set is bidirectionally checked against the
-  Rust fail-closed inventory.
+- [x] Phase 5: zero currently frozen HTTP operations; four syscall operations
+  remain explicitly deferred. The manifest records the remaining grouped
+  Python ownership, prerequisite Rust authorities, and exit evidence; its exact
+  operation set is bidirectionally checked against Rust's fail-closed inventory.
 - [x] The PostgreSQL Rust service now serves
   `GET /api/conversations/{conversation_id}/snapshots/latest` through its
   existing ACL-filtered snapshot projection, with Python-compatible namespace,

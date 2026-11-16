@@ -33,8 +33,8 @@ use kogwistar_runtime::{
 };
 use kogwistar_store::{
     AuthIdentityStore, AuthUser, ConversationListAccumulator, DistanceMetric,
-    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, EntityEvent,
-    GraphAclIndex, GraphAclPrincipal, GraphAclProjection, GraphAuthorityCapability,
+    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentRollbackRequest, DocumentStore,
+    EntityEvent, GraphAclIndex, GraphAclPrincipal, GraphAclProjection, GraphAuthorityCapability,
     GraphEntityKind, GraphFindEdgesQuery, GraphKHopQuery, GraphMutation, GraphMutationBatch,
     GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore,
     GraphRecord, GraphScope, GraphShortestPathQuery, IndexJobClaimFilter, LaneMessageClaimFilter,

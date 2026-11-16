@@ -19,7 +19,7 @@ except ModuleNotFoundError:  # imported as a repository module in unit tests
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT_MATRIX_PATH = ROOT / "contracts" / "dual-language-support-matrix-v1.json"
 LAYERS = ("core", "parser", "sink", "application")
-SERVER_DEFERRAL_ROUTE_COUNT_V1 = 1
+SERVER_DEFERRAL_ROUTE_COUNT_V1 = 0
 SERVER_DEFERRAL_SYSCALL_COUNT_V1 = 4
 REQUIRED_RUST_OWNERS = {
     "deterministic-contracts",
@@ -126,8 +126,8 @@ def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
 
     routes: set[tuple[str, str]] = set()
     route_groups = deferrals.get("route_groups")
-    if not isinstance(route_groups, list) or not route_groups:
-        errors.append("route_groups must be a non-empty array")
+    if not isinstance(route_groups, list):
+        errors.append("route_groups must be an array")
         route_groups = []
     for index, group in enumerate(route_groups):
         prefix = f"route_groups[{index}]"

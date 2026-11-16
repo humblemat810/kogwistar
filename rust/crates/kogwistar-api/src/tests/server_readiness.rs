@@ -214,14 +214,42 @@
     }
 
     #[tokio::test]
-    async fn deferred_admin_document_delete_preserves_graph_events() {
+    async fn admin_document_delete_commits_rollback_and_index_intent() {
+        use axum::{
+            body::{Body, to_bytes},
+            http::Request,
+        };
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
         let sqlite_path = std::env::temp_dir().join(format!(
-            "kogwistar-deferred-admin-delete-{}.sqlite",
+            "kogwistar-admin-delete-{}.sqlite",
             uuid::Uuid::new_v4()
         ));
         let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
         let node_id = "admin-delete-retained-node";
         let doc_id = "admin-delete-retained-doc";
+        let scope = GraphScope {
+            namespace: "docs".to_owned(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        DocumentStore::upsert_document_projection(
+            &service.store,
+            DocumentProjectionUpsert {
+                scope: scope.clone(),
+                record: GraphRecord {
+                    id: doc_id.to_owned(),
+                    document: Some("source document".to_owned()),
+                    metadata: Default::default(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+        )
+        .await
+        .unwrap();
         let metadata = json!({
             "entity_type": "node",
             "label": "Retained node",
@@ -233,19 +261,48 @@
             .store
             .apply_canonical_graph_mutation_batch(GraphMutationBatch {
                 mutations: vec![GraphMutation {
-                    scope: GraphScope {
-                        namespace: "docs".to_owned(),
-                        workspace_id: None,
-                        graph_space: None,
-                    },
+                    scope,
                     table: "gke_nodes".to_owned(),
                     entity_kind: "node".to_owned(),
                     event_id: "admin-delete-retained-event".to_owned(),
                     op: "ADD".to_owned(),
-                    payload: json!({"id": node_id, "doc_id": doc_id, "metadata": metadata}),
+                    payload: json!({
+                        "id": node_id,
+                        "label": "Retained node",
+                        "type": "entity",
+                        "summary": "Grounded node for rollback test",
+                        "doc_id": doc_id,
+                        "domain_id": null,
+                        "level_from_root": 0,
+                        "properties": {},
+                        "embedding": null,
+                        "mentions": [{
+                            "spans": [{
+                                "collection_page_url": "https://example.test/collection",
+                                "document_page_url": "https://example.test/document",
+                                "doc_id": doc_id,
+                                "insertion_method": "contract-test",
+                                "page_number": 1,
+                                "start_char": 0,
+                                "end_char": 6,
+                                "excerpt": "source",
+                                "context_before": "",
+                                "context_after": "",
+                                "source_cluster_id": null,
+                                "verification": {
+                                    "method": "heuristic",
+                                    "is_verified": false,
+                                    "score": null,
+                                    "notes": "contract test"
+                                }
+                            }],
+                            "multimodal_spans": []
+                        }],
+                        "metadata": metadata
+                    }),
                     record: GraphRecord {
                         id: node_id.to_owned(),
-                        document: None,
+                        document: Some("source-grounded node".to_owned()),
                         metadata: serde_json::from_value(metadata).unwrap(),
                         embedding: None,
                     },
@@ -256,31 +313,115 @@
             .unwrap();
         let before = service.store.replay_raw_events("docs", 0, 10).unwrap();
         assert_eq!(before.len(), 1);
-        assert!(!service.supports_http_operation("DELETE", "/admin/doc/{doc_id}"));
+        assert!(service.supports_http_operation("DELETE", "/admin/doc/{doc_id}"));
+
+        let secret = "admin-document-delete-http-test-secret";
+        let token_for_role = |role: &str| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub": "admin-document-delete-test",
+                    "role": role,
+                    "ns": ["docs"],
+                    "storage_ns": "docs",
+                    "exp": 4102444800_u64
+                }),
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let request = |role: &str| {
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/doc/{doc_id}"))
+                .header("authorization", format!("Bearer {}", token_for_role(role)))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let denied = app.clone().oneshot(request("ro")).await.unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            service.store.replay_raw_events("docs", 0, 10).unwrap(),
+            before,
+            "denied delete must not mutate canonical graph events"
+        );
+
+        let response = app.oneshot(request("rw")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["doc_id"], doc_id);
+        assert_eq!(body["deleted"], json!({"nodes": 1, "edges": 0}));
+        let jobs = kogwistar_store::IndexJobReadStore::index_jobs(
+            &service.store,
+            Some("docs"),
+            Some("PENDING"),
+            Some("node"),
+            Some(node_id),
+            Some("node_embedding"),
+            10,
+        )
+        .await
+        .unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].op, "DELETE");
+
+        drop(service);
+        let reopened = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        let events = reopened.store.replay_raw_events("docs", 0, 10).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].op, "TOMBSTONE");
+        assert!(DocumentStore::document_projection_ids(
+            &reopened.store,
+            GraphScope {
+                namespace: "docs".to_owned(),
+                workspace_id: None,
+                graph_space: None,
+            },
+            vec![doc_id.to_owned()],
+        )
+        .await
+        .unwrap()
+        .is_empty());
+        drop(reopened);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[tokio::test]
+    async fn in_memory_admin_document_delete_uses_shared_rollback_contract() {
+        let service = InMemoryGraphApplicationService::default();
+        assert!(service.supports_http_operation("DELETE", "/admin/doc/{doc_id}"));
 
         let response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "DELETE".to_owned(),
-                path_and_query: format!("/admin/doc/{doc_id}"),
+                path_and_query: "/admin/doc/missing-doc".to_owned(),
                 body: Vec::new(),
                 principal: json!({"sub": "admin", "role": "rw", "ns": ["docs"]}),
             })
             .await;
 
-        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
-        assert_eq!(
-            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
-            "KOGWISTAR_ROUTE_DEFERRED"
-        );
-        assert_eq!(
-            service.store.replay_raw_events("docs", 0, 10).unwrap(),
-            before,
-            "the unsupported Rust route must not tombstone or mutate canonical graph events"
-        );
-
-        drop(service);
-        remove_test_sqlite(&sqlite_path);
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["ok"], true);
+        assert_eq!(body["doc_id"], "missing-doc");
+        assert_eq!(body["deleted"], json!({"nodes": 0, "edges": 0}));
     }
 
     #[tokio::test]

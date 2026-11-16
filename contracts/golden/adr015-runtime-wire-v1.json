@@ -298,7 +298,6 @@
   },
   "submit": {
     "conversation_id": "conv-1",
-    "expected_run_owner_id": "alice",
     "initial_state": {
       "seed": 1
     },

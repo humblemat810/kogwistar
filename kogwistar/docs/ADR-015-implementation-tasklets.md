@@ -52,7 +52,7 @@ until its authority, authorization, persistence, and transport oracle passes.
 
 | ID | Status | Tasklet and single acceptance oracle |
 | --- | --- | --- |
-| SRV-01 | NOT STARTED | Implement `DELETE /admin/doc/{doc_id}` through native graph mutation, queue/index cleanup, rollback, and public REST contract. Authenticated parity test proves ACL enforcement, durable deletion, replay/reopen behavior, and Python readability. |
+| SRV-01 | IN PROGRESS | Implement `DELETE /admin/doc/{doc_id}` through native graph mutation, queue/index cleanup, rollback, and public REST contract. `cargo test -p kogwistar-api admin_document_delete --lib -- --nocapture` (**2 passed**) verifies real Axum HTTP auth/role denial, SQLite tombstone + index DELETE + document-projection removal + reopen, and in-memory route dispatch. Rust authorization matches Python `require_role("rw")`; no extra capability gate. Remaining oracle: live PostgreSQL behavior, Python readability/parity, and complete auth/scope cases. |
 | SRV-02 | NOT STARTED | Implement conversation `send_message` and `receive_message` syscalls through the versioned durable runtime boundary. Paired REST/MCP tests prove authorization, scope isolation, idempotent retry, restart recovery, and Python/Rust readability. |
 | SRV-03 | NOT STARTED | Implement `mount_memory` syscall through the versioned durable runtime boundary. Paired tests prove ACL and namespace enforcement, bounded projection, restart recovery, and no unauthorized memory exposure. |
 | SRV-04 | NOT STARTED | Implement `invoke_tool` syscall through the host-authorized tool catalog and durable runtime boundary. Paired tests prove capability checks, scope/ACL enforcement, idempotency, denied-call non-execution, and restart recovery. |

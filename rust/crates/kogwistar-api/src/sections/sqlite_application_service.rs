@@ -818,6 +818,9 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "DELETE" && admin_document_delete_id(path).is_some() {
+            return self.store.supports_document_rollback();
+        }
         let is_composed_search_index = method == "GET"
             && path == "/api/search_index_hybrid"
             && self.search_index_fts.is_some()
@@ -918,6 +921,16 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "DELETE"
+                && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
+            {
+                return admin_document_delete_effect(
+                    &request,
+                    &self.store,
+                    document_id,
+                )
+                .await;
+            }
             if request.method == "POST"
                 && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
                 && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["resume"]

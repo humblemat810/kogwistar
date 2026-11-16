@@ -622,8 +622,8 @@ def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> No
         encoding="utf-8"
     )
 
-    assert pending_count == 1
-    assert f"the {pending_count} currently frozen" in status
+    assert pending_count == 0
+    assert "zero currently frozen HTTP operations" in status
 
 
 def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() -> None:
@@ -811,6 +811,9 @@ def test_dual_language_surface_inventory_is_current() -> None:
         )
     )
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    implementation_tasklets = (
+        ROOT / "kogwistar" / "docs" / "ADR-015-implementation-tasklets.md"
+    ).read_text(encoding="utf-8")
     mappings = route_map["operations"]
     mapping_keys = [(item["method"], item["path"]) for item in mappings]
     assert route_map["schema_version"] == 1
@@ -819,13 +822,15 @@ def test_dual_language_surface_inventory_is_current() -> None:
     tasklet_ids = [item["tasklet_id"] for item in mappings]
     assert len(tasklet_ids) == len(set(tasklet_ids))
     for tasklet_id in tasklet_ids:
-        assert len(re.findall(rf"^\| {re.escape(tasklet_id)} \|", worklist, re.M)) == 1
+        source = implementation_tasklets if tasklet_id == "SRV-01" else worklist
+        assert len(re.findall(rf"^\| {re.escape(tasklet_id)} \|", source, re.M)) == 1
 
     unsupported = [item for item in mappings if item.get("classification") == "unsupported"]
-    assert len(unsupported) == 1
-    assert unsupported[0]["tasklet_id"] == "FW-03-03B"
+    assert unsupported == []
     supported_tasklet_ids = {
-        item["tasklet_id"] for item in mappings if item not in unsupported
+        item["tasklet_id"]
+        for item in mappings
+        if item["tasklet_id"].startswith("FW-03-03A-HTTP-")
     }
     declared_route_tasklet_ids = set(
         re.findall(r"^\| (FW-03-03A-HTTP-(?:GET|POST|DELETE)-[0-9a-f]{8}) \|", worklist, re.M)
@@ -836,8 +841,10 @@ def test_dual_language_surface_inventory_is_current() -> None:
     }
     for item in mappings:
         key = (item["method"], item["path"])
-        if item.get("classification") == "unsupported":
-            assert rust_by_key[key] == "pending"
+        if item["tasklet_id"] == "SRV-01":
+            assert key == ("DELETE", "/admin/doc/{doc_id}")
+            assert item["classification"] == "application-route-in-cutover-inventory"
+            assert rust_by_key[key] != "pending"
         else:
             assert item["tasklet_id"].startswith("FW-03-03A-HTTP-")
             assert rust_by_key[key] != "pending"
@@ -877,11 +884,13 @@ def test_dual_language_surface_inventory_is_current() -> None:
         re.findall(r'\("([A-Z]+)",\s*"([^"]+)"\)', transport_block.group(1))
     )
     statuses = {operation["rust"] for operation in http_operations}
-    assert statuses == {
+    expected_statuses = {
         "application-route-in-cutover-inventory",
         "transport-owned",
-        "pending",
     }
+    if deferred_routes:
+        expected_statuses.add("pending")
+    assert statuses == expected_statuses
     assert {
         (operation["method"], operation["path"])
         for operation in http_operations
@@ -1240,7 +1249,7 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
     }
     assert "not overall migration completion" in checklist
     assert "overall dual-language migration remains **NOT COMPLETE**" in checklist
-    assert "not whole-goal or release-readiness percentages" in worklist
+    assert "not unfinished implementation or overall migration progress" in worklist
     assert "**Overall Rust cutover:** **NOT COMPLETE**" in worklist
 
 
@@ -1479,7 +1488,7 @@ def test_rest_capability_keeps_deferred_route_explicit_and_cutover_gated() -> No
     assert set(selector["accepted_modes"]) == {"python", "rust"}
     assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
     assert server_gaps["status"] == "intentionally-deferred"
-    assert ["DELETE", "/admin/doc/{doc_id}"] in server_gaps["pending_routes"]
+    assert ["DELETE", "/admin/doc/{doc_id}"] not in server_gaps["pending_routes"]
 
 
 def test_sse_support_remains_opt_in_until_ordering_and_resume_parity() -> None:

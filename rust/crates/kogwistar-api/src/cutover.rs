@@ -188,7 +188,7 @@ mod tests {
             "POST",
             "/api/conversations/c-1/turns:answer?mode=sync"
         ));
-        assert!(is_pending_server_cutover_route(
+        assert!(!is_pending_server_cutover_route(
             "DELETE",
             "/admin/doc/doc-1"
         ));

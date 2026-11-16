@@ -2219,6 +2219,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "DELETE" && admin_document_delete_id(path).is_some() {
+            return self.store.supports_document_rollback();
+        }
         let route = path.split('?').next();
         if method == "POST"
             && matches!(
@@ -2276,6 +2279,16 @@ impl ApplicationService for InMemoryGraphApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "DELETE"
+                && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
+            {
+                return admin_document_delete_effect(
+                    &request,
+                    &self.store,
+                    document_id,
+                )
+                .await;
+            }
             if request.method == "POST"
                 && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
             {
