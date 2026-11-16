@@ -108,15 +108,15 @@ Only these local items remain in scope before production rollout:
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
-  one broad store flag from a narrow test. Current-source local evidence is
-  recorded by `scripts/durable_store_capability_gate.py` in the local,
-  ignored `.codex/adr015-phase3-capability-gate.json`: PostgreSQL
-  sequence/event-log 4, projection/snapshot/run-registry 6, queue/lease/lane
-  3, and graph/pgvector 47 all passed with zero failures, errors, or skips for
-  source SHA-256
-  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`.
-  This is current-source local evidence only; each `rust_cutover_ready` remains
-  false until its same-candidate production canary and rollback evidence exists.
+  one broad store flag from a narrow test. The latest current-source local run
+  used `scripts/durable_store_capability_gate.py`, CPython 3.13.3, and live
+  `pgvector/pgvector:pg16`. The four groups passed with zero failures, errors,
+  or skips: PostgreSQL sequence/event-log 4, projection/snapshot/run-registry
+  6, queue/lease/lane 3, and graph/pgvector 47. Source SHA-256 is
+  `1079a0bafb5032ac06562bc42ccb8292ffc3295ee118eead7ec56b14732f540a`; the
+  local report is `.tmp/adr015-phase3-20261116/capability-gate.json`. This is
+  current-source local evidence only; each `rust_cutover_ready` remains false
+  until its same-candidate staged canary and rollback evidence exists.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
