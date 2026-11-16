@@ -301,15 +301,17 @@ Only these local items remain in scope before production rollout:
 - [x] Phase 5: pass current-candidate local route/auth/capability/error,
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
   `scripts/server_contract_gate.py` re-run produced local report
-  `.tmp/adr015-runtime-refresh/server-contract.json` for source
-  `9fe77b950f687394cf2570f78c619dcb448c682917af94e7e0c5762b10422fe7`:
+  `.tmp/adr015-runtime-refresh-pg/server-contract-after.json` for source
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`:
   REST/SSE 4, auth/syscall 54, MCP 130, frozen contracts 3, and live async
   Chroma/PostgreSQL SSE 6 passed (197 total) with zero failures, errors, or
-  skips. The gate
-  exposed and fixed a PostgreSQL startup `Engine` NameError; MCP capability
-  coverage now uses each registered tool's actual namespace without weakening
-  authorization. This is current local contract evidence, not production
-  rollout/canary evidence.
+  skips. An initial restricted-shell run exposed the Windows Python 3.13
+  `socketpair` TCP fallback blocking at loopback `accept`; the same focused
+  test and full gate passed with local loopback access enabled. The gate
+  previously exposed and fixed a PostgreSQL startup `Engine` NameError; MCP
+  capability coverage now uses each registered tool's actual namespace
+  without weakening authorization. This is current local contract evidence,
+  not production rollout/canary evidence.
 - [ ] Phase 5: pass mixed-version/rolling-upgrade and operational
   implementation/parity/queue/replay/schema telemetry gates in a production
   canary. Local gate deliberately records this as unproven rather than
