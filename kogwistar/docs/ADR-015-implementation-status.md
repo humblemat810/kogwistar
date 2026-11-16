@@ -580,14 +580,18 @@ not authorize a broad authority-flag promotion or replace production canaries.
   service projection against concurrent duplicate spawn. REST and MCP share
   this path. Rust syscall dispatch now owns spawn/terminate process,
   checkpoint, resume, and approval branches over existing authoritative run
-  and capability services. Conversation/tool-dependent syscall branches remain
-  explicitly fail-closed in `PENDING_SYSCALL_CUTOVER_OPS`. The
+  and capability services. Conversation/tool-dependent branches remain listed
+  in `PENDING_SYSCALL_CUTOVER_OPS` and are not cutover-ready; implemented
+  handlers may still run under explicit Rust selection in isolated UAT with
+  ordinary authorization checks. The inventory is a promotion gate, not a
+  runtime disable switch. The
   graph-validation route now validates frozen Node/Edge provenance shape and
   preserves Python's metadata-pointer lift without touching storage. Three
   visualization HTML shells are embedded from the existing packaged templates;
   unresolved Jinja drift fails closed. The data-bearing D3 bundle remains
-  Python-owned until graph reads cut over. API coverage is 30/30; 16
-  frozen server operations remain Python-owned.
+  Python-owned until graph reads cut over. The frozen HTTP route inventory is
+  empty; four conversation/tool syscalls remain listed as not promotion-ready,
+  not as disabled Rust handlers.
 - Focused execution exposed and fixed a pre-existing capability regression:
   capability snapshots again require both `project_view` and
   `read_security_scope`. The capability contract file now imports its fixture
@@ -742,7 +746,7 @@ deployment canary evidence required to make Rust its live default writer.
   conversation/tool syscalls are classified in `server_operation_deferrals` in
   `contracts/rust-port-v1.json`. Each records a prerequisite authority and
   capability-specific exit evidence; a contract test requires an exact,
-  duplicate-free match with Rust's direct fail-closed inventories. Implemented
+  duplicate-free match with Rust's pending cutover inventories. Implemented
   routes leave this inventory only after their native authority path and
   capability-specific evidence are verified. This closes classification only,
   not the remaining Rust authority or Phase 5 conformance gates.

@@ -632,6 +632,10 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     assert deferrals["contract_version"] == 1
     assert deferrals["status"] == "versioned-intentionally-deferred"
     assert deferrals["owner"] == "python-rollback-deployment"
+    assert "blocks cutover/readiness claims, not handler execution" in deferrals[
+        "execution_policy"
+    ]
+    assert "does not disable an implemented Rust handler" in deferrals["rule"]
 
     build_script = RUST_API_BUILD_SCRIPT_PATH.read_text(encoding="utf-8")
     manifest_routes = {
