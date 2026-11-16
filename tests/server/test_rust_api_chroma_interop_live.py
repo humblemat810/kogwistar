@@ -796,6 +796,14 @@ def test_rust_graph_mutation_is_readable_by_python_over_chroma(
         assert response.status_code == 200, response.text
         assert response.json().get("projection_consistency") == "eventual"
         assert all(item["mutated"] for item in response.json()["results"])
+        retry = httpx.post(
+            f"{base}/internal/graph/mutations",
+            headers={"Authorization": f"Bearer {_token(secret, claims)}"},
+            json=batch,
+            timeout=20,
+        )
+        assert retry.status_code == 200, retry.text
+        assert all(item["mutated"] is False for item in retry.json()["results"])
 
         client = chromadb.HttpClient(host="127.0.0.1", port=chroma_port)
         deadline = time.monotonic() + 30
@@ -826,6 +834,16 @@ def test_rust_graph_mutation_is_readable_by_python_over_chroma(
             ],
         )
         try:
+            events = list(verifier.meta_sqlite.iter_entity_events(namespace=namespace))
+            assert len(events) == 3
+            assert {
+                (event[1], event[2], event[3])
+                for event in events
+            } == {
+                ("node", source_id, "ADD"),
+                ("node", target_id, "ADD"),
+                ("edge", edge_id, "ADD"),
+            }
             python_nodes = verifier.read.get_nodes(ids=[source_id, target_id])
             python_edges = verifier.read.get_edges(ids=[edge_id])
             assert {node.id for node in python_nodes} == {source_id, target_id}

@@ -50,13 +50,14 @@ operations and persisted records were read and parity-checked through Python's
 and retrieval checks. Temporary schemas were removed by fixture teardown. This
 proves this bounded mixed-language path in UAT, not whole-stack or production
 cutover readiness.
-The opt-in local Chroma interop suite also passed on this source:
-`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**, 99.98s).
+The opt-in local Chroma interop suite passed on the current checkout:
+`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**, 100.82s).
 It covers Python Chroma projection read/reconciliation by Rust, Rust-authenticated
-graph mutation projected to Chroma and read after Python engine reopen, Python
-Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1 promotion
-by the Python worker. These are isolated local UAT handoffs, not production
-cutover evidence.
+graph mutation projected to Chroma and read after Python engine reopen, idempotent
+retry of that mutation batch, Python readback of the three canonical SQLite events,
+Python Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1
+promotion by the Python worker. These are isolated local UAT handoffs, not
+production cutover evidence.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
