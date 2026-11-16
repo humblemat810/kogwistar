@@ -199,9 +199,12 @@ Only these local items remain in scope before production rollout:
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
   `scripts/server_contract_gate.py` produced
   `.codex/adr015-phase5-server-gate.json` for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
-  REST/SSE 4, auth/syscall 41, MCP 13, frozen contracts 3, and live async
-  Chroma/PostgreSQL SSE 6 passed with zero failures, errors, or skips.
+  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`:
+  REST/SSE 4, auth/syscall 54, MCP 130, frozen contracts 3, and live async
+  Chroma/PostgreSQL SSE 6 passed with zero failures, errors, or skips. The gate
+  exposed and fixed a PostgreSQL startup `Engine` NameError; MCP capability
+  coverage now uses each registered tool's actual namespace without weakening
+  authorization.
 - [ ] Phase 5: pass mixed-version/rolling-upgrade and operational
   implementation/parity/queue/replay/schema telemetry gates in a production
   canary. Local gate deliberately records this as unproven rather than

@@ -60,3 +60,12 @@ def test_load_server_storage_settings_pg_uses_schema_suffixes():
     assert settings.index_dir == os.path.join(root, "index")
     assert settings.schema_for("knowledge") == "tenant_knowledge"
     assert settings.schema_for("workflow") == "tenant_workflow"
+
+
+def test_pg_resource_factory_resolves_engine_type_at_runtime(monkeypatch):
+    from kogwistar.server import resources
+
+    sentinel = object()
+    monkeypatch.setattr(resources, "build_sqlalchemy_engine", lambda _settings: sentinel)
+
+    assert resources._build_pg_sqlalchemy_engine() is sentinel

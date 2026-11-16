@@ -4264,7 +4264,11 @@ async def test_root_graph_mcp_honors_explicit_capability_claims(monkeypatch):
 
     for name, capability in mcp_tools.TOOL_CAPABILITIES.items():
         role = "rw" if capability == "write_graph" else "ro"
-        namespace = "wisdom" if name.startswith("wisdom.") else "docs"
+        default_namespace = "wisdom" if name.startswith("wisdom.") else "docs"
+        allowed_namespaces = mcp_tools.TOOL_NAMESPACE.get(
+            name, {default_namespace}
+        )
+        namespace = next(iter(allowed_namespaces))
         with _claims(role, namespace, scope_parts={"capabilities": []}):
             assert not mcp_tools._tool_allowed(
                 name, role=role, namespaces={namespace}
