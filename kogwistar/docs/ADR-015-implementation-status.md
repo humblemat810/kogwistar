@@ -166,7 +166,15 @@ Only these local items remain in scope before production rollout:
   Python-worker/Rust-native callback recovery integration also passed on that
   candidate (`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
   **1 passed**, 62.24s), including event durability, failed-result recovery,
-  async callback delivery, and checkpoint inspection.
+  async callback delivery, and checkpoint inspection. A later runtime contract
+  check exposed that Rust public resume waited for a terminal result only when
+  `wait_for_completion=true`, unlike Python's default synchronous result. The
+  SQLite and PostgreSQL Rust handlers now wait by default; the SQLite lifecycle
+  contract (**1 passed**), Python route parity (**1 passed**), and live
+  PostgreSQL shared-result contract (**1 passed**, pgvector:pg16) pass without
+  a query flag. `cargo build -p kogwistar-api --bin kogwistar-server` and
+  `cargo fmt --all --check` pass. This closes the sync-result behavior gap, not
+  the Rust runtime production canary/readiness gate.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
