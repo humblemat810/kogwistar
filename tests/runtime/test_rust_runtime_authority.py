@@ -4425,6 +4425,33 @@ def test_public_resume_dispatches_to_rust_authority(monkeypatch) -> None:
     assert calls[1] == {"closed": True}
 
 
+def test_sync_resume_rust_mode_without_authority_url_fails_closed(monkeypatch) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.delenv("KOGWISTAR_RUST_RUNTIME_URL", raising=False)
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    monkeypatch.setattr(
+        WorkflowRuntime,
+        "_latest_checkpoint_for_run",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Rust-selected resume must not fall back to Python checkpoint lookup"
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(
+        RustRuntimeAuthorityError, match="without a configured URL"
+    ):
+        runtime.resume_run(
+            run_id="run-1",
+            suspended_node_id="gate",
+            suspended_token_id="token-1",
+            client_result=RunSuccess(conversation_node_id=None, state_update=[]),
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+        )
+
+
 def test_resume_effect_uses_existing_update_and_route_semantics(
     monkeypatch,
     tmp_path,

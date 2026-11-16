@@ -164,11 +164,17 @@ class SuspendedRunResumeMixin:
         from .runtime import WorkflowRuntime
         from .rust_runtime_authority import (
             RustRuntimeAuthority,
+            RustRuntimeAuthorityError,
+            rust_runtime_authority_selected,
             rust_runtime_authority_url,
         )
 
         authority_url = rust_runtime_authority_url()
-        if authority_url is not None:
+        if rust_runtime_authority_selected():
+            if authority_url is None:
+                raise RustRuntimeAuthorityError(
+                    "Rust runtime authority was selected without a configured URL"
+                )
             authority = RustRuntimeAuthority(
                 runtime=cast(WorkflowRuntime, self),
                 base_url=authority_url,

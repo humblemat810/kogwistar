@@ -140,7 +140,9 @@ Only these local items remain in scope before production rollout:
   async-v2 callback authority: explicit lane protocol,
   sync/async cross-rejection, replay-safe local journal, and live Rust SQLite
   scheduler round trip; service-triggered SQLite/PostgreSQL runs preserve the
-  same protocol. This line remains unchecked:
+  same protocol. Sync `resume_run` now also fails closed when Rust authority is
+  selected without a URL, matching async resume and preventing Python checkpoint
+  fallback; focused dispatch/fail-closed tests pass. This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
 - [x] Phase 5: explicitly version/defer the 1 currently frozen Python-owned
