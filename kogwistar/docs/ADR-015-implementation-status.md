@@ -232,6 +232,15 @@ Only these local items remain in scope before production rollout:
   PostgreSQL pre-storage rejection (**1 each**). Rust runtime trace tests passed
   (**2 passed**) and reserved-state/DTO test passed (**1 passed**). These close
   two context transport seams only, not the public runtime-owner/canary gate.
+  Full current-source Phase-4 gate re-run passed at source SHA
+  `9fe77b950f687394cf2570f78c619dcb448c682917af94e7e0c5762b10422fe7`:
+  durable worker 184 tests (10 skipped), sync/async bijection 72, bridge 22,
+  suspend/terminal 23, and live PostgreSQL 10 (**301 passed, 10 skipped, zero
+  failures/errors**). Report: `.tmp/adr015-runtime-refresh/runtime-authority.json`.
+  The first run exposed two stale exact-call expectations for explicit null
+  `trace_context` and `run_owner_id`; the assertions now match the existing
+  dispatcher contract, and the full gate passes. No runtime implementation
+  behavior changed in that correction.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the

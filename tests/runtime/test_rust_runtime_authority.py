@@ -577,6 +577,8 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
             },
             "run_id": "run-1",
             "cache_dir": "cache",
+            "trace_context": None,
+            "run_owner_id": None,
         }
     ]
 
@@ -4594,6 +4596,8 @@ def test_async_runtime_dispatches_to_async_rust_authority_when_selected(
             "initial_state": {"seed": 1},
             "run_id": "run-1",
             "cache_dir": "cache",
+                "trace_context": None,
+                "run_owner_id": None,
         }
     ]
 
