@@ -186,8 +186,11 @@ Only these local items remain in scope before production rollout:
   The same two focused tests also pass in a clean Ubuntu 24.04 container using
   Rust 1.97.1 (**2 passed**); this adds an OS image check, not a separate
   production/dev behavior contract. The broad 440-test Rust API run did not
-  complete cleanly in this Windows session, so it is not counted as current
-  full-suite evidence.
+  complete cleanly in this Windows session. A clean Ubuntu 24.04 container
+  with Rust 1.97.1 and the Python MCP subprocess dependencies passed the full
+  API library suite: **402 passed, 39 ignored, 0 failed** (441 discovered).
+  This is Linux full-suite evidence, not Windows parity or production canary
+  evidence; ignored tests remain outside this result.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
