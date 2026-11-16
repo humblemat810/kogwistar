@@ -960,6 +960,9 @@ impl ApplicationService for SqliteRunApplicationService {
                 if !(200..300).contains(&admitted.status) {
                     return admitted;
                 }
+                if !query_boolean(&request.path_and_query, "wait_for_completion", true) {
+                    return admitted;
+                }
                 loop {
                     let run = match self.store.get_server_run(&run_id) {
                         Ok(Some(run)) => run,

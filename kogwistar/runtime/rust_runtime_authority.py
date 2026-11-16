@@ -871,7 +871,7 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
             )
         self._request_json(
             "POST",
-            f"/api/workflow/runs/{run_id}/resume",
+            f"/api/workflow/runs/{run_id}/resume?wait_for_completion=false",
             json={
                 "suspended_node_id": suspended_node_id,
                 "suspended_token_id": suspended_token_id,
@@ -1256,7 +1256,7 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
             )
         await self._request_json(
             "POST",
-            f"/api/workflow/runs/{run_id}/resume",
+            f"/api/workflow/runs/{run_id}/resume?wait_for_completion=false",
             json={
                 "suspended_node_id": suspended_node_id,
                 "suspended_token_id": suspended_token_id,

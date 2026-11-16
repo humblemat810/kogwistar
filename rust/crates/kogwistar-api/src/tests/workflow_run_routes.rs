@@ -1,3 +1,27 @@
+#[test]
+fn resume_wait_for_completion_defaults_to_sync_and_accepts_explicit_false() {
+    assert!(query_boolean(
+        "/api/workflow/runs/run-1/resume",
+        "wait_for_completion",
+        true
+    ));
+    assert!(query_boolean(
+        "/api/workflow/runs/run-1/resume?wait_for_completion=true",
+        "wait_for_completion",
+        true
+    ));
+    assert!(!query_boolean(
+        "/api/workflow/runs/run-1/resume?wait_for_completion=false",
+        "wait_for_completion",
+        true
+    ));
+    assert!(query_boolean(
+        "/api/workflow/runs/run-1/resume?wait_for_completion=invalid",
+        "wait_for_completion",
+        true
+    ));
+}
+
 #[tokio::test]
 async fn workflow_lineage_checks_authority_before_run_lookup() {
     let sqlite_path = std::env::temp_dir().join(format!(

@@ -1234,7 +1234,10 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         if pg_schema is not None and pg_dsn is not None:
             import sqlalchemy as sa
 
-            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            cleanup_dsn = sa.engine.make_url(pg_dsn).set(
+                drivername="postgresql+psycopg"
+            )
+            cleanup_engine = sa.create_engine(cleanup_dsn, future=True)
             try:
                 with cleanup_engine.begin() as connection:
                     connection.execute(
@@ -3843,7 +3846,10 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
         if pg_schema is not None and pg_dsn is not None:
             import sqlalchemy as sa
 
-            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            cleanup_dsn = sa.engine.make_url(pg_dsn).set(
+                drivername="postgresql+psycopg"
+            )
+            cleanup_engine = sa.create_engine(cleanup_dsn, future=True)
             try:
                 with cleanup_engine.begin() as connection:
                     connection.execute(

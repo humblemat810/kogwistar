@@ -174,7 +174,18 @@ Only these local items remain in scope before production rollout:
   PostgreSQL shared-result contract (**1 passed**, pgvector:pg16) pass without
   a query flag. `cargo build -p kogwistar-api --bin kogwistar-server` and
   `cargo fmt --all --check` pass. This closes the sync-result behavior gap, not
-  the Rust runtime production canary/readiness gate.
+  the Rust runtime production canary/readiness gate. A current-source recheck
+  found and fixed the Python-worker resume deadlock: Rust SQLite and PostgreSQL
+  now honor explicit `wait_for_completion=false`, while omitted/invalid values
+  retain synchronous waiting; Python sync/async authorities request admission
+  before pumping their worker. The six real-server SQLite and live pgvector 16
+  sync/async success/error cells pass; the shared query parser unit test and
+  public SQLite synchronous-resume test pass. `cargo check`, server build,
+  formatting, and Ruff pass. A writable Linux `rust:1.97.1-bookworm` container
+  also passed the query-policy and durable SQLite suspend/resume tests (**1
+  each**). The broad 440-test Rust API run did not complete cleanly in this
+  Windows session, so it is not counted as current full-suite evidence.
+  Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
