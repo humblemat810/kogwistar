@@ -750,6 +750,43 @@ def test_python_workflow_success_matches_rust_durable_successor_admission(
             },
         },
     )
+    rust_done_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "success-parity-done",
+            "expected_event_seq": 2,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 1,
+            "node_id": "done",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": [],
+            "result": {"answer": "worker"},
+            "frontier": empty_frontier,
+        },
+    )
+    rust_complete_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "success-parity-complete",
+            "expected_event_seq": 3,
+            "kind": "complete",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 1,
+            "node_id": "done",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "result": {"workflow_status": "succeeded"},
+            "frontier": empty_frontier,
+        },
+    )
     rust_events = store_sqlite(
         path=database,
         operation={
@@ -759,14 +796,40 @@ def test_python_workflow_success_matches_rust_durable_successor_admission(
             "limit": 10,
         },
     )
-    rust_success_event = rust_events[-1]["payload"]["reduced"]
-
+    rust_step_events = [event["payload"]["reduced"] for event in rust_events[1:3]]
+    python_step_history = [
+        {
+            "step_seq": int(node.metadata["step_seq"]),
+            "node_id": node.metadata["workflow_node_id"],
+            "state_update": json.loads(node.metadata["result_json"])["state_update"],
+            "errors": json.loads(node.metadata["result_json"]).get("errors", []),
+        }
+        for node in sorted(python_steps, key=lambda node: int(node.metadata["step_seq"]))
+    ]
+    rust_step_history = [
+        {
+            "step_seq": event["state"]["last_step_seq"],
+            "node_id": event["state"]["last_node_id"],
+            "state_update": event["state_update"],
+            "errors": event["errors"],
+        }
+        for event in rust_step_events
+    ]
+    assert python_step_history == rust_step_history
     assert rust_result["state"]["state"]["answer"] == python_run.final_state["answer"]
-    assert rust_success_event["state_update"] == contract["state_update"]
-    assert rust_success_event["state"]["frontier"]["pending"] == [
+    assert rust_result["state"]["frontier"]["pending"] == [
         ["done", 1, "token-1", None]
     ]
-    assert len(rust_events) == contract["expected_event_count"]
+    assert rust_done_result["state"]["frontier"]["pending"] == []
+    assert rust_complete_result["state"]["status"] == "completed"
+    assert (
+        rust_complete_result["state"]["state"]["answer"]
+        == python_run.final_state["answer"]
+    )
+    assert rust_step_events[0]["state"]["frontier"]["pending"] == [
+        ["done", 1, "token-1", None]
+    ]
+    assert len(rust_events) == 4
 
 
 def test_python_handled_failure_matches_rust_durable_recovery_admission(
@@ -894,7 +957,7 @@ def test_python_handled_failure_matches_rust_durable_recovery_admission(
             },
         },
     )
-    rust_result = apply_recorded_transition(
+    rust_failure_result = apply_recorded_transition(
         path=database,
         transition={
             "contract_version": 1,
@@ -917,6 +980,65 @@ def test_python_handled_failure_matches_rust_durable_recovery_admission(
             },
         },
     )
+    rust_recovery_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-recover",
+            "expected_event_seq": 2,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 1,
+            "node_id": "recover",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": [["u", {"recovered": True}]],
+            "result": {"workflow_status": "success"},
+            "frontier": {
+                **empty_frontier,
+                "pending": [["end", 2, "token-1", None]],
+            },
+        },
+    )
+    rust_end_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-end",
+            "expected_event_seq": 3,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 2,
+            "node_id": "end",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": [["u", {"ended": True}]],
+            "result": {"workflow_status": "success"},
+            "frontier": empty_frontier,
+        },
+    )
+    rust_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-complete",
+            "expected_event_seq": 4,
+            "kind": "complete",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 2,
+            "node_id": "end",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "result": {"workflow_status": "succeeded"},
+            "frontier": empty_frontier,
+        },
+    )
     rust_events = store_sqlite(
         path=database,
         operation={
@@ -926,18 +1048,50 @@ def test_python_handled_failure_matches_rust_durable_recovery_admission(
             "limit": 10,
         },
     )
-    rust_failure_event = rust_events[-1]["payload"]["reduced"]
-
-    assert python_failure_step.metadata["step_seq"] == rust_failure_event["state"][
+    rust_step_events = [event["payload"]["reduced"] for event in rust_events[1:4]]
+    python_steps = sorted(
+        (
+            node
+            for node in conversation_engine.nodes
+            if node.metadata.get("entity_type") == "workflow_step_exec"
+        ),
+        key=lambda node: int(node.metadata["step_seq"]),
+    )
+    python_step_history = [
+        {
+            "step_seq": int(node.metadata["step_seq"]),
+            "node_id": node.metadata["workflow_node_id"],
+            "state_update": json.loads(node.metadata["result_json"])["state_update"],
+            "errors": json.loads(node.metadata["result_json"]).get("errors", []),
+        }
+        for node in python_steps
+    ]
+    rust_step_history = [
+        {
+            "step_seq": event["state"]["last_step_seq"],
+            "node_id": event["state"]["last_node_id"],
+            "state_update": event["state_update"],
+            "errors": event["errors"],
+        }
+        for event in rust_step_events
+    ]
+    assert python_step_history == rust_step_history
+    assert python_failure_step.metadata["step_seq"] == rust_failure_result["state"][
         "last_step_seq"
     ]
-    assert python_failure_result["state_update"] == rust_failure_event["state_update"]
-    assert python_failure_result["errors"] == rust_failure_event["errors"]
-    assert rust_result["state"]["status"] == "running"
-    assert rust_failure_event["state"]["frontier"]["pending"] == [
+    assert python_failure_result["state_update"] == rust_step_events[0]["state_update"]
+    assert python_failure_result["errors"] == rust_step_events[0]["errors"]
+    assert rust_step_events[0]["state"]["frontier"]["pending"] == [
         ["recover", 1, "token-1", None]
     ]
-    assert len(rust_events) == case["expected_event_count"]
+    assert rust_recovery_result["state"]["frontier"]["pending"] == [
+        ["end", 2, "token-1", None]
+    ]
+    assert rust_end_result["state"]["frontier"]["pending"] == []
+    assert rust_result["state"]["status"] == "completed"
+    assert rust_result["state"]["state"]["ended"] is True
+    assert rust_result["state"]["state"]["recovered"] is True
+    assert len(rust_events) == 5
 
 
 def _seed_join_bridge_graph(workflow_id: str):
