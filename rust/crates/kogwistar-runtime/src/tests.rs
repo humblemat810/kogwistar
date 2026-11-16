@@ -2548,3 +2548,64 @@ fn provider_event_ack_effect_field_is_backward_compatible_and_optional() {
         );
         assert!(resumed.state.frontier.suspended.is_empty());
     }
+
+    #[test]
+    fn suspend_resume_preserves_unrelated_pending_and_join_obligations() {
+        let mut initial_frontier = RuntimeFrontier {
+            pending: vec![
+                ("gate".to_owned(), 0, "gate-token".to_owned(), None),
+                (
+                    "unrelated".to_owned(),
+                    0,
+                    "unrelated-token".to_owned(),
+                    None,
+                ),
+            ],
+            join_node_ids: vec!["join".to_owned()],
+            join_outstanding: vec![1],
+            join_waiters: BTreeMap::from([(
+                "join".to_owned(),
+                vec![(1, "arrived-token".to_owned(), None)],
+            )]),
+            ..RuntimeFrontier::default()
+        };
+        initial_frontier.pending.sort();
+        let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
+        start.initial_state = Some(Map::new());
+        start.frontier = Some(initial_frontier.clone());
+        let started = reduce_recorded_transition(None, &start).unwrap();
+
+        let parked_frontier =
+            frontier_after_worker_suspend(&started.state.frontier, "gate", "gate-token", None)
+                .unwrap();
+        let mut suspend = transition(RecordedTransitionKind::Suspend, "suspend", 1, 0);
+        suspend.node_id = Some("gate".to_owned());
+        suspend.token_id = Some("gate-token".to_owned());
+        suspend.frontier = Some(parked_frontier.clone());
+        suspend.wait_reason = Some("approval".to_owned());
+        let suspended = reduce_recorded_transition(Some(&started.state), &suspend).unwrap();
+        assert_eq!(suspended.state.frontier, parked_frontier);
+        assert!(suspended.state.frontier.pending.iter().any(|token| {
+            token.0 == "unrelated" && token.2 == "unrelated-token"
+        }));
+        assert_eq!(suspended.state.frontier.join_outstanding, vec![1]);
+        assert_eq!(
+            suspended.state.frontier.join_waiters["join"],
+            vec![(1, "arrived-token".to_owned(), None)]
+        );
+
+        let resumed_frontier =
+            frontier_after_worker_resume(&suspended.state.frontier, "gate", "gate-token", None)
+                .unwrap();
+        let mut resume = transition(RecordedTransitionKind::ResumeResult, "resume", 2, 1);
+        resume.node_id = Some("gate".to_owned());
+        resume.token_id = Some("gate-token".to_owned());
+        resume.frontier = Some(resumed_frontier.clone());
+        resume.resume_payload = Some(json!({"approved": true}));
+        let resumed = reduce_recorded_transition(Some(&suspended.state), &resume).unwrap();
+
+        assert_eq!(resumed.state.frontier, initial_frontier);
+        assert_eq!(resumed.state.status, RecordedRunStatus::Running);
+        assert_eq!(resumed.state.wait_reason, None);
+        assert_eq!(resumed.state.resume_payload, Some(json!({"approved": true})));
+    }
