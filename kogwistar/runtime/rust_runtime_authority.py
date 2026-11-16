@@ -14,7 +14,7 @@ import queue
 import threading
 import tempfile
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -32,10 +32,36 @@ if TYPE_CHECKING:
     from .async_runtime import AsyncWorkflowRuntime
     from .models import StepRunResult, WorkflowEdge, WorkflowNode
     from .runtime import RunResult, WorkflowRuntime
+    from .telemetry import TraceContext
 
 
 class RustRuntimeAuthorityError(RuntimeError):
     """Rust runtime authority is unavailable or violates its contract."""
+
+
+def validate_rust_run_context(
+    *,
+    run_metadata: Mapping[str, Any] | None = None,
+    trace_context: TraceContext | None = None,
+    parent_lease_renew: Callable[[], None] | None = None,
+    run_owner_id: str | None = None,
+) -> None:
+    """Reject Python-only run context instead of silently losing lineage/ownership."""
+    unsupported = [
+        name
+        for name, value in (
+            ("run metadata", run_metadata),
+            ("trace context", trace_context),
+            ("parent lease renewal", parent_lease_renew),
+            ("run owner", run_owner_id),
+        )
+        if value is not None
+    ]
+    if unsupported:
+        names = ", ".join(unsupported)
+        raise RustRuntimeAuthorityError(
+            f"Rust runtime authority cannot preserve Python run context: {names}"
+        )
 
 
 _RUST_NATIVE_OPERATION_PREFIX = "rust-native/"

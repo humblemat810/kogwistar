@@ -23,6 +23,7 @@ from fastapi.testclient import TestClient
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
+from kogwistar.runtime.telemetry import TraceContext
 from kogwistar.runtime.rust_worker import (
     AsyncRustRuntimeWorker,
     RustRuntimeWorker,
@@ -741,6 +742,48 @@ def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
             turn_node_id="turn-1",
             initial_state={},
             run_id="run-1",
+        )
+
+
+@pytest.mark.parametrize(
+    ("context_field", "context_value"),
+    [
+        ("_run_metadata", {"parent_run_id": "parent-run"}),
+        (
+            "_trace_context",
+            TraceContext.new_root(
+                run_id="parent-run",
+                token_id="parent-run",
+                step_seq=0,
+                node_id="parent",
+            ),
+        ),
+        ("_parent_lease_renew", lambda: None),
+        ("_run_owner_id", "parent-owner"),
+    ],
+)
+def test_public_sync_rust_runtime_rejects_unforwarded_python_context(
+    monkeypatch, context_field: str, context_value: Any
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime.step_resolver = SimpleNamespace(_state_schema={})
+    runtime.workflow_engine = SimpleNamespace(metadata=None)
+    runtime.conversation_engine = SimpleNamespace(
+        metadata=None,
+        read=SimpleNamespace(get_nodes=lambda **_kwargs: []),
+    )
+
+    with pytest.raises(
+        RustRuntimeAuthorityError, match="cannot preserve Python run context"
+    ):
+        runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id="run-1",
+            **{context_field: context_value},
         )
 
 
@@ -4405,6 +4448,47 @@ def test_async_runtime_rust_mode_without_authority_url_fails_closed(
         )
 
     with pytest.raises(RustRuntimeAuthorityError, match="URL is not configured"):
+        asyncio.run(invoke())
+
+
+@pytest.mark.parametrize(
+    ("context_field", "context_value"),
+    [
+        ("_run_metadata", {"parent_run_id": "parent-run"}),
+        (
+            "_trace_context",
+            TraceContext.new_root(
+                run_id="parent-run",
+                token_id="parent-run",
+                step_seq=0,
+                node_id="parent",
+            ),
+        ),
+        ("_run_owner_id", "parent-owner"),
+    ],
+)
+def test_async_rust_runtime_rejects_unforwarded_python_context(
+    monkeypatch, context_field: str, context_value: Any
+) -> None:
+    from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
+
+    async def invoke() -> None:
+        await runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+            **{context_field: context_value},
+        )
+
+    with pytest.raises(
+        RustRuntimeAuthorityError, match="cannot preserve Python run context"
+    ):
         asyncio.run(invoke())
 
 

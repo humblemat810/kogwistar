@@ -208,6 +208,11 @@ Only these local items remain in scope before production rollout:
   including the existing pgvector container over `host.docker.internal`. This
   confirms cross-OS execution behavior, not a distinct production-vs-development
   contract; Docker build used a dedicated Cargo target volume.
+  The Python sync/async runtime entry points now reject Rust-authority runs when
+  Python-only run metadata, trace context, parent lease renewal, or run-owner
+  context would otherwise be silently discarded. Focused fail-closed coverage
+  passed (**10 passed**); the full authority test module passed (**63 passed,
+  10 skipped**). This closes context-loss at dispatch, not public owner routing.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the

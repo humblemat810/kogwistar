@@ -474,9 +474,16 @@ class WorkflowRuntime(
             from .rust_runtime_authority import (
                 run_with_rust_authority,
                 rust_runtime_authority_selected,
+                validate_rust_run_context,
             )
 
             if rust_runtime_authority_selected():
+                validate_rust_run_context(
+                    run_metadata=_run_metadata,
+                    trace_context=_trace_context,
+                    parent_lease_renew=_parent_lease_renew,
+                    run_owner_id=_run_owner_id,
+                )
                 if _resume_step_seq is not None or _resume_last_exec_node is not None:
                     raise NotImplementedError(
                         "Rust runtime authority uses the versioned resume endpoint; "

@@ -255,9 +255,15 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         from .rust_runtime_authority import (
             run_with_rust_authority_async,
             rust_runtime_authority_selected,
+            validate_rust_run_context,
         )
 
         if rust_runtime_authority_selected():
+            validate_rust_run_context(
+                run_metadata=_run_metadata,
+                trace_context=_trace_context,
+                run_owner_id=_run_owner_id,
+            )
             if _resume_step_seq is not None or _resume_last_exec_node is not None:
                 raise NotImplementedError(
                     "Rust async authority does not support ordinary checkpoint "
