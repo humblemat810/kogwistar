@@ -7,7 +7,7 @@ its rollout evidence, not a deprecation decision. Transaction ownership and
 the optional native execution paths are specified in
 `ADR-022-dual-language-capability-paths.md`.
 
-Updated: 2026-11-16
+Updated: 2026-11-17
 
 Active production-cutover tasklets and their sole completion count are tracked
 in [`ADR-015-cutover-worklist.md`](ADR-015-cutover-worklist.md). ADR-022's fine
@@ -28,6 +28,16 @@ older reports do not prove current source behavior or promote Rust authority.
 Re-run relevant gates against the current source before making those claims.
 Release workflow design is tracked in
 [`ADR-015-library-release.md`](ADR-015-library-release.md).
+
+Latest current-source Windows verification: HEAD `246b2501`, candidate source
+SHA-256 `bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`.
+The rebuilt PyO3 wheel passed its SQLite transaction ABI smoke. Rust API tests
+passed **409**, with **40 ignored**. The Phase 4 runtime-authority gate passed
+the four runnable groups: durable-worker **185 tests/10 skipped**, bijection
+**72**, bridge **30**, suspend-terminal **23**; zero failures/errors. The live
+PostgreSQL group was not run because Docker access and a test DSN were
+unavailable. These are local verification results, not Phase 4 closure or
+production/UAT promotion evidence; Docker-emulated runs remain UAT only.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
