@@ -590,17 +590,19 @@ not authorize a broad authority-flag promotion or replace production canaries.
   lane, and projection-contract tests pass; workspace Clippy remains warning-free.
   Serving projection namespace/cursor/schema metadata also comes from one shared
   store-contract helper, preventing backend-local projection field drift.
-- Current-source Phase 4 runtime gate passes all 296 tests with zero failures,
-  errors, or skips: durable worker 169, sync/async bijection 72, bridge parity
+- Current-source Phase 4 runtime gate passes all 311 tests with zero failures,
+  errors, or skips: durable worker 184, sync/async bijection 72, bridge parity
   22, suspend/terminal 23, and live PostgreSQL 10. Source SHA-256 is
-  `bf30351d86c914b867b5a1c6ec77682cf2cd30a809b2aa56f65a28f22914903b`; the
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`; the
   current native extension SHA-256 is
-  `fd807a71068d563ac1715de5e55d88c2f5b2382cd9657870d675e3e10648860f`.
-  PostgreSQL tests use the live pgvector container. Runtime test clients now
-  authenticate with scoped workflow ACL fixtures, and graph assertions use the
-  Python-parity per-graph schema; server authorization and schema isolation
-  remain enforced. This is local Phase 4 evidence, not production canary or
-  `workflow-runtime` cutover readiness.
+  `a8986916cbb62f139582c8f4614d7b0d59c2f33c2e990b385071b8fb9143dfff`.
+  The regression fix removes schema DDL from each PostgreSQL embedding-worker
+  batch; server startup remains the schema-bootstrap owner, avoiding DDL/DML
+  deadlocks during runtime claims. The focused Python-worker/PostgreSQL case
+  passes against the rebuilt server, and the complete gate passes against the
+  live pgvector container. This is local Phase 4 evidence, not production
+  canary or `workflow-runtime` cutover readiness. Full report:
+  `.tmp/adr015-runtime-refresh-pg/runtime-authority-after.json`.
 - Host-native focused verification now has a persisted exact-ABI build and smoke
   path. It builds a wheel for the selected Python interpreter, atomically
   refreshes the ignored source-tree extension, records source/wheel/extension

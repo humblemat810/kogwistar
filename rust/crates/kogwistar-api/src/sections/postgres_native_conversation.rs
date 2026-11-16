@@ -792,7 +792,6 @@ impl PostgresRunApplicationService {
             .profile()
             .validate()
             .map_err(|error| error.to_string())?;
-        self.ensure_graph_type_schemas().await?;
 
         let store = self.graph_store_for_type(&self.graph_role).clone();
         let provider_store = store.clone();
