@@ -1,0 +1,37 @@
+{
+  "contract_version": 1,
+  "query_embedding": [1.0, 0.0],
+  "records": [
+    {
+      "id": "filter-a",
+      "document": "a",
+      "metadata": {"team": "red", "entity_type": "node"},
+      "embedding": [1.0, 0.0]
+    },
+    {
+      "id": "filter-b",
+      "document": "b",
+      "metadata": {"team": "red", "entity_type": "node"},
+      "embedding": [0.8, 0.6]
+    },
+    {
+      "id": "filter-acl",
+      "document": "acl",
+      "metadata": {"team": "red", "entity_type": "acl_record"},
+      "embedding": [0.99, 0.01]
+    },
+    {
+      "id": "filter-blue",
+      "document": "blue",
+      "metadata": {"team": "blue", "entity_type": "node"},
+      "embedding": [0.0, 1.0]
+    }
+  ],
+  "where": {
+    "$and": [
+      {"team": "red"},
+      {"entity_type": {"$ne": "acl_record"}}
+    ]
+  },
+  "expected_ids": ["filter-a", "filter-b"]
+}

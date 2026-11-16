@@ -1,6 +1,6 @@
 # ADR-015 Remaining Implementation Tasklets
 
-**Progress:** **5/11 PASS (45.5%)**. Two tasklets are `IN PROGRESS`; four are `NOT STARTED`.
+**Progress:** **6/11 PASS (54.5%)**. One tasklet is `IN PROGRESS`; four are `NOT STARTED`.
 **Purpose:** Track remaining library implementation work, not production rollout.
 **Parent:** [ADR-015 implementation status](ADR-015-implementation-status.md).
 **Separate gates:** Production canaries and promotion remain exclusively in
@@ -41,7 +41,7 @@ described in [implementation status](ADR-015-implementation-status.md).
 
 | ID | Status | Tasklet and single acceptance oracle |
 | --- | --- | --- |
-| PG-01 | IN PROGRESS | Implement the documented Python-compatible complex metadata-filter query subset in the Rust PostgreSQL authority. Shared fixtures prove identical ordered IDs and filtering for supported operators; unsupported operators fail closed before Python/backend fallback. Partial evidence: `graph_read_filter_combines_equality_and_exclusion_safely` verifies scoped equality plus `$ne` SQL generation and escaping; Rust store unit suite (**11 passed, 33 live-PostgreSQL tests ignored without DSN**) and Python filter grammar test (**1 passed**). Live ordered-result parity and unsupported-operator no-fallback remain open. |
+| PG-01 | PASS | Python-compatible vector metadata filters support flat equality, `$ne`, and `$and` combinations; unsupported forms fail closed before backend fallback. Shared fixture `contracts/golden/postgres-vector-filter-parity-v1.json` produced identical ordered IDs and distances through Python `PgVectorBackend` and Rust PostgreSQL authority against live pgvector: `tests/pg_sql/test_phase3_e2e_engine_pg.py::test_rust_postgres_vector_filters_match_python_backend` (**1 passed**). Python filter grammar plus Rust-selected native routing/no-fallback tests: **2 passed**. Rust SQL builder also verifies scoped equality/exclusion and hostile quoted-value escaping; PostgreSQL store unit suite: **11 passed, 33 live-DB tests ignored in the package-wide run**. |
 | PG-02 | IN PROGRESS | Move remaining graph-derived lookup reads explicitly listed as Python adapters onto the Rust PostgreSQL read authority. Paired fixtures prove identical IDs, scope, provenance, and ordering, with instrumentation proving no Python backend call in Rust mode. |
 
 ## Rust Server Operations

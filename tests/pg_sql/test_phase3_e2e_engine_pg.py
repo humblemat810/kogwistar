@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -95,6 +96,65 @@ def test_phase3_e2e_engine_edges_by_doc_pg(
 
     got = eng.edges_by_doc(doc_id)
     assert e.safe_get_id() in set(got)
+
+
+def test_rust_postgres_vector_filters_match_python_backend(
+    sa_engine, pg_schema, pg_dsn, monkeypatch
+) -> None:
+    if sa_engine is None or pg_schema is None or pg_dsn is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
+
+    fixture = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/postgres-vector-filter-parity-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
+    backend.ensure_schema()
+    records = fixture["records"]
+    backend.node_upsert(
+        ids=[record["id"] for record in records],
+        documents=[record["document"] for record in records],
+        metadatas=[record["metadata"] for record in records],
+        embeddings=[record["embedding"] for record in records],
+    )
+    python_result = backend.node_query(
+        query_embeddings=[fixture["query_embedding"]],
+        n_results=4,
+        where=fixture["where"],
+        include=["distances"],
+    )
+    native_filter = ReadSubsystem._native_vector_filter(fixture["where"])
+    assert native_filter is not None
+    metadata, metadata_not_equals = native_filter
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    rust_store = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+    try:
+        rust_result = rust_store.graph_projection_vector_query_excluding_metadata(
+            namespace="default",
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            embedding=fixture["query_embedding"],
+            embedding_dim=2,
+            metadata=metadata,
+            metadata_not_equals=metadata_not_equals,
+            metric="cosine",
+            limit=4,
+        )
+    finally:
+        rust_store.close()
+
+    python_ids = python_result["ids"][0]
+    rust_ids = [match["record"]["id"] for match in rust_result]
+    assert rust_ids == python_ids == fixture["expected_ids"]
+    assert [match["distance"] for match in rust_result] == pytest.approx(
+        python_result["distances"][0]
+    )
 
 
 def test_incident_edge_lookup_is_canonical_and_joins_postgres_transaction(
