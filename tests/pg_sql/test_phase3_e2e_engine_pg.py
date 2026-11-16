@@ -236,6 +236,20 @@ def test_rust_postgres_reference_filters_match_python_backend(
                 where={"namespace": namespace, "insertion_method": insertion_method},
             ),
         }
+        python_fallback_ids = {
+            "node": python_reader.ids_with_insertion_method(
+                kind="node",
+                insertion_method=insertion_method,
+                ids=["node-other-method"],
+                doc_id=doc_id,
+            ),
+            "edge": python_reader.ids_with_insertion_method(
+                kind="edge",
+                insertion_method=insertion_method,
+                ids=["edge-other-method"],
+                doc_id=doc_id,
+            ),
+        }
 
         rust_reader = ReadSubsystem(
             SimpleNamespace(
@@ -269,6 +283,20 @@ def test_rust_postgres_reference_filters_match_python_backend(
                 where={"namespace": namespace, "insertion_method": insertion_method},
             ),
         }
+        rust_fallback_ids = {
+            "node": rust_reader.ids_with_insertion_method(
+                kind="node",
+                insertion_method=insertion_method,
+                ids=["node-other-method"],
+                doc_id=doc_id,
+            ),
+            "edge": rust_reader.ids_with_insertion_method(
+                kind="edge",
+                insertion_method=insertion_method,
+                ids=["edge-other-method"],
+                doc_id=doc_id,
+            ),
+        }
 
         for entity_kind, expected_ids in fixture["expected_ids"].items():
             python_entities = python_results[entity_kind]
@@ -280,6 +308,10 @@ def test_rust_postgres_reference_filters_match_python_backend(
                 span = rust_entity.mentions[0].spans[0]
                 assert span.doc_id == doc_id
                 assert span.insertion_method == insertion_method
+        assert python_fallback_ids == rust_fallback_ids == {
+            "node": ["node-other-method"],
+            "edge": ["edge-other-method"],
+        }
     finally:
         rust_store.close()
 
