@@ -1281,8 +1281,10 @@ def test_step_resolver_adapter_maps_failure_routing(handled: bool) -> None:
     )
     effect = adapter(_adapter_work(routes=[route]))
     assert effect["status"] == "failed"
+    assert effect["state_update"] == [["u", {"attempted": True}]]
     assert effect["errors"] == ["boom"]
     assert effect["result"]["workflow_status"] == "failed"
+    assert effect["result"]["final_state"]["attempted"] is True
     assert effect["successors"] == (
         [{"node_id": "recover", "join_mask": 4}] if handled else []
     )

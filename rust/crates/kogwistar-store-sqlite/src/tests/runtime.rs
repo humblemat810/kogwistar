@@ -195,7 +195,12 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
         handled.reduced.state.status,
         kogwistar_runtime::RecordedRunStatus::Running
     );
+    assert_eq!(
+        handled.reduced.state.state["attempted"],
+        serde_json::json!(true)
+    );
     assert_eq!(handled.reduced.state.frontier.pending[0].0, "recover");
+    assert_eq!(handled.reduced.errors, vec!["boom"]);
     assert_eq!(
         store
             .get_projected_lane_message("handled-request")
@@ -204,12 +209,17 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
             .status,
         "completed"
     );
+    let handled_events = store.list_server_run_events("handled", 0, 20).unwrap();
+    assert_eq!(handled_events.len(), 2);
+    let handled_payload: serde_json::Value =
+        serde_json::from_str(&handled_events[1].payload_json).unwrap();
     assert_eq!(
-        store
-            .list_server_run_events("handled", 0, 20)
-            .unwrap()
-            .len(),
-        2
+        handled_payload["reduced"]["errors"],
+        serde_json::json!(["boom"])
+    );
+    assert_eq!(
+        handled_payload["reduced"]["state"]["frontier"]["pending"][0][0],
+        "recover"
     );
 
     setup("unhandled", "unhandled-request", "unhandled-worker");
@@ -223,6 +233,11 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
         unhandled.reduced.state.status,
         kogwistar_runtime::RecordedRunStatus::Failed
     );
+    assert_eq!(
+        unhandled.reduced.state.state["attempted"],
+        serde_json::json!(true)
+    );
+    assert_eq!(unhandled.reduced.errors, vec!["boom"]);
     assert!(unhandled.reduced.state.frontier.pending.is_empty());
     assert_eq!(
         store.get_server_run("unhandled").unwrap().unwrap().status,
