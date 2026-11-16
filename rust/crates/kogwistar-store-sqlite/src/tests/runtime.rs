@@ -2,6 +2,81 @@
 use super::*;
 
 #[test]
+fn worker_success_effect_matches_shared_contract_and_is_retry_safe() {
+    let contract: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/runtime-worker-success-v1.json"
+    ))
+    .unwrap();
+    let (store, path) = store("runtime-worker-success");
+    store
+        .apply_recorded_runtime_transition(runtime_success_start("success", "start-success"), false)
+        .unwrap();
+    store
+        .project_lane_message(runtime_worker_lane("success", "success-request"))
+        .unwrap();
+    assert_eq!(
+        store
+            .claim_projected_lane_messages("runtime", "python-workers", "success-worker", 1, 30,)
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let handoff = runtime_worker_handoff("success", "success-request", "success-worker");
+    let effect = runtime_success_effect("success-effect", &contract);
+    let applied = store
+        .apply_claimed_recorded_worker_effect(handoff.clone(), effect.clone())
+        .unwrap();
+    let retry = store
+        .apply_claimed_recorded_worker_effect(handoff, effect)
+        .unwrap();
+    assert!(!applied.idempotent && retry.idempotent);
+    assert_eq!(applied.event_seq, retry.event_seq);
+    assert_eq!(
+        applied.reduced.state.status.server_status(),
+        contract["expected_run_status"].as_str().unwrap()
+    );
+    for (key, value) in contract["expected_state"].as_object().unwrap() {
+        assert_eq!(applied.reduced.state.state[key], *value);
+    }
+    assert_eq!(
+        applied
+            .reduced
+            .state
+            .frontier
+            .pending
+            .iter()
+            .map(|token| token.0.as_str())
+            .collect::<Vec<_>>(),
+        contract["expected_frontier_pending_node_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        store
+            .get_projected_lane_message("success-request")
+            .unwrap()
+            .unwrap()
+            .status,
+        "completed"
+    );
+    let events = store.list_server_run_events("success", 0, 20).unwrap();
+    assert_eq!(
+        events.len(),
+        contract["expected_event_count"].as_u64().unwrap() as usize
+    );
+    let payload: serde_json::Value = serde_json::from_str(&events[1].payload_json).unwrap();
+    assert_eq!(payload["reduced"]["state_update"], contract["state_update"]);
+    assert_eq!(payload["reduced"]["errors"], serde_json::json!([]));
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn recorded_transition_lookup_uses_json_expression_index() {
     let (store, path) = store("runtime-transition-index");
     drop(store);

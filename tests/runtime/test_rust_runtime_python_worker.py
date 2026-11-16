@@ -43,6 +43,12 @@ RUNTIME_WORKER_FAILURE_CONTRACT = json.loads(
         / "contracts/golden/runtime-worker-failure-v1.json"
     ).read_text(encoding="utf-8")
 )
+RUNTIME_WORKER_SUCCESS_CONTRACT = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/runtime-worker-success-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
@@ -569,6 +575,33 @@ def test_step_resolver_adapter_maps_context_mutation_update_and_explicit_route()
         "workflow_status": "succeeded",
         "final_state": {"seed": 1, "items": ["result"], "direct": "kept"},
     }
+
+
+def test_step_resolver_adapter_matches_shared_success_effect_contract() -> None:
+    contract = RUNTIME_WORKER_SUCCESS_CONTRACT
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[(mode, payload) for mode, payload in contract["state_update"]],
+            _route_next=contract["route_next"],
+        )
+
+    effect = RustStepResolverAdapter(resolver)(
+        _adapter_work(
+            state={"answer": "seed"},
+            routes=[_route("done", aliases=contract["route_next"])],
+        )
+    )
+
+    assert effect["status"] == "success"
+    assert effect["state_update"] == contract["state_update"]
+    assert effect["route_next"] == contract["route_next"]
+    assert effect["successors"] == contract["successors"]
+    assert effect["result"]["workflow_status"] == "succeeded"
+    assert effect["result"]["final_state"] == contract["expected_state"]
 
 
 def test_sync_rust_worker_binds_runtime_selection_through_callback_and_reduction(

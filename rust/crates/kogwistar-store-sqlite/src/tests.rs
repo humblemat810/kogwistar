@@ -113,6 +113,26 @@ fn runtime_failure_start(run_id: &str, transition_id: &str) -> RecordedRuntimeTr
     start
 }
 
+fn runtime_success_start(run_id: &str, transition_id: &str) -> RecordedRuntimeTransition {
+    let mut start = runtime_start(run_id, transition_id);
+    start.initial_state.as_mut().unwrap().insert(
+        "_rt_routes".to_owned(),
+        serde_json::json!([{
+            "edge_id": "success-edge",
+            "source_node_id": "step-1",
+            "target_node_id": "done",
+            "aliases": ["done"],
+            "join_mask": 0,
+            "predicate": null,
+            "multiplicity": "one",
+            "is_default": false,
+            "priority": 100,
+            "source_fanout": false
+        }]),
+    );
+    start
+}
+
 fn runtime_worker_lane(run_id: &str, message_id: &str) -> NewProjectedLaneMessage {
     NewProjectedLaneMessage {
         message_id: message_id.to_owned(),
@@ -162,6 +182,23 @@ fn runtime_failure_effect(effect_id: &str, contract_case: &Value) -> RecordedWor
         "route_next": contract_case["route_next"].clone(),
         "result": {"workflow_status": "failed"},
         "errors": contract_case["errors"].clone()
+    }))
+    .unwrap()
+}
+
+fn runtime_success_effect(effect_id: &str, contract: &Value) -> RecordedWorkerSuccessEffect {
+    serde_json::from_value(serde_json::json!({
+        "contract_version": 1,
+        "effect_id": effect_id,
+        "status": "success",
+        "state_update": contract["state_update"].clone(),
+        "successors": contract["successors"].clone(),
+        "route_next": contract["route_next"].clone(),
+        "result": {
+            "workflow_status": "succeeded",
+            "final_state": contract["expected_state"].clone()
+        },
+        "errors": []
     }))
     .unwrap()
 }
