@@ -1699,6 +1699,47 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         return out
 
     # Doc-index helpers
+    def _rust_reference_entity_ids(
+        self, *, kind: GraphEntityKind, where: object
+    ) -> list[str] | None:
+        if not self._rust_postgres_projection_selected():
+            return None
+        from ..rust_postgres_session import RustEnginePostgresMetaStore
+
+        meta = getattr(self._e, "metadata", None)
+        if not isinstance(meta, RustEnginePostgresMetaStore):
+            raise RuntimeError(
+                "Rust-selected reference lookup requires the native PostgreSQL "
+                "metadata store; refusing Python backend fallback"
+            )
+        metadata = self._native_equality_filter(where)
+        if metadata is None:
+            raise RuntimeError(
+                "Rust-selected reference lookup supports equality filters only; "
+                "refusing Python backend fallback"
+            )
+        backend = cast(ProjectionBackendLike, self._e.backend)
+        refs = backend.node_refs if kind == "node" else backend.edge_refs
+        owner_key = "node_id" if kind == "node" else "edge_id"
+        records = meta.graph_projection_records(
+            namespace=getattr(self._e, "namespace", "default"),
+            workspace_id=None,
+            graph_space=None,
+            table=refs.name,
+            ids=None,
+            metadata=metadata,
+            limit=200,
+        )
+        return sorted(
+            {
+                str(record_metadata[owner_key])
+                for record in records
+                if (record_metadata := _json_object(record.get("metadata"))).get(
+                    owner_key
+                )
+            }
+        )
+
     @implementation_selection_bound
     def node_ids_by_doc(
         self, doc_id: str, insertion_method: str | None = None
@@ -1831,6 +1872,11 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if not where
             else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
         )
+        native_ids = self._rust_reference_entity_ids(
+            kind="edge", where=query_where
+        )
+        if native_ids is not None:
+            return native_ids
         rows = _json_object(run_awaitable_blocking(self._e.backend.edge_refs_get(where=query_where, include=["documents"])))
         return list({json.loads(d)["edge_id"] for d in _json_strings(rows.get("documents"))})
 
@@ -1841,7 +1887,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         ids = self.edges_by_doc(doc_id, where)
         if not ids:
             return []
-        got = _json_object(run_awaitable_blocking(self._e.backend.edge_get(ids=ids, include=["documents"])))
+        if self._rust_postgres_projection_selected():
+            got = self._edge_get_raw(ids=ids, include=["documents"])
+        else:
+            got = _json_object(run_awaitable_blocking(self._e.backend.edge_get(ids=ids, include=["documents"])))
         with use_mode("backend"):
             return [Edge.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
@@ -1852,6 +1901,9 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             if not where
             else {"$and": [{"doc_id": doc_id}] + [{k: v} for k, v in where.items()]}
         )
+        native_ids = self._rust_reference_entity_ids(kind="node", where=where)
+        if native_ids is not None:
+            return native_ids
         rows = _json_object(run_awaitable_blocking(self._e.backend.node_refs_get(where=where, include=["documents"])))
         return list({json.loads(d)["node_id"] for d in _json_strings(rows.get("documents"))})
 
@@ -1862,7 +1914,10 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         ids = self.nodes_by_doc(doc_id, where=where)
         if not ids:
             return []
-        got = _json_object(run_awaitable_blocking(self._e.backend.node_get(ids=ids, include=["documents"])))
+        if self._rust_postgres_projection_selected():
+            got = self._node_get_raw(ids=ids, include=["documents"])
+        else:
+            got = _json_object(run_awaitable_blocking(self._e.backend.node_get(ids=ids, include=["documents"])))
         with use_mode("backend"):
             return [Node.model_validate_json(js) for js in _json_strings(got.get("documents"))]
 
