@@ -103,31 +103,32 @@ Only these local items remain in scope before production rollout:
   Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
   `scripts/durable_store_gate.py` produced
   `.codex/adr015-phase3-store-gate.json` for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
-  memory 17, SQLite 27, and live pgvector PostgreSQL 36 all passed with zero
+  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`:
+  memory 17, SQLite 90, and live pgvector PostgreSQL 83 tests passed, with zero
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
   one broad store flag from a narrow test. Current-source local evidence is
   recorded by `scripts/durable_store_capability_gate.py` in the local,
-  ignored `.codex/adr015-phase3-capability-gate-current.json`: PostgreSQL
+  ignored `.codex/adr015-phase3-capability-gate.json`: PostgreSQL
   sequence/event-log 4, projection/snapshot/run-registry 6, queue/lease/lane
   3, and graph/pgvector 47 all passed with zero failures, errors, or skips for
   source SHA-256
-  `bbca317a14b725247dee31234dfbaab93c0f8fd1947a445107f09e0a32d59235`.
+  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`.
   This is current-source local evidence only; each `rust_cutover_ready` remains
   false until its same-candidate production canary and rollback evidence exists.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
   native evidence is `.codex/adr015-phase4-runtime-gate.json` for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`.
+  `901969f64f29fc64b69b15082f87894aa816d0ea9ab12636f5379197b2174a8b`.
 - [x] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
   terminal suites; recorded state/event/terminal-result parity; crash/restart;
   cancellation/backpressure; and Python-worker restart gates. The persisted
-  gate passed durable-worker 61, sync/async bijection 64, bridge parity 17,
-  suspend/terminal 23, and live PostgreSQL 10 tests, all with zero failures,
-  errors, or skips. Async authority now has a bounded `async-v2` callback
+  gate passed durable-worker 169 (10 intentionally skipped non-live cases),
+  sync/async bijection 72, bridge parity 22, suspend/terminal 23, and live
+  PostgreSQL 10 tests; all groups had zero failures/errors, and the live
+  PostgreSQL group had zero skips. Async authority now has a bounded `async-v2` callback
   worker protocol, evidenced separately below; it was intentionally
   fail-closed under the earlier `sync-v1` worker protocol.
 - [ ] Phase 4: route the public runtime owner through the proven Rust durable
