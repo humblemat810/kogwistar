@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import gc
 import json
 import time
 import uuid
@@ -14,7 +15,7 @@ import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from kogwistar.runtime.models import (
     RunFailure,
@@ -2003,12 +2004,57 @@ def _normalize_resume_result(
     }
 
 
-def _run_sync_wait_reason_suspend_resume(tmp_path: Path) -> dict:
+def _workflow_step_history(engine: GraphKnowledgeEngine, run_id: str) -> list[dict]:
+    nodes = engine.read.get_nodes(
+        where={
+            "$and": [
+                {"entity_type": "workflow_step_exec"},
+                {"run_id": run_id},
+            ]
+        },
+        limit=100,
+    )
+    history = []
+    for node in sorted(nodes, key=lambda item: int(item.metadata["step_seq"])):
+        result = json.loads(node.metadata["result_json"])
+        history.append(
+            {
+                "step_seq": int(node.metadata["step_seq"]),
+                "node_id": str(node.metadata["workflow_node_id"]),
+                "status": str(node.metadata["status"]),
+                "state_update": result.get("state_update", []),
+                "errors": result.get("errors", []),
+                "resume_payload": result.get("resume_payload"),
+                "token_id": str(node.metadata["token_id"]),
+            }
+        )
+    return history
+
+
+def _run_sync_wait_reason_suspend_resume(
+    tmp_path: Path,
+    *,
+    capture: dict | None = None,
+    restart_before_resume: bool = False,
+) -> dict:
     wf_id = "wf_wait_bridge_sync"
     run_id = "run_wait_bridge_sync"
     conv_id = "conv_wait_bridge_sync"
-    wf_engine = _make_engine(tmp_path / "wf_sync", "workflow")
-    conv_engine = _make_engine(tmp_path / "conv_sync", "conversation")
+    if restart_before_resume:
+        persist_directory = str(tmp_path / "chroma")
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="workflow",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="conversation",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+    else:
+        wf_engine = _make_engine(tmp_path / "wf_sync", "workflow")
+        conv_engine = _make_engine(tmp_path / "conv_sync", "conversation")
     _seed_suspend_resume_workflow(wf_engine, wf_id)
 
     resolver = MappingStepResolver()
@@ -2052,6 +2098,26 @@ def _run_sync_wait_reason_suspend_resume(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     suspended_token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
+    if restart_before_resume:
+        del runtime, conv_engine, wf_engine
+        gc.collect()
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="workflow",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="conversation",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
     out2 = runtime.resume_run(
         run_id=run_id,
         suspended_node_id="gate",
@@ -2064,6 +2130,18 @@ def _run_sync_wait_reason_suspend_resume(tmp_path: Path) -> dict:
         conversation_id=conv_id,
         turn_node_id="turn_1",
     )
+    if capture is not None:
+        capture.update(
+            {
+                "run_id": run_id,
+                "workflow_id": wf_id,
+                "conversation_id": conv_id,
+                "first_status": str(out1.status),
+                "checkpoint_state": checkpoint_state,
+                "final_state": dict(out2.final_state or {}),
+                "step_history": _workflow_step_history(conv_engine, run_id),
+            }
+        )
     return _normalize_suspend_resume_result(
         suspended_status=out1.status,
         checkpoint_state=checkpoint_state,
@@ -2454,6 +2532,194 @@ def test_runtime_parity_bridge_wait_reason_suspend_resume():
         "final_suspended_nodes": [],
     }
     assert async_out == sync_out
+
+
+@pytest.mark.ci_full
+def test_python_suspend_resume_matches_rust_durable_ordered_history(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar._rust_bridge import store_sqlite
+    from kogwistar.runtime.rust_runtime_adapter import (
+        apply_recorded_transition,
+        read_recorded_runtime_state,
+    )
+
+    python_trace: dict = {}
+    python_result = _run_sync_wait_reason_suspend_resume(
+        tmp_path / "python", capture=python_trace, restart_before_resume=True
+    )
+    run_id = python_trace["run_id"]
+    workflow_id = python_trace["workflow_id"]
+    conversation_id = python_trace["conversation_id"]
+    turn_id = "turn_1"
+    empty_frontier = {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+    }
+    python_suspended_step = next(
+        step for step in python_trace["step_history"] if step["status"] == "suspended"
+    )
+    token_id = python_suspended_step["token_id"]
+    database = tmp_path / "rust" / "suspend-resume.sqlite"
+    initial_frontier = {
+        **empty_frontier,
+        "pending": [["start", 0, token_id, None]],
+    }
+
+    def record(
+        kind: str,
+        transition_id: str,
+        expected_event_seq: int,
+        step_seq: int,
+        node_id: str,
+        **fields: JsonValue,
+    ) -> JsonObject:
+        transition: JsonObject = {
+            "contract_version": 1,
+            "transition_id": transition_id,
+            "expected_event_seq": expected_event_seq,
+            "kind": kind,
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": step_seq,
+            "node_id": node_id,
+            "token_id": token_id,
+            "parent_token_id": None,
+        }
+        transition.update(fields)
+        return apply_recorded_transition(path=database, transition=transition)
+
+    record(
+        "start",
+        "suspend-parity-start",
+        0,
+        0,
+        "start",
+        user_id="test",
+        user_turn_node_id=turn_id,
+        initial_state=_initial_state(conversation_id),
+        frontier=initial_frontier,
+    )
+    record(
+        "recorded_step_success",
+        "suspend-parity-start-step",
+        1,
+        0,
+        "start",
+        state_update=[["u", {"started": True}]],
+        result={"workflow_status": "success"},
+        frontier={**empty_frontier, "pending": [["gate", 0, token_id, None]]},
+    )
+    suspended_frontier = {
+        **empty_frontier,
+        "suspended": [["gate", 0, token_id, None]],
+    }
+    record(
+        "suspend",
+        "suspend-parity-gate",
+        2,
+        1,
+        "gate",
+        wait_reason="approval",
+        resume_payload=python_suspended_step["resume_payload"],
+        frontier=suspended_frontier,
+    )
+
+    reopened = read_recorded_runtime_state(
+        path=database,
+        run_id=run_id,
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+    )
+    assert reopened is not None
+    assert reopened["status"] == "suspended"
+    assert reopened["wait_reason"] == python_trace["checkpoint_state"]["wait_reason"]
+    assert reopened["resume_payload"] == python_suspended_step["resume_payload"]
+    python_frontier = python_trace["checkpoint_state"]["_rt_join"]
+    for key in (
+        "pending",
+        "suspended",
+        "join_node_ids",
+        "join_outstanding",
+        "join_waiters",
+    ):
+        assert reopened["frontier"][key] == python_frontier[key]
+
+    record(
+        "resume_result",
+        "suspend-parity-resume",
+        3,
+        2,
+        "gate",
+        state_update=[["u", {"resumed": True}]],
+        resume_payload={"approved": True},
+        result={"workflow_status": "success"},
+        frontier={**empty_frontier, "pending": [["end", 0, token_id, None]]},
+    )
+    rust_end = record(
+        "recorded_step_success",
+        "suspend-parity-end",
+        4,
+        3,
+        "end",
+        state_update=[["u", {"ended": True}]],
+        result={"workflow_status": "success"},
+        frontier=empty_frontier,
+    )
+    rust_complete = record(
+        "complete",
+        "suspend-parity-complete",
+        5,
+        3,
+        "end",
+        result={"workflow_status": "succeeded"},
+        frontier=empty_frontier,
+    )
+    rust_events = store_sqlite(
+        path=database,
+        operation={
+            "kind": "list_server_run_events",
+            "run_id": run_id,
+            "after_seq": 0,
+            "limit": 20,
+        },
+    )
+    rust_step_events = [event["payload"]["reduced"] for event in rust_events[1:5]]
+    rust_step_history = [
+        {
+            "step_seq": event["state"]["last_step_seq"],
+            "node_id": event["state"]["last_node_id"],
+            "status": "suspended" if event["kind"] == "suspend" else "ok",
+            "state_update": event["state_update"],
+            "errors": event["errors"],
+            "resume_payload": (
+                {"type": "recoverable_error", "category": "approval"}
+                if event["kind"] == "suspend"
+                else None
+            ),
+            "token_id": event["state"]["last_token_id"],
+        }
+        for event in rust_step_events
+    ]
+    assert python_trace["step_history"] == rust_step_history
+    assert len({step["token_id"] for step in python_trace["step_history"]}) == 1
+    assert len({step["token_id"] for step in rust_step_history}) == 1
+    assert python_result["suspended_status"] == "suspended"
+    assert python_result["resumed_status"] == "succeeded"
+    assert rust_end["state"]["frontier"] == empty_frontier
+    assert rust_complete["state"]["status"] == "completed"
+    user_state_keys = ("started", "resumed", "ended")
+    assert {
+        key: python_trace["final_state"].get(key) for key in user_state_keys
+    } == {
+        key: rust_complete["state"]["state"].get(key) for key in user_state_keys
+    }
+    assert [event["seq"] for event in rust_events] == list(range(1, 7))
 
 
 @pytest.mark.ci_full
