@@ -382,3 +382,113 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
     assert_eq!(response["op"], "receive_message");
     assert_eq!(response["result"], contract);
 }
+
+#[tokio::test]
+async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
+    let service = InMemoryGraphApplicationService::default();
+    let path = "/api/syscall/v1/invoke_tool";
+    assert!(service.supports_http_operation("POST", path));
+
+    let request = |tool_name: &str, capabilities: &[&str]| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: path.to_owned(),
+        body: json!({
+            "version":"v1",
+            "op":"invoke_tool",
+            "args":{"tool_name":tool_name,"conversation_id":"c1"}
+        })
+        .to_string()
+        .into_bytes(),
+        principal: json!({
+            "sub":"alice",
+            "role":"rw",
+            "storage_ns":"conversation",
+            "workspace_id":"workspace-a",
+            "graph_space":"conversation",
+            "ns":["conversation"],
+            "capabilities":capabilities
+        }),
+    };
+
+    let denied = service
+        .execute(request("list_transcript", &["invoke_tool"]))
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+    let denied_snapshot = service
+        .execute(request("capability_snapshot", &["invoke_tool"]))
+        .await;
+    assert_eq!(denied_snapshot.status, StatusCode::FORBIDDEN.as_u16());
+
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/invoke-tool-results-v1.json"
+    ))
+    .unwrap();
+    let list = service
+        .execute(request("list_transcript", &["invoke_tool", "read_graph"]))
+        .await;
+    assert_eq!(list.status, StatusCode::OK.as_u16());
+    let list: Value = serde_json::from_slice(&list.body).unwrap();
+    assert_eq!(list["op"], fixture["op"]);
+    assert_eq!(list["result"]["tool_name"], "list_transcript");
+    assert_eq!(list["result"]["conversation_id"], "c1");
+    assert_eq!(list["result"]["messages"], json!([]));
+    assert_eq!(
+        list["result"].as_object().unwrap().keys().cloned().collect::<BTreeSet<_>>(),
+        fixture["results"]["list_transcript"]["root_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap().to_owned())
+            .collect()
+    );
+
+    for tool_name in ["capability_snapshot", "resource_snapshot"] {
+        let response = service
+            .execute(request(
+                tool_name,
+                &["invoke_tool", "project_view", "read_security_scope"],
+            ))
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16(), "{tool_name}");
+        let response: Value = serde_json::from_slice(&response.body).unwrap();
+        let expected_fields = fixture["results"][tool_name]["root_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            response["result"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected_fields,
+            "{tool_name} result fields"
+        );
+        let expected_snapshot_fields = fixture["results"][tool_name]["snapshot_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap().to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            response["result"]["snapshot"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected_snapshot_fields,
+            "{tool_name} snapshot fields"
+        );
+    }
+
+    let unknown = service
+        .execute(request("not_registered", &["invoke_tool"]))
+        .await;
+    assert_eq!(unknown.status, StatusCode::NOT_FOUND.as_u16());
+}
