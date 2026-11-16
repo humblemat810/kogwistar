@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .chat_service import ChatRunService
+from .chat_service_shared import IdempotencyConflictError
 from .error_reporting import internal_http_error
 
 
@@ -26,6 +27,8 @@ class SyscallResponse(BaseModel):
 
 
 def _as_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, IdempotencyConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ValueError):
@@ -235,6 +238,7 @@ def create_syscall_router(
                     user_id=inp.args.get("user_id") or (get_user_id() if callable(get_user_id) else None),
                     text=str(inp.args["text"]),
                     workflow_id=str(inp.args.get("workflow_id") or "agentic_answering.v2"),
+                    idempotency_key=inp.args.get("idempotency_key"),
                 )
                 return _ok(version, op, payload)
             if op == "receive_message":

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import pathlib
 import threading
+import unicodedata
 from collections.abc import Mapping
 from typing import cast
 
@@ -13,7 +14,7 @@ from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
 )
-from kogwistar.id_provider import new_id_str
+from kogwistar.id_provider import new_id_str, stable_id
 from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonObject
 from kogwistar.runtime.replay import load_checkpoint
@@ -23,6 +24,7 @@ from kogwistar.runtime.telemetry import EventEmitter
 
 from .chat_service_shared import (
     AnswerRunRequest,
+    IdempotencyConflictError,
     RunCancelledError,
     RuntimeResumeRequest,
     RuntimeRunRequest,
@@ -44,6 +46,7 @@ class _RunExecutionService(_BaseComponent):
         user_id: str | None,
         text: str,
         workflow_id: str = "agentic_answering.v2",
+        idempotency_key: str | None = None,
     ) -> JsonObject:
         text = str(text or "").strip()
         if not text:
@@ -55,44 +58,108 @@ class _RunExecutionService(_BaseComponent):
         if not resolved_user_id:
             raise ValueError("user_id is required for this conversation")
 
+        normalized_key = self._normalize_idempotency_key(idempotency_key)
+        request_fingerprint = (
+            str(
+                stable_id(
+                    "conversation.send_message.fingerprint",
+                    resolved_user_id,
+                    conversation_id,
+                    workflow_id,
+                    text,
+                )
+            )
+            if normalized_key is not None
+            else None
+        )
+        if normalized_key is not None:
+            stable_parts = (resolved_user_id, conversation_id, normalized_key)
+            run_id: str | None = str(
+                stable_id("conversation.send_message.run", *stable_parts)
+            )
+            turn_id = str(
+                stable_id("conversation.send_message.turn", *stable_parts)
+            )
+            mem_id = str(
+                stable_id("conversation.send_message.memory", *stable_parts)
+            )
+        else:
+            run_id = None
+            turn_id = str(new_id_str())
+            mem_id = str(new_id_str())
+
         svc = self._conversation_service()
         prev_turn_meta_summary = MetaFromLastSummary(0, 0)
-        add_turn = svc.add_conversation_turn(
-            user_id=resolved_user_id,
-            conversation_id=conversation_id,
-            turn_id=str(new_id_str()),
-            mem_id=str(new_id_str()),
-            role="user",
-            content=text,
-            ref_knowledge_engine=self._knowledge_engine(),
-            filtering_callback=lambda *args, **kwargs: (
-                FilteringResult(node_ids=[], edge_ids=[]),
-                "",
-            ),
-            prev_turn_meta_summary=prev_turn_meta_summary,
-            add_turn_only=True,
-        )
+        try:
+            with self._conversation_engine().uow():
+                if normalized_key is not None:
+                    self.run_registry.create_run(
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                        workflow_id=workflow_id,
+                        user_id=resolved_user_id,
+                        user_turn_node_id=turn_id,
+                        status="queued",
+                    )
 
-        run_id = str(new_id_str())
-        self.run_registry.create_run(
-            run_id=run_id,
-            conversation_id=conversation_id,
-            workflow_id=workflow_id,
-            user_id=resolved_user_id,
-            user_turn_node_id=str(add_turn.user_turn_node_id),
-            status="queued",
-        )
-        self._publish(
-            run_id,
-            "run.created",
-            {
-                "run_id": run_id,
-                "conversation_id": conversation_id,
-                "workflow_id": workflow_id,
-                "status": "queued",
-                "user_turn_node_id": str(add_turn.user_turn_node_id),
-            },
-        )
+                add_turn = svc.add_conversation_turn(
+                    user_id=resolved_user_id,
+                    conversation_id=conversation_id,
+                    turn_id=turn_id,
+                    mem_id=mem_id,
+                    role="user",
+                    content=text,
+                    ref_knowledge_engine=self._knowledge_engine(),
+                    filtering_callback=lambda *args, **kwargs: (
+                        FilteringResult(node_ids=[], edge_ids=[]),
+                        "",
+                    ),
+                    prev_turn_meta_summary=prev_turn_meta_summary,
+                    add_turn_only=True,
+                )
+
+                if run_id is None:
+                    run_id = str(new_id_str())
+
+                if normalized_key is None:
+                    self.run_registry.create_run(
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                        workflow_id=workflow_id,
+                        user_id=resolved_user_id,
+                        user_turn_node_id=str(add_turn.user_turn_node_id),
+                        status="queued",
+                    )
+                created_payload = {
+                    "run_id": run_id,
+                    "conversation_id": conversation_id,
+                    "workflow_id": workflow_id,
+                    "status": "queued",
+                    "user_turn_node_id": str(add_turn.user_turn_node_id),
+                }
+                if request_fingerprint is not None:
+                    created_payload["request_fingerprint"] = request_fingerprint
+                self._publish(run_id, "run.created", created_payload)
+        except Exception:
+            if (
+                normalized_key is not None
+                and run_id is not None
+                and request_fingerprint is not None
+            ):
+                replay = self._existing_idempotent_submission(
+                    run_id,
+                    conversation_id=conversation_id,
+                    user_id=resolved_user_id,
+                    workflow_id=workflow_id,
+                    turn_id=turn_id,
+                    request_fingerprint=request_fingerprint,
+                )
+                if replay is not None:
+                    return replay
+            raise
+
+        if run_id is None:
+            raise RuntimeError("run id was not assigned during admission")
 
         req = AnswerRunRequest(
             run_id=run_id,
@@ -127,6 +194,62 @@ class _RunExecutionService(_BaseComponent):
             "workflow_id": workflow_id,
             "status": "queued",
             "user_turn_node_id": str(add_turn.user_turn_node_id),
+        }
+
+    @staticmethod
+    def _normalize_idempotency_key(value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("idempotency_key must be a string")
+        key = value.strip()
+        if (
+            not key
+            or len(key.encode("utf-8")) > 256
+            or any(unicodedata.category(character) == "Cc" for character in key)
+        ):
+            raise ValueError("idempotency_key must be printable and at most 256 bytes")
+        return key
+
+    def _existing_idempotent_submission(
+        self,
+        run_id: str,
+        *,
+        conversation_id: str,
+        user_id: str,
+        workflow_id: str,
+        turn_id: str,
+        request_fingerprint: str,
+    ) -> JsonObject | None:
+        run = self.run_registry.get_run(run_id)
+        if run is None:
+            return None
+        created_event = next(
+            (
+                event
+                for event in self.run_registry.list_events(run_id, limit=100)
+                if event.get("event_type") == "run.created"
+            ),
+            None,
+        )
+        event_payload = created_event.get("payload") if created_event else None
+        if (
+            run.get("conversation_id") != conversation_id
+            or run.get("workflow_id") != workflow_id
+            or run.get("user_id") != user_id
+            or run.get("user_turn_node_id") != turn_id
+            or not isinstance(event_payload, Mapping)
+            or event_payload.get("request_fingerprint") != request_fingerprint
+        ):
+            raise IdempotencyConflictError(
+                "idempotency_key was already used for a different request"
+            )
+        return {
+            "run_id": run_id,
+            "conversation_id": str(run.get("conversation_id") or ""),
+            "workflow_id": str(run.get("workflow_id") or ""),
+            "status": "queued",
+            "user_turn_node_id": str(run.get("user_turn_node_id") or ""),
         }
 
     def _output_chunks(self, text: str, *, chunk_size: int = 160) -> list[str]:

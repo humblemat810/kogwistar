@@ -559,6 +559,7 @@ class ChatRunService:
         user_id: str | None,
         text: str,
         workflow_id: str = "agentic_answering.v2",
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         self._require_capability(
             "send_message",
@@ -577,6 +578,7 @@ class ChatRunService:
             user_id=conversation_owner,
             text=text,
             workflow_id=workflow_id,
+            idempotency_key=idempotency_key,
         )
 
     def submit_workflow_run(

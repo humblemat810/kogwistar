@@ -511,6 +511,12 @@ impl SqliteRunApplicationService {
                         "operation": "send_message",
                     });
                 }
+                if let Some(fingerprint) = conversation_admission
+                    .as_ref()
+                    .and_then(|admission| admission.request_fingerprint.as_deref())
+                {
+                    payload["request_fingerprint"] = json!(fingerprint);
+                }
                 serde_json::to_string(&payload)?
             })?;
             let mut persisted_worker_payload = worker_payload.clone();

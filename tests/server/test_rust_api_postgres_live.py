@@ -2023,6 +2023,18 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "conversation",
             ),
         )
+        auth_db.execute(
+            """CREATE TABLE workflow_acl (
+                workflow_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
+                role VARCHAR(32) NOT NULL,
+                PRIMARY KEY (workflow_id, user_id)
+            )"""
+        )
+        auth_db.execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?, ?, ?)",
+            ("debug.rag.v1", "conversation-owner", "rw"),
+        )
     env = os.environ.copy()
     for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
         env.pop(name, None)
@@ -3060,7 +3072,11 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "roles": ["reader"],
             "ns": "workflow",
             "storage_ns": "workflow",
-            "capabilities": ["workflow.design.write", "workflow.design.inspect"],
+            "capabilities": [
+                "workflow.design.write",
+                "workflow.design.inspect",
+                "write_graph",
+            ],
             "exp": 4_102_444_800,
         }
         python_worker_operations = {
@@ -3137,6 +3153,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "write_graph",
                 "read_graph",
                 "workflow.run.write",
+                "workflow.run.read",
             ],
         }
         rust_turn = httpx.post(
@@ -3251,13 +3268,30 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "conversation_id": rust_conversation_id,
                 "text": "Rust persisted syscall question",
                 "workflow_id": workflow_id,
+                "idempotency_key": f"{id_prefix}-mcp-ask-once",
             },
             turn_claims,
             endpoint="/mcp/conversation",
         )
         assert rust_syscall_turn["run_id"]
-        assert rust_syscall_turn["turn_node_id"]
-        rust_syscall_turn_id = rust_syscall_turn["turn_node_id"]
+        assert rust_syscall_turn["user_turn_node_id"]
+        replayed_syscall_turn = rust_mcp_tool(
+            "conversation.ask",
+            {
+                "conversation_id": rust_conversation_id,
+                "text": "Rust persisted syscall question",
+                "workflow_id": workflow_id,
+                "idempotency_key": f"{id_prefix}-mcp-ask-once",
+            },
+            turn_claims,
+            endpoint="/mcp/conversation",
+        )
+        assert replayed_syscall_turn["run_id"] == rust_syscall_turn["run_id"]
+        assert (
+            replayed_syscall_turn["user_turn_node_id"]
+            == rust_syscall_turn["user_turn_node_id"]
+        )
+        rust_syscall_turn_id = rust_syscall_turn["user_turn_node_id"]
         with RustRuntimeWorker.from_step_resolver(
             base_url=base,
             worker_id="python-mcp-answer-worker",
@@ -3337,6 +3371,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         finally:
             claims_ctx.reset(conversation_read_token)
         assert any(node.id == rust_start_node_id for node in python_rust_nodes)
+        assert sum(node.id == rust_syscall_turn_id for node in python_rust_nodes) == 1
         assert len(rest_next_edges) == 1
         assert rest_next_edges[0].source_ids == [rust_user_turn_id]
         assert rest_next_edges[0].target_ids == [rust_assistant_turn_id]

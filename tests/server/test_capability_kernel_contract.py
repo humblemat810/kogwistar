@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
+from kogwistar.id_provider import stable_id
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.server.auth_middleware import claims_ctx
@@ -898,7 +899,7 @@ def test_submit_turn_for_answer_rejects_user_id_not_owned_by_conversation(
         {
             "ns": "conversation",
             "role": "rw",
-            "capabilities": ["send_message", "spawn_process"],
+            "capabilities": ["send_message", "spawn_process", "read_graph"],
             "sub": "authorized-sender",
         }
     )
@@ -953,6 +954,129 @@ def test_submit_turn_for_answer_keeps_authorized_actor_distinct_from_owner(
         assert run is not None
         assert run["user_id"] == "conversation-owner"
         assert run["user_turn_node_id"] == response["user_turn_node_id"]
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_submit_turn_for_answer_replays_idempotency_key_and_rejects_payload_change(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    monkeypatch.setattr(service._run_execution, "_run_answer", lambda _req: None)
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "role": "rw",
+            "capabilities": ["send_message", "spawn_process", "read_graph"],
+            "sub": "conversation-owner",
+        }
+    )
+    try:
+        created = service.create_conversation(user_id="conversation-owner")
+        request = {
+            "conversation_id": created["conversation_id"],
+            "user_id": "conversation-owner",
+            "text": "retry-safe message",
+            "idempotency_key": "client-request-1",
+        }
+        first = service.submit_turn_for_answer(**request)
+        second = service.submit_turn_for_answer(**request)
+
+        assert second == first
+        assert first["run_id"] == str(
+            stable_id(
+                "conversation.send_message.run",
+                "conversation-owner",
+                created["conversation_id"],
+                request["idempotency_key"],
+            )
+        )
+        created_event = next(
+            event
+            for event in registry.list_events(first["run_id"], limit=100)
+            if event["event_type"] == "run.created"
+        )
+        assert created_event["payload"]["request_fingerprint"] == str(
+            stable_id(
+                "conversation.send_message.fingerprint",
+                "conversation-owner",
+                created["conversation_id"],
+                "agentic_answering.v2",
+                request["text"],
+            )
+        )
+        assert "idempotency_key" not in created_event["payload"]
+        assert len(service.list_transcript(created["conversation_id"])) == 1
+        assert len(
+            registry.meta_store.list_server_runs(
+                conversation_id=created["conversation_id"], limit=100
+            )
+        ) == 1
+        with pytest.raises(ValueError, match="already used for a different request"):
+            service.submit_turn_for_answer(**{**request, "text": "changed payload"})
+        assert len(service.list_transcript(created["conversation_id"])) == 1
+        assert len(
+            registry.meta_store.list_server_runs(
+                conversation_id=created["conversation_id"], limit=100
+            )
+        ) == 1
+    finally:
+        claims_ctx.reset(token)
+
+
+def test_submit_turn_for_answer_rolls_back_turn_if_run_creation_fails(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(
+        monkeypatch,
+        engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+    token = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "role": "rw",
+            "capabilities": ["send_message", "spawn_process", "read_graph"],
+            "sub": "conversation-owner",
+        }
+    )
+    try:
+        created = service.create_conversation(user_id="conversation-owner")
+        event_store = conversation_engine.metadata
+        before_events = list(
+            event_store.iter_entity_events(namespace=conversation_engine.namespace)
+        )
+
+        def fail_run_create(**_kwargs):
+            raise RuntimeError("injected run registry failure")
+
+        monkeypatch.setattr(registry, "create_run", fail_run_create)
+        with pytest.raises(RuntimeError, match="injected run registry failure"):
+            service.submit_turn_for_answer(
+                conversation_id=created["conversation_id"],
+                user_id="conversation-owner",
+                text="must roll back",
+                idempotency_key="client-request-rollback",
+            )
+
+        # Chroma is an external eventual projection; canonical event rollback
+        # and run-registry rollback are the transaction authority here.
+        assert list(
+            event_store.iter_entity_events(namespace=conversation_engine.namespace)
+        ) == before_events
+        assert registry.meta_store.list_server_runs(
+            conversation_id=created["conversation_id"], limit=100
+        ) == []
     finally:
         claims_ctx.reset(token)
 

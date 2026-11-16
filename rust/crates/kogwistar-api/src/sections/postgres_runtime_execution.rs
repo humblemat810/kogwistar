@@ -544,6 +544,12 @@ impl PostgresRunApplicationService {
                             "operation": "send_message",
                         });
                     }
+                    if let Some(fingerprint) = conversation_admission
+                        .as_ref()
+                        .and_then(|admission| admission.request_fingerprint.as_deref())
+                    {
+                        created_payload["request_fingerprint"] = json!(fingerprint);
+                    }
                     let created = uow
                         .append_server_run_event(
                             &run_id,
