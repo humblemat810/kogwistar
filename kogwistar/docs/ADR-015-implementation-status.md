@@ -687,6 +687,12 @@ deployment canary evidence required to make Rust its live default writer.
   remains pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
+- Effective Rust server readiness now requires both pending HTTP-route and
+  pending syscall inventories to be empty, in addition to the declared flag
+  and route-count checks. `server_readiness_cannot_overclaim_pending_routes`
+  guards against manually setting the route count complete while syscalls
+  remain deferred. This is a fail-closed local invariant, not production
+  readiness evidence; Docker-backed runs remain UAT only.
 - The currently deferred Rust server routes and four remaining frozen
   conversation/tool syscalls are classified in `server_operation_deferrals` in
   `contracts/rust-port-v1.json`. Each records a prerequisite authority and

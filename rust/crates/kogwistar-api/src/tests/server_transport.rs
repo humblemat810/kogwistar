@@ -9,8 +9,8 @@
         assert_eq!(embedded["paths"].as_object().unwrap().len(), 82);
     }
 
-    #[test]
-    fn sqlite_application_route_inventory_has_no_unclassified_cutover_drift() {
+    #[tokio::test]
+    async fn sqlite_application_route_inventory_has_no_unclassified_cutover_drift() {
         let path = std::env::temp_dir().join(format!(
             "kogwistar-api-route-inventory-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -63,17 +63,19 @@
                 .replace("{edge_id}", "inventory-edge")
                 .replace("{doc_id}", "inventory-document")
                 .replace("{op}", "checkpoint");
-            let response = service.execute_sync(ApiEffectRequest {
-                contract_version: 1,
-                method: method.to_owned(),
-                path_and_query,
-                body: b"{}".to_vec(),
-                principal: json!({
-                    "sub": "inventory-admin",
-                    "role": "admin",
-                    "capabilities": ["*"]
-                }),
-            });
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: method.to_owned(),
+                    path_and_query,
+                    body: b"{}".to_vec(),
+                    principal: json!({
+                        "sub": "inventory-admin",
+                        "role": "rw",
+                        "capabilities": ["*"]
+                    }),
+                })
+                .await;
             if response.status == StatusCode::NOT_IMPLEMENTED.as_u16() {
                 unavailable.push(format!("{method} {template}"));
             }
