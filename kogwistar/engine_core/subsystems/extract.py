@@ -711,25 +711,48 @@ class ExtractSubsystem(NamespaceProxy["GraphKnowledgeEngine"], ExtractLike):
         return [self.dealias_one_grounding(r, real_doc_id) for r in mentions]
 
     def fetch_document_text(self, document_id: str) -> str:
-        got = cast(
-            Mapping[str, object],
-            run_awaitable_blocking(
-            self._e.backend.document_get(ids=[document_id], include=["documents"])
-            ),
+        from .read import ReadSubsystem
+
+        read = cast(ReadSubsystem, self._e.read)
+        got = read._rust_postgres_projection_get(
+            entity_kind="document",
+            ids=[document_id],
+            where=None,
+            limit=1,
+            include=["documents"],
         )
+        if got is None:
+            got = cast(
+                Mapping[str, object],
+                run_awaitable_blocking(
+                    self._e.backend.document_get(
+                        ids=[document_id], include=["documents"]
+                    )
+                ),
+            )
         if got and got.get("documents"):
             docs = got.get("documents")
             if isinstance(docs, list) and docs:
                 return docs[0] if isinstance(docs[0], str) else ""
             raise Exception("document lost")
-        got = cast(
-            Mapping[str, object],
-            run_awaitable_blocking(
-                self._e.backend.document_get(
-                    where={"doc_id": document_id}, include=["documents"]
-                )
-            ),
+        native_fallback = read._rust_postgres_projection_get(
+            entity_kind="document",
+            ids=None,
+            where={"doc_id": document_id},
+            limit=200,
+            include=["documents"],
         )
+        if native_fallback is not None:
+            got = native_fallback
+        else:
+            got = cast(
+                Mapping[str, object],
+                run_awaitable_blocking(
+                    self._e.backend.document_get(
+                        where={"doc_id": document_id}, include=["documents"]
+                    )
+                ),
+            )
         if got and got.get("documents"):
             docs = got.get("documents")
             if isinstance(docs, list) and docs:

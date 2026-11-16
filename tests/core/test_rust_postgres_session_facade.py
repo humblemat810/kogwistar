@@ -19,6 +19,7 @@ from kogwistar.engine_core.rust_postgres_session import (
     _RustPostgresTransactionToken,
 )
 from kogwistar.engine_core.models import Document, PureChromaNode
+from kogwistar.engine_core.subsystems.extract import ExtractSubsystem
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
@@ -1532,6 +1533,62 @@ def test_rust_selected_document_reference_reads_and_hydration_are_native(
     with pytest.raises(RuntimeError, match="equality filters only.*refusing Python"):
         reader.nodes_by_doc("doc-1", where={"tags": {"$in": ["blue"]}})
     assert all(call["table"] != "gke_edges" for call in calls)
+
+
+def test_rust_selected_reference_context_document_text_reads_are_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RustEnginePostgresMetaStore(dsn="postgresql://example/db", schema="test")
+    calls: list[dict[str, object]] = []
+
+    def graph_projection_records(**values: object) -> list[dict[str, object]]:
+        calls.append(values)
+        if values["ids"] == ["document-1"]:
+            return [
+                {
+                    "id": "document-1",
+                    "document": "direct body",
+                    "metadata": {},
+                    "embedding": None,
+                }
+            ]
+        if values["metadata"] == {"doc_id": "legacy-document"}:
+            return [
+                {
+                    "id": "legacy-page-1",
+                    "document": "legacy body",
+                    "metadata": {"doc_id": "legacy-document"},
+                    "embedding": None,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(store, "graph_projection_records", graph_projection_records)
+
+    class Backend:
+        documents = SimpleNamespace(name="gke_documents")
+
+        def document_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected document read used Python backend")
+
+    engine = SimpleNamespace(
+        backend=Backend(),
+        metadata=store,
+        namespace="alpha",
+        kg_graph_type="knowledge",
+    )
+    reader = ReadSubsystem(engine)
+    monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+    engine.read = reader
+    extractor = ExtractSubsystem(engine)
+
+    assert extractor.fetch_document_text("document-1") == "direct body"
+    assert extractor.fetch_document_text("legacy-document") == "legacy body"
+    assert [call["ids"] for call in calls] == [
+        ["document-1"],
+        ["legacy-document"],
+        None,
+    ]
 
 
 def test_native_vector_filter_accepts_only_lossless_supported_forms():
