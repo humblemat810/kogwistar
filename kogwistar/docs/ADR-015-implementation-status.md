@@ -157,7 +157,12 @@ Only these local items remain in scope before production rollout:
   SQLite+Chroma external-worker/inline-server combinations
   (`test_rust_native_workflow_runs_through_real_server_without_python_worker`,
   **4 passed**); the workflow event traces attest `implementation_authority=rust`
-  and `seam_crossings=[]`.
+  and `seam_crossings=[]`. Re-run against current source
+  `2ff2554c09f7d5865eb8e53ea4caccec956c3cce` passed all four combinations
+  (**4 passed**, 25.55s). Current-source fail-closed coverage also passed for
+  public sync/async run selection without an authority URL, sync resume without
+  an authority URL, and Python transaction entry across generic, PostgreSQL,
+  SQLite/memory, and engine metadata paths (**7 passed**, 3.09s).
   This line remains unchecked:
   public authority promotion still requires its capability canary and the
   explicit `workflow-runtime` readiness decision.
