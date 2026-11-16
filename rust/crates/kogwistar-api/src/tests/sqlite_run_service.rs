@@ -1917,6 +1917,16 @@
             .filter(|event| event.event_type == "workflow.trace.v1")
             .map(|event| serde_json::from_str::<Value>(&event.payload_json).unwrap())
             .collect::<Vec<_>>();
+        assert_eq!(
+            persisted_worker_traces
+                .iter()
+                .filter(|event| {
+                    event["trace"]["event"] == "runtime.python_worker.result_submitted"
+                })
+                .count(),
+            1,
+            "duplicate result delivery must not count the accepted language handoff twice"
+        );
         let persisted_worker_trace = persisted_worker_traces
             .iter()
             .find(|event| event["trace"]["event"] == "runtime.python_worker.result_prepared")

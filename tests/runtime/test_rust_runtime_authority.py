@@ -225,6 +225,70 @@ def _mcp_response_payload(response: httpx.Response) -> dict[str, Any]:
     return payload
 
 
+def _accepted_python_worker_handoffs(
+    run_events: list[dict[str, Any]],
+) -> list[tuple[str, str, str]]:
+    """Count accepted submissions, not each prepared/submitted trace pair."""
+    handoffs: list[tuple[str, str, str]] = []
+    for event in run_events:
+        if event.get("event_type") != "workflow.trace.v1":
+            continue
+        trace = event.get("payload", {}).get("trace")
+        if not isinstance(trace, dict):
+            continue
+        if trace.get("event") != "runtime.python_worker.result_submitted":
+            continue
+        assert trace.get("executor_target") == "python-worker"
+        handoff = (
+            str(trace.get("run_id") or ""),
+            str(trace.get("message_id") or ""),
+            str(trace.get("lease_claim_id") or ""),
+        )
+        assert all(handoff), "accepted handoff requires durable identity fields"
+        handoffs.append(handoff)
+    assert len(set(handoffs)) == len(handoffs), "duplicate accepted handoff trace"
+    return handoffs
+
+
+def test_accepted_python_worker_handoffs_count_submissions_once() -> None:
+    def trace_row(event: str, lease_claim_id: str = "worker#lease-1") -> dict[str, Any]:
+        return {
+            "event_type": "workflow.trace.v1",
+            "payload": {
+                "trace": {
+                    "event": event,
+                    "executor_target": "python-worker",
+                    "run_id": "run-1",
+                    "message_id": "message-1",
+                    "lease_claim_id": lease_claim_id,
+                }
+            },
+        }
+
+    assert _accepted_python_worker_handoffs(
+        [
+            trace_row("runtime.python_worker.result_prepared"),
+            trace_row("runtime.python_worker.result_submitted"),
+        ]
+    ) == [("run-1", "message-1", "worker#lease-1")]
+    assert len(
+        _accepted_python_worker_handoffs(
+            [trace_row("runtime.python_worker.result_submitted", "worker#lease-2")]
+        )
+    ) == 1
+    with pytest.raises(AssertionError, match="duplicate accepted handoff"):
+        _accepted_python_worker_handoffs(
+            [
+                trace_row("runtime.python_worker.result_submitted"),
+                trace_row("runtime.python_worker.result_submitted"),
+            ]
+        )
+    forged = trace_row("runtime.python_worker.result_submitted")
+    forged["payload"]["trace"]["executor_target"] = "rust-native"
+    with pytest.raises(AssertionError, match="python-worker"):
+        _accepted_python_worker_handoffs([forged])
+
+
 def _start_fake_chroma_collections() -> tuple[
     ThreadingHTTPServer, str, list[str], list[dict[str, Any]]
 ]:
@@ -3319,6 +3383,9 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         assert run_events_response.status_code == 200, run_events_response.text
         run_events_result = _mcp_response_payload(run_events_response)["result"]
         run_events = run_events_result["structuredContent"]["events"]
+        accepted_handoffs = _accepted_python_worker_handoffs(run_events)
+        expected_handoff_count = 2 if persistence_target == "python-worker" else 1
+        assert len(accepted_handoffs) == expected_handoff_count
         python_worker_traces = [
             event["payload"]["trace"]
             for event in run_events
@@ -5192,6 +5259,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             if event["event_type"] == "workflow.trace.v1"
             and isinstance(event.get("payload", {}).get("trace"), dict)
         ]
+        assert _accepted_python_worker_handoffs(event_list) == []
         assert not [
             trace
             for trace in run_traces
