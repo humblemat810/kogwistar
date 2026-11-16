@@ -41,7 +41,7 @@ described in [implementation status](ADR-015-implementation-status.md).
 
 | ID | Status | Tasklet and single acceptance oracle |
 | --- | --- | --- |
-| PG-01 | IN PROGRESS | Implement the documented Python-compatible complex metadata-filter query subset in the Rust PostgreSQL authority. Shared fixtures prove identical ordered IDs and filtering for supported operators; unsupported operators fail closed before Python/backend fallback. |
+| PG-01 | IN PROGRESS | Implement the documented Python-compatible complex metadata-filter query subset in the Rust PostgreSQL authority. Shared fixtures prove identical ordered IDs and filtering for supported operators; unsupported operators fail closed before Python/backend fallback. Partial evidence: `graph_read_filter_combines_equality_and_exclusion_safely` verifies scoped equality plus `$ne` SQL generation and escaping; Rust store unit suite (**11 passed, 33 live-PostgreSQL tests ignored without DSN**) and Python filter grammar test (**1 passed**). Live ordered-result parity and unsupported-operator no-fallback remain open. |
 | PG-02 | IN PROGRESS | Move remaining graph-derived lookup reads explicitly listed as Python adapters onto the Rust PostgreSQL read authority. Paired fixtures prove identical IDs, scope, provenance, and ordering, with instrumentation proving no Python backend call in Rust mode. |
 
 ## Rust Server Operations

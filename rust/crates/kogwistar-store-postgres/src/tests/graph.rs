@@ -1564,6 +1564,40 @@ fn graph_read_filter_accepts_only_legacy_default_scope_rows() {
     assert_eq!(values, vec!["namespace", "workspace_id"]);
     assert!(!sql.contains("NOT (metadata"));
 }
+
+#[test]
+fn graph_read_filter_combines_equality_and_exclusion_safely() {
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let filter = MetadataFilter {
+        equals: BTreeMap::from([("team".to_owned(), serde_json::json!("red"))]),
+    };
+    let exclusions = BTreeMap::from([(
+        "entity_type".to_owned(),
+        serde_json::json!("acl_record'); DROP TABLE gke_nodes; --"),
+    )]);
+
+    let (sql, values) = graph_filter_sql_with_exclusions(&scope, &filter, &exclusions, 4).unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "team",
+            "entity_type"
+        ]
+    );
+    assert!(sql.contains("metadata -> $8::TEXT IS DISTINCT FROM"));
+    assert!(sql.contains("'\"acl_record''); DROP TABLE gke_nodes; --\"'::JSONB"));
+    assert!(sql.contains("metadata -> $7::TEXT"));
+    assert_eq!(sql.matches(" IS DISTINCT FROM ").count(), 1);
+}
+
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_available()
