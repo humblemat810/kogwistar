@@ -37,6 +37,13 @@ from kogwistar.implementation_selection import (
 )
 from kogwistar._rust_bridge import runtime_implementation_mode
 
+RUNTIME_WORKER_FAILURE_CONTRACT = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/runtime-worker-failure-v1.json"
+    ).read_text(encoding="utf-8")
+)
+
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
 
@@ -1264,30 +1271,37 @@ def test_step_resolver_adapter_maps_suspend() -> None:
 
 @pytest.mark.parametrize("handled", [False, True], ids=["unhandled", "handled"])
 def test_step_resolver_adapter_maps_failure_routing(handled: bool) -> None:
+    contract_case = RUNTIME_WORKER_FAILURE_CONTRACT["cases"][
+        "handled" if handled else "unhandled"
+    ]
     resolver = MappingStepResolver()
 
     @resolver.register("start")
     def execute(_ctx):
         return RunFailure(
             conversation_node_id=None,
-            state_update=[("u", {"attempted": True})],
-            errors=["boom"],
+            state_update=[(mode, payload) for mode, payload in contract_case["state_update"]],
+            errors=contract_case["errors"],
         )
 
-    route = _route("recover", predicate="on_failure", join_mask=4)
+    join_mask = (
+        contract_case["successors"][0]["join_mask"]
+        if contract_case["successors"]
+        else 4
+    )
+    route = _route("recover", predicate="on_failure", join_mask=join_mask)
     adapter = RustStepResolverAdapter(
         resolver,
         predicate_registry={"on_failure": lambda _edge, _state, _result: handled},
     )
     effect = adapter(_adapter_work(routes=[route]))
     assert effect["status"] == "failed"
-    assert effect["state_update"] == [["u", {"attempted": True}]]
-    assert effect["errors"] == ["boom"]
+    assert effect["state_update"] == contract_case["state_update"]
+    assert effect["errors"] == contract_case["errors"]
     assert effect["result"]["workflow_status"] == "failed"
     assert effect["result"]["final_state"]["attempted"] is True
-    assert effect["successors"] == (
-        [{"node_id": "recover", "join_mask": 4}] if handled else []
-    )
+    assert effect["route_next"] == contract_case["route_next"]
+    assert effect["successors"] == contract_case["successors"]
 
 
 @pytest.mark.parametrize(

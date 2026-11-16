@@ -152,20 +152,16 @@ fn runtime_worker_handoff(run_id: &str, message_id: &str, owner: &str) -> Record
     }
 }
 
-fn runtime_failure_effect(
-    effect_id: &str,
-    route_next: &[&str],
-    successors: Value,
-) -> RecordedWorkerSuccessEffect {
+fn runtime_failure_effect(effect_id: &str, contract_case: &Value) -> RecordedWorkerSuccessEffect {
     serde_json::from_value(serde_json::json!({
         "contract_version": 1,
         "effect_id": effect_id,
         "status": "failed",
-        "state_update": [["u", {"attempted": true}]],
-        "successors": successors,
-        "route_next": route_next,
+        "state_update": contract_case["state_update"].clone(),
+        "successors": contract_case["successors"].clone(),
+        "route_next": contract_case["route_next"].clone(),
         "result": {"workflow_status": "failed"},
-        "errors": ["boom"]
+        "errors": contract_case["errors"].clone()
     }))
     .unwrap()
 }

@@ -1,0 +1,23 @@
+{
+  "contract_version": 1,
+  "cases": {
+    "handled": {
+      "state_update": [["u", {"attempted": true}]],
+      "errors": ["boom"],
+      "route_next": [],
+      "successors": [{"node_id": "recover", "join_mask": 0}],
+      "expected_run_status": "running",
+      "expected_frontier_pending_node_ids": ["recover"],
+      "expected_event_count": 2
+    },
+    "unhandled": {
+      "state_update": [["u", {"attempted": true}]],
+      "errors": ["boom"],
+      "route_next": [],
+      "successors": [],
+      "expected_run_status": "failed",
+      "expected_frontier_pending_node_ids": [],
+      "expected_event_count": 2
+    }
+  }
+}

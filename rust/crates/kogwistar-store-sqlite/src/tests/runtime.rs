@@ -159,6 +159,12 @@ fn completed_answer_transition_materializes_assistant_turn_id() {
 }
 #[test]
 fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
+    let contract: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/runtime-worker-failure-v1.json"
+    ))
+    .unwrap();
+    let handled_case = &contract["cases"]["handled"];
+    let unhandled_case = &contract["cases"]["unhandled"];
     let (store, path) = store("runtime-worker-failure");
     let setup = |run_id: &str, message_id: &str, owner: &str| {
         store
@@ -181,8 +187,7 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
 
     setup("handled", "handled-request", "handled-worker");
     let handled_handoff = runtime_worker_handoff("handled", "handled-request", "handled-worker");
-    let handled_effect =
-        runtime_failure_effect("handled-effect", &["recover"], serde_json::json!([]));
+    let handled_effect = runtime_failure_effect("handled-effect", handled_case);
     let handled = store
         .apply_claimed_recorded_worker_effect(handled_handoff.clone(), handled_effect.clone())
         .unwrap();
@@ -199,8 +204,30 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
         handled.reduced.state.state["attempted"],
         serde_json::json!(true)
     );
-    assert_eq!(handled.reduced.state.frontier.pending[0].0, "recover");
-    assert_eq!(handled.reduced.errors, vec!["boom"]);
+    assert_eq!(
+        handled.reduced.state.status.server_status(),
+        handled_case["expected_run_status"].as_str().unwrap()
+    );
+    assert_eq!(
+        handled.reduced.errors,
+        serde_json::from_value::<Vec<String>>(handled_case["errors"].clone()).unwrap()
+    );
+    assert_eq!(
+        handled
+            .reduced
+            .state
+            .frontier
+            .pending
+            .iter()
+            .map(|token| token.0.as_str())
+            .collect::<Vec<_>>(),
+        handled_case["expected_frontier_pending_node_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node.as_str().unwrap())
+            .collect::<Vec<_>>()
+    );
     assert_eq!(
         store
             .get_projected_lane_message("handled-request")
@@ -210,7 +237,10 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
         "completed"
     );
     let handled_events = store.list_server_run_events("handled", 0, 20).unwrap();
-    assert_eq!(handled_events.len(), 2);
+    assert_eq!(
+        handled_events.len(),
+        handled_case["expected_event_count"].as_u64().unwrap() as usize
+    );
     let handled_payload: serde_json::Value =
         serde_json::from_str(&handled_events[1].payload_json).unwrap();
     assert_eq!(
@@ -219,14 +249,18 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
     );
     assert_eq!(
         handled_payload["reduced"]["state"]["frontier"]["pending"][0][0],
-        "recover"
+        handled_case["expected_frontier_pending_node_ids"][0]
+    );
+    assert_eq!(
+        handled_payload["reduced"]["state_update"],
+        handled_case["state_update"]
     );
 
     setup("unhandled", "unhandled-request", "unhandled-worker");
     let unhandled = store
         .apply_claimed_recorded_worker_effect(
             runtime_worker_handoff("unhandled", "unhandled-request", "unhandled-worker"),
-            runtime_failure_effect("unhandled-effect", &[], serde_json::json!([])),
+            runtime_failure_effect("unhandled-effect", unhandled_case),
         )
         .unwrap();
     assert_eq!(
@@ -237,8 +271,30 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
         unhandled.reduced.state.state["attempted"],
         serde_json::json!(true)
     );
-    assert_eq!(unhandled.reduced.errors, vec!["boom"]);
+    assert_eq!(
+        unhandled.reduced.state.status.server_status(),
+        unhandled_case["expected_run_status"].as_str().unwrap()
+    );
+    assert_eq!(
+        unhandled.reduced.errors,
+        serde_json::from_value::<Vec<String>>(unhandled_case["errors"].clone()).unwrap()
+    );
     assert!(unhandled.reduced.state.frontier.pending.is_empty());
+    let unhandled_events = store.list_server_run_events("unhandled", 0, 20).unwrap();
+    assert_eq!(
+        unhandled_events.len(),
+        unhandled_case["expected_event_count"].as_u64().unwrap() as usize
+    );
+    let unhandled_payload: serde_json::Value =
+        serde_json::from_str(&unhandled_events[1].payload_json).unwrap();
+    assert_eq!(
+        unhandled_payload["reduced"]["state_update"],
+        unhandled_case["state_update"]
+    );
+    assert_eq!(
+        unhandled_payload["reduced"]["errors"],
+        unhandled_case["errors"]
+    );
     assert_eq!(
         store.get_server_run("unhandled").unwrap().unwrap().status,
         "failed"
@@ -250,8 +306,12 @@ fn worker_failure_routing_is_atomic_handled_terminal_and_retry_safe() {
             runtime_worker_handoff("forged", "forged-request", "forged-worker"),
             runtime_failure_effect(
                 "forged-effect",
-                &[],
-                serde_json::json!([{"node_id": "forged", "join_mask": 0}]),
+                &serde_json::json!({
+                    "state_update": [],
+                    "successors": [{"node_id": "forged", "join_mask": 0}],
+                    "route_next": [],
+                    "errors": []
+                })
             ),
         ),
         Err(SqliteStoreError::RecordedRuntime(_))
