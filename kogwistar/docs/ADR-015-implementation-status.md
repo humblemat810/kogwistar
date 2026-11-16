@@ -9,6 +9,10 @@ the optional native execution paths are specified in
 
 Updated: 2026-11-16
 
+Active production-cutover tasklets and their sole completion count are tracked
+in [`ADR-015-cutover-worklist.md`](ADR-015-cutover-worklist.md). ADR-022's fine
+worklist remains a closed evidence inventory, not active rollout tracking.
+
 ## Current Source and Release Boundary
 
 Current package metadata is `0.7.0`; local tag `v0.7.0` points to release
@@ -108,15 +112,19 @@ Only these local items remain in scope before production rollout:
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
-  one broad store flag from a narrow test. The latest current-source local run
-  used `scripts/durable_store_capability_gate.py`, CPython 3.13.3, and live
-  `pgvector/pgvector:pg16`. The four groups passed with zero failures, errors,
-  or skips: PostgreSQL sequence/event-log 4, projection/snapshot/run-registry
-  6, queue/lease/lane 3, and graph/pgvector 47. Source SHA-256 is
-  `1079a0bafb5032ac06562bc42ccb8292ffc3295ee118eead7ec56b14732f540a`; the
-  local report is `.tmp/adr015-phase3-20261116/capability-gate.json`. This is
-  current-source local evidence only; each `rust_cutover_ready` remains false
-  until its same-candidate staged canary and rollback evidence exists.
+  one broad store flag from a narrow test. Refreshed current-source local run
+  used `scripts/host_native_wheel_builder.py` and
+  `scripts/durable_store_capability_gate.py`, CPython 3.13, and live
+  `pgvector/pgvector:pg16`. Native wheel/SQLite transaction ABI smoke passed;
+  all four capability groups passed with zero failures, errors, or skips:
+  PostgreSQL sequence/event-log 4, projection/snapshot/run-registry 6,
+  queue/lease/lane 3, and graph/pgvector 47 (**60 total**). Candidate source
+  SHA-256 is
+  `9fe77b950f687394cf2570f78c619dcb448c682917af94e7e0c5762b10422fe7`;
+  reports are under `.tmp/adr015-current-native/`. This is current-source
+  local evidence only; each `rust_cutover_ready` remains false until its
+  same-candidate staged canary and rollback evidence exists. Remaining rollout
+  tasklets are tracked in `ADR-015-cutover-worklist.md`.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
@@ -341,10 +349,10 @@ These cannot be satisfied by more local unit-test implementation:
   upgrade/rollback survival, and all consumer/E2E gates. Under ADR-022 these
   checks do not retire the independently selectable Python implementation.
 
-Current objective facts: 2 of 8 Rust-target capability flags are ready; 6 are
-not ready; completed production capability canaries are 0 of 8 (0 of 40
-capability-stage observations); the required full compatibility release has not
-elapsed. These counts, not a floating percentage, govern ADR completion.
+Current authority facts: 2 of 8 Rust-target capability flags are locally ready;
+6 are not ready. Production canary stages, compatibility release, and deployment
+task progress are maintained in the linked cutover worklist. These evidence
+gates, not a floating percentage, govern ADR completion.
 
 ### Historical local validation and release boundary
 
