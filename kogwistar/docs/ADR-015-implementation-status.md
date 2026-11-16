@@ -12,6 +12,9 @@ Updated: 2026-11-16
 Active production-cutover tasklets and their sole completion count are tracked
 in [`ADR-015-cutover-worklist.md`](ADR-015-cutover-worklist.md). ADR-022's fine
 worklist remains a closed evidence inventory, not active rollout tracking.
+Remaining local implementation gaps have a separate fixed-scope ledger in
+[`ADR-015-implementation-tasklets.md`](ADR-015-implementation-tasklets.md);
+it does not change the production cutover count.
 
 ## Current Source and Release Boundary
 
@@ -642,9 +645,11 @@ library delivery item. It means no downstream adopter has supplied the independe
 deployment canary evidence required to make Rust its live default writer.
 
 - Public PostgreSQL meta/event-log, projection, run-registry, and queue facades
-  are implemented behind the coordinated sync PostgreSQL selector. Fresh
-  current-candidate four-layer evidence now passes, but the capability readiness
-  flags remain false until capability-specific production canaries exist.
+  are implemented behind the coordinated sync PostgreSQL selector. Earlier
+  four-layer evidence passed for its then-current candidate; current source
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc` has fresh
+  Phase 3/4/5 evidence but still needs a same-candidate four-layer run. Capability
+  readiness flags remain false until capability-specific production canaries.
   `KOGWISTAR_IMPL_META_STORE=rust`
   independently promotes only the ready `sqlite-meta` capability on SQLite.
 - Sync PostgreSQL base graph mutation, replay, repair, and rollback writers are
@@ -678,7 +683,9 @@ deployment canary evidence required to make Rust its live default writer.
   public `WorkflowRuntime` resolver and side-effect lifecycle.
   `ADR-015-runtime-semantics-contract.md` now freezes the bounded Python
   routing/failure/join/worker behavior required for that cutover and names its
-  executable evidence; implementation and fresh four-layer proof remain pending.
+  executable evidence. Local runtime gaps and their acceptance oracles are
+  tracked in `ADR-015-implementation-tasklets.md`; same-candidate four-layer proof
+  remains pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
 - The currently deferred Rust server routes and four remaining frozen

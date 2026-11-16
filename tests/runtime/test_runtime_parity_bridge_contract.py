@@ -7,6 +7,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -371,6 +372,111 @@ def test_runtime_parity_bridge_route_next_shared_semantics():
     assert sync_default_next == ["n|fallback"]
     assert async_default_next == sync_default_next
     assert sync_default_decision.selected == [("e-default", "n|fallback", "default")]
+
+
+def test_rust_shadow_route_selection_matches_python_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.runtime.routing import compute_route_next
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge.runtime_implementation_mode", lambda: "shadow"
+    )
+    nodes = _mk_nodes()
+
+    def choose(
+        edge: _JoinEdge, state: dict[str, object], result: object
+    ) -> bool:
+        return True
+
+    predicates = {"choose": choose}
+
+    predicate_edges = [
+        _join_edge(
+            "e-low",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|left",
+            predicate="choose",
+            priority=10,
+            multiplicity="many",
+        ),
+        _join_edge(
+            "e-high",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|right",
+            predicate="choose",
+            priority=20,
+            multiplicity="many",
+        ),
+    ]
+    selected = compute_route_next(
+        edges=predicate_edges,
+        state={},
+        last_result=SimpleNamespace(status="success"),
+        fanout=False,
+        predicate_registry=predicates,
+        nodes=nodes,
+    )
+    assert selected.next_node_ids == ["n|right", "n|left"]
+    assert selected.selected == [
+        ("e-low", "n|left", "predicate"),
+        ("e-high", "n|right", "predicate"),
+    ]
+
+    explicit = compute_route_next(
+        edges=_mk_fanout_edges(),
+        state={},
+        last_result=RunSuccess(
+            conversation_node_id=None,
+            state_update=[],
+            _route_next=["go_left", "right_op"],
+        ),
+        fanout=True,
+        predicate_registry={},
+        nodes=nodes,
+    )
+    assert explicit.next_node_ids == ["n|left", "n|right"]
+
+    defaulted = compute_route_next(
+        edges=_mk_default_edges(),
+        state={},
+        last_result=SimpleNamespace(status="success"),
+        fanout=False,
+        predicate_registry={
+            "if_true": lambda _edge, _state, _result: False,
+            "if_false": lambda _edge, _state, _result: False,
+        },
+        nodes=nodes,
+    )
+    assert defaulted.next_node_ids == ["n|fallback"]
+
+    failure_edges = [
+        _join_edge(
+            "e-base",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|left",
+        ),
+        _join_edge(
+            "e-default",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|fallback",
+            is_default=True,
+        ),
+    ]
+    failure = compute_route_next(
+        edges=failure_edges,
+        state={},
+        last_result=SimpleNamespace(status="failure"),
+        fanout=False,
+        predicate_registry={},
+        nodes=nodes,
+    )
+    assert failure.next_node_ids == []
+    assert failure.selected == []
 
 
 def _seed_join_bridge_graph(workflow_id: str):
