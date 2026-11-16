@@ -261,7 +261,6 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         if rust_runtime_authority_selected():
             validate_rust_run_context(
                 run_metadata=_run_metadata,
-                trace_context=_trace_context,
                 run_owner_id=_run_owner_id,
             )
             if _resume_step_seq is not None or _resume_last_exec_node is not None:
@@ -282,6 +281,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 initial_state=initial_state,
                 run_id=run_id or f"run|{uuid.uuid4()}",
                 cache_dir=cache_dir,
+                trace_context=_trace_context,
             )
         return await self._run_native_async(
             workflow_id=workflow_id,

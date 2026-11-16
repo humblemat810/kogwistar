@@ -4,6 +4,33 @@
     }
 
     #[test]
+    fn runtime_trace_context_is_server_installed_not_caller_state() {
+        let mut state = serde_json::Map::from_iter([(
+            "_rt_trace_context".to_owned(),
+            json!({"trace_id": "forged", "span_id": "forged"}),
+        )]);
+        let request: RuntimeSubmitRun = serde_json::from_value(json!({
+            "workflow_id": "workflow",
+            "conversation_id": "conversation",
+            "trace_context": {
+                "trace_id": "trace-authoritative",
+                "span_id": "span-run",
+                "parent_span_id": "span-parent",
+            }
+        }))
+        .unwrap();
+        let seed = request.trace_context.expect("trace seed decodes");
+
+        install_runtime_trace_context(&mut state, Some(&seed)).unwrap();
+
+        assert_eq!(state["_rt_trace_context"]["trace_id"], "trace-authoritative");
+        assert_eq!(state["_rt_trace_context"]["span_id"], "span-run");
+        assert_eq!(state["_rt_trace_context"]["parent_span_id"], "span-parent");
+        assert!(install_runtime_trace_context(&mut state, None).is_ok());
+        assert!(!state.contains_key("_rt_trace_context"));
+    }
+
+    #[test]
     fn python_runtime_wire_vectors_round_trip_through_rust_dtos() {
         let vectors: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),

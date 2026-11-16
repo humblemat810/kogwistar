@@ -28,6 +28,7 @@ from kogwistar.runtime.rust_worker import (
     RustStepResolverAdapter,
     RustWorkerError,
     WorkerResultJournal,
+    _claimed_work_trace_context,
 )
 from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
 from kogwistar.implementation_selection import (
@@ -57,6 +58,39 @@ def _work(*, owner: str = "worker-1") -> dict[str, Any]:
             "state": {"seed": 1},
         },
     }
+
+
+def test_claimed_python_worker_trace_inherits_rust_run_trace_seed() -> None:
+    root = Path(__file__).resolve().parents[2]
+    fixture = json.loads(
+        (root / "contracts" / "golden" / "runtime-trace-context-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    seed = fixture["nested_run_seed"]
+    step = seed["step"]
+    payload = {
+        "run_id": step["run_id"],
+        "token_id": step["token_id"],
+        "step_seq": step["step_seq"],
+        "conversation_id": "conversation-1",
+        "turn_node_id": "turn-1",
+        "state": {
+            "_rt_trace_context": seed["trace_context"]
+        },
+    }
+
+    context = _claimed_work_trace_context(
+        {"run_id": step["run_id"]}, payload, step["node_id"]
+    )
+
+    assert context.trace_id == seed["expected"]["trace_id"]
+    assert context.span_id == seed["trace_context"]["span_id"]
+    assert context.parent_span_id == seed["trace_context"]["parent_span_id"]
+    assert (
+        context.child_span(node_id=step["node_id"]).parent_span_id
+        == seed["trace_context"]["span_id"]
+    )
 
 
 def _effect() -> dict[str, Any]:

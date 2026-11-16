@@ -50,5 +50,24 @@
     "span_id": "stp:{run_id}:{token_id}:{step_seq}:{attempt}:{node_id}",
     "parent_span_id": "tok:{run_id}:{token_id}",
     "attempt": 1
+  },
+  "nested_run_seed": {
+    "trace_context": {
+      "trace_id": "trace-parent",
+      "span_id": "span-child-run",
+      "parent_span_id": "span-parent-run"
+    },
+    "step": {
+      "run_id": "child-run",
+      "token_id": "token-1",
+      "step_seq": 1,
+      "node_id": "step-1",
+      "attempt": 1
+    },
+    "expected": {
+      "trace_id": "trace-parent",
+      "parent_span_id": "span-child-run",
+      "span_id": "stp:child-run:token-1:1:1:step-1"
+    }
   }
 }

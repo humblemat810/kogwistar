@@ -42,7 +42,6 @@ class RustRuntimeAuthorityError(RuntimeError):
 def validate_rust_run_context(
     *,
     run_metadata: Mapping[str, Any] | None = None,
-    trace_context: TraceContext | None = None,
     parent_lease_renew: Callable[[], None] | None = None,
     run_owner_id: str | None = None,
 ) -> None:
@@ -51,7 +50,6 @@ def validate_rust_run_context(
         name
         for name, value in (
             ("run metadata", run_metadata),
-            ("trace context", trace_context),
             ("parent lease renewal", parent_lease_renew),
             ("run owner", run_owner_id),
         )
@@ -171,6 +169,23 @@ def _json_state(initial_state: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RustRuntimeAuthorityError("Rust runtime initial state must be an object")
     return value
+
+
+def _runtime_trace_context_payload(
+    trace_context: TraceContext | None,
+) -> dict[str, str | None] | None:
+    if trace_context is None:
+        return None
+    fields = trace_context.as_fields()
+    return {
+        "trace_id": str(fields["trace_id"]),
+        "span_id": str(fields["span_id"]),
+        "parent_span_id": (
+            str(fields["parent_span_id"])
+            if fields.get("parent_span_id") is not None
+            else None
+        ),
+    }
 
 
 def _aliases(edge: WorkflowEdge, target: WorkflowNode, target_id: str) -> list[str]:
@@ -792,6 +807,7 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
         turn_node_id: str | None,
         initial_state: Mapping[str, Any],
         run_id: str,
+        trace_context: TraceContext | None = None,
     ) -> RunResult:
 
         if initial_state.get("dream_deps"):
@@ -816,6 +832,11 @@ class RustRuntimeAuthority(_RunDependencyRegistry):
             "turn_node_id": turn_node_id,
             "initial_state": durable_initial,
             "runtime_kind": "sync",
+            **(
+                {"trace_context": _runtime_trace_context_payload(trace_context)}
+                if trace_context is not None
+                else {}
+            ),
             **plan,
         }
         self._register_dependencies(run_id, dependencies)
@@ -929,6 +950,7 @@ def run_with_rust_authority(
     initial_state: Mapping[str, Any],
     run_id: str,
     cache_dir: str | os.PathLike[str] | None,
+    trace_context: TraceContext | None = None,
 ) -> RunResult:
     url = rust_runtime_authority_url()
     if url is None:
@@ -945,6 +967,7 @@ def run_with_rust_authority(
             turn_node_id=turn_node_id,
             initial_state=initial_state,
             run_id=run_id,
+            trace_context=trace_context,
         )
     finally:
         authority.close()
@@ -1174,6 +1197,7 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
         turn_node_id: str | None,
         initial_state: Mapping[str, Any],
         run_id: str,
+        trace_context: TraceContext | None = None,
     ) -> RunResult:
         if initial_state.get("dream_deps"):
             raise RustRuntimeAuthorityError(
@@ -1197,6 +1221,11 @@ class AsyncRustRuntimeAuthority(_RunDependencyRegistry):
             "turn_node_id": turn_node_id,
             "initial_state": durable_initial,
             "runtime_kind": "async",
+            **(
+                {"trace_context": _runtime_trace_context_payload(trace_context)}
+                if trace_context is not None
+                else {}
+            ),
             **plan,
         }
         self._register_dependencies(run_id, dependencies)
@@ -1314,6 +1343,7 @@ async def run_with_rust_authority_async(
     initial_state: Mapping[str, Any],
     run_id: str,
     cache_dir: str | os.PathLike[str] | None,
+    trace_context: TraceContext | None = None,
 ) -> RunResult:
     url = rust_runtime_authority_url()
     if url is None:
@@ -1330,6 +1360,7 @@ async def run_with_rust_authority_async(
             turn_node_id=turn_node_id,
             initial_state=initial_state,
             run_id=run_id,
+            trace_context=trace_context,
         )
     finally:
         await authority.aclose()

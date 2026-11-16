@@ -480,7 +480,6 @@ class WorkflowRuntime(
             if rust_runtime_authority_selected():
                 validate_rust_run_context(
                     run_metadata=_run_metadata,
-                    trace_context=_trace_context,
                     parent_lease_renew=_parent_lease_renew,
                     run_owner_id=_run_owner_id,
                 )
@@ -499,6 +498,7 @@ class WorkflowRuntime(
                     initial_state=initial_state,
                     run_id=str(run_id),
                     cache_dir=cache_dir,
+                    trace_context=_trace_context,
                 )
 
             ownership: RunOwnership | None = None

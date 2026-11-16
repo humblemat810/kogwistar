@@ -95,12 +95,12 @@ class _BufferedEventSink:
         self.overflowed = False
         self._lock = threading.Lock()
 
-    def emit(self, event: dict[str, Any]) -> None:
+    def emit(self, evt: dict[str, Any]) -> None:
         with self._lock:
             if self.overflowed:
                 return
             try:
-                event_bytes = len(strict_json_dumps(event).encode("utf-8"))
+                event_bytes = len(strict_json_dumps(evt).encode("utf-8"))
             except (TypeError, ValueError):
                 self.overflowed = True
                 return
@@ -110,7 +110,7 @@ class _BufferedEventSink:
             ):
                 self.overflowed = True
                 return
-            self.events.append(dict(event))
+            self.events.append(dict(evt))
             self.serialized_bytes += event_bytes
 
     def flush(self, timeout: float = 1.0) -> bool:
@@ -163,6 +163,16 @@ def _claimed_work_trace_context(
     work: Mapping[str, JsonValue], payload: Mapping[str, JsonValue], node_id: str
 ) -> TraceContext:
     """Build callback trace identity only from scheduler-owned claim fields."""
+    raw_state = payload.get("state", payload.get("initial_state"))
+    trace_seed = (
+        raw_state.get("_rt_trace_context")
+        if isinstance(raw_state, dict)
+        else None
+    )
+    seed = trace_seed if isinstance(trace_seed, dict) else {}
+    trace_id = seed.get("trace_id")
+    span_id = seed.get("span_id")
+    parent_span_id = seed.get("parent_span_id")
     return TraceContext(
         run_id=str(payload.get("run_id") or work.get("run_id") or ""),
         token_id=str(payload.get("token_id") or work.get("run_id") or ""),
@@ -171,6 +181,11 @@ def _claimed_work_trace_context(
         attempt=_json_int(payload.get("attempt"), 1),
         conversation_id=str(payload.get("conversation_id") or "") or None,
         turn_node_id=str(payload.get("turn_node_id") or "") or None,
+        trace_id=trace_id if isinstance(trace_id, str) else None,
+        span_id=span_id if isinstance(span_id, str) else None,
+        parent_span_id=(
+            parent_span_id if isinstance(parent_span_id, str) else None
+        ),
     )
 
 

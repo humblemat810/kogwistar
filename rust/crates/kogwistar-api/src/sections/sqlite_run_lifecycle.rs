@@ -221,6 +221,16 @@ impl SqliteRunApplicationService {
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state.clone();
+        if let Err(message) = install_runtime_trace_context(
+            &mut initial_state,
+            input.trace_context.as_ref(),
+        ) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_TRACE_CONTEXT",
+                message,
+            );
+        }
         // Runtime scope and owner are server-derived authority, never caller state.
         // Keep SQLite admission aligned with PostgreSQL before scheduling any step.
         initial_state.remove("_rt_graph_scope");

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -40,6 +41,7 @@ from kogwistar.runtime.rust_runtime_authority import (
     _runtime_plan_requires_python_worker,
     _validate_resume_plan,
     _json_state,
+    _runtime_trace_context_payload,
     freeze_runtime_plan,
 )
 from kogwistar.implementation_selection import capture_implementation_selection
@@ -749,15 +751,6 @@ def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
     ("context_field", "context_value"),
     [
         ("_run_metadata", {"parent_run_id": "parent-run"}),
-        (
-            "_trace_context",
-            TraceContext.new_root(
-                run_id="parent-run",
-                token_id="parent-run",
-                step_seq=0,
-                node_id="parent",
-            ),
-        ),
         ("_parent_lease_renew", lambda: None),
         ("_run_owner_id", "parent-owner"),
     ],
@@ -785,6 +778,113 @@ def test_public_sync_rust_runtime_rejects_unforwarded_python_context(
             run_id="run-1",
             **{context_field: context_value},
         )
+
+
+def test_rust_trace_context_payload_preserves_parent_span_identity() -> None:
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+
+    assert _runtime_trace_context_payload(context) == {
+        "trace_id": "trace-abc",
+        "span_id": "span-child",
+        "parent_span_id": "span-parent",
+    }
+
+
+def test_sync_rust_authority_submit_serializes_trace_context(monkeypatch) -> None:
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+    captured: dict[str, Any] = {}
+    authority = RustRuntimeAuthority.__new__(RustRuntimeAuthority)
+    authority.runtime = SimpleNamespace(step_resolver=SimpleNamespace(_state_schema={}))
+    authority.server_managed_native_worker = False
+    authority._register_dependencies = lambda *_args: None
+    authority._submit_run = lambda payload: captured.update(payload) or {
+        "run_id": "child-run",
+        "admission": "accepted",
+    }
+    authority._run_dependencies = lambda _run_id: {}
+    expected = RunResult(
+        final_state={},
+        run_id="child-run",
+        mq=queue.Queue(),
+        status="succeeded",
+    )
+    authority._pump_existing_run = lambda **_kwargs: expected
+    authority._release_if_terminal = lambda _run_id, result: result
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.freeze_runtime_plan",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority._python_worker_required_for_plan",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = authority.run(
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        initial_state={},
+        run_id="child-run",
+        trace_context=context,
+    )
+
+    assert result is expected
+    assert captured["trace_context"] == {
+        "trace_id": "trace-abc",
+        "span_id": "span-child",
+        "parent_span_id": "span-parent",
+    }
+
+
+def test_public_sync_rust_runtime_forwards_trace_context(monkeypatch) -> None:
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+    captured: dict[str, Any] = {}
+    sentinel = object()
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.run_with_rust_authority",
+        lambda _runtime, **kwargs: captured.update(kwargs) or sentinel,
+    )
+    runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime.step_resolver = SimpleNamespace(_state_schema={})
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
+
+    result = runtime.run(
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        initial_state={},
+        run_id="child-run",
+        _trace_context=context,
+    )
+
+    assert result is sentinel
+    assert captured["trace_context"] is context
 
 
 def test_authority_pumps_only_target_run_and_restores_process_local_deps(
@@ -4455,15 +4555,6 @@ def test_async_runtime_rust_mode_without_authority_url_fails_closed(
     ("context_field", "context_value"),
     [
         ("_run_metadata", {"parent_run_id": "parent-run"}),
-        (
-            "_trace_context",
-            TraceContext.new_root(
-                run_id="parent-run",
-                token_id="parent-run",
-                step_seq=0,
-                node_id="parent",
-            ),
-        ),
         ("_run_owner_id", "parent-owner"),
     ],
 )
@@ -4490,6 +4581,48 @@ def test_async_rust_runtime_rejects_unforwarded_python_context(
         RustRuntimeAuthorityError, match="cannot preserve Python run context"
     ):
         asyncio.run(invoke())
+
+
+def test_public_async_rust_runtime_forwards_trace_context(monkeypatch) -> None:
+    from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+    captured: dict[str, Any] = {}
+    sentinel = object()
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+
+    async def fake_authority(_runtime, **kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.run_with_rust_authority_async",
+        fake_authority,
+    )
+    runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
+
+    async def invoke() -> Any:
+        return await runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id="child-run",
+            _trace_context=context,
+        )
+
+    assert asyncio.run(invoke()) is sentinel
+    assert captured["trace_context"] is context
 
 
 def test_public_resume_dispatches_to_rust_authority(monkeypatch) -> None:

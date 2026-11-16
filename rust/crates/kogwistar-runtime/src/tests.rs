@@ -248,6 +248,40 @@
     }
 
     #[test]
+    fn native_trace_context_inherits_python_nested_run_seed() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/runtime-trace-context-v1.json"
+        ))
+        .unwrap();
+        let seed = &fixture["nested_run_seed"];
+        let step = &seed["step"];
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: step["run_id"].as_str().unwrap().to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: step["node_id"].as_str().unwrap().to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: Some("turn".to_owned()),
+            token_id: step["token_id"].as_str().unwrap().to_owned(),
+            parent_token_id: None,
+            step_seq: step["step_seq"].as_i64().unwrap(),
+            state: Map::from_iter([(
+                "_rt_trace_context".to_owned(),
+                seed["trace_context"].clone(),
+            )]),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+
+        let fields = native_trace_context_fields(&request);
+        for (field, expected) in seed["expected"].as_object().unwrap() {
+            assert_eq!(&fields[field], expected, "field {field}");
+        }
+    }
+
+    #[test]
     fn native_routed_operation_selects_only_frozen_successors() {
         let mut registry = NativeOperationRegistry::default();
         registry

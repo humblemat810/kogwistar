@@ -209,10 +209,19 @@ Only these local items remain in scope before production rollout:
   confirms cross-OS execution behavior, not a distinct production-vs-development
   contract; Docker build used a dedicated Cargo target volume.
   The Python sync/async runtime entry points now reject Rust-authority runs when
-  Python-only run metadata, trace context, parent lease renewal, or run-owner
-  context would otherwise be silently discarded. Focused fail-closed coverage
-  passed (**10 passed**); the full authority test module passed (**63 passed,
-  10 skipped**). This closes context-loss at dispatch, not public owner routing.
+  Python-only run metadata, parent lease renewal, or run-owner context would
+  otherwise be silently discarded. Trace context now crosses the Python
+  sync/async authority adapter as typed `RuntimeTraceContextV1`; each Rust
+  backend strips caller-supplied `_rt_trace_context` and installs only the
+  validated admission seed. Native Rust steps and Python callbacks inherit the
+  same parent trace/span from the shared
+  `contracts/golden/runtime-trace-context-v1.json` fixture. Focused Python
+  coverage passed (**9 passed**), Rust runtime trace tests passed (**2 passed**),
+  and Rust API reserved-state/DTO test passed (**1 passed**). The same Rust
+  runtime and API tests passed in Ubuntu Docker (`rust:1.97.1-bookworm`: 2 and
+  1 passed respectively). Run metadata,
+  parent lease renewal, and owner context remain fail-closed; this closes one
+  trace propagation seam, not public owner routing.
   Production readiness flags remain unchanged.
   This line remains unchecked:
   public authority promotion still requires its capability canary and the

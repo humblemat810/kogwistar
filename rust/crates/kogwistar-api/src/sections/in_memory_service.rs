@@ -3050,6 +3050,16 @@ impl InMemoryGraphApplicationService {
         ] {
             initial_state.remove(reserved);
         }
+        if let Err(message) = install_runtime_trace_context(
+            &mut initial_state,
+            input.trace_context.as_ref(),
+        ) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_TRACE_CONTEXT",
+                message,
+            );
+        }
         initial_state.insert(
             "_rt_graph_scope".to_owned(),
             security_scope_value(&request.principal),
