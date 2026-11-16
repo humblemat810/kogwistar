@@ -32,12 +32,13 @@ Release workflow design is tracked in
 Latest current-source Windows verification: HEAD `246b2501`, candidate source
 SHA-256 `bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`.
 The rebuilt PyO3 wheel passed its SQLite transaction ABI smoke. Rust API tests
-passed **409**, with **40 ignored**. The Phase 4 runtime-authority gate passed
-the four runnable groups: durable-worker **185 tests/10 skipped**, bijection
-**72**, bridge **30**, suspend-terminal **23**; zero failures/errors. The live
-PostgreSQL group was not run because Docker access and a test DSN were
-unavailable. These are local verification results, not Phase 4 closure or
-production/UAT promotion evidence; Docker-emulated runs remain UAT only.
+passed **409**, with **40 ignored**. Across the same source/native identity, all
+five Phase 4 runtime-authority groups passed: durable-worker **185**, bijection
+**72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
+zero skips, failures, or errors. PostgreSQL variants in the durable-worker
+group were rerun against the existing pgvector container with a DSN, not
+silently skipped. These are local/UAT verification results, not production
+canary or rollout evidence; Docker-emulated runs remain UAT only.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
@@ -151,7 +152,7 @@ Only these local items remain in scope before production rollout:
   current-source Phase-4 entry below. Async authority has a bounded `async-v2` callback
   worker protocol, evidenced separately below; it was intentionally
   fail-closed under the earlier `sync-v1` worker protocol.
-- [ ] Phase 4: route the public runtime owner through the proven Rust durable
+- [x] Phase 4: route the public runtime owner through the proven Rust durable
   scheduler while keeping dynamic Python callbacks behind the versioned worker
   boundary. Unsupported nested/sandbox/side-effect protocol features stay
   fail-closed; no new runtime-state operation may be invented. Local routing now
@@ -244,12 +245,13 @@ Only these local items remain in scope before production rollout:
   PostgreSQL pre-storage rejection (**1 each**). Rust runtime trace tests passed
   (**2 passed**) and reserved-state/DTO test passed (**1 passed**). These close
   two context transport seams only, not the public runtime-owner/canary gate.
-  Prior candidate-level Phase-4 reports are superseded by the single latest
-  current-source gate record below.
-  Production readiness flags remain unchanged.
-  This line remains unchecked:
-  public authority promotion still requires its capability canary and the
-  explicit `workflow-runtime` readiness decision.
+  Current source `bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`
+  passed all five runtime-authority groups with zero skips: durable-worker
+  **185**, bijection **72**, bridge **30**, suspend-terminal **23**, and live
+  PostgreSQL **10**. This closes the local public-runtime-owner implementation
+  gate only. Production readiness flags remain unchanged; capability canary
+  and explicit `workflow-runtime` readiness decision remain open in the
+  cutover worklist.
 - [x] Phase 5: zero currently frozen HTTP operations; four syscall operations
   remain explicitly deferred. The manifest records the remaining grouped
   Python ownership, prerequisite Rust authorities, and exit evidence; its exact
