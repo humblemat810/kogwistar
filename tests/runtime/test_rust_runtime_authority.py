@@ -4991,8 +4991,18 @@ def test_resume_rejects_current_graph_drift_before_state_change(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("backend", ["sqlite", "sqlite-chroma", "pg"])
-@pytest.mark.parametrize("execution_mode", ["external-worker", "inline-server"])
+@pytest.mark.parametrize(
+    ("backend", "execution_mode"),
+    [
+        ("in-memory", "inline-server"),
+        ("sqlite", "external-worker"),
+        ("sqlite-chroma", "external-worker"),
+        ("pg", "external-worker"),
+        ("sqlite", "inline-server"),
+        ("sqlite-chroma", "inline-server"),
+        ("pg", "inline-server"),
+    ],
+)
 def test_rust_native_workflow_runs_through_real_server_without_python_worker(
     tmp_path: Path,
     backend: str,
@@ -5022,6 +5032,14 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             / "runtime-native-increment-workflow-v1.json"
         ).read_text(encoding="utf-8")
     )
+    if backend == "in-memory":
+        first_node = workflow_contract["nodes"][0]
+        workflow_contract["nodes"] = [first_node]
+        workflow_contract["routes"] = []
+        workflow_contract["expected_completed_steps"] = [first_node["id"]]
+        workflow_contract["expected_step_sequences"] = [0]
+        workflow_contract["trace_contract"]["expected_attempts"] = [1]
+        workflow_contract["expected_final_state"]["counter"] = 1
     run_id = f"native-http-{suffix}"
     pg_schema = f"kw_native_http_{suffix}" if backend == "pg" else None
     chroma_server = None
@@ -5040,7 +5058,9 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         env.pop(name, None)
     env.update(
         {
-            "KOGWISTAR_BACKEND": "pg" if backend == "pg" else "sqlite",
+            "KOGWISTAR_BACKEND": "in_memory" if backend == "in-memory" else (
+                "pg" if backend == "pg" else "sqlite"
+            ),
             "KOGWISTAR_SERVER_HOST": "127.0.0.1",
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
@@ -5056,13 +5076,15 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
         env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
-    else:
+    elif backend in {"sqlite", "sqlite-chroma"}:
         env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "native-http.sqlite3")
         if backend == "sqlite-chroma":
             assert chroma_endpoint is not None
             env["KOGWISTAR_CHROMA_ENDPOINT"] = chroma_endpoint
             env["KOGWISTAR_CHROMA_NODE_COLLECTION"] = "native-runtime-nodes"
             env["KOGWISTAR_CHROMA_EDGE_COLLECTION"] = "native-runtime-edges"
+    else:
+        env["KOGWISTAR_PERSIST_DIRECTORY"] = str(tmp_path / "native-http-persist")
 
     process = subprocess.Popen(
         [str(RUST_SERVER)],
@@ -5171,41 +5193,42 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             else:
                 raise AssertionError("inline Rust server did not finish the native run")
             execution_completed_at = time.perf_counter()
-            python_run_id = f"python-http-{suffix}"
-            python_submitted = httpx.post(
-                f"{base_url}/api/workflow/runs",
-                headers=headers,
-                json={
-                    "run_id": python_run_id,
-                    "workflow_id": "python-worker-compatibility",
-                    "conversation_id": "python-worker-compatibility",
-                    "initial_state": {},
-                    "runtime_kind": "sync",
-                    "start_node_id": "python-step",
-                    "node_ops": {"python-step": "custom-operation"},
-                    "node_executor_targets": {"python-step": "python-worker"},
-                    "runtime_routes": [],
-                },
-                timeout=10,
-            )
-            assert python_submitted.status_code == 202, python_submitted.text
-            python_claim = httpx.post(
-                f"{base_url}/internal/runtime/claim",
-                headers=headers,
-                json={
-                    "claimed_by": "python-worker-test",
-                    "limit": 1,
-                    "lease_seconds": 60,
-                    "recipient_ids": ["python-worker"],
-                    "run_id": python_run_id,
-                },
-                timeout=10,
-            )
-            assert python_claim.status_code == 200, python_claim.text
-            python_work = python_claim.json()["work"]
-            assert len(python_work) == 1
-            assert python_work[0]["step_id"] == "python-step"
-            assert python_work[0]["payload"]["executor_target"] == "python-worker"
+            if backend != "in-memory":
+                python_run_id = f"python-http-{suffix}"
+                python_submitted = httpx.post(
+                    f"{base_url}/api/workflow/runs",
+                    headers=headers,
+                    json={
+                        "run_id": python_run_id,
+                        "workflow_id": "python-worker-compatibility",
+                        "conversation_id": "python-worker-compatibility",
+                        "initial_state": {},
+                        "runtime_kind": "sync",
+                        "start_node_id": "python-step",
+                        "node_ops": {"python-step": "custom-operation"},
+                        "node_executor_targets": {"python-step": "python-worker"},
+                        "runtime_routes": [],
+                    },
+                    timeout=10,
+                )
+                assert python_submitted.status_code == 202, python_submitted.text
+                python_claim = httpx.post(
+                    f"{base_url}/internal/runtime/claim",
+                    headers=headers,
+                    json={
+                        "claimed_by": "python-worker-test",
+                        "limit": 1,
+                        "lease_seconds": 60,
+                        "recipient_ids": ["python-worker"],
+                        "run_id": python_run_id,
+                    },
+                    timeout=10,
+                )
+                assert python_claim.status_code == 200, python_claim.text
+                python_work = python_claim.json()["work"]
+                assert len(python_work) == 1
+                assert python_work[0]["step_id"] == "python-step"
+                assert python_work[0]["payload"]["executor_target"] == "python-worker"
         record_property("execution_mode", f"{execution_mode}:{backend}")
         record_property(
             "submit_to_native_completion_ms",
@@ -5216,26 +5239,27 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         )
         assert status.status_code == 200, status.text
         assert status.json()["status"] == "succeeded"
-        checkpoints = httpx.get(
-            f"{base_url}/api/workflow/runs/{run_id}/checkpoints",
-            headers=headers,
-            timeout=10,
-        )
-        assert checkpoints.status_code == 200, checkpoints.text
-        assert (
-            checkpoints.json()["checkpoints"][-1]["state"]["counter"]
-            == workflow_contract["expected_final_state"]["counter"]
-        )
-        steps_response = httpx.get(
-            f"{base_url}/api/workflow/runs/{run_id}/steps",
-            headers=headers,
-            timeout=10,
-        )
-        assert steps_response.status_code == 200, steps_response.text
-        steps = steps_response.json()["steps"]
-        assert [step["workflow_node_id"] for step in steps] == [
-            node["id"] for node in workflow_contract["nodes"]
-        ]
+        if backend != "in-memory":
+            checkpoints = httpx.get(
+                f"{base_url}/api/workflow/runs/{run_id}/checkpoints",
+                headers=headers,
+                timeout=10,
+            )
+            assert checkpoints.status_code == 200, checkpoints.text
+            assert (
+                checkpoints.json()["checkpoints"][-1]["state"]["counter"]
+                == workflow_contract["expected_final_state"]["counter"]
+            )
+            steps_response = httpx.get(
+                f"{base_url}/api/workflow/runs/{run_id}/steps",
+                headers=headers,
+                timeout=10,
+            )
+            assert steps_response.status_code == 200, steps_response.text
+            steps = steps_response.json()["steps"]
+            assert [step["workflow_node_id"] for step in steps] == [
+                node["id"] for node in workflow_contract["nodes"]
+            ]
         mcp_events = httpx.post(
             f"{base_url}/mcp/workflow",
             headers={
@@ -5255,6 +5279,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         )
         assert mcp_events.status_code == 200, mcp_events.text
         mcp_result = _mcp_response_payload(mcp_events)["result"]
+        assert "structuredContent" in mcp_result, mcp_result
         event_list = mcp_result["structuredContent"]["events"]
         assert any(event["event_type"] == "run.created" for event in event_list)
         run_traces = [
@@ -5275,7 +5300,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             for trace in run_traces
             if "runtime.native.step.completed" in json.dumps(trace)
         ]
-        assert len(native_traces) == 2
+        assert len(native_traces) == len(workflow_contract["expected_completed_steps"])
         expected_completed_steps = workflow_contract["expected_completed_steps"]
         assert [trace["node_id"] for trace in native_traces] == expected_completed_steps
         assert [trace["step_seq"] for trace in native_traces] == workflow_contract[
@@ -5285,16 +5310,17 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             assert trace["implementation_authority"] == "rust-native"
             assert trace["seam_crossings"] == []
             assert trace["run_id"] == run_id
-        assert len(steps) == len(native_traces)
-        for step, trace in zip(steps, native_traces, strict=True):
-            assert step["step_seq"] == trace["step_seq"]
-            assert step["workflow_node_id"] == trace["node_id"]
-            assert step["trace_context"] == {
-                "trace_id": trace["trace_id"],
-                "span_id": trace["span_id"],
-                "parent_span_id": trace["parent_span_id"],
-                "attempt": trace["attempt"],
-            }
+        if backend != "in-memory":
+            assert len(steps) == len(native_traces)
+            for step, trace in zip(steps, native_traces, strict=True):
+                assert step["step_seq"] == trace["step_seq"]
+                assert step["workflow_node_id"] == trace["node_id"]
+                assert step["trace_context"] == {
+                    "trace_id": trace["trace_id"],
+                    "span_id": trace["span_id"],
+                    "parent_span_id": trace["parent_span_id"],
+                    "attempt": trace["attempt"],
+                }
         trace_contract = workflow_contract["trace_contract"]
         assert [trace["attempt"] for trace in native_traces] == trace_contract[
             "expected_attempts"

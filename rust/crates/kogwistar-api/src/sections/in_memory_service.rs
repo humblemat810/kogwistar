@@ -2174,6 +2174,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        if surface == "workflow" && name == "workflow.run_events" {
+            return true;
+        }
         surface == "root"
             && Self::supports_graph_tool(name)
             && (!matches!(
@@ -2188,6 +2191,23 @@ impl ApplicationService for InMemoryGraphApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        // PYTHON_PARITY_NOTE_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read; rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores
+        if name == "workflow.run_events" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && effective_capabilities(
+                    principal,
+                    &self
+                        .capabilities
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                )
+                .contains("workflow.run.read")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "wisdom.semantic_seed_then_expand" {
             return self.supports_mcp_tool(surface, name)
                 && matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -2238,7 +2258,11 @@ impl ApplicationService for InMemoryGraphApplicationService {
         }
         if method == "GET"
             && runtime_run_route(path)
-                .is_some_and(|(_, tail)| tail.is_empty() || tail.as_slice() == ["events"])
+                .is_some_and(|(_, tail)| {
+                    tail.is_empty()
+                        || tail.as_slice() == ["events"]
+                        || tail.as_slice() == ["events", "poll"]
+                })
         {
             return true;
         }
@@ -3497,7 +3521,7 @@ impl InMemoryGraphApplicationService {
         )
         .await
         {
-            Ok(events) if tail.as_slice() == ["events"] => {
+            Ok(events) if tail.as_slice() == ["events"] || tail.as_slice() == ["events", "poll"] => {
                 let events = events
                     .into_iter()
                     .map(server_run_event_value)

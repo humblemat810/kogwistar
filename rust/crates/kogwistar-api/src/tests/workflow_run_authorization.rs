@@ -48,7 +48,8 @@
             "workflow_run_events_mcp_admission",
         )
         .unwrap();
-        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let in_memory = InMemoryGraphApplicationService::default();
+        let services: [&dyn ApplicationService; 3] = [&sqlite, &postgres, &in_memory];
 
         for service in services {
             assert!(service.supports_mcp_tool_for_principal(
