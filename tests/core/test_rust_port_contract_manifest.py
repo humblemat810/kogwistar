@@ -1290,7 +1290,7 @@ def test_each_authoritative_capability_has_owner_and_rollback() -> None:
         assert item["rollback"]
 
 
-def test_projection_snapshot_registry_capability_remains_explicitly_unsupported() -> None:
+def test_projection_snapshot_registry_is_evidenced_but_not_cutover_ready() -> None:
     capability_id = "projections-snapshots-run-registry"
     ownership = next(
         item
@@ -1314,7 +1314,11 @@ def test_projection_snapshot_registry_capability_remains_explicitly_unsupported(
     assert support["rust"]["status"] == "disabled"
     assert support["mixed"]["status"] == "disabled"
     assert coverage["rust_coverage"] == "not-cutover-ready"
-    assert coverage["mixed_coverage"] == "not-inventoried"
+    assert coverage["mixed_coverage"].startswith("partial;")
+    assert "bb0850773f41b372babec13e419de2a9fcb7938c39379eec249d6d3e85260f72" in coverage[
+        "mixed_coverage"
+    ]
+    assert ".tmp/goal-projection-capability-report.json" in coverage["mixed_coverage"]
     assert {
         "projection-rebuild-and-snapshot-parity",
         "restart-resume-and-stale-state",

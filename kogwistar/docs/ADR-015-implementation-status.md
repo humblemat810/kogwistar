@@ -228,6 +228,15 @@ Only these local items remain in scope before production rollout:
   SHA-256 is
   `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`;
   report: `.tmp/adr015-runtime-refresh-pg/phase3-capability-after.json`.
+  Follow-up on current source `bb0850773f41b372babec13e419de2a9fcb7938c39379eec249d6d3e85260f72`:
+  the projection/snapshot/run-registry group alone passed **6/6**, zero skips,
+  failures, or errors, on Windows CPython 3.12 with a rebuilt native wheel and
+  live `pgvector/pgvector:pg16`. The six cases cover bidirectional named
+  projection and run-registry access, Python/Rust-created workflow-history
+  schemas, atomic batches, and bounded recovery/rebuild interoperability.
+  Report: `.tmp/goal-projection-capability-report.json`. This refreshes only
+  local mixed-path evidence; it does not promote the capability or satisfy its
+  separate staged canary/rollback release gates.
   This is current-source
   local evidence only; each `rust_cutover_ready` remains false until its
   same-candidate staged canary and rollback evidence exists. Remaining rollout

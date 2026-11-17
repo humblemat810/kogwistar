@@ -96,7 +96,7 @@
       "rust_port_manifest_id": "projections-snapshots-run-registry",
       "conformance_profile": "projections-snapshots-run-registry",
       "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "not-inventoried",
+      "mixed_coverage": "partial; current-source Windows CPython 3.12/Rust native-wheel local UAT against pgvector:pg16 passed 6/6 projection, run-registry, workflow-history, and recovery interoperability tests with zero skips (candidate source bb0850773f41b372babec13e419de2a9fcb7938c39379eec249d6d3e85260f72; report .tmp/goal-projection-capability-report.json). This is explicit local mixed-path evidence only; mixed selection remains disabled and full capability parity/cutover are not established",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified"
     },
