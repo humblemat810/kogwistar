@@ -376,6 +376,7 @@ def test_runtime_parity_bridge_route_next_shared_semantics():
     assert sync_default_decision.selected == [("e-default", "n|fallback", "default")]
 
 
+@pytest.mark.requires_rust
 def test_rust_shadow_route_selection_matches_python_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

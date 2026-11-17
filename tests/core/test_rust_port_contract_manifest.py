@@ -1180,7 +1180,7 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(current) == len(row_pattern.findall(checklist))
 
     inventory = re.search(
-        r"Current (?:evidence )?inventory: \*\*(\d+) items\*\* "
+        r"Current (?:(?:fine-grained )?evidence )?inventory: \*\*(\d+) items\*\* "
         r"\(\*\*(\d+) PASS, (\d+) IN PROGRESS, (\d+) NOT STARTED, "
         r"(\d+) FAIL, (\d+) BLOCKED; ([\d.]+)% PASS\*\*\)",
         scope,

@@ -5,11 +5,9 @@ import os
 import pathlib
 from collections.abc import Callable
 from threading import Lock
-from typing import Generic, TypeVar, cast
+from typing import TYPE_CHECKING, Generic, TypeVar, cast
 
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.engine import Engine
-
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.graph_query import GraphQuery
 from kogwistar.server.bootstrap import (
@@ -26,6 +24,9 @@ from kogwistar.server.chat_service_shared import (
 from kogwistar.server.run_registry import RunRegistry
 
 T = TypeVar("T")
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
 
 
 storage_settings = load_server_storage_settings()
