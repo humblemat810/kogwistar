@@ -860,7 +860,6 @@ async fn in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together() {
                 ]
                 .into_iter()
                 .collect(),
-                ..MetadataFilter::default()
             },
             limit: 10,
         })

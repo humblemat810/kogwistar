@@ -18,16 +18,28 @@ use std::collections::{BTreeMap, BTreeSet};
 const DOCUMENT_TABLE: &str = "gke_documents";
 const MAX_EDGE_ROLLBACK_PASSES: usize = 4096;
 
-fn rollback_mutation(
-    scope: &GraphScope,
-    kind: &str,
+struct RollbackMutation<'a> {
+    scope: &'a GraphScope,
+    kind: &'a str,
     entity_id: String,
-    operation_id: &str,
+    operation_id: &'a str,
     revision: i64,
-    effect: &str,
-    op: &str,
+    effect: &'a str,
+    op: &'a str,
     payload: Value,
-) -> StoreResult<GraphMutation> {
+}
+
+fn rollback_mutation(input: RollbackMutation<'_>) -> StoreResult<GraphMutation> {
+    let RollbackMutation {
+        scope,
+        kind,
+        entity_id,
+        operation_id,
+        revision,
+        effect,
+        op,
+        payload,
+    } = input;
     let metadata = payload
         .get("metadata")
         .and_then(Value::as_object)
@@ -198,16 +210,16 @@ fn apply_document_rollback(
                         "deleted_at": request.deleted_at,
                         "delete_reason": format!("rollback_document:{}", request.document_id)
                     });
-                    node_mutations.push(rollback_mutation(
-                        &request.scope,
-                        "node",
+                    node_mutations.push(rollback_mutation(RollbackMutation {
+                        scope: &request.scope,
+                        kind: "node",
                         entity_id,
-                        &request.operation_id,
+                        operation_id: &request.operation_id,
                         revision,
-                        "tombstone",
-                        "TOMBSTONE",
-                        tombstone,
-                    )?);
+                        effect: "tombstone",
+                        op: "TOMBSTONE",
+                        payload: tombstone,
+                    })?);
                 }
                 Some(NodeRollbackDecision::Replace {
                     entity_id,
@@ -224,16 +236,16 @@ fn apply_document_rollback(
                         canonical_entity_ids
                             .insert(replacement_id.clone(), canonical_id.to_owned());
                     }
-                    node_mutations.push(rollback_mutation(
-                        &request.scope,
-                        "node",
-                        replacement_id.clone(),
-                        &request.operation_id,
+                    node_mutations.push(rollback_mutation(RollbackMutation {
+                        scope: &request.scope,
+                        kind: "node",
+                        entity_id: replacement_id.clone(),
+                        operation_id: &request.operation_id,
                         revision,
-                        "replacement",
-                        "ADD",
-                        replacement_payload,
-                    )?);
+                        effect: "replacement",
+                        op: "ADD",
+                        payload: replacement_payload,
+                    })?);
                     let mut redirect = payload.clone();
                     redirect["lifecycle_patch"] = serde_json::json!({
                         "lifecycle_status": "tombstoned",
@@ -241,16 +253,16 @@ fn apply_document_rollback(
                         "deleted_at": request.deleted_at,
                         "delete_reason": format!("rollback_document:{}", request.document_id)
                     });
-                    node_mutations.push(rollback_mutation(
-                        &request.scope,
-                        "node",
+                    node_mutations.push(rollback_mutation(RollbackMutation {
+                        scope: &request.scope,
+                        kind: "node",
                         entity_id,
-                        &request.operation_id,
+                        operation_id: &request.operation_id,
                         revision,
-                        "redirect",
-                        "REPLACE",
-                        redirect,
-                    )?);
+                        effect: "redirect",
+                        op: "REPLACE",
+                        payload: redirect,
+                    })?);
                 }
             }
         }
@@ -321,16 +333,16 @@ fn apply_document_rollback(
                             "deleted_at": request.deleted_at,
                             "delete_reason": format!("rollback_document:{}", request.document_id)
                         });
-                        mutations.push(rollback_mutation(
-                            &request.scope,
-                            "edge",
+                        mutations.push(rollback_mutation(RollbackMutation {
+                            scope: &request.scope,
+                            kind: "edge",
                             entity_id,
-                            &request.operation_id,
+                            operation_id: &request.operation_id,
                             revision,
-                            "tombstone",
-                            "TOMBSTONE",
-                            tombstone,
-                        )?);
+                            effect: "tombstone",
+                            op: "TOMBSTONE",
+                            payload: tombstone,
+                        })?);
                     }
                     Some(EdgeRollbackDecision::Replace {
                         entity_id,
@@ -339,16 +351,16 @@ fn apply_document_rollback(
                         replacement_payload,
                     }) => {
                         edge_redirects.insert(entity_id.clone(), replacement_id.clone());
-                        mutations.push(rollback_mutation(
-                            &request.scope,
-                            "edge",
-                            replacement_id.clone(),
-                            &request.operation_id,
+                        mutations.push(rollback_mutation(RollbackMutation {
+                            scope: &request.scope,
+                            kind: "edge",
+                            entity_id: replacement_id.clone(),
+                            operation_id: &request.operation_id,
                             revision,
-                            "replacement",
-                            "ADD",
-                            replacement_payload,
-                        )?);
+                            effect: "replacement",
+                            op: "ADD",
+                            payload: replacement_payload,
+                        })?);
                         let mut redirect = payload.clone();
                         redirect["lifecycle_patch"] = serde_json::json!({
                             "lifecycle_status": "tombstoned",
@@ -356,16 +368,16 @@ fn apply_document_rollback(
                             "deleted_at": request.deleted_at,
                             "delete_reason": format!("rollback_document:{}", request.document_id)
                         });
-                        mutations.push(rollback_mutation(
-                            &request.scope,
-                            "edge",
+                        mutations.push(rollback_mutation(RollbackMutation {
+                            scope: &request.scope,
+                            kind: "edge",
                             entity_id,
-                            &request.operation_id,
+                            operation_id: &request.operation_id,
                             revision,
-                            "redirect",
-                            "REPLACE",
-                            redirect,
-                        )?);
+                            effect: "redirect",
+                            op: "REPLACE",
+                            payload: redirect,
+                        })?);
                     }
                 }
             }
@@ -435,134 +447,121 @@ impl DocumentStore for InMemoryStore {
         true
     }
 
-    fn document_projection_ids(
+    async fn document_projection_ids(
         &self,
         scope: GraphScope,
         ids: Vec<String>,
-    ) -> impl std::future::Future<Output = StoreResult<Vec<String>>> + Send {
-        async move {
-            if ids.is_empty() {
-                return Ok(Vec::new());
-            }
-            let rows = self
-                .graph_projection_records(GraphProjectionRead {
-                    scope,
-                    table: DOCUMENT_TABLE.to_owned(),
-                    ids: Some(ids),
-                    metadata: MetadataFilter::default(),
-                    limit: usize::MAX,
-                })
-                .await?;
-            Ok(rows.into_iter().map(|row| row.id).collect())
+    ) -> StoreResult<Vec<String>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
         }
+        let rows = self
+            .graph_projection_records(GraphProjectionRead {
+                scope,
+                table: DOCUMENT_TABLE.to_owned(),
+                ids: Some(ids),
+                metadata: MetadataFilter::default(),
+                limit: usize::MAX,
+            })
+            .await?;
+        Ok(rows.into_iter().map(|row| row.id).collect())
     }
 
-    fn rollback_document(
+    async fn rollback_document(
         &self,
         request: DocumentRollbackRequest,
-    ) -> impl std::future::Future<Output = StoreResult<AppliedDocumentRollback>> + Send {
-        async move {
-            let mut state = self.state.write().expect("in-memory store lock poisoned");
-            apply_document_rollback(&mut state, &request)
-        }
+    ) -> StoreResult<AppliedDocumentRollback> {
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        apply_document_rollback(&mut state, &request)
     }
 
-    fn upsert_document_projection(
-        &self,
-        write: DocumentProjectionUpsert,
-    ) -> impl std::future::Future<Output = StoreResult<()>> + Send {
-        async move {
-            if write.scope.namespace.trim().is_empty() || write.record.id.trim().is_empty() {
-                return Err(StoreError::Backend {
-                    backend: "memory-document".to_owned(),
-                    message: "document namespace and ID must be non-empty".to_owned(),
-                });
-            }
-            if write.record.document.is_none() {
-                return Err(StoreError::Backend {
-                    backend: "memory-document".to_owned(),
-                    message: "source document text is required".to_owned(),
-                });
-            }
-            namespace(&write.scope.namespace)?;
-            write
-                .scope
-                .validate_metadata_scope(&write.record.metadata)?;
-            if let Some(embedding) = &write.record.embedding {
-                if embedding.iter().any(|value| !value.is_finite()) {
-                    return Err(StoreError::NonFiniteVector);
-                }
-                if embedding.len() != write.embedding_dim {
-                    return Err(StoreError::VectorDimensionMismatch {
-                        expected: write.embedding_dim,
-                        actual: embedding.len(),
-                    });
-                }
-            }
-
-            let mut state = self.state.write().expect("in-memory store lock poisoned");
-            let projection = state.graph_projections.entry(write.scope).or_default();
-            let key = (DOCUMENT_TABLE.to_owned(), write.record.id.clone());
-            if !projection.records.contains_key(&key) {
-                projection.record_order.push(key.clone());
-            }
-            projection.records.insert(key, write.record);
-            Ok(())
+    async fn upsert_document_projection(&self, write: DocumentProjectionUpsert) -> StoreResult<()> {
+        if write.scope.namespace.trim().is_empty() || write.record.id.trim().is_empty() {
+            return Err(StoreError::Backend {
+                backend: "memory-document".to_owned(),
+                message: "document namespace and ID must be non-empty".to_owned(),
+            });
         }
+        if write.record.document.is_none() {
+            return Err(StoreError::Backend {
+                backend: "memory-document".to_owned(),
+                message: "source document text is required".to_owned(),
+            });
+        }
+        namespace(&write.scope.namespace)?;
+        write
+            .scope
+            .validate_metadata_scope(&write.record.metadata)?;
+        if let Some(embedding) = &write.record.embedding {
+            if embedding.iter().any(|value| !value.is_finite()) {
+                return Err(StoreError::NonFiniteVector);
+            }
+            if embedding.len() != write.embedding_dim {
+                return Err(StoreError::VectorDimensionMismatch {
+                    expected: write.embedding_dim,
+                    actual: embedding.len(),
+                });
+            }
+        }
+
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let projection = state.graph_projections.entry(write.scope).or_default();
+        let key = (DOCUMENT_TABLE.to_owned(), write.record.id.clone());
+        if !projection.records.contains_key(&key) {
+            projection.record_order.push(key.clone());
+        }
+        projection.records.insert(key, write.record);
+        Ok(())
     }
 
-    fn delete_document_projection(
+    async fn delete_document_projection(
         &self,
         scope: GraphScope,
         document_id: String,
-    ) -> impl std::future::Future<Output = StoreResult<bool>> + Send {
-        async move {
-            namespace(&scope.namespace)?;
-            if document_id.trim().is_empty() {
-                return Err(StoreError::EmptyRecordId);
-            }
-            let mut state = self.state.write().expect("in-memory store lock poisoned");
-            let Some(projection) = state.graph_projections.get_mut(&scope) else {
-                return Ok(false);
-            };
-            let key = (DOCUMENT_TABLE.to_owned(), document_id.to_owned());
-            projection.record_order.retain(|item| item != &key);
-            Ok(projection.records.remove(&key).is_some())
+    ) -> StoreResult<bool> {
+        namespace(&scope.namespace)?;
+        if document_id.trim().is_empty() {
+            return Err(StoreError::EmptyRecordId);
         }
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let Some(projection) = state.graph_projections.get_mut(&scope) else {
+            return Ok(false);
+        };
+        let key = (DOCUMENT_TABLE.to_owned(), document_id.to_owned());
+        projection.record_order.retain(|item| item != &key);
+        Ok(projection.records.remove(&key).is_some())
     }
 
-    fn delete_document_projections_by_source_id(
+    async fn delete_document_projections_by_source_id(
         &self,
         scope: GraphScope,
         source_document_id: String,
-    ) -> impl std::future::Future<Output = StoreResult<Vec<String>>> + Send {
-        async move {
-            namespace(&scope.namespace)?;
-            if source_document_id.trim().is_empty() {
-                return Err(StoreError::EmptyRecordId);
-            }
-            let mut state = self.state.write().expect("in-memory store lock poisoned");
-            let Some(projection) = state.graph_projections.get_mut(&scope) else {
-                return Ok(Vec::new());
-            };
-            let ids = projection
-                .records
-                .iter()
-                .filter(|((table, id), record)| {
-                    table == DOCUMENT_TABLE
-                        && (id == &source_document_id
-                            || record.metadata.get("doc_id").and_then(Value::as_str)
-                                == Some(source_document_id.as_str()))
-                })
-                .map(|((_, id), _)| id.clone())
-                .collect::<Vec<_>>();
-            for id in &ids {
-                let key = (DOCUMENT_TABLE.to_owned(), id.clone());
-                projection.records.remove(&key);
-                projection.record_order.retain(|item| item != &key);
-            }
-            Ok(ids)
+    ) -> StoreResult<Vec<String>> {
+        namespace(&scope.namespace)?;
+        if source_document_id.trim().is_empty() {
+            return Err(StoreError::EmptyRecordId);
         }
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let Some(projection) = state.graph_projections.get_mut(&scope) else {
+            return Ok(Vec::new());
+        };
+        let ids = projection
+            .records
+            .iter()
+            .filter(|((table, id), record)| {
+                table == DOCUMENT_TABLE
+                    && (id == &source_document_id
+                        || record.metadata.get("doc_id").and_then(Value::as_str)
+                            == Some(source_document_id.as_str()))
+            })
+            .map(|((_, id), _)| id.clone())
+            .collect::<Vec<_>>();
+        for id in &ids {
+            let key = (DOCUMENT_TABLE.to_owned(), id.clone());
+            projection.records.remove(&key);
+            projection.record_order.retain(|item| item != &key);
+        }
+        Ok(ids)
     }
 
     fn document_authority_capability(&self) -> DocumentAuthorityCapability {

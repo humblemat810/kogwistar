@@ -191,15 +191,19 @@ fn conversation_send_message_fingerprint(
     .to_string()
 }
 
+struct ConversationIdempotencyExpectation<'a> {
+    run_id: &'a str,
+    conversation_id: &'a str,
+    owner_id: &'a str,
+    workflow_id: &'a str,
+    turn_id: &'a str,
+    request_fingerprint: &'a str,
+}
+
 fn conversation_idempotency_replay_result(
     run: &ServerRun,
     events: &[ServerRunEvent],
-    expected_run_id: &str,
-    conversation_id: &str,
-    owner_id: &str,
-    workflow_id: &str,
-    turn_id: &str,
-    request_fingerprint: &str,
+    expected: ConversationIdempotencyExpectation<'_>,
 ) -> Result<Value, String> {
     let created_payload = events
         .iter()
@@ -209,12 +213,12 @@ fn conversation_idempotency_replay_result(
         .as_ref()
         .and_then(|payload| payload.get("request_fingerprint"))
         .and_then(Value::as_str)
-        == Some(request_fingerprint);
-    if run.run_id != expected_run_id
-        || run.conversation_id != conversation_id
-        || run.workflow_id != workflow_id
-        || run.user_id.as_deref() != Some(owner_id)
-        || run.user_turn_node_id.as_deref() != Some(turn_id)
+        == Some(expected.request_fingerprint);
+    if run.run_id != expected.run_id
+        || run.conversation_id != expected.conversation_id
+        || run.workflow_id != expected.workflow_id
+        || run.user_id.as_deref() != Some(expected.owner_id)
+        || run.user_turn_node_id.as_deref() != Some(expected.turn_id)
         || !fingerprint_matches
     {
         return Err("idempotency_key was already used for a different request".to_owned());
@@ -223,7 +227,7 @@ fn conversation_idempotency_replay_result(
         "run_id": run.run_id,
         "conversation_id": run.conversation_id,
         "workflow_id": run.workflow_id,
-        "turn_node_id": turn_id,
+        "turn_node_id": expected.turn_id,
         "status": "queued",
         "admission": "accepted",
         "idempotent": true,

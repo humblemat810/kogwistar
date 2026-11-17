@@ -364,7 +364,7 @@ impl PostgresUnitOfWork<'_> {
             .map(|id| {
                 let events = events_by_id.remove(&id).unwrap_or_default();
                 reconstruct_canonical_graph_entity(&events, namespace, entity_kind, &id)
-                    .map_err(|error| PostgresStoreError::Store(error))?
+                    .map_err(PostgresStoreError::Store)?
                     .ok_or_else(|| {
                         PostgresStoreError::TransactionAborted(format!(
                             "canonical history missing for {entity_kind}:{id}"

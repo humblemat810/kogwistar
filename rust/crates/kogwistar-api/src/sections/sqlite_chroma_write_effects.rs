@@ -931,12 +931,14 @@ impl SqliteRunApplicationService {
                 return match conversation_idempotency_replay_result(
                     &existing,
                     &events,
-                    &run_id,
-                    conversation_id,
-                    &owner_id,
-                    workflow_id,
-                    &turn_id,
-                    expected_fingerprint,
+                    ConversationIdempotencyExpectation {
+                        run_id: &run_id,
+                        conversation_id,
+                        owner_id: &owner_id,
+                        workflow_id,
+                        turn_id: &turn_id,
+                        request_fingerprint: expected_fingerprint,
+                    },
                 ) {
                     Ok(result) => syscall_result(
                         &input.version,
@@ -1311,12 +1313,14 @@ impl SqliteRunApplicationService {
                 return match conversation_idempotency_replay_result(
                     &existing,
                     &events,
-                    &run_id,
-                    conversation_id,
-                    &owner_id,
-                    workflow_id,
-                    &turn_id,
-                    expected_fingerprint,
+                    ConversationIdempotencyExpectation {
+                        run_id: &run_id,
+                        conversation_id,
+                        owner_id: &owner_id,
+                        workflow_id,
+                        turn_id: &turn_id,
+                        request_fingerprint: expected_fingerprint,
+                    },
                 ) {
                     Ok(result) => syscall_result(
                         &input.version,
