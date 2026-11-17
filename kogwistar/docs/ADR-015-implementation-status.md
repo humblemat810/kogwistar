@@ -29,8 +29,8 @@ Re-run relevant gates against the current source before making those claims.
 Release workflow design is tracked in
 [`ADR-015-library-release.md`](ADR-015-library-release.md).
 
-Latest current-source Windows verification: code commit `246b2501` (subsequent
-commits updated only this status document); candidate source SHA-256
+Previous broad current-source Windows verification: code commit `246b2501`;
+candidate source SHA-256
 `bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`.
 The rebuilt PyO3 wheel passed its SQLite transaction ABI smoke. Rust API tests
 passed **409**, with **40 ignored**, on Windows and again in the isolated Linux
@@ -66,6 +66,18 @@ group were rerun against the existing pgvector container with a DSN, not
 silently skipped. These are local/UAT verification results, not production
 canary or rollout evidence. Docker-emulated runs are isolated UAT, equivalent
 to a separate UAT environment; local Windows runs are also not production.
+
+Latest focused source verification: code commit `d82c1bb4`; candidate source
+SHA-256 `399599f2a416f8d32db0c851c6c17eb2029db648551546611a657b24eed1d503`
+(939 source files). Windows CPython 3.12, 3.13, and 3.14 each passed the full
+SQLite context invariant suite (**37 passed, 2 skipped**) and supervisor/worker
+E2E plus runner (**6 passed**). Linux Docker UAT on CPython 3.13 passed the
+SQLite context suite (**39 passed**). The rebuilt current-source Rust HTTP/MCP
+server passed the no-Python workflow smoke across SQLite and SQLite+Chroma in
+external-worker and inline-server modes (**4 passed**, PostgreSQL cells not
+run). These runs are isolated UAT/regression evidence only; Docker is a
+separate UAT environment, not production cutover or a production canary. Hosted
+Ubuntu CI remains pending for the refreshed SQLite lock protocol.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
