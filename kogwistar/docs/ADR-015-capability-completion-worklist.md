@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **48/67 PASS (71.6%)**; **1 IN PROGRESS**; **18 NOT STARTED**.
+**Progress:** **48/67 PASS (71.6%)**; **3 IN PROGRESS**; **16 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -109,8 +109,8 @@ the closed ADR-022 evidence inventories.
 | SRV-05C | `server-rest-sse-mcp-cli` | PASS | Invariant: unsupported tool follows declared Python seam or fails explicitly. Cell: in-memory and PostgreSQL native modes reject unknown tool; SQLite metadata-only mode rejects unsupported dispatch. Oracle: explicit stable error; never silent fallback. Evidence: `tests::in_memory_invoke_builtin_tools_match_shared_contract_and_authority` (**1 passed**); `tests::postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live PostgreSQL; unknown tool returned 404 `KOGWISTAR_TOOL_NOT_FOUND` and audit status `error`); `sqlite_transcript_reads` metadata-only invocation returns 501 `KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER`. |
 | SRV-06 | `server-rest-sse-mcp-cli` | PARENT | Installed CLI contract requirement; children: SRV-06A,SRV-06B,SRV-06C. | Parent closes when all leaves pass. |
 | SRV-06A | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: installed package's documented `kogwistar` CLI entrypoint advertises supported commands. This is the Python HTTP-client adapter defined by ADR-022, not the separately built Cargo binary. Fast check: `test_cli_help_lists_supported_commands` (**1 passed**) and `.venv\Scripts\kogwistar.exe --help` (exit 0; expected commands shown). The venv resolves to repo `kogwistar.egg-info`, not a clean wheel; repeat against the clean candidate wheel at parent closeout. |
-| SRV-06B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: one documented CLI success path returns Python-compatible result. Cell: clean consumer container and configured backend. Oracle: expected structured output and exit 0. Check: add/run `test_installed_cli_success_contract`. |
-| SRV-06C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: invalid CLI request returns structured Python-compatible failure. Cell: clean consumer container with invalid input. Oracle: stable error code/message class and nonzero exit. Check: add/run `test_installed_cli_failure_contract`. |
+| SRV-06B | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: documented CLI API operation returns Python-compatible structured result through HTTP without loading Rust in-process. Fast evidence: `test_python_cli_remains_http_client_for_rust_selected_server`; clean-wheel/server success closeout remains pending. |
+| SRV-06C | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: invalid CLI input fails with stable nonzero result, not silent success. Fast check: `test_python_cli_invalid_api_arguments_exit_with_usage_error` asserts argparse exit 2 and required-field diagnostic; clean-wheel failure closeout remains pending. |
 | REL-01 | All six | PARENT | Candidate identity and four-layer compatibility requirement; children: REL-01A,REL-01B,REL-01C,REL-01D,REL-01E,REL-01F. | Parent closes when all leaves pass. |
 | REL-01A | All six | NOT STARTED | Invariant: one immutable candidate identity names source, pins, wheel, ABI, and backend. Cell: release-candidate manifest generation. Oracle: all identity fields present and hashes reproducible. Check: run candidate identity verifier. |
 | REL-01B | All six | NOT STARTED | Invariant: core compatibility layer passes exact required tests. Cell: same candidate identity. Oracle: required core profile green with no unapproved skips. Check: run core Docker shard. |

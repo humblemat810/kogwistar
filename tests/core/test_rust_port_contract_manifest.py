@@ -1336,10 +1336,10 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     assert len(parents) == 16
     assert len(rows) == 67
     assert statuses.count("PASS") == 48
-    assert statuses.count("IN PROGRESS") == 1
-    assert statuses.count("NOT STARTED") == 18
+    assert statuses.count("IN PROGRESS") == 3
+    assert statuses.count("NOT STARTED") == 16
     assert capability_ids == incomplete_capabilities
-    assert "**Progress:** **48/67 PASS (71.6%)**; **1 IN PROGRESS**; **18 NOT STARTED**." in worklist
+    assert "**Progress:** **48/67 PASS (71.6%)**; **3 IN PROGRESS**; **16 NOT STARTED**." in worklist
     assert "| QLL-03 | `queues-leases-lanes` | PASS |" in worklist
     assert "| QLL-03A | `queues-leases-lanes` | PASS |" in worklist
     assert "| QLL-03B | `queues-leases-lanes` | PASS |" in worklist
@@ -1358,6 +1358,8 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     assert "| SRV-05 | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-05C | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-06A | `server-rest-sse-mcp-cli` | IN PROGRESS |" in worklist
+    assert "| SRV-06B | `server-rest-sse-mcp-cli` | IN PROGRESS |" in worklist
+    assert "| SRV-06C | `server-rest-sse-mcp-cli` | IN PROGRESS |" in worklist
     assert (
         "No separate customer traffic fleet or percentage canary is required"
         in worklist
@@ -1714,6 +1716,18 @@ def test_python_cli_remains_http_client_for_rust_selected_server(
         "url": "http://rust-server/api/conversations/conv-1/turns",
     }
     assert json.loads(capsys.readouterr().out) == {"conversation_id": "conv-1", "turns": []}
+
+
+def test_python_cli_invalid_api_arguments_exit_with_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from kogwistar.cli import main
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["api", "conversation", "conversation.get_transcript"])
+
+    assert exit_info.value.code == 2
+    assert "--conversation-id" in capsys.readouterr().err
 
 
 def test_cli_parity_remains_a_server_release_gate() -> None:
