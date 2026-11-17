@@ -293,9 +293,11 @@ async fn in_memory_native_admission_uses_authoritative_design_and_rejects_confli
         principal: principal.clone(),
     };
 
-    let accepted = service
-        .execute(submit(workflow_id, "memory-authoritative-run", json!({})))
-        .await;
+    let mut authoritative_request = submit(workflow_id, "memory-authoritative-run", json!({}));
+    let mut authoritative_body: Value = serde_json::from_slice(&authoritative_request.body).unwrap();
+    authoritative_body["initial_state"]["counter"] = json!(0);
+    authoritative_request.body = serde_json::to_vec(&authoritative_body).unwrap();
+    let accepted = service.execute(authoritative_request).await;
     assert_eq!(accepted.status, StatusCode::ACCEPTED.as_u16());
     let lane = kogwistar_store::LaneMessageReadStore::projected_lane_message(
         &service.store,
@@ -307,6 +309,7 @@ async fn in_memory_native_admission_uses_authoritative_design_and_rejects_confli
     let payload: Value = serde_json::from_str(lane.payload_json.as_deref().unwrap()).unwrap();
     assert_eq!(payload["op"], "increment-counter");
     assert_eq!(payload["executor_target"], "rust-native");
+    assert!(service.execute_inline_native_work_once().await.unwrap());
 
     let conflict = service
         .execute(submit(
@@ -326,59 +329,75 @@ async fn in_memory_native_admission_uses_authoritative_design_and_rejects_confli
         .is_none()
     );
 
-    let unsupported_workflow = "memory-multistep-authoritative-workflow";
-    kogwistar_store::ProjectionWriteStore::replace_named_projection(
-        &service.store,
-        "workflow_design",
-        unsupported_workflow,
-        NamedProjectionWrite {
-            payload: serde_json::Map::from_iter([
-                ("current_version".to_owned(), json!(1)),
-                ("snapshot_schema_version".to_owned(), json!(1)),
-            ]),
-            last_authoritative_seq: 1,
-            last_materialized_seq: 1,
-            projection_schema_version: 1,
-            materialization_status: "ready".to_owned(),
-        },
-    )
-    .await
-    .unwrap();
-    kogwistar_store::WorkflowDesignHistoryWriteStore::put_workflow_design_snapshot(
-        &service.store,
-        unsupported_workflow,
-        WorkflowDesignSnapshotWrite {
-            version: 1,
-            seq: 1,
-            schema_version: 1,
-            payload_json: serde_json::to_string(&json!({
-                "nodes": [
-                    {"id":"start", "metadata":{"wf_start":true, "wf_op":"noop", "wf_executor_target":"rust-native"}},
-                    {"id":"finish", "metadata":{"wf_terminal":true, "wf_op":"noop", "wf_executor_target":"rust-native"}}
-                ],
-                "edges": [{"id":"route", "source_ids":["start"], "target_ids":["finish"], "metadata":{}}]
-            }))
-            .unwrap(),
-        },
-    )
-    .await
-    .unwrap();
-    let unsupported = service
-        .execute(submit(
-            unsupported_workflow,
-            "memory-multistep-run",
-            json!({}),
-        ))
-        .await;
-    assert_eq!(
-        unsupported.status,
-        StatusCode::UNPROCESSABLE_ENTITY.as_u16()
+    let multistep_workflow = "memory-multistep-workflow";
+    let mut multistep_request = submit(
+        multistep_workflow,
+        "memory-multistep-run",
+        json!({"start": "noop", "finish": "noop"}),
     );
-    assert!(
-        kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-multistep-run")
-            .await
-            .unwrap()
-            .is_none()
+    let mut multistep_body: Value = serde_json::from_slice(&multistep_request.body).unwrap();
+    multistep_body["start_node_id"] = json!("start");
+    multistep_body["runtime_routes"] = json!([{
+        "edge_id": "route",
+        "source_node_id": "start",
+        "target_node_id": "finish",
+        "aliases": [],
+        "join_mask": 0,
+        "predicate": null,
+        "multiplicity": "all",
+        "is_default": false,
+        "priority": 0,
+        "source_fanout": false
+    }]);
+    multistep_body["node_executor_targets"] = json!({
+        "start": "rust-native",
+        "finish": "rust-native"
+    });
+    multistep_request.body = serde_json::to_vec(&multistep_body).unwrap();
+    let accepted_multistep = service.execute(multistep_request).await;
+    assert_eq!(
+        accepted_multistep.status,
+        StatusCode::ACCEPTED.as_u16()
+    );
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    let successor_lanes = kogwistar_store::LaneMessageReadStore::projected_lane_messages(
+        &service.store,
+        kogwistar_store::LaneMessageFilter {
+            namespace: Some("workflow".to_owned()),
+            inbox_id: Some("workflow-runtime".to_owned()),
+            correlation_id: Some("memory-multistep-run".to_owned()),
+            ..kogwistar_store::LaneMessageFilter::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(successor_lanes.iter().any(|lane| {
+        lane.step_id.as_deref() == Some("finish") && lane.status == "pending"
+    }));
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+    assert!(!service.execute_inline_native_work_once().await.unwrap());
+    let completed = kogwistar_store::ServerRunReadStore::server_run(
+        &service.store,
+        "memory-multistep-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(completed.status, "succeeded");
+    let events = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-multistep-run",
+        0,
+        20,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "workflow.recorded_transition.v1")
+            .count(),
+        4,
     );
 }
 

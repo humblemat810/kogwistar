@@ -1,14 +1,15 @@
 use super::{
     InMemoryStore, NamedProjection, ServerRun, ServerRunEvent, State, now_ms, now_seconds,
 };
+use kogwistar_contracts::stable_id;
 use kogwistar_runtime::{
     PersistedRecordedTransition, RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRunStatus,
     RecordedRuntimeState, RecordedRuntimeTransition, RecordedTransitionKind,
     RecordedTransitionResult, RecordedWorkerHandoff, RecordedWorkerSuccessEffect,
-    RuntimeWorkerEffectStatus, RuntimeWorkerSuccessEffect,
-    authoritative_runtime_successors_for_result, frontier_after_worker_success,
-    frontier_after_worker_suspend, reduce_recorded_transition, transition_digest,
-    worker_effect_digest,
+    RuntimeStepExecutePayload, RuntimeStepExecuteRequest, RuntimeWorkerEffectStatus,
+    RuntimeWorkerSuccessEffect, authoritative_runtime_successors_for_result,
+    frontier_after_worker_success, frontier_after_worker_suspend, reduce_recorded_transition,
+    transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
     EntityEvent, GraphMutation, GraphMutationBatch, NewIndexJob, NewProjectedLaneMessage,
@@ -701,8 +702,9 @@ impl InMemoryStore {
                 .map_err(json_error)?,
             ));
         }
+        let mut staged = state.clone();
         let applied = apply_transition(
-            &mut state,
+            &mut staged,
             transition,
             Some((handoff.clone(), effect_digest)),
             false,
@@ -718,17 +720,20 @@ impl InMemoryStore {
                 .join_waiters
                 .values()
                 .any(|waiters| !waiters.is_empty());
+        if unfinished {
+            enqueue_pending_runtime_lanes(&mut staged, &applied.reduced.state, applied.event_seq)?;
+        }
         let result = if unfinished || applied.reduced.state.status.is_terminal() {
             applied
         } else {
             let completed_state = &applied.reduced.state;
-            let expected_event_seq = state
+            let expected_event_seq = staged
                 .server_run_events
                 .get(&handoff.run_id)
                 .and_then(|events| events.last())
                 .map_or(0, |event| event.seq);
             apply_transition(
-                &mut state,
+                &mut staged,
                 RecordedRuntimeTransition {
                     contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
                     transition_id: format!("complete-{}", effect.effect_id),
@@ -760,7 +765,7 @@ impl InMemoryStore {
         let mut next_seq = result.event_seq;
         if let Some((message_id, payload_json)) = acknowledgement {
             next_seq += 1;
-            state
+            staged
                 .server_run_events
                 .entry(handoff.run_id.clone())
                 .or_default()
@@ -771,7 +776,7 @@ impl InMemoryStore {
                     payload_json,
                     created_at_ms: now_ms(),
                 });
-            let lane = state
+            let lane = staged
                 .lane_messages
                 .get_mut(&message_id)
                 .expect("validated provider event lane remains present under write lock");
@@ -781,7 +786,7 @@ impl InMemoryStore {
         }
         for (event_type, payload_json) in telemetry_events {
             next_seq += 1;
-            state
+            staged
                 .server_run_events
                 .entry(handoff.run_id.clone())
                 .or_default()
@@ -793,13 +798,14 @@ impl InMemoryStore {
                     created_at_ms: now_ms(),
                 });
         }
-        let lane = state
+        let lane = staged
             .lane_messages
             .get_mut(&handoff.message_id)
             .expect("validated worker lane remains present under write lock");
         lane.status = "completed".to_owned();
         lane.claimed_by = None;
         lane.lease_until = None;
+        *state = staged;
         Ok(result)
     }
 
@@ -964,6 +970,92 @@ fn insert_initial_lane(state: &mut State, row: NewProjectedLaneMessage) {
             conversation_tail_message_id: Some(message_id),
         },
     );
+}
+
+fn enqueue_pending_runtime_lanes(
+    state: &mut State,
+    runtime: &RecordedRuntimeState,
+    expected_event_seq: i64,
+) -> StoreResult<()> {
+    for (node_id, join_mask, token_id, parent_token_id) in &runtime.frontier.pending {
+        let already_active = state.lane_messages.values().any(|lane| {
+            lane.run_id.as_deref() == Some(runtime.run_id.as_str())
+                && matches!(lane.status.as_str(), "pending" | "claimed")
+                && lane
+                    .payload_json
+                    .as_deref()
+                    .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+                    .is_some_and(|payload| {
+                        payload["token_id"].as_str() == Some(token_id.as_str())
+                            && payload["node_id"].as_str() == Some(node_id.as_str())
+                    })
+        });
+        if already_active {
+            continue;
+        }
+        let step_seq = runtime.last_step_seq.saturating_add(1);
+        let message_id = format!(
+            "lane|{}",
+            stable_id(
+                "runtime.worker.request",
+                &[
+                    runtime.run_id.clone(),
+                    token_id.clone(),
+                    node_id.clone(),
+                    step_seq.to_string(),
+                ],
+            )
+        );
+        if state.lane_messages.contains_key(&message_id) {
+            return Err(runtime_conflict(
+                "runtime successor lane ID already exists outside the active frontier",
+            ));
+        }
+        let op = runtime
+            .state
+            .get("_rt_node_ops")
+            .and_then(Value::as_object)
+            .and_then(|operations| operations.get(node_id))
+            .cloned()
+            .unwrap_or_else(|| Value::String("noop".to_owned()));
+        let payload = RuntimeStepExecutePayload::from_recorded_state(
+            runtime,
+            RuntimeStepExecuteRequest {
+                node_id: node_id.clone(),
+                op,
+                join_mask: *join_mask,
+                token_id: token_id.clone(),
+                parent_token_id: parent_token_id.clone(),
+                step_seq,
+                expected_event_seq,
+                resume_effect: None,
+            },
+        );
+        let payload_json = serde_json::to_string(&payload).map_err(json_error)?;
+        let now = now_seconds();
+        insert_initial_lane(
+            state,
+            NewProjectedLaneMessage {
+                message_id,
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: runtime.conversation_id.clone(),
+                recipient_id: "rust-native-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "pending".to_owned(),
+                created_at: now,
+                available_at: now,
+                run_id: Some(runtime.run_id.clone()),
+                step_id: Some(node_id.clone()),
+                correlation_id: Some(runtime.run_id.clone()),
+                payload_json: Some(payload_json),
+                error_json: None,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn apply_transition(

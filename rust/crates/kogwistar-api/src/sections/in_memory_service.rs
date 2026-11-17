@@ -3071,7 +3071,7 @@ impl InMemoryGraphApplicationService {
         )
     }
 
-    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_run_admission_is_authenticated_and_atomic, rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_admission_uses_authoritative_design_and_rejects_conflicts; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission validates an exact ready workflow-design snapshot when present, accepts only one unjoined Rust-native v1 step, and atomically admits run/event/transition/lane without language fallback.
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_run_admission_is_authenticated_and_atomic+in_memory_native_admission_uses_authoritative_design_and_schedules_successors; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission validates an exact ready workflow-design snapshot when present; all steps are supported v1 Rust-native operations, and successor lanes commit atomically with worker effects without language fallback.
     async fn submit_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !principal_strings(&request.principal, "ns")
             .iter()
@@ -3183,37 +3183,6 @@ impl InMemoryGraphApplicationService {
             );
         }
         if let Some(plan) = graph_plan.as_ref() {
-            let node_id = plan.start_node_id.as_str();
-            let operation = plan.node_ops.get(node_id).map(String::as_str);
-            let version = plan.node_versions.get(node_id).map(String::as_str);
-            let executor_target = plan.node_executor_targets.get(node_id).map(String::as_str);
-            if plan.node_ops.len() != 1
-                || plan.node_versions.len() != 1
-                || !plan.join_node_ids.is_empty()
-                || plan.start_join_mask != 0
-                || !plan.routes.is_empty()
-                || !plan.node_environment_ids.is_empty()
-                || !plan.node_worker_identities.is_empty()
-                || operation.is_none_or(|operation| {
-                    !matches!(
-                        operation,
-                        "noop"
-                            | "increment-counter"
-                            | "emit-result"
-                            | "agent.event.request"
-                            | "agent.event.receive"
-                            | "agent.event.ack"
-                    )
-                })
-                || version != Some("v1")
-                || executor_target != Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
-            {
-                return effect_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
-                    "in-memory native admission supports one unjoined v1 Rust-native start step only",
-                );
-            }
             if input.start_node_id.is_none() {
                 input.start_node_id = Some(plan.start_node_id.clone());
             }
@@ -3231,21 +3200,108 @@ impl InMemoryGraphApplicationService {
                 );
             }
         }
-        if !input.join_node_ids.is_empty()
-            || input.start_join_mask != 0
-            || !input.runtime_routes.is_empty()
-            || input.node_ops.len() > 1
-            || input
-                .node_ops
+        let effective_routes = graph_plan
+            .as_ref()
+            .map(|plan| plan.routes.clone())
+            .unwrap_or_else(|| input.runtime_routes.clone());
+        let effective_join_node_ids = graph_plan
+            .as_ref()
+            .map(|plan| plan.join_node_ids.clone())
+            .unwrap_or_else(|| input.join_node_ids.clone());
+        let effective_start_join_mask = graph_plan
+            .as_ref()
+            .map(|plan| plan.start_join_mask)
+            .unwrap_or(input.start_join_mask);
+        let effective_start_node_id = graph_plan
+            .as_ref()
+            .map(|plan| plan.start_node_id.clone())
+            .or_else(|| {
+                input
+                    .start_node_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|node_id| !node_id.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "start".to_owned());
+        let effective_node_ops = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_ops.clone())
+            .unwrap_or_else(|| {
+                if input.node_ops.is_empty() {
+                    BTreeMap::from([(effective_start_node_id.clone(), "noop".to_owned())])
+                } else {
+                    input.node_ops.clone()
+                }
+            });
+        let effective_node_versions = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_versions.clone())
+            .unwrap_or_else(|| {
+                if input.node_versions.is_empty() {
+                    effective_node_ops
+                        .keys()
+                        .map(|node_id| (node_id.clone(), "v1".to_owned()))
+                        .collect()
+                } else {
+                    input.node_versions.clone()
+                }
+            });
+        let effective_node_environment_ids = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_environment_ids.clone())
+            .unwrap_or_else(|| input.node_environment_ids.clone());
+        let effective_node_worker_identities = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_worker_identities.clone())
+            .unwrap_or_else(|| input.node_worker_identities.clone());
+        let mut effective_node_executor_targets = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_executor_targets.clone())
+            .unwrap_or_else(|| input.node_executor_targets.clone());
+        if graph_plan.is_none() && effective_node_executor_targets.is_empty() {
+            effective_node_executor_targets.extend(effective_node_ops.keys().map(|node_id| {
+                (
+                    node_id.clone(),
+                    kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+                )
+            }));
+        }
+        if effective_node_ops.is_empty()
+            || !effective_node_ops.contains_key(&effective_start_node_id)
+            || !effective_node_environment_ids.is_empty()
+            || !effective_node_worker_identities.is_empty()
+            || effective_node_ops.iter().any(|(node_id, operation)| {
+                !matches!(
+                    effective_node_executor_targets.get(node_id).map(String::as_str),
+                    Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+                ) || effective_node_versions.get(node_id).map(String::as_str) != Some("v1")
+                    || !matches!(
+                        kogwistar_runtime::native_operation_for_target(
+                            operation,
+                            effective_node_executor_targets.get(node_id).map(String::as_str),
+                        ),
+                        Some(
+                            "noop"
+                                | "increment-counter"
+                                | "emit-result"
+                                | "agent.event.request"
+                                | "agent.event.receive"
+                                | "agent.event.ack"
+                        )
+                    )
+            })
+            || effective_node_executor_targets
                 .keys()
-                .any(|node_id| node_id != input.start_node_id.as_deref().unwrap_or("start"))
-            || !input.node_environment_ids.is_empty()
-            || !input.node_worker_identities.is_empty()
+                .any(|node_id| !effective_node_ops.contains_key(node_id))
+            || effective_node_versions
+                .keys()
+                .any(|node_id| !effective_node_ops.contains_key(node_id))
         {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
-                "in-memory native admission currently accepts one unjoined native start step only",
+                "in-memory execution requires a valid graph whose every node uses a supported v1 Rust-native operation",
             );
         }
         let run_id = input
@@ -3262,55 +3318,19 @@ impl InMemoryGraphApplicationService {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| format!("wf_turn|{run_id}"));
-        let start_node_id = input
-            .start_node_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("start");
-        let operation = input
-            .node_ops
+        let start_node_id = effective_start_node_id.as_str();
+        let operation = effective_node_ops
             .get(start_node_id)
             .map(String::as_str)
             .unwrap_or("noop");
-        let executor_target = input
-            .node_executor_targets
+        let op_version = effective_node_versions
+            .get(start_node_id)
+            .map(String::as_str)
+            .unwrap_or("v1");
+        let executor_target = effective_node_executor_targets
             .get(start_node_id)
             .map(String::as_str)
             .unwrap_or(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
-        let native_operation =
-            kogwistar_runtime::native_operation_for_target(operation, Some(executor_target));
-        if executor_target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
-            || !matches!(
-                native_operation,
-                Some(
-                    "noop"
-                        | "increment-counter"
-                        | "emit-result"
-                        | "agent.event.request"
-                        | "agent.event.receive"
-                        | "agent.event.ack"
-                )
-            )
-            || input
-                .node_executor_targets
-                .keys()
-                .any(|node_id| node_id != start_node_id)
-            || input
-                .node_versions
-                .get(start_node_id)
-                .is_some_and(|version| version != "v1")
-            || input
-                .node_versions
-                .keys()
-                .any(|node_id| node_id != start_node_id)
-        {
-            return effect_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
-                "in-memory admission requires a supported v1 Rust-native operation",
-            );
-        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
@@ -3344,15 +3364,29 @@ impl InMemoryGraphApplicationService {
             security_scope_value(&request.principal),
         );
         initial_state.insert("_rt_run_owner_id".to_owned(), json!(owner_id));
-        install_authoritative_node_executor_targets(
-            &mut initial_state,
-            &BTreeMap::from([(start_node_id.to_owned(), executor_target.to_owned())]),
-        );
+        install_authoritative_node_executor_targets(&mut initial_state, &effective_node_executor_targets);
         inject_authoritative_capability_state(
             &mut initial_state,
             &request.principal,
             &self.capabilities,
         );
+        if !effective_routes.is_empty() {
+            initial_state.insert(
+                "_rt_routes".to_owned(),
+                serde_json::to_value(&effective_routes).expect("runtime routes serialize"),
+            );
+        }
+        initial_state.insert(
+            "_rt_node_ops".to_owned(),
+            serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
+        );
+        if effective_node_versions.values().any(|version| version != "v1") {
+            initial_state.insert(
+                "_rt_node_versions".to_owned(),
+                serde_json::to_value(&effective_node_versions)
+                    .expect("runtime node versions serialize"),
+            );
+        }
         let runtime_kind = if input.runtime_kind.trim().is_empty() {
             default_runtime_kind()
         } else {
@@ -3368,20 +3402,21 @@ impl InMemoryGraphApplicationService {
             "worker_protocol": worker_protocol_for_runtime_kind(&runtime_kind),
             "node_id": start_node_id,
             "op": operation,
-            "op_version": "v1",
+            "op_version": op_version,
             "executor_target": executor_target,
-            "join_mask": 0,
+            "join_mask": effective_start_join_mask,
             "token_id": run_id,
             "step_seq": 0,
             "expected_event_seq": 2,
+            "runtime_routes": effective_routes,
             "state": initial_state,
         });
         add_executor_target(&mut worker_payload, operation, Some(executor_target));
         let mut transition_payload = worker_payload.clone();
         transition_payload["initial_state"] = worker_payload["state"].clone();
         transition_payload["start_node_id"] = json!(start_node_id);
-        transition_payload["join_node_ids"] = json!([]);
-        transition_payload["start_join_mask"] = json!(0);
+        transition_payload["join_node_ids"] = json!(effective_join_node_ids);
+        transition_payload["start_join_mask"] = json!(effective_start_join_mask);
         let mut transition = runtime_start_transition(&transition_payload, &run_id);
         transition.expected_event_seq = 1;
         transition.user_id = Some(owner_id.to_owned());
