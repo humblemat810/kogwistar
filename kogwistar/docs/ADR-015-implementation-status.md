@@ -121,7 +121,10 @@ success cell: canonical SQLite event, host-derived ACL record, durable index
 job, successful run, and completed lane are asserted together. The focused test
 and owner-revocation regression passed; the full API library suite passed
 **411 tests, 40 ignored**, and `cargo check --locked -p kogwistar-api --tests`
-passed. This remains isolated Docker UAT, not production evidence.
+passed. The complementary live PostgreSQL inline V2 authority test also passed
+against disposable pgvector, covering host-derived ACL/index effects,
+idempotent ACL defaults, cross-scope denial, and transaction rollback. These
+remain isolated Docker UAT results, not production evidence.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
