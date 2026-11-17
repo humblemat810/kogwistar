@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **55/67 PASS (82.1%)**; **0 IN PROGRESS**; **12 NOT STARTED**.
+**Progress:** **55/67 PASS (82.1%)**; **1 IN PROGRESS**; **11 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -113,7 +113,7 @@ the closed ADR-022 evidence inventories.
 | SRV-06C | `server-rest-sse-mcp-cli` | PASS | Invariant: invalid CLI input fails with stable nonzero result, not silent success. Evidence: `test_python_cli_invalid_api_arguments_exit_with_usage_error` passed; same clean Python 3.12 consumer and candidate wheel as SRV-06A: `kogwistar api conversation conversation.get_transcript` exited 2 and printed required `--conversation-id` diagnostic. |
 | REL-01 | All six | PARENT | Candidate identity and four-layer compatibility requirement; children: REL-01A,REL-01B,REL-01C,REL-01D,REL-01E,REL-01F. | Parent closes when all leaves pass. |
 | REL-01A | All six | PASS | Invariant: one immutable candidate identity names source, pins, wheel, ABI, and backend. Cell: candidate manifest generation. Oracle: identity fingerprint is reproducible; wheel/source hashes match artifact. Evidence: 6 focused identity tests passed. `.tmp/adr015-rel01a-identity-current/identity-report.json`, identity `1860bd1a1736fff50076e3057b34ed8ef379b2088ab4686ccc4171d7a1978d8b`; source SHA `d3e05f2d04e3cf6d2b05435a6585fc9b2ec15a6a6aa167fc4c67e9dd2b724f69` matches wheel build report; wheel SHA `ec2fb817c96e7664df63196b909bde06afab892a34c88aac811e4bcddef376b7` independently verified. Manifest truthfully records CPython 3.13.3 Windows and backend `local-identity-only`; no compatibility execution is claimed. |
-| REL-01B | All six | NOT STARTED | Invariant: core compatibility layer passes exact required tests. Cell: same candidate identity. Oracle: required core profile green with no unapproved skips. Check: run core Docker shard. |
+| REL-01B | All six | IN PROGRESS | Invariant: core compatibility layer passes exact required tests. Cell: same candidate identity. Oracle: required core profile green with no unapproved skips. Check: clean Docker core milestone profile, 3 shards. Latest candidate failed two Chroma conversation cases, the trace fanout case, and MCP dev-token setup. Focused fixes now pass for trace (`1 passed`) and MCP (`1 passed`); Chroma failures remain unresolved. Candidate predates those fixes, so rerun one clean Docker closeout only after Chroma has focused evidence. |
 | REL-01C | All six | NOT STARTED | Invariant: parser compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: parser profile green with exact coverage. Check: run parser Docker shard. |
 | REL-01D | All six | NOT STARTED | Invariant: sink compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: sink profile green with exact coverage. Check: run sink Docker shard. |
 | REL-01E | All six | NOT STARTED | Invariant: application compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: app profile green with exact coverage. Check: run application Docker shard. |

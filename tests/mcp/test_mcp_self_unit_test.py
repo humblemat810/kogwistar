@@ -36,6 +36,7 @@ def running_server() -> dict[str, Any]:
     This fixture starts uvicorn on a free ephemeral port and waits for /health.
     """
     import importlib
+    import os
     import traceback
 
     app_import_candidates = [
@@ -91,6 +92,7 @@ def running_server() -> dict[str, Any]:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env={**os.environ, "AUTH_MODE": "dev"},
     )
 
     t = threading.Thread(target=_reader, daemon=True)
