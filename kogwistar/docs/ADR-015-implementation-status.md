@@ -83,6 +83,15 @@ The Python-only memory runtime E2E sync/async cells also passed (**2 passed**)
 with Rust extension loading patched to fail if attempted; `cargo tree` confirmed
 the native API's normal dependency closure contains no Python binding/PyO3
 crates. These checks cover the tested paths, not every optional integration.
+On current HEAD `d2f77258`, the rebuilt Rust server passed the mixed
+Python-worker/Rust-native SQLite integration
+(`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
+**1 passed**, 56.80s). It exercised sync/async success and failure, native-step
+handoff, durable events, restart, and checkpoint recovery. The same current
+binary's PostgreSQL UAT passed the `[pg]` case (**1 passed**, 351.97s) against
+the disposable pgvector container with temporary-schema cleanup. These are
+bounded local UAT results only; neither Docker nor local runs are production
+canary/cutover evidence, and capability readiness remains unchanged.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
