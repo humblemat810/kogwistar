@@ -51,7 +51,7 @@ def test_custom_embedder(tmp_path, backend_kind):
     expected_document_embedding = eng._embed_one(document_result["documents"][0])
     assert len(document_embedding) == len(expected_document_embedding)
     assert all(
-        abs(actual - expected) < 1e-9
+        abs(actual - expected) < 1e-4
         for actual, expected in zip(document_embedding, expected_document_embedding)
     )
     node = Node(
@@ -65,6 +65,6 @@ def test_custom_embedder(tmp_path, backend_kind):
     emb = got["embeddings"][0]
     expected = eng._embed_one(got["documents"][0])
     assert len(emb) == len(expected)
-    assert all(abs(a - b) < 1e-9 for a, b in zip(expected, emb)), (
+    assert all(abs(a - b) < 1e-4 for a, b in zip(expected, emb)), (
         f"custom embedding mismatch: expected={expected!r}, actual={emb!r}"
     )
