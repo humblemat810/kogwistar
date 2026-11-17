@@ -1851,7 +1851,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
 
         from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
-        graph_sqlalchemy_engine = sa.create_engine(pg_dsn, future=True)
+        graph_sqlalchemy_url = sa.engine.make_url(pg_dsn).set(
+            drivername="postgresql+psycopg"
+        )
+        graph_sqlalchemy_engine = sa.create_engine(graph_sqlalchemy_url, future=True)
         PgVectorBackend(
             engine=graph_sqlalchemy_engine,
             embedding_dim=3,
@@ -2906,7 +2909,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         if pg_schema is not None and pg_dsn is not None:
             import sqlalchemy as sa
 
-            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            cleanup_url = sa.engine.make_url(pg_dsn).set(
+                drivername="postgresql+psycopg"
+            )
+            cleanup_engine = sa.create_engine(cleanup_url, future=True)
             try:
                 with cleanup_engine.begin() as connection:
                     connection.execute(
