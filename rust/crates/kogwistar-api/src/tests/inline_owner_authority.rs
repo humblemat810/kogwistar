@@ -243,6 +243,228 @@ async fn sqlite_inline_graph_owner_revocation_fails_claim_durably() {
     let _ = std::fs::remove_file(auth_path);
 }
 
+#[tokio::test]
+async fn sqlite_inline_graph_v2_commits_graph_acl_index_and_lane_together() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let chroma_setup = tokio::spawn(async move {
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0_u8; 2048];
+            let (header_end, content_length) = loop {
+                let count = stream.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                bytes.extend_from_slice(&chunk[..count]);
+                if let Some(header_end) = bytes.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                        .unwrap_or(0);
+                    if bytes.len() >= header_end + 4 + content_length {
+                        break (header_end, content_length);
+                    }
+                }
+            };
+            let request: Value =
+                serde_json::from_slice(&bytes[header_end + 4..header_end + 4 + content_length])
+                    .unwrap();
+            let response = json!({
+                "id": format!("collection-{}", request["name"].as_str().unwrap()),
+                "metadata": {"hnsw:space": "cosine"}
+            })
+            .to_string();
+            let wire = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            );
+            stream.write_all(wire.as_bytes()).await.unwrap();
+        }
+    });
+    let chroma_config = |collection: &str| kogwistar_store_chroma::ChromaStoreConfig {
+        endpoint: endpoint.clone(),
+        collection: collection.to_owned(),
+        ..Default::default()
+    };
+    let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+        chroma_config("sqlite-inline-v2-nodes"),
+        chroma_config("sqlite-inline-v2-edges"),
+    )
+    .await
+    .unwrap();
+    chroma_setup.await.unwrap();
+
+    let store_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-inline-graph-v2-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-inline-graph-v2-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "alice".to_owned(),
+        email: "alice@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "alice".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "alpha".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+
+    let mut registry = kogwistar_runtime::NativeOperationRegistry::default();
+    registry
+        .register_graph_v2("app/sqlite-inline-graph-v2", "v1", |request| {
+            let entity_id = format!("sqlite-inline-v2-node-{}", request.run_id);
+            let batch = serde_json::from_value(json!({
+                "contract_version": 2,
+                "atomic": true,
+                "mutations": [{
+                    "scope": {"namespace": "alpha"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": format!("sqlite-inline-v2-event-{}", request.run_id),
+                    "op": "ADD",
+                    "payload": {
+                        "id": entity_id,
+                        "label": "SQLite inline V2 node",
+                        "type": "entity",
+                        "summary": "SQLite inline V2 node",
+                        "doc_id": "sqlite-inline-v2-doc",
+                        "mentions": [],
+                        "metadata": {},
+                        "properties": {},
+                        "embedding": null
+                    },
+                    "record": {"id": entity_id, "document": "SQLite inline V2 node"},
+                    "embedding_dim": 0
+                }],
+                "index_jobs": [{
+                    "job_id": format!("sqlite-inline-v2-index-{}", request.run_id),
+                    "namespace": "alpha",
+                    "entity_kind": "node",
+                    "entity_id": entity_id,
+                    "index_kind": "node_embedding",
+                    "op": "UPSERT"
+                }],
+                "default_acl": {"truth_graph": "knowledge"}
+            }))
+            .unwrap();
+            Ok((
+                kogwistar_runtime::NativeOperationOutput {
+                    state_update: Vec::new(),
+                    result: Some(json!({"sqlite_inline_graph_v2": true})),
+                },
+                Some(batch),
+            ))
+        })
+        .unwrap();
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = SqliteRunApplicationService::open(&store_path)
+        .unwrap()
+        .with_chroma_graph(graph)
+        .with_native_operations(registry)
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let run_id = "sqlite-inline-graph-v2";
+    let submitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": run_id,
+                "workflow_id": "sqlite-inline-graph-v2-workflow",
+                "conversation_id": "sqlite-inline-graph-v2-conversation",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/app/sqlite-inline-graph-v2"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "user_id": "alice",
+                "sub": "alice@example.test",
+                "role": "rw",
+                "ns": "alpha",
+                "storage_ns": "alpha",
+                "capabilities": ["spawn_process", "workflow.run.write", "write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(submitted.status, StatusCode::ACCEPTED.as_u16());
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+
+    let entity_id = format!("sqlite-inline-v2-node-{run_id}");
+    let events = service.store.replay_raw_events("alpha", 0, 100).unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_id == format!("sqlite-inline-v2-event-{run_id}")
+            && event.entity_id == entity_id
+    }));
+    let scope = GraphScope {
+        namespace: "alpha".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let acl_records = service
+        .store
+        .immediate_transaction(|uow| {
+            uow.graph_acl_records_for_entities(&scope, "knowledge", std::slice::from_ref(&entity_id))
+        })
+        .unwrap();
+    assert_eq!(acl_records.len(), 1);
+    assert_eq!(acl_records[0].metadata.get("acl_mode"), Some(&json!("private")));
+    assert_eq!(
+        acl_records[0].metadata.get("owner_id"),
+        Some(&json!("alice"))
+    );
+    let index_jobs = service
+        .store
+        .list_index_jobs(Some("alpha"), None, None, None, None, 100)
+        .unwrap();
+    assert!(index_jobs.iter().any(|job| job.entity_id == entity_id));
+    assert_eq!(
+        service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        "succeeded"
+    );
+    let lanes = service
+        .store
+        .list_projected_lane_messages(LaneMessageFilter {
+            correlation_id: Some(run_id.to_owned()),
+            limit: 10,
+            ..LaneMessageFilter::default()
+        })
+        .unwrap();
+    assert_eq!(lanes.len(), 1);
+    assert_eq!(lanes[0].status, "completed");
+
+    drop(service);
+    let _ = std::fs::remove_file(store_path);
+    let _ = std::fs::remove_file(auth_path);
+}
+
 #[test]
 fn recorded_step_snapshots_matches_python_fixture() {
     let fixture: Value = serde_json::from_str(include_str!(
