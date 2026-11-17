@@ -421,6 +421,32 @@
                 ))
                 .unwrap()
         };
+        let rest_send = |bearer: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/send_message")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::from(
+                    json!({
+                        "version":"v1",
+                        "op":"send_message",
+                        "args":{
+                            "conversation_id":conversation_id,
+                            "text":"A user question",
+                            "user_id":"conversation-owner",
+                            "workflow_id":"send-message-admission-test",
+                            "idempotency_key":"conversation-admission-key"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        for bearer in [&missing_capability_token, &wrong_namespace_token] {
+            let denied = app.clone().oneshot(rest_send(bearer)).await.unwrap();
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        }
         for (bearer, request_id) in [
             (&missing_capability_token, "ask-no-capability"),
             (&wrong_namespace_token, "ask-wrong-namespace"),
