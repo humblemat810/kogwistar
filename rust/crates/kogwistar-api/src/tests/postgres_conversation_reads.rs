@@ -268,6 +268,31 @@
                 "snapshot": expected
             })
         );
+        let invoke_audit_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/syscall/v1/audit?limit=20".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(invoke_audit_response.status, StatusCode::OK.as_u16());
+        let invoke_audit: Value = serde_json::from_slice(&invoke_audit_response.body).unwrap();
+        let invoke_events = invoke_audit["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["op"] == "invoke_tool")
+            .collect::<Vec<_>>();
+        assert_eq!(invoke_events.len(), 1, "successful built-in call must be audited once");
+        assert_eq!(invoke_events[0]["status"], "ok");
         let initial_invoke_digest = format!(
             "{:x}",
             sha2::Sha256::digest(
