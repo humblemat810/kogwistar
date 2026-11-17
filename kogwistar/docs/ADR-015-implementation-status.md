@@ -74,8 +74,9 @@ SQLite context invariant suite (**37 passed, 2 skipped**) and supervisor/worker
 E2E plus runner (**6 passed**). Linux Docker UAT on CPython 3.13 passed the
 SQLite context suite (**39 passed**). The rebuilt current-source Rust HTTP/MCP
 server passed the no-Python workflow smoke across SQLite and SQLite+Chroma in
-external-worker and inline-server modes (**4 passed**, PostgreSQL cells not
-run). These runs are isolated UAT/regression evidence only; Docker is a
+external-worker and inline-server modes, plus PostgreSQL/pgvector in both modes
+(**6 passed**). PostgreSQL used disposable per-run schemas, removed by fixture
+teardown. These runs are isolated local/Docker UAT evidence only; Docker is a
 separate UAT environment, not production cutover or a production canary. Hosted
 Ubuntu CI remains pending for the refreshed SQLite lock protocol.
 The Python-only memory runtime E2E sync/async cells also passed (**2 passed**)
