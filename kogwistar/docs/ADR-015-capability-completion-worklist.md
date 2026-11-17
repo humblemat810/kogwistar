@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **14/31 PASS (45.2%)**; **11 IN PROGRESS**; **6 NOT STARTED**.
+**Progress:** **15/31 PASS (48.4%)**; **10 IN PROGRESS**; **6 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -55,7 +55,7 @@ the closed ADR-022 evidence inventories.
 | WFR-01 | `workflow-runtime` | PASS | Route selection, transitions, failure handling, fan-out, join, and terminal frontier match frozen Python semantics. | `ADR-015-implementation-tasklets.md` RT-01/02/04; Rust/Python differential tests passed. |
 | WFR-02 | `workflow-runtime` | PASS | Suspension/resume preserves exact token, unrelated pending work, and join obligations across reopen. | `ADR-015-implementation-tasklets.md` RT-03; Python/Rust ordered-history and reopen tests passed. |
 | WFR-03 | `workflow-runtime` | PASS | Worker claim/result, replay, duplicate delivery, rollback, and persisted checkpoint state interoperate across Python/Rust. | `ADR-015-implementation-tasklets.md` RT-05; handoff suite 7 passed. |
-| WFR-04 | `workflow-runtime` | IN PROGRESS | A declared Rust-native workflow completes ingress-to-persistence with no Python worker and trace `seam_crossings=[]`. | Extend native answer smoke to assert authority, durable result, and empty seams in Docker UAT. |
+| WFR-04 | `workflow-runtime` | PASS | A declared Rust-native workflow completes ingress-to-persistence with no Python worker and trace `seam_crossings=[]`. | Linux Docker UAT, Rust 1.97.1 + CPython 3.11, `test_rust_native_workflow_runs_through_real_server_without_python_worker` SQLite `external-worker` and `inline-server`: **2 passed**; durable run/checkpoint/steps, MCP trace authority, no Python handoff, empty seams verified. |
 | SRV-01 | `server-rest-sse-mcp-cli` | PASS | Implemented REST/SSE/MCP operations preserve contract, authentication, scope, and error behavior. | Phase-5 server gate recorded 197 passed; current-candidate revalidation is REL-01/REL-02. |
 | SRV-02 | `server-rest-sse-mcp-cli` | IN PROGRESS | `send_message` admits a turn in Rust without a Python syscall worker; owner, ACL, idempotency, event/lane writes stay atomic. | Finish native handler plus paired REST/MCP replay and denial tests. |
 | SRV-03 | `server-rest-sse-mcp-cli` | IN PROGRESS | `receive_message` serves scoped transcript/result from Rust-native storage with Python-compatible ordering and projection. | Finish native handler plus cross-language reopen fixture and unauthorized-scope test. |
