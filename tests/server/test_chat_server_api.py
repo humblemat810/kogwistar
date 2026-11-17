@@ -2118,7 +2118,9 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
 
     with TestClient(server.app) as client:
         conversation_headers = _token_header(client, role="rw", ns="conversation")
-        workflow_headers = _token_header(client, role="ro", ns="workflow")
+        workflow_headers = _token_header(
+            client, role="ro", ns="workflow", username="python-only-user"
+        )
         denied_headers = _token_header(client, role="ro", ns="wisdom")
         created = client.post(
             "/api/conversations",
@@ -2159,6 +2161,15 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
             ids=[snapshot_id], limit=1
         )[0]
         assert persisted_snapshot_metadata["used_node_ids"] == [start_node_id]
+        conversation_engine.acl.record_acl(
+            grain="node",
+            truth_graph="conversation",
+            entity_id=snapshot_id,
+            version=2,
+            mode="private",
+            owner_id="python-only-user",
+            supersedes_version=1,
+        )
 
         response = client.get(
             f"/api/runs/{run_id}/evidence", headers=workflow_headers
@@ -2869,6 +2880,9 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
         docs_headers = _token_header(client, role="rw", ns="docs")
         conv_headers = _token_header(client, role="rw", ns="conversation")
         workflow_headers = _token_header(client, role="ro", ns="workflow")
+        snapshot_owner_headers = _token_header(
+            client, role="ro", ns="workflow", username="u-snap"
+        )
 
         forbidden = client.post(
             "/api/conversations", json={"user_id": "u-docs"}, headers=docs_headers
@@ -2901,10 +2915,19 @@ def test_chat_debug_endpoints_namespace_and_workflow_viz(monkeypatch, engine_tri
             model_name="fake-model",
             budget_tokens=128,
         )
+        conversation_engine.acl.record_acl(
+            grain="node",
+            truth_graph="conversation",
+            entity_id=snapshot_id,
+            version=2,
+            mode="private",
+            owner_id="u-snap",
+            supersedes_version=1,
+        )
 
         latest = client.get(
             f"/api/conversations/{conversation_id}/snapshots/latest",
-            headers=workflow_headers,
+            headers=snapshot_owner_headers,
         )
         assert latest.status_code == 200
         latest.raise_for_status()
