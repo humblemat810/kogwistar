@@ -89,6 +89,11 @@
 
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let python = std::env::var_os("KOGWISTAR_PYTHON").unwrap_or_else(|| "python".into());
         let schema = format!("rust_run_owner_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
@@ -150,36 +155,51 @@
             .apply_recorded_runtime_transition(runtime_start, false)
             .await
             .unwrap();
-        service
-            .store
-            .project_lane_message(NewProjectedLaneMessage {
-                message_id: "lane-1".to_owned(),
-                namespace: "workflow".to_owned(),
-                purpose: "system".to_owned(),
-                inbox_id: "workflow-runtime".to_owned(),
-                conversation_id: "conversation".to_owned(),
-                recipient_id: "python-worker".to_owned(),
-                sender_id: "rust-scheduler".to_owned(),
-                msg_type: "workflow.step.execute".to_owned(),
-                status: "pending".to_owned(),
-                created_at: 1,
-                available_at: 1,
-                run_id: Some("owned-run".to_owned()),
-                step_id: Some("step-1".to_owned()),
-                correlation_id: Some("owned-run".to_owned()),
-                payload_json: Some(
-                    json!({
-                        "workflow_id": "workflow",
-                        "conversation_id": "conversation",
-                        "token_id": "owned-run",
-                        "parent_token_id": null
-                    })
-                    .to_string(),
-                ),
-                error_json: None,
-            })
-            .await
-            .unwrap();
+        let python_seed_lane = r#"
+import json
+import os
+import sqlalchemy as sa
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+dsn = os.environ["KOGWISTAR_TEST_PG_DSN"]
+if dsn.startswith("postgres://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgres://")
+elif dsn.startswith("postgresql://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgresql://")
+engine = sa.create_engine(dsn)
+try:
+    store = EnginePostgresMetaStore(
+        engine=engine, schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"]
+    )
+    store.project_lane_message(
+        message_id="lane-1", namespace="workflow", purpose="system",
+        inbox_id="workflow-runtime", conversation_id="conversation",
+        recipient_id="python-worker", sender_id="rust-scheduler",
+        msg_type="workflow.step.execute", status="pending", created_at=1,
+        available_at=1, run_id="owned-run", step_id="step-1",
+        correlation_id="owned-run",
+        payload_json=json.dumps({
+            "workflow_id": "workflow", "conversation_id": "conversation",
+            "token_id": "owned-run", "parent_token_id": None,
+        }),
+    )
+finally:
+    engine.dispose()
+"#;
+        let seed_result = std::process::Command::new(&python)
+            .arg("-c")
+            .arg(python_seed_lane)
+            .current_dir(&repository_root)
+            .env("KOGWISTAR_TEST_PG_DSN", &dsn)
+            .env("KOGWISTAR_TEST_PG_SCHEMA", &schema)
+            .output()
+            .expect("launch Python PostgreSQL lane writer");
+        assert!(
+            seed_result.status.success(),
+            "Python lane writer failed; stdout={}; stderr={}",
+            String::from_utf8_lossy(&seed_result.stdout),
+            String::from_utf8_lossy(&seed_result.stderr)
+        );
         let claimed = service
             .store
             .claim_projected_lane_messages("workflow", "workflow-runtime", "worker-1", 1, 30)
@@ -187,7 +207,18 @@
             .unwrap();
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].message_id, "lane-1");
+        assert_eq!(claimed[0].namespace, "workflow");
+        assert_eq!(claimed[0].purpose, "system");
+        assert_eq!(claimed[0].inbox_id, "workflow-runtime");
+        assert_eq!(claimed[0].conversation_id, "conversation");
+        assert_eq!(claimed[0].recipient_id, "python-worker");
+        assert_eq!(claimed[0].sender_id, "rust-scheduler");
+        assert_eq!(claimed[0].msg_type, "workflow.step.execute");
         assert_eq!(claimed[0].status, "claimed");
+        assert_eq!(claimed[0].run_id.as_deref(), Some("owned-run"));
+        assert_eq!(claimed[0].step_id.as_deref(), Some("step-1"));
+        assert_eq!(claimed[0].correlation_id.as_deref(), Some("owned-run"));
+        assert_eq!(claimed[0].claimed_by.as_deref(), Some("worker-1"));
 
         let mut worker_result = json!({
                     "handoff": {
@@ -650,11 +681,6 @@
                 .count(),
             1
         );
-        let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .canonicalize()
-            .unwrap();
-        let python = std::env::var_os("KOGWISTAR_PYTHON").unwrap_or_else(|| "python".into());
         let python_probe = r#"
 import os
 import json
@@ -683,6 +709,31 @@ try:
         "node", "owner-check-node", "ADD"
     ), event
     assert payload["id"] == "owner-check-node", payload
+    lane_rows = store.list_projected_lane_messages(
+        namespace="workflow", inbox_id="workflow-runtime", run_id="owned-run"
+    )
+    assert len(lane_rows) == 1, lane_rows
+    lane = lane_rows[0]
+    assert (
+        lane.message_id, lane.namespace, lane.inbox_id, lane.conversation_id,
+        lane.run_id, lane.step_id, lane.correlation_id, lane.status, lane.claimed_by,
+    ) == (
+        "lane-1", "workflow", "workflow-runtime", "conversation",
+        "owned-run", "step-1", "owned-run", "completed", None,
+    ), lane
+    run_events = store.list_server_run_events("owned-run")
+    worker_events = [
+        event
+        for event in run_events
+        if event["event_type"] == "workflow.recorded_transition.v1"
+        and event["payload"].get("worker_handoff") is not None
+    ]
+    assert len(worker_events) == 1, worker_events
+    assert worker_events[0]["run_id"] == "owned-run"
+    assert worker_events[0]["payload"]["worker_handoff"] == {
+        "message_id": "lane-1", "claimed_by": "worker-2", "run_id": "owned-run",
+        "step_id": "step-1", "correlation_id": "owned-run",
+    }, worker_events[0]
 finally:
     engine.dispose()
 "#;
