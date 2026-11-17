@@ -78,6 +78,10 @@ external-worker and inline-server modes (**4 passed**, PostgreSQL cells not
 run). These runs are isolated UAT/regression evidence only; Docker is a
 separate UAT environment, not production cutover or a production canary. Hosted
 Ubuntu CI remains pending for the refreshed SQLite lock protocol.
+The Python-only memory runtime E2E sync/async cells also passed (**2 passed**)
+with Rust extension loading patched to fail if attempted; `cargo tree` confirmed
+the native API's normal dependency closure contains no Python binding/PyO3
+crates. These checks cover the tested paths, not every optional integration.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
