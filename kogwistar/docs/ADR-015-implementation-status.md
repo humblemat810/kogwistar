@@ -111,6 +111,11 @@ run against the disposable pgvector:pg16 service (**33 passed**, 11 ordinary
 tests excluded by the filter). Each live test uses an isolated schema. These
 Docker-backed runs are isolated UAT, not production or production-cutover
 evidence; they do not change deployment gates or capability-readiness counts.
+The API crate's ignored PostgreSQL integration suite then passed all **35**
+database cases against the same disposable service, excluding four live-Chroma
+tests and one manual Python-MCP SDK smoke. The first run had 34 passes and one
+harness precondition failure because `kogwistar-server` had not been built;
+after building that binary, the remaining native-answer workflow test passed.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
