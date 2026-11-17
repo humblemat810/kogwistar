@@ -2497,6 +2497,10 @@ Per-operation mean of the three sample-level latency percentiles (ms):
 Elapsed sample coefficient of variation was 1.17%, 2.14%, and 6.71%,
 respectively. These three-sample tails are descriptive, not stable population
 estimates. Result closes the Python baseline, mixed seam, and Rust-native
-measurement tasklets only; the comparison/report-verifier task remains open.
+measurement tasklets. The new pure-Python report verifier rechecked copied
+trace content and SHA, run/trace identity, operation counts, digest parity,
+reported medians, per-operation percentiles, resources, and seam counters:
+**passed**, with **0 failed samples** and **0 validation errors**. Its focused
+unit tests passed (**3 passed**), including cross-mode digest-mismatch rejection.
 Raw machine report and manifest are retained locally under the ignored
 `.tmp/mixed-runtime-matrix-20261118-rel05a/` directory.

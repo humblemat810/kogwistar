@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **36/67 PASS (53.7%)**; **0 IN PROGRESS**; **31 NOT STARTED**.
+**Progress:** **37/67 PASS (55.2%)**; **0 IN PROGRESS**; **30 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -136,7 +136,7 @@ the closed ADR-022 evidence inventories.
 | REL-05A | All six | PASS | Python HTTP baseline: fixed 100-item/300-operation trace, 4 CPU/8 GiB Docker limits verified, 1 warm-up + 3 fresh samples. Equal canonical digest `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`; median 5,315 ms, 56.44 ops/s, startup 77.34 ms, CPU 5,481 ms, RSS delta -2.47 MiB; trace SHA `bc539bc8c2bb7247f3d1d2d10d1c338854447ae4cdd4eceda6820031a77c478d`. Evidence: `.tmp/mixed-runtime-matrix-20261118-rel05a/endpoint/endpoint-report.v1.json`; source revision `278689982e356ab4360fb9d04c4a25708451734c`, source manifest SHA `241b2e88770f7a2e31ab6b4c0ee5b4ce3c08fc1cb7dae1481d89b9aefbc10af3`. |
 | REL-05B | All six | PASS | Mixed Python HTTP + Rust authority used same trace/backend/4-CPU/8-GiB limits; digest equals Python. Median 5,320 ms, 56.39 ops/s, startup 71.31 ms, CPU 5,461 ms, RSS delta 0.68 MiB; measured 1,000 FFI calls and 200 transaction boundaries, owner `rust_meta_store`. Same raw report, trace SHA, source revision, and source manifest as REL-05A. |
 | REL-05C | All six | PASS | Rust-native HTTP used same trace/backend/limits; digest equals Python; measured FFI calls **0**. Median 775 ms, 387.25 ops/s, startup 23.10 ms, native CPU 560 ms, native peak RSS 7.73 MiB; owner `rust_native_store`. Same raw report, trace SHA, source revision, and source manifest as REL-05A. |
-| REL-05D | All six | NOT STARTED | Invariant: comparison uses matched conditions and honest variation/tails. Cell: three mode reports. Oracle: input identity equal; p50/p95/p99, RSS, startup, error counts and sample variation reported. Check: run benchmark parity/report verifier. |
+| REL-05D | All six | PASS | Pure-Python verifier checks copied trace SHA/canonical operation order, shared run/trace identity, sample counts, digest parity, per-operation p50/p95/p99, reported summary metrics, RSS/CPU/startup, seam counts, and variation. Evidence: `_verify_endpoint_reports` passed on `.tmp/mixed-runtime-matrix-20261118-rel05a/endpoint/endpoint-report.v1.json`; 3 modes, 1 warm-up + 3 samples each, **0 failed samples / 0 validation errors**. `tests/core/test_mixed_endpoint_container_benchmark.py` (**3 passed**) includes digest-mismatch rejection. No second Docker build. |
 
 ## Closure
 
