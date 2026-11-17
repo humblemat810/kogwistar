@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **41/67 PASS (61.2%)**; **0 IN PROGRESS**; **26 NOT STARTED**.
+**Progress:** **42/67 PASS (62.7%)**; **0 IN PROGRESS**; **25 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -93,7 +93,7 @@ the closed ADR-022 evidence inventories.
 | SRV-01 | `server-rest-sse-mcp-cli` | PASS | Implemented REST/SSE/MCP operations preserve contract, authentication, scope, and error behavior. | Phase-5 server gate recorded 197 passed; current-candidate revalidation is REL-01/REL-02. |
 | SRV-02 | `server-rest-sse-mcp-cli` | PARENT | Native `send_message` admission requirement; children: SRV-02A,SRV-02B,SRV-02C. | Parent closes when all leaves pass. |
 | SRV-02A | `server-rest-sse-mcp-cli` | PASS | Invariant: valid REST send admits one turn in Rust. Cell: PostgreSQL REST ingress. Oracle: response and durable run/turn/event/lane state. Evidence: `tests::postgres_agentic_answer::postgres_agentic_answer_workflow_executes_durably_without_python_worker` (**1 passed**, live `kogwistar-adr015-pg16`); HTTP `202`, user turn persisted, exactly one matching `run.created`, run and lane persisted, Rust-native workflow completed. |
-| SRV-02B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: MCP send exact retry is idempotent. Cell: PostgreSQL MCP ingress, same idempotency key. Oracle: same admission response and no duplicate durable rows. Check: add/run `test_postgres_mcp_send_message_retry_is_idempotent`. |
+| SRV-02B | `server-rest-sse-mcp-cli` | PASS | Invariant: MCP send exact retry is idempotent. Cell: PostgreSQL MCP admission test covers concurrent duplicate, sequential retry, changed-payload conflict, durable counts, and service reopen. Evidence: `postgres_send_message_admission_is_one_graph_run_event_lane_transaction` passed live against disposable `pgvector:pg16` (1 passed, 5.85s); exact retries returned same run/turn, changed payload conflicted, and durable state remained single-admission after reopen. |
 | SRV-02C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: wrong owner/capability cannot admit a turn. Cell: REST and MCP denied send requests. Oracle: authorization denial and unchanged run/event/lane counts. Check: add/run `test_postgres_send_message_denial_has_no_effects`. |
 | SRV-03 | `server-rest-sse-mcp-cli` | PARENT | Native `receive_message` projection requirement; children: SRV-03A,SRV-03B,SRV-03C. | Parent closes when all leaves pass. |
 | SRV-03A | `server-rest-sse-mcp-cli` | PASS | Invariant: Rust receive returns Python-compatible transcript ordering and shape. Cell: PostgreSQL conversation REST/service response over shared fixture. Oracle: canonical JSON equals Python golden. Evidence: `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` (**1 passed**, live `kogwistar-adr015-pg16`); `receive_message.result` exactly equals `receive-message-result-v1.json`, ordered REST transcript fields verified. |
