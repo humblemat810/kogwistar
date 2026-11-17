@@ -38,6 +38,36 @@
         );
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/wisdom_retrieval.rs#graph_record_document_json; python=tests/core/test_graph_model_adapter.py#test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences
+    #[test]
+    fn semantic_edge_projection_preserves_node_and_edge_endpoint_ids() {
+        let record = GraphRecord {
+            id: "edge-hyper-1".to_owned(),
+            document: Some(
+                json!({
+                    "id":"edge-hyper-1",
+                    "source_ids":["node-a", "node-b"],
+                    "target_ids":["node-c"],
+                    "source_edge_ids":["edge-parent"],
+                    "target_edge_ids":["edge-child"]
+                })
+                .to_string(),
+            ),
+            metadata: json!({"lifecycle_status":"active"})
+                .as_object()
+                .unwrap()
+                .clone(),
+            embedding: None,
+        };
+
+        let projected: Value =
+            serde_json::from_str(&graph_record_document_json(&record).unwrap()).unwrap();
+        assert_eq!(projected["source_ids"], json!(["node-a", "node-b"]));
+        assert_eq!(projected["target_ids"], json!(["node-c"]));
+        assert_eq!(projected["source_edge_ids"], json!(["edge-parent"]));
+        assert_eq!(projected["target_edge_ids"], json!(["edge-child"]));
+    }
+
     #[test]
     fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
         let request: GraphNeighborsRequestV1 =

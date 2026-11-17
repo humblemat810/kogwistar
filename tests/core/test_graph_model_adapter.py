@@ -1678,6 +1678,7 @@ def test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences() -> No
     assert envelope["payload"]["id"] == edge.id
     assert envelope["payload"]["source_ids"] == ["node-a", "node-b"]
     assert envelope["payload"]["source_edge_ids"] == ["edge-parent"]
+    assert envelope["payload"]["target_edge_ids"] is None
 
 
 def test_supported_edge_families_retain_node_lifecycle_capabilities() -> None:
