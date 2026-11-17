@@ -146,6 +146,7 @@
         assert_eq!(payload["conversation_id"], "conversation-1");
         assert_eq!(payload["metadata"]["source"], "integration");
         assert_eq!(payload["properties"]["summary"], "latest snapshot");
+        assert_eq!(payload, expected, "REST snapshot projection must match Python golden");
         assert_eq!(
             payload
                 .as_object()

@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **25/67 PASS (37.3%)**; **4 IN PROGRESS**; **38 NOT STARTED**.
+**Progress:** **26/67 PASS (38.8%)**; **3 IN PROGRESS**; **38 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -100,7 +100,7 @@ the closed ADR-022 evidence inventories.
 | SRV-03B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: Rust-written transcript remains readable after Python reopen. Cell: write via Rust server, read via Python facade. Oracle: same ordered turn/result projection. Check: add/run `test_postgres_receive_message_cross_language_reopen`. |
 | SRV-03C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: unauthorized scope cannot read transcript. Cell: foreign owner/namespace receive request. Oracle: denied response with no transcript content. Check: add/run `test_postgres_receive_message_rejects_foreign_scope`. |
 | SRV-04 | `server-rest-sse-mcp-cli` | PARENT | Native `mount_memory` requirement; children: SRV-04A,SRV-04B,SRV-04C. | Parent closes when all leaves pass. |
-| SRV-04A | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: owner mounts persisted snapshot with Python response shape. Cell: Rust PostgreSQL REST route after reopen. Oracle: canonical response equals shared fixture. Check: finish `test_postgres_mount_memory_owner_matches_python_contract`. |
+| SRV-04A | `server-rest-sse-mcp-cli` | PASS | Invariant: owner mounts persisted snapshot with Python response shape. Cell: Rust PostgreSQL REST route and mount-memory syscall over shared fixture. Oracle: canonical response equals shared fixture. Evidence: `tests::postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live `kogwistar-adr015-pg16`); exact REST payload and mount-memory result equal `mount-memory-result-v1.json`. |
 | SRV-04B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: non-owner cannot mount private memory. Cell: Rust route with foreign principal. Oracle: denial and no snapshot content. Check: add/run `test_postgres_mount_memory_rejects_non_owner`. |
 | SRV-04C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: namespace mismatch cannot mount snapshot. Cell: same principal, foreign namespace. Oracle: denial without cross-namespace data. Check: add/run `test_postgres_mount_memory_rejects_foreign_namespace`. |
 | SRV-05 | `server-rest-sse-mcp-cli` | PARENT | Host-authorized `invoke_tool` requirement; children: SRV-05A,SRV-05B,SRV-05C. | Parent closes when all leaves pass. |
