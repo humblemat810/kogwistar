@@ -99,15 +99,18 @@ Every trace reported `implementation_authority=rust-native` and
 `seam_crossings=[]`; PostgreSQL used a disposable schema with teardown. This
 proves these tested UAT paths only, not unrestricted stack parity or production
 readiness.
-The current working-tree in-memory runtime slice also passed isolated Docker
-UAT: full store-memory suite (**48 passed**) and API library suite (**410
-passed, 40 ignored**). Focused graph-effect atomicity/stale-ACL tests (**2
-passed**), in-memory inline graph/ACL tests (**5 passed**), and
-native-operation/provider-event regressions (**6 passed**) also passed.
-`cargo check -p kogwistar-api --tests` and `cargo fmt --all -- --check`
-passed. Docker is an isolated UAT environment, not production and not
-production-cutover evidence; this slice does not change the deployment gate or
-capability-readiness count.
+Commit `3fc5063a`'s in-memory runtime slice passed isolated Docker UAT: full
+store-memory suite (**48 passed**) and API library suite (**410 passed, 40
+ignored**). Focused graph-effect atomicity/stale-ACL tests (**2 passed**),
+in-memory inline graph/ACL tests (**5 passed**), and native-operation/provider-
+event regressions (**6 passed**) also passed. `cargo check -p kogwistar-api
+--tests` and `cargo fmt --all -- --check` passed. The supporting Rust contracts,
+runtime, engine, SQLite-store, and PostgreSQL-store crate suites also passed;
+the PostgreSQL store's normally ignored live integration tests were explicitly
+run against the disposable pgvector:pg16 service (**33 passed**, 11 ordinary
+tests excluded by the filter). Each live test uses an isolated schema. These
+Docker-backed runs are isolated UAT, not production or production-cutover
+evidence; they do not change deployment gates or capability-readiness counts.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
