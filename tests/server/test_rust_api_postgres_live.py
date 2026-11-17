@@ -3460,6 +3460,58 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             f"rest_assistant_id={rust_assistant_turn_id!r}; "
             f"mcp_assistant_id={mcp_assistant_turn_id!r}"
         )
+
+        import sqlalchemy as sa
+
+        reopened_sqlalchemy_engine = sa.create_engine(sa_engine.url, future=True)
+        reopened_conversation_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "python_reopened_conversation"),
+            backend=PgVectorBackend(
+                engine=reopened_sqlalchemy_engine,
+                embedding_dim=3,
+                schema=conversation_schema,
+            ),
+            namespace="conversation",
+            kg_graph_type="conversation",
+            embedding_function=fixture_embedding,
+            embedding_profile=EmbeddingProfile(
+                provider="ollama",
+                model="fixture-embedding-v1",
+                dimension=3,
+                similarity_metric="cosine",
+                embedding_kind="single_vector",
+            ),
+            acl_enabled=True,
+        )
+        try:
+            reopened_read_token = claims_ctx.set(conversation_owner)
+            try:
+                reopened_nodes = reopened_conversation_engine.read.get_nodes(
+                    where={"conversation_id": rust_conversation_id}
+                )
+            finally:
+                claims_ctx.reset(reopened_read_token)
+        finally:
+            reopened_conversation_engine.close()
+        reopened_transcript = [
+            {
+                "node_id": node.id,
+                "turn_index": node.turn_index,
+                "role": node.role,
+                "content": node.summary,
+                "entity_type": node.metadata["entity_type"],
+            }
+            for node in sorted(
+                reopened_nodes,
+                key=lambda node: (
+                    node.turn_index if isinstance(node.turn_index, int) else -1,
+                    node.id,
+                ),
+            )
+            if node.metadata.get("entity_type")
+            in {"conversation_turn", "assistant_turn"}
+        ]
+        assert reopened_transcript == expected_python_rust_transcript
     finally:
         process.terminate()
         try:

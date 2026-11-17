@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **32/67 PASS (47.8%)**; **1 IN PROGRESS**; **34 NOT STARTED**.
+**Progress:** **33/67 PASS (49.3%)**; **1 IN PROGRESS**; **33 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -97,7 +97,7 @@ the closed ADR-022 evidence inventories.
 | SRV-02C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: wrong owner/capability cannot admit a turn. Cell: REST and MCP denied send requests. Oracle: authorization denial and unchanged run/event/lane counts. Check: add/run `test_postgres_send_message_denial_has_no_effects`. |
 | SRV-03 | `server-rest-sse-mcp-cli` | PARENT | Native `receive_message` projection requirement; children: SRV-03A,SRV-03B,SRV-03C. | Parent closes when all leaves pass. |
 | SRV-03A | `server-rest-sse-mcp-cli` | PASS | Invariant: Rust receive returns Python-compatible transcript ordering and shape. Cell: PostgreSQL conversation REST/service response over shared fixture. Oracle: canonical JSON equals Python golden. Evidence: `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` (**1 passed**, live `kogwistar-adr015-pg16`); `receive_message.result` exactly equals `receive-message-result-v1.json`, ordered REST transcript fields verified. |
-| SRV-03B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: Rust-written transcript remains readable after Python reopen. Cell: write via Rust server, read via Python facade. Oracle: same ordered turn/result projection. Check: add/run `test_postgres_receive_message_cross_language_reopen`. |
+| SRV-03B | `server-rest-sse-mcp-cli` | PASS | Invariant: Rust-written transcript remains readable after Python reopen. Cell: Rust REST/MCP server writes, fresh Python facade and SQLAlchemy connection read. Oracle: same ordered turn/result projection. Evidence: `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection` (**1 passed**, live PostgreSQL, 115.63s); fresh engine transcript equals expected Rust REST/MCP turns. |
 | SRV-03C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: unauthorized scope cannot read transcript. Cell: foreign owner/namespace receive request. Oracle: denied response with no transcript content. Check: add/run `test_postgres_receive_message_rejects_foreign_scope`. |
 | SRV-04 | `server-rest-sse-mcp-cli` | PARENT | Native `mount_memory` requirement; children: SRV-04A,SRV-04B,SRV-04C. | Parent closes when all leaves pass. |
 | SRV-04A | `server-rest-sse-mcp-cli` | PASS | Invariant: owner mounts persisted snapshot with Python response shape. Cell: Rust PostgreSQL REST route and mount-memory syscall over shared fixture. Oracle: canonical response equals shared fixture. Evidence: `tests::postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live `kogwistar-adr015-pg16`); exact REST payload and mount-memory result equal `mount-memory-result-v1.json`. |
