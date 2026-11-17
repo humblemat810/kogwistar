@@ -5,11 +5,12 @@ import os
 import pathlib
 from collections.abc import Callable
 from threading import Lock
-from typing import TYPE_CHECKING, Generic, TypeVar, cast
+from typing import Generic, TypeVar, cast
 
 from fastapi.templating import Jinja2Templates
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.graph_query import GraphQuery
+from kogwistar.typing_interfaces import SqlAlchemyEngineLike
 from kogwistar.server.bootstrap import (
     build_graph_engine,
     build_sqlalchemy_engine,
@@ -24,9 +25,6 @@ from kogwistar.server.chat_service_shared import (
 from kogwistar.server.run_registry import RunRegistry
 
 T = TypeVar("T")
-
-if TYPE_CHECKING:
-    from sqlalchemy.engine import Engine
 
 
 storage_settings = load_server_storage_settings()
@@ -75,11 +73,11 @@ class _LazyResource(Generic[T]):
         return f"<_LazyResource {object.__getattribute__(self, '_name')} ({state})>"
 
 
-def _build_pg_sqlalchemy_engine() -> Engine:
+def _build_pg_sqlalchemy_engine() -> SqlAlchemyEngineLike:
     return build_sqlalchemy_engine(storage_settings)
 
 
-def _shared_sqlalchemy_engine() -> Engine | None:
+def _shared_sqlalchemy_engine() -> SqlAlchemyEngineLike | None:
     if storage_settings.backend != "pg":
         return None
     return pg_sqlalchemy_engine.get()
@@ -118,23 +116,27 @@ def _build_wisdom_engine() -> GraphKnowledgeEngine:
     )
 
 
-pg_sqlalchemy_engine: _LazyResource[Engine] = _LazyResource(
+pg_sqlalchemy_engine: _LazyResource[SqlAlchemyEngineLike] = _LazyResource(
     _build_pg_sqlalchemy_engine, "pg_sqlalchemy_engine"
 )
 
 
-def _init_auth() -> Engine:
+def _init_auth() -> SqlAlchemyEngineLike:
+    from sqlalchemy.engine import Engine
+
     from kogwistar.server.auth.db import create_auth_engine, init_auth_db
 
     auth_engine = _shared_sqlalchemy_engine()
     if auth_engine is None:
         auth_db_url = os.getenv("AUTH_DB_URL", "sqlite:///auth.sqlite")
         auth_engine = create_auth_engine(auth_db_url)
-    init_auth_db(auth_engine)
+    init_auth_db(cast(Engine, auth_engine))
     return auth_engine
 
 
-auth_engine_resource: _LazyResource[Engine] = _LazyResource(_init_auth, "auth_engine")
+auth_engine_resource: _LazyResource[SqlAlchemyEngineLike] = _LazyResource(
+    _init_auth, "auth_engine"
+)
 
 engine: _LazyResource[GraphKnowledgeEngine] = _LazyResource(
     _build_engine, "knowledge_engine"

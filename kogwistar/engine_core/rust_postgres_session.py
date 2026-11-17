@@ -433,7 +433,7 @@ class RustEnginePostgresMetaStore(RustEngineSQLite):
             isinstance(item, str) and item for item in result
         ):
             raise RuntimeError("native source-document deletion returned invalid IDs")
-        return result
+        return [cast(str, item) for item in result]
 
     def graph_incident_edges(self, **values: JsonValue) -> list[JsonObject]:
         result = self._call("graph_incident_edges", **values)

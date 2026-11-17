@@ -93,6 +93,7 @@ class _RunExecutionService(_BaseComponent):
         try:
             with self._conversation_engine().uow():
                 if normalized_key is not None:
+                    assert run_id is not None
                     self.run_registry.create_run(
                         run_id=run_id,
                         conversation_id=conversation_id,
