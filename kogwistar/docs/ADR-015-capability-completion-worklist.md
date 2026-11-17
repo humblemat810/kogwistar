@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **54/67 PASS (80.6%)**; **0 IN PROGRESS**; **13 NOT STARTED**.
+**Progress:** **55/67 PASS (82.1%)**; **0 IN PROGRESS**; **12 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -117,7 +117,7 @@ the closed ADR-022 evidence inventories.
 | REL-01C | All six | NOT STARTED | Invariant: parser compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: parser profile green with exact coverage. Check: run parser Docker shard. |
 | REL-01D | All six | NOT STARTED | Invariant: sink compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: sink profile green with exact coverage. Check: run sink Docker shard. |
 | REL-01E | All six | NOT STARTED | Invariant: application compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: app profile green with exact coverage. Check: run application Docker shard. |
-| REL-01F | All six | NOT STARTED | Invariant: layer reports reconcile to one candidate and no missing/duplicate tests. Cell: merged four-layer report. Oracle: identities equal and required-test set equals expected set. Check: run merged-report verifier. |
+| REL-01F | All six | PASS | Invariant: layer reports reconcile to one candidate and no missing/duplicate tests. Cell: merged four-layer report. Oracle: identities equal and required-test set equals expected set. Evidence: shard merger and release-gate verification, `tests/core/test_rust_port_container_compat.py` plus `tests/core/test_rust_port_release_gate.py` (**29 passed**, `-p no:cacheprovider`; no Docker/Rust build). Covers missing/duplicate layers, selected/run mismatch, and missing runs. Ruff unavailable (`No module named ruff`). |
 | REL-02 | All six | PARENT | Clean consumer wheel and persisted-data compatibility requirement; children: REL-02A,REL-02B,REL-02C,REL-02D. | Parent closes when all leaves pass. |
 | REL-02A | All six | NOT STARTED | Invariant: clean Docker consumer installs the exact candidate wheel and passes dependency validation. Cell: isolated consumer image. Oracle: install and `pip check` succeed. Check: run clean-wheel install smoke. |
 | REL-02B | All six | NOT STARTED | Invariant: installed wheel imports native extension with expected ABI/version. Cell: same clean consumer. Oracle: import and version handshake succeed without source checkout. Check: run native-wheel import smoke. |

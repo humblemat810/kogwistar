@@ -24,10 +24,63 @@ def _compatibility(identity: str, source_sha256: str | None = None) -> list[dict
                 "identity_sha256": identity,
                 "candidate_source_sha256": source_sha256,
             },
-            "layers": [{"name": layer, "status": "passed", "returncode": 0}],
+            "layers": [
+                {
+                    "name": layer,
+                    "status": "passed",
+                    "returncode": 0,
+                    "target_group_count": 1,
+                    "selected_group_indexes": [0],
+                    "group_assignments": [0],
+                    "commands": [["pytest", f"tests/{layer}"]],
+                    "runs": [
+                        {
+                            "group_index": 0,
+                            "group_key": f"{layer}/test_contract.py",
+                            "command": ["pytest", f"tests/{layer}"],
+                            "returncode": 0,
+                        }
+                    ],
+                }
+            ],
         }
         for layer in ("core", "parser", "sink", "application")
     ]
+
+
+def _evaluate_compatibility(reports: list[dict]) -> dict:
+    manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
+    return _gate().evaluate_release_gate(
+        manifest=manifest,
+        compatibility_reports=reports,
+        runtime_performance={"gate": {"status": "blocked"}},
+        phase3_capability_evidence={},
+        phase4_runtime_evidence={},
+        phase5_server_evidence={},
+        canary_evidence={},
+    )
+
+
+def test_release_gate_rejects_duplicate_layer_report() -> None:
+    reports = _compatibility("a" * 64)
+    reports[0]["layers"].append(dict(reports[0]["layers"][0]))
+
+    result = _evaluate_compatibility(reports)
+
+    assert "core layer appears more than once" in {
+        row["detail"] for row in result["blockers"]
+    }
+
+
+def test_release_gate_rejects_missing_test_group_run() -> None:
+    reports = _compatibility("a" * 64)
+    reports[0]["layers"][0]["runs"] = []
+
+    result = _evaluate_compatibility(reports)
+
+    assert "core layer test-group runs are missing or duplicated" in {
+        row["detail"] for row in result["blockers"]
+    }
 
 
 def _production_canary_set() -> dict:

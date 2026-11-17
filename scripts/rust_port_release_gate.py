@@ -341,6 +341,49 @@ def _validate_deferred_group(group: dict[str, Any], prefix: str, errors: list[st
         errors.append(f"{prefix}.exit_evidence must be non-empty")
 
 
+def _compatibility_layer_errors(layer: dict[str, Any]) -> list[str]:
+    """Require a passing layer summary to reconcile to its exact test-group runs."""
+    name = layer.get("name")
+    prefix = f"{name} layer"
+    errors: list[str] = []
+    count = layer.get("target_group_count")
+    if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+        return [f"{prefix} has invalid target group count"]
+    assignments = layer.get("group_assignments")
+    if not isinstance(assignments, list) or len(assignments) != count or any(
+        not isinstance(index, int) or isinstance(index, bool) or index < 0
+        for index in assignments
+    ):
+        errors.append(f"{prefix} has invalid group assignments")
+    selected = layer.get("selected_group_indexes")
+    expected = list(range(count))
+    if selected != expected:
+        errors.append(f"{prefix} selected groups are missing or duplicated")
+
+    runs = layer.get("runs")
+    if not isinstance(runs, list) or any(not isinstance(run, dict) for run in runs):
+        errors.append(f"{prefix} test-group runs are invalid")
+        return errors
+    run_indexes = [run.get("group_index") for run in runs]
+    if (
+        any(not isinstance(index, int) or isinstance(index, bool) for index in run_indexes)
+        or len(run_indexes) != count
+        or sorted(run_indexes) != expected
+    ):
+        errors.append(f"{prefix} test-group runs are missing or duplicated")
+    group_keys = [run.get("group_key") for run in runs]
+    if any(not isinstance(key, str) or not key for key in group_keys) or len(
+        set(group_keys)
+    ) != count:
+        errors.append(f"{prefix} test-group keys are missing or duplicated")
+    if any(run.get("returncode") != 0 or not isinstance(run.get("command"), list) for run in runs):
+        errors.append(f"{prefix} contains an unverified test-group run")
+    commands = layer.get("commands")
+    if not isinstance(commands, list) or commands != [run.get("command") for run in runs]:
+        errors.append(f"{prefix} commands do not match test-group runs")
+    return errors
+
+
 def evaluate_release_gate(
     *,
     manifest: dict[str, Any],
@@ -353,6 +396,7 @@ def evaluate_release_gate(
 ) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
     by_layer: dict[str, dict[str, Any]] = {}
+    layer_counts: dict[str, int] = {}
     identities: set[str] = set()
     source_identities: set[str] = set()
     for report in compatibility_reports:
@@ -363,15 +407,28 @@ def evaluate_release_gate(
             candidate.get("candidate_source_sha256"), str
         ):
             source_identities.add(candidate["candidate_source_sha256"])
-        for layer in report.get("layers", []):
+        layers = report.get("layers")
+        if not isinstance(layers, list):
+            blockers.append({"gate": "compatibility", "detail": "compatibility report layers are invalid"})
+            continue
+        for layer in layers:
             if isinstance(layer, dict) and layer.get("name") in LAYERS:
-                by_layer[str(layer["name"])] = layer
+                name = str(layer["name"])
+                layer_counts[name] = layer_counts.get(name, 0) + 1
+                by_layer.setdefault(name, layer)
     for layer in LAYERS:
         evidence = by_layer.get(layer)
+        if layer_counts.get(layer, 0) > 1:
+            blockers.append(
+                {"gate": "compatibility", "detail": f"{layer} layer appears more than once"}
+            )
         if evidence is None or evidence.get("status") != "passed" or evidence.get("returncode") != 0:
             blockers.append(
                 {"gate": "compatibility", "detail": f"{layer} layer lacks passing evidence"}
             )
+        elif evidence is not None:
+            for detail in _compatibility_layer_errors(evidence):
+                blockers.append({"gate": "compatibility", "detail": detail})
     if len(identities) != 1:
         blockers.append(
             {"gate": "compatibility", "detail": "four layers do not share one candidate identity"}

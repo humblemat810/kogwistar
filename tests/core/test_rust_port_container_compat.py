@@ -338,3 +338,43 @@ def test_merge_shards_requires_same_identity_and_exact_group_coverage(
     _write_shard(second, shard_index=1, selected=[0])
     with pytest.raises(ValueError, match="missing or duplicated"):
         harness._merge_shard_reports([first, second], output)
+
+
+def test_merge_shards_rejects_run_set_that_differs_from_selected_groups(
+    tmp_path: Path,
+) -> None:
+    harness = _harness()
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    output = tmp_path / "merged.json"
+    _write_shard(first, shard_index=0, selected=[0])
+    _write_shard(second, shard_index=1, selected=[1])
+    payload = json.loads(second.read_text(encoding="utf-8"))
+    payload["layers"][0]["runs"] = []
+    second.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runs are missing or duplicated"):
+        harness._merge_shard_reports([first, second], output)
+
+
+def test_merge_shards_rejects_duplicate_or_missing_layer_records(
+    tmp_path: Path,
+) -> None:
+    harness = _harness()
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    output = tmp_path / "merged.json"
+    _write_shard(first, shard_index=0, selected=[0])
+    _write_shard(second, shard_index=1, selected=[1])
+    payload = json.loads(first.read_text(encoding="utf-8"))
+    payload["layers"].append(dict(payload["layers"][0]))
+    first.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate core layer"):
+        harness._merge_shard_reports([first, second], output)
+
+    _write_shard(first, shard_index=0, selected=[0])
+    payload = json.loads(second.read_text(encoding="utf-8"))
+    payload["layers"] = []
+    second.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing or unexpected layer sets"):
+        harness._merge_shard_reports([first, second], output)

@@ -409,37 +409,86 @@ def _merge_shard_reports(paths: list[Path], output: Path) -> dict[str, object]:
     if any(report.get("status") != "passed" for report in reports):
         raise ValueError("cannot merge a failed shard")
 
+    layers_by_report: list[dict[str, dict[str, object]]] = []
+    for report in reports:
+        raw_layers = report.get("layers")
+        if not isinstance(raw_layers, list):
+            raise ValueError("shard report layers are invalid")
+        mapped: dict[str, dict[str, object]] = {}
+        for layer in raw_layers:
+            if not isinstance(layer, dict) or not isinstance(layer.get("name"), str):
+                raise ValueError("shard report has an invalid layer record")
+            name = layer["name"]
+            if name in mapped:
+                raise ValueError(f"shard report contains duplicate {name} layer")
+            mapped[name] = layer
+        layers_by_report.append(mapped)
+    layer_names = list(layers_by_report[0])
+    if not layer_names or any(set(layers) != set(layer_names) for layers in layers_by_report):
+        raise ValueError("shard reports have missing or unexpected layer sets")
+
     merged_layers: list[dict[str, object]] = []
-    layer_names = [
-        layer.get("name")
-        for layer in reports[0].get("layers", [])
-        if isinstance(layer, dict)
-    ]
     for name in layer_names:
-        parts = [
-            next(
-                layer
-                for layer in report.get("layers", [])
-                if isinstance(layer, dict) and layer.get("name") == name
-            )
-            for report in reports
-        ]
+        parts = [layers[name] for layers in layers_by_report]
         counts = {part.get("target_group_count") for part in parts}
         assignments = {tuple(part.get("group_assignments", [])) for part in parts}
         if len(counts) != 1 or len(assignments) != 1:
             raise ValueError(f"{name} shard plans differ")
         target_count = next(iter(counts))
-        if not isinstance(target_count, int):
+        if (
+            not isinstance(target_count, int)
+            or isinstance(target_count, bool)
+            or target_count < 1
+        ):
             raise ValueError(f"{name} target group count is invalid")
-        selected = [
-            index for part in parts for index in part.get("selected_group_indexes", [])
-        ]
+        assignment = list(next(iter(assignments)))
+        if len(assignment) != target_count or any(
+            not isinstance(shard, int)
+            or isinstance(shard, bool)
+            or not 0 <= shard < len(reports)
+            for shard in assignment
+        ):
+            raise ValueError(f"{name} shard assignments are invalid")
+        selected: list[int] = []
+        runs: list[dict[str, object]] = []
+        for report, part in zip(reports, parts, strict=True):
+            shard_index = report.get("execution", {}).get("shard_index")
+            expected_for_shard = {
+                index for index, shard in enumerate(assignment) if shard == shard_index
+            }
+            raw_selected = part.get("selected_group_indexes")
+            if not isinstance(raw_selected, list) or any(
+                not isinstance(index, int) or isinstance(index, bool)
+                for index in raw_selected
+            ):
+                raise ValueError(f"{name} selected group indexes are invalid")
+            if len(raw_selected) != len(set(raw_selected)) or set(raw_selected) != expected_for_shard:
+                raise ValueError(f"{name} groups are missing or duplicated")
+            selected.extend(raw_selected)
+            raw_runs = part.get("runs")
+            if not isinstance(raw_runs, list) or any(
+                not isinstance(run, dict) for run in raw_runs
+            ):
+                raise ValueError(f"{name} run records are invalid")
+            run_indexes = [run.get("group_index") for run in raw_runs]
+            if (
+                any(not isinstance(index, int) or isinstance(index, bool) for index in run_indexes)
+                or len(run_indexes) != len(set(run_indexes))
+                or set(run_indexes) != expected_for_shard
+            ):
+                raise ValueError(f"{name} runs are missing or duplicated")
+            for run in raw_runs:
+                if run.get("returncode") != 0 or not isinstance(run.get("command"), list):
+                    raise ValueError(f"{name} contains an unverified group run")
+                runs.append(run)
         if sorted(selected) != list(range(target_count)):
             raise ValueError(f"{name} groups are missing or duplicated")
-        runs = sorted(
-            (run for part in parts for run in part.get("runs", [])),
-            key=lambda run: run.get("group_index", -1),
-        )
+        runs.sort(key=lambda run: run["group_index"])
+        group_keys = [run.get("group_key") for run in runs]
+        if any(not isinstance(key, str) or not key for key in group_keys) or len(
+            set(group_keys)
+        ) != target_count:
+            raise ValueError(f"{name} test-group keys are missing or duplicated")
         merged_layers.append(
             {
                 **parts[0],
