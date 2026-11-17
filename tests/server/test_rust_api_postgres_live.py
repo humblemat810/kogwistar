@@ -2437,6 +2437,24 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             actual_seed_ids, actual_layers = semantic_ids(rust_semantic)
             assert actual_seed_ids == expected_seed_ids, principal_id
             assert expected_seed_ids[0] == visible_target.id
+            python_seed_records = {
+                record["id"]: record
+                for record in (json.loads(item) for item in python_semantic["seeds"])
+            }
+            rust_seed_records = {
+                record["id"]: record
+                for record in (json.loads(item) for item in rust_semantic["seeds"])
+            }
+            python_record = python_seed_records[visible_target.id]
+            rust_record = rust_seed_records[visible_target.id]
+            differences = {
+                key: {"python": python_record.get(key), "rust": rust_record.get(key)}
+                for key in python_record.keys() | rust_record.keys()
+                if python_record.get(key) != rust_record.get(key)
+            }
+            assert not differences, (
+                f"{principal_id}: canonical visible node payload differs: {differences}"
+            )
             assert expected_seed_ids[-1] == other_doc_target.id
             assert len(actual_layers) == len(expected_layers), principal_id
             for actual, expected in zip(actual_layers, expected_layers, strict=True):

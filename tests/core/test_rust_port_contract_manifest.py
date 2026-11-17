@@ -1266,11 +1266,37 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         / "ADR-015-capability-completion-worklist.md"
     )
     worklist = worklist_path.read_text(encoding="utf-8")
-    rows = [
+    all_rows = [
         line
         for line in worklist.splitlines()
-        if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV|REL)-\d+ \|", line)
+        if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV|REL)-[A-Z0-9-]+ \|", line)
     ]
+    parents = [line for line in all_rows if "| PARENT |" in line]
+    rows = [line for line in all_rows if "| PARENT |" not in line]
+    row_by_id = {
+        re.match(r"\| ([A-Z0-9-]+) \|", line).group(1): line
+        for line in all_rows
+    }
+    referenced_children: set[str] = set()
+    for parent in parents:
+        parent_id = re.match(r"\| ([A-Z0-9-]+) \|", parent).group(1)
+        child_match = re.search(r"children: ([A-Z0-9,-]+)", parent)
+        assert child_match is not None, parent
+        child_ids = child_match.group(1).split(",")
+        assert len(child_ids) >= 2
+        assert all(child_id in row_by_id for child_id in child_ids), parent
+        assert not referenced_children.intersection(child_ids), parent
+        referenced_children.update(child_ids)
+        expected_children = {
+            row_id
+            for row_id in row_by_id
+            if row_id.startswith(f"{parent_id}") and row_id != parent_id
+        }
+        assert set(child_ids) == expected_children, parent
+    detailed_children = {
+        row_id for row_id in row_by_id if re.search(r"-\d+[A-Z]$", row_id)
+    }
+    assert referenced_children == detailed_children
     statuses = []
     for line in rows:
         match = re.search(r"\| (PASS|IN PROGRESS|NOT STARTED) \|", line)
@@ -1291,12 +1317,13 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         and not item["rust_cutover_ready"]
     }
 
-    assert len(rows) == 31
-    assert statuses.count("PASS") == 15
-    assert statuses.count("IN PROGRESS") == 10
-    assert statuses.count("NOT STARTED") == 6
+    assert len(parents) == 16
+    assert len(rows) == 67
+    assert statuses.count("PASS") == 16
+    assert statuses.count("IN PROGRESS") == 9
+    assert statuses.count("NOT STARTED") == 42
     assert capability_ids == incomplete_capabilities
-    assert "**Progress:** **15/31 PASS (48.4%)**" in worklist
+    assert "**Progress:** **16/67 PASS (23.9%)**" in worklist
     assert (
         "No separate customer traffic fleet or percentage canary is required"
         in worklist

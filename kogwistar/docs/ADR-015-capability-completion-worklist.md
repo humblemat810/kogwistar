@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **15/31 PASS (48.4%)**; **10 IN PROGRESS**; **6 NOT STARTED**.
+**Progress:** **16/67 PASS (23.9%)**; **9 IN PROGRESS**; **42 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -14,12 +14,30 @@ the closed ADR-022 evidence inventories.
 
 ## Rules
 
-- Fixed denominator: **31 leaf tasklets**. Do not add rows, split rows, or change
-  the denominator without a newly approved requirement or demonstrated
-  independently failing oracle. Do not reopen a PASS without regression or
-  invalidated evidence.
+- Fixed denominator: **67 leaf tasklets**. The 16 unfinished parent requirements
+  were expanded once by the user's explicit request into independently verifiable
+  leaves; parent rows do not count. Do not add or split rows again without a newly
+  approved requirement or demonstrated independently failing oracle. Do not
+  reopen a PASS without regression or invalidated evidence.
 - One row = one invariant, one capability/backend cell, one observable oracle,
   and one focused check. Parent capability names do not count as tasklets.
+- Each leaf targets at most 30 minutes of active engineering; test/CI/runtime
+  wait time is excluded. A leaf must prove one outcome only. Parent closes
+  mechanically when every explicitly listed child is `PASS`.
+- **Verification cadence:** a leaf's first check must be a focused unit or
+  contract test, with no Docker/server startup. For Rust changes, run
+  `cargo check -p <crate>` for fast compile feedback, then add sibling unit
+  tests and execute them together in one `cargo test -p <crate> <parent-filter>`
+  invocation per parent, not one build per leaf. Rust unit tests still require a
+  test-binary link; batching avoids repeating it. Keep the existing Cargo target
+  cache and never `cargo clean` for this loop.
+- **Expensive closeout:** run each parent's required live-backend or server test
+  group once after its leaves are implemented. Reuse one disposable PostgreSQL
+  fixture for that group where supported. Build the server/container only for
+  end-to-end parent closeout; run clean-consumer Docker UAT and hosted CI once
+  for the shared REL gates, not for each leaf. A unit test or `cargo check` is
+  not a substitute for the required live closeout, and stale binaries do not
+  count after source changes.
 - `PASS` records behavioral evidence. Shared candidate-release checks remain
   separate and must pass before claiming the full library candidate verified.
 - A false `rust_cutover_ready` value keeps Rust from becoming an implicit
@@ -45,32 +63,85 @@ the closed ADR-022 evidence inventories.
 | PRJ-03 | `projections-snapshots-run-registry` | PASS | Bounded recovery/rebuild after reopen yields Python/Rust interoperable projection state. | Current candidate Phase-3 gate: `test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop`, passed. |
 | QLL-01 | `queues-leases-lanes` | PASS | PostgreSQL queue and lane rows preserve the shared Python/Rust wire contract. | Current candidate Phase-3 queue/lane group, 3 passed. |
 | QLL-02 | `queues-leases-lanes` | PASS | Concurrent claims, lease reclaim, and terminal retry remain exclusive and idempotent across runtimes. | Current candidate Phase-3 queue/lane group; live PostgreSQL concurrency cases passed. |
-| QLL-03 | `queues-leases-lanes` | NOT STARTED | Worker effect commits but ACK is lost; restart/reconciliation accepts exactly one effect and safely completes the durable lane. | Add live-PostgreSQL crash/lost-ACK test spanning queue, effect, and lane completion. |
-| QLL-04 | `queues-leases-lanes` | NOT STARTED | Run, step, message, and trace correlation identifiers remain identical across Python/Rust enqueue, claim, result, and ACK. | Add one shared-fixture trace assertion to the PostgreSQL queue/lane differential test. |
+| QLL-03 | `queues-leases-lanes` | PARENT | Lost-ACK recovery requirement; children: QLL-03A,QLL-03B. | Parent closes when both leaves pass. |
+| QLL-03A | `queues-leases-lanes` | NOT STARTED | Invariant: committed worker effect survives client ACK loss. Cell: Rust PostgreSQL worker-result commit followed by simulated lost response. Oracle: reopened Python reader sees exactly one canonical effect. Check: add/run `test_postgres_worker_effect_survives_lost_ack`. |
+| QLL-03B | `queues-leases-lanes` | NOT STARTED | Invariant: retry/reconciliation completes lane without duplicating effect. Cell: restart, reclaim, retry, and ACK of same lane message. Oracle: one effect, one terminal lane state, stable idempotency key. Check: add/run `test_postgres_lane_lost_ack_recovery_is_idempotent`. |
+| QLL-04 | `queues-leases-lanes` | PARENT | Correlation preservation requirement; children: QLL-04A,QLL-04B. | Parent closes when both leaves pass. |
+| QLL-04A | `queues-leases-lanes` | NOT STARTED | Invariant: run/step/message/trace IDs survive enqueue and claim. Cell: shared Python/Rust PostgreSQL lane fixture. Oracle: every stored and returned ID equals fixture identity. Check: add/run `test_postgres_lane_enqueue_claim_preserves_correlation_ids`. |
+| QLL-04B | `queues-leases-lanes` | NOT STARTED | Invariant: same IDs survive result and ACK. Cell: complete the claimed lane in both runtimes. Oracle: result, durable event, and ACK reference same run/step/message/trace IDs. Check: add/run `test_postgres_lane_result_ack_preserves_correlation_ids`. |
 | GRF-01 | `graph-pgvector` | PASS | Graph mutation event, node/edge state, and transaction rollback remain mutually readable across Python/Rust. | Current candidate Phase-3 graph/transaction group, 47 passed. |
-| GRF-02 | `graph-pgvector` | IN PROGRESS | Node read and mutation enforce the same tenant, namespace, graph-space, and ACL decision in Python and Rust. | Complete a shared valid/denied fixture for both authorities; prove denied requests cause no writes. |
-| GRF-03 | `graph-pgvector` | IN PROGRESS | Edge read/hydration and source-evidence visibility preserve endpoint integrity, source spans, and authorization across authorities. | Complete paired fixtures for edge endpoints and evidence spans; assert no hidden-source leakage. |
-| GRF-04 | `graph-pgvector` | IN PROGRESS | Vector query filters, metric, ordering, and returned distances match Python without Rust-to-Python fallback. | Complete shared PostgreSQL query fixtures for supported filters, ranking ties, and unsupported-form rejection. |
-| GRF-05 | `graph-pgvector` | IN PROGRESS | A graph write's indexing intent and vector projection recover after reopen without violating the canonical transaction boundary. | Finish restart/rebuild parity for index jobs and vectors; assert Python worker seam only when configured. |
+| GRF-02 | `graph-pgvector` | PARENT | Node read/write scope and ACL requirement; children: GRF-02A,GRF-02B,GRF-02C. | Parent closes when all leaves pass. |
+| GRF-02A | `graph-pgvector` | PASS | Invariant: authorized semantic node read returns Python-compatible canonical payload. Cell: Python and rebuilt Rust PostgreSQL semantic query under reader and owner ACL claims. Oracle: visible IDs/order and full visible seed JSON match, including LLM field slicing and default `redirect_to_id`. Evidence: `test_rust_postgres_graph_read_tools_match_python_over_shared_projection` (**1 passed**, disposable `pgvector:pg16`, 120.08s); Rust `semantic_graph_record_projection_matches_python_llm_slice` (**1 passed**); `cargo fmt --check` passed. |
+| GRF-02B | `graph-pgvector` | NOT STARTED | Invariant: denied node read cannot expose cross-tenant or cross-namespace node. Cell: Rust route/store read with mismatched scope and ACL. Oracle: denied/empty per Python contract; no hidden payload. Check: add/run `test_postgres_node_read_scope_denial_parity`. |
+| GRF-02C | `graph-pgvector` | NOT STARTED | Invariant: denied node mutation has no durable effects. Cell: Rust PostgreSQL graph write with denied ACL/scope. Oracle: denial plus unchanged event/projection/index-job counts. Check: add/run `test_postgres_node_write_denial_is_side_effect_free`. |
+| GRF-03 | `graph-pgvector` | PARENT | Edge/evidence read integrity requirement; children: GRF-03A,GRF-03B,GRF-03C. | Parent closes when all leaves pass. |
+| GRF-03A | `graph-pgvector` | IN PROGRESS | Invariant: visible edge hydration preserves node and edge endpoints. Cell: Python/Rust PostgreSQL reads over shared hyperedge fixture. Oracle: endpoint kinds and canonical IDs match. Check: finish `test_postgres_edge_hydration_endpoint_parity`. |
+| GRF-03B | `graph-pgvector` | NOT STARTED | Invariant: visible evidence preserves exact source span and source-map reference. Cell: Rust PostgreSQL edge/evidence read. Oracle: offsets, revision, and evidence IDs equal shared fixture. Check: add/run `test_postgres_edge_evidence_span_parity`. |
+| GRF-03C | `graph-pgvector` | NOT STARTED | Invariant: hidden source ACL prevents edge/evidence leakage. Cell: authorized edge with unauthorized source evidence. Oracle: response omits protected edge/evidence as Python does. Check: add/run `test_postgres_hidden_source_evidence_is_not_leaked`. |
+| GRF-04 | `graph-pgvector` | PARENT | Vector-query semantics requirement; children: GRF-04A,GRF-04B,GRF-04C. | Parent closes when all leaves pass. |
+| GRF-04A | `graph-pgvector` | IN PROGRESS | Invariant: supported vector filters return same eligible IDs. Cell: shared PostgreSQL Python/Rust fixture for tenant, namespace, graph-space, and ACL filters. Oracle: ordered eligible-ID sets equal. Check: finish `test_postgres_vector_query_filter_parity`. |
+| GRF-04B | `graph-pgvector` | NOT STARTED | Invariant: metric, distance, and deterministic tie ordering match Python. Cell: equal-distance PostgreSQL vector candidates. Oracle: same scores and stable tie order. Check: add/run `test_postgres_vector_query_metric_and_ties_match_python`. |
+| GRF-04C | `graph-pgvector` | NOT STARTED | Invariant: unsupported query forms fail closed without Python fallback. Cell: malformed/unsupported Rust vector-query request. Oracle: explicit contract error and zero Python seam calls. Check: add/run `test_postgres_vector_query_unsupported_form_fails_closed`. |
+| GRF-05 | `graph-pgvector` | PARENT | Durable indexing/projection recovery requirement; children: GRF-05A,GRF-05B,GRF-05C. | Parent closes when all leaves pass. |
+| GRF-05A | `graph-pgvector` | IN PROGRESS | Invariant: canonical graph write and index intent share promised transaction boundary. Cell: injected PostgreSQL index-intent failure. Oracle: transaction-capable backend rolls back graph event/projection/intent together. Check: finish `test_postgres_graph_write_index_intent_atomicity`. |
+| GRF-05B | `graph-pgvector` | NOT STARTED | Invariant: pending index intent survives close/reopen and is replayed once. Cell: Rust PostgreSQL queue restart/rebuild. Oracle: one completed job and no duplicate event/vector. Check: add/run `test_postgres_index_intent_recovery_after_reopen`. |
+| GRF-05C | `graph-pgvector` | NOT STARTED | Invariant: vector projection is readable after worker promotion, with configured seam explicit. Cell: Rust write + selected Python/Rust worker + reopen. Oracle: canonical vector query returns promoted record; seam trace matches selected mode. Check: add/run `test_postgres_vector_promotion_and_seam_contract`. |
 | WFR-01 | `workflow-runtime` | PASS | Route selection, transitions, failure handling, fan-out, join, and terminal frontier match frozen Python semantics. | `ADR-015-implementation-tasklets.md` RT-01/02/04; Rust/Python differential tests passed. |
 | WFR-02 | `workflow-runtime` | PASS | Suspension/resume preserves exact token, unrelated pending work, and join obligations across reopen. | `ADR-015-implementation-tasklets.md` RT-03; Python/Rust ordered-history and reopen tests passed. |
 | WFR-03 | `workflow-runtime` | PASS | Worker claim/result, replay, duplicate delivery, rollback, and persisted checkpoint state interoperate across Python/Rust. | `ADR-015-implementation-tasklets.md` RT-05; handoff suite 7 passed. |
 | WFR-04 | `workflow-runtime` | PASS | A declared Rust-native workflow completes ingress-to-persistence with no Python worker and trace `seam_crossings=[]`. | Linux Docker UAT, Rust 1.97.1 + CPython 3.11, `test_rust_native_workflow_runs_through_real_server_without_python_worker` SQLite `external-worker` and `inline-server`: **2 passed**; durable run/checkpoint/steps, MCP trace authority, no Python handoff, empty seams verified. |
 | SRV-01 | `server-rest-sse-mcp-cli` | PASS | Implemented REST/SSE/MCP operations preserve contract, authentication, scope, and error behavior. | Phase-5 server gate recorded 197 passed; current-candidate revalidation is REL-01/REL-02. |
-| SRV-02 | `server-rest-sse-mcp-cli` | IN PROGRESS | `send_message` admits a turn in Rust without a Python syscall worker; owner, ACL, idempotency, event/lane writes stay atomic. | Finish native handler plus paired REST/MCP replay and denial tests. |
-| SRV-03 | `server-rest-sse-mcp-cli` | IN PROGRESS | `receive_message` serves scoped transcript/result from Rust-native storage with Python-compatible ordering and projection. | Finish native handler plus cross-language reopen fixture and unauthorized-scope test. |
-| SRV-04 | `server-rest-sse-mcp-cli` | IN PROGRESS | `mount_memory` resolves snapshot and ACL natively with Python public response contract. | Finish native HTTP/MCP path plus owner/non-owner/namespace tests after reopen. |
-| SRV-05 | `server-rest-sse-mcp-cli` | IN PROGRESS | `invoke_tool` dispatches supported Rust-native built-ins through host authorization; model output cannot grant permission. | Complete allow/deny tool fixtures, audit evidence, and explicit Python seam behavior for unsupported tools. |
-| SRV-06 | `server-rest-sse-mcp-cli` | NOT STARTED | Installed Rust CLI operation and error responses match documented Python CLI contract. | Add package-level CLI smoke: help, one success, one structured failure. |
-| REL-01 | All six | NOT STARTED | One candidate identity passes core, parser, sink, and application compatibility layers with exact coverage and no required skips. | Run persisted four-layer Docker harness on release candidate; retain merged report and identity. |
-| REL-02 | All six | NOT STARTED | Clean Docker consumer installs candidate wheel, imports native extension, passes `pip check`, performs Rust→Python→Rust persisted-data handoff, and exercises Python rollback. | Run deterministic consumer UAT against that wheel and durable database. |
-| REL-03 | All six | NOT STARTED | Supported release CI passes CPython 3.12–3.14 and PyPy 3.11 for declared package/test lanes. | Verify GitHub checks for exact candidate commit; label best-effort lanes, do not count them as required passes. |
-| REL-04 | All six | IN PROGRESS | Python-only path never enters Rust; Rust-native path never starts Python; mixed path crosses only declared serialized seams. | Extend/execute boundary guards for public selectors and Rust HTTP container; assert no silent fallback. |
-| REL-05 | All six | IN PROGRESS | Resource-matched Python, mixed, and seam-free Rust end-to-end paths preserve output parity and report throughput/latency/RSS. | Refresh benchmark on release candidate and Docker resource profile; report seam count, not microbenchmark extrapolation. |
+| SRV-02 | `server-rest-sse-mcp-cli` | PARENT | Native `send_message` admission requirement; children: SRV-02A,SRV-02B,SRV-02C. | Parent closes when all leaves pass. |
+| SRV-02A | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: valid REST send admits one turn in Rust. Cell: PostgreSQL REST ingress. Oracle: response and one atomic run/turn/event/lane state. Check: finish `test_postgres_rest_send_message_native_admission`. |
+| SRV-02B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: MCP send exact retry is idempotent. Cell: PostgreSQL MCP ingress, same idempotency key. Oracle: same admission response and no duplicate durable rows. Check: add/run `test_postgres_mcp_send_message_retry_is_idempotent`. |
+| SRV-02C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: wrong owner/capability cannot admit a turn. Cell: REST and MCP denied send requests. Oracle: authorization denial and unchanged run/event/lane counts. Check: add/run `test_postgres_send_message_denial_has_no_effects`. |
+| SRV-03 | `server-rest-sse-mcp-cli` | PARENT | Native `receive_message` projection requirement; children: SRV-03A,SRV-03B,SRV-03C. | Parent closes when all leaves pass. |
+| SRV-03A | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: Rust receive returns Python-compatible transcript ordering and shape. Cell: PostgreSQL REST response over shared conversation fixture. Oracle: canonical JSON equals Python golden. Check: finish `test_postgres_receive_message_matches_python_fixture`. |
+| SRV-03B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: Rust-written transcript remains readable after Python reopen. Cell: write via Rust server, read via Python facade. Oracle: same ordered turn/result projection. Check: add/run `test_postgres_receive_message_cross_language_reopen`. |
+| SRV-03C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: unauthorized scope cannot read transcript. Cell: foreign owner/namespace receive request. Oracle: denied response with no transcript content. Check: add/run `test_postgres_receive_message_rejects_foreign_scope`. |
+| SRV-04 | `server-rest-sse-mcp-cli` | PARENT | Native `mount_memory` requirement; children: SRV-04A,SRV-04B,SRV-04C. | Parent closes when all leaves pass. |
+| SRV-04A | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: owner mounts persisted snapshot with Python response shape. Cell: Rust PostgreSQL REST route after reopen. Oracle: canonical response equals shared fixture. Check: finish `test_postgres_mount_memory_owner_matches_python_contract`. |
+| SRV-04B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: non-owner cannot mount private memory. Cell: Rust route with foreign principal. Oracle: denial and no snapshot content. Check: add/run `test_postgres_mount_memory_rejects_non_owner`. |
+| SRV-04C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: namespace mismatch cannot mount snapshot. Cell: same principal, foreign namespace. Oracle: denial without cross-namespace data. Check: add/run `test_postgres_mount_memory_rejects_foreign_namespace`. |
+| SRV-05 | `server-rest-sse-mcp-cli` | PARENT | Host-authorized `invoke_tool` requirement; children: SRV-05A,SRV-05B,SRV-05C. | Parent closes when all leaves pass. |
+| SRV-05A | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: allowed built-in tool executes only after host capability check. Cell: Rust PostgreSQL invoke request with granted capability. Oracle: one tool outcome and audit record. Check: finish `test_postgres_invoke_tool_authorized_builtin`. |
+| SRV-05B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: model-supplied tool name/arguments cannot grant permission. Cell: denied capability and stale/revoked authority. Oracle: no executor call and denied audit result. Check: add/run `test_postgres_invoke_tool_does_not_trust_model_authority`. |
+| SRV-05C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: unsupported tool follows declared Python seam or fails explicitly. Cell: unsupported tool under each configured mode. Oracle: exactly declared seam or stable unsupported error; never silent fallback. Check: add/run `test_invoke_tool_unsupported_mode_is_explicit`. |
+| SRV-06 | `server-rest-sse-mcp-cli` | PARENT | Installed CLI contract requirement; children: SRV-06A,SRV-06B,SRV-06C. | Parent closes when all leaves pass. |
+| SRV-06A | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: installed Rust CLI advertises documented help. Cell: clean-wheel `kogwistar` CLI invocation. Oracle: expected command/options and exit 0. Check: add/run `test_installed_cli_help_contract`. |
+| SRV-06B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: one documented CLI success path returns Python-compatible result. Cell: clean consumer container and configured backend. Oracle: expected structured output and exit 0. Check: add/run `test_installed_cli_success_contract`. |
+| SRV-06C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: invalid CLI request returns structured Python-compatible failure. Cell: clean consumer container with invalid input. Oracle: stable error code/message class and nonzero exit. Check: add/run `test_installed_cli_failure_contract`. |
+| REL-01 | All six | PARENT | Candidate identity and four-layer compatibility requirement; children: REL-01A,REL-01B,REL-01C,REL-01D,REL-01E,REL-01F. | Parent closes when all leaves pass. |
+| REL-01A | All six | NOT STARTED | Invariant: one immutable candidate identity names source, pins, wheel, ABI, and backend. Cell: release-candidate manifest generation. Oracle: all identity fields present and hashes reproducible. Check: run candidate identity verifier. |
+| REL-01B | All six | NOT STARTED | Invariant: core compatibility layer passes exact required tests. Cell: same candidate identity. Oracle: required core profile green with no unapproved skips. Check: run core Docker shard. |
+| REL-01C | All six | NOT STARTED | Invariant: parser compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: parser profile green with exact coverage. Check: run parser Docker shard. |
+| REL-01D | All six | NOT STARTED | Invariant: sink compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: sink profile green with exact coverage. Check: run sink Docker shard. |
+| REL-01E | All six | NOT STARTED | Invariant: application compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: app profile green with exact coverage. Check: run application Docker shard. |
+| REL-01F | All six | NOT STARTED | Invariant: layer reports reconcile to one candidate and no missing/duplicate tests. Cell: merged four-layer report. Oracle: identities equal and required-test set equals expected set. Check: run merged-report verifier. |
+| REL-02 | All six | PARENT | Clean consumer wheel and persisted-data compatibility requirement; children: REL-02A,REL-02B,REL-02C,REL-02D. | Parent closes when all leaves pass. |
+| REL-02A | All six | NOT STARTED | Invariant: clean Docker consumer installs the exact candidate wheel and passes dependency validation. Cell: isolated consumer image. Oracle: install and `pip check` succeed. Check: run clean-wheel install smoke. |
+| REL-02B | All six | NOT STARTED | Invariant: installed wheel imports native extension with expected ABI/version. Cell: same clean consumer. Oracle: import and version handshake succeed without source checkout. Check: run native-wheel import smoke. |
+| REL-02C | All six | NOT STARTED | Invariant: persisted graph written Rust→Python→Rust remains readable and canonical. Cell: one durable DB shared sequentially across clean processes. Oracle: exact record/event digest equality. Check: add/run `test_clean_wheel_bidirectional_persisted_handoff`. |
+| REL-02D | All six | NOT STARTED | Invariant: Python rollback remains effective after Rust-authored data. Cell: injected Python transaction failure in consumer. Oracle: no partial Python writes; Rust-authored canonical state remains readable. Check: add/run `test_clean_wheel_python_rollback_after_rust_write`. |
+| REL-03 | All six | PARENT | Supported interpreter CI requirement; children: REL-03A,REL-03B,REL-03C,REL-03D. | Parent closes when all leaves pass. |
+| REL-03A | All six | NOT STARTED | Invariant: CPython 3.12 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Check: inspect exact-commit CI run. |
+| REL-03B | All six | NOT STARTED | Invariant: CPython 3.13 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Check: inspect exact-commit CI run. |
+| REL-03C | All six | NOT STARTED | Invariant: CPython 3.14 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Check: inspect exact-commit CI run. |
+| REL-03D | All six | NOT STARTED | Invariant: PyPy 3.11 declared lane has accurate best-effort/required result. Cell: hosted PyPy lane. Oracle: status matches support policy; failure cannot be reported as pass. Check: inspect exact-commit PyPy result. |
+| REL-04 | All six | PARENT | Language-boundary isolation requirement; children: REL-04A,REL-04B,REL-04C. | Parent closes when all leaves pass. |
+| REL-04A | All six | IN PROGRESS | Invariant: Python-only public path never loads/calls Rust. Cell: instrumented Python server and memory workflow. Oracle: zero native imports/calls; expected state. Check: finish Python-only boundary guard. |
+| REL-04B | All six | NOT STARTED | Invariant: Rust-native container path never starts Python worker/interpreter. Cell: clean Linux Docker UAT. Oracle: process/call instrumentation reports no Python execution and empty seam list. Check: add/run Rust-native no-Python container test. |
+| REL-04C | All six | NOT STARTED | Invariant: mixed mode crosses only declared serialization seams. Cell: one traced end-to-end operation per configured seam. Oracle: observed seam set equals declared set; undeclared crossing fails. Check: add/run mixed-boundary inventory guard. |
+| REL-05 | All six | PARENT | Resource-matched end-to-end comparison requirement; children: REL-05A,REL-05B,REL-05C,REL-05D. | Parent closes when all leaves pass. |
+| REL-05A | All six | IN PROGRESS | Invariant: Python endpoint baseline records correct output and resource metrics. Cell: pinned Docker resource profile and fixed trace. Oracle: digest correct; throughput/latency/RSS/startup recorded. Check: refresh Python endpoint sample. |
+| REL-05B | All six | NOT STARTED | Invariant: mixed endpoint preserves output and measures seam/resource costs. Cell: same trace, backend, container limits. Oracle: digest matches Python; seam count and metrics recorded. Check: run mixed endpoint sample. |
+| REL-05C | All six | NOT STARTED | Invariant: Rust-native endpoint preserves output and measures native/resource costs. Cell: same trace, backend, container limits. Oracle: digest matches Python; zero undeclared seams and metrics recorded. Check: run Rust-native endpoint sample. |
+| REL-05D | All six | NOT STARTED | Invariant: comparison uses matched conditions and honest variation/tails. Cell: three mode reports. Oracle: input identity equal; p50/p95/p99, RSS, startup, error counts and sample variation reported. Check: run benchmark parity/report verifier. |
 
 ## Closure
 
-A capability is complete when all its tasklets pass and shared REL tasklets pass.
+A capability parent closes when every mapped leaf passes; all shared REL leaves
+must also pass before claiming the library candidate verified.
 This worklist does not require external customer traffic, percentage rollout,
 or a production canary. Completing library acceptance does not silently change
 the default language: Python and Rust remain selectable; any default-policy

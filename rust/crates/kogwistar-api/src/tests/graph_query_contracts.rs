@@ -1,4 +1,44 @@
     #[test]
+    fn semantic_graph_record_projection_matches_python_llm_slice() {
+        let record = GraphRecord {
+            id: "node-1".to_owned(),
+            document: Some(
+                json!({
+                    "id":"node-1",
+                    "mentions":[{"spans":[{
+                        "doc_id":"doc-1",
+                        "start_char":0,
+                        "end_char":1,
+                        "insertion_method":"private-backend-value",
+                        "verification":{"method":"human","is_verified":true}
+                    }]}]
+                })
+                .to_string(),
+            ),
+            metadata: json!({
+                "lifecycle_status":"active",
+                "mentions":"backend metadata remains unchanged"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            embedding: None,
+        };
+
+        let projected: Value =
+            serde_json::from_str(&graph_record_document_json(&record).unwrap()).unwrap();
+        let span = &projected["mentions"][0]["spans"][0];
+        assert_eq!(span["doc_id"], "doc-1");
+        assert!(span.get("insertion_method").is_none());
+        assert!(span.get("verification").is_none());
+        assert_eq!(projected["metadata"]["redirect_to_id"], Value::Null);
+        assert_eq!(
+            projected["metadata"]["mentions"],
+            "backend metadata remains unchanged"
+        );
+    }
+
+    #[test]
     fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
         let request: GraphNeighborsRequestV1 =
             serde_json::from_str(r#"{"rid":" n1 ","doc_id":"doc-1"}"#).unwrap();

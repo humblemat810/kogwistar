@@ -12,10 +12,13 @@ Updated: 2026-11-17
 Active Rust capability implementation and library-UAT tasklets, with the sole
 current completion count, are tracked in
 [`ADR-015-capability-completion-worklist.md`](ADR-015-capability-completion-worklist.md).
-Its fixed baseline is **15/31 PASS (48.4%)**, **10 IN PROGRESS**, and
-**6 NOT STARTED**. Kogwistar is a library: clean Docker UAT on one identified
-candidate is its deployment-grade end-to-end acceptance. No customer fleet,
-traffic percentage, or external canary is required for library completion.
+Its fixed baseline is **16/67 PASS (23.9%)**, **9 IN PROGRESS**, and
+**42 NOT STARTED**. The denominator changed once because the user requested
+manageable leaves for all 16 unfinished parent requirements; the prior 15 PASS
+leaves remain, with one graph-read parity leaf newly closed. Kogwistar is a
+library: clean Docker UAT on one identified candidate is its deployment-grade
+end-to-end acceptance. No customer fleet, traffic percentage, or external
+canary is required for library completion.
 The closed ADR-022 worklist remains a historical evidence inventory.
 [`ADR-015-implementation-tasklets.md`](ADR-015-implementation-tasklets.md)
 contains 11 already-closed implementation slices; it is supporting evidence,
