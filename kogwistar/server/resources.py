@@ -76,7 +76,7 @@ class _LazyResource(Generic[T]):
 
 
 def _build_pg_sqlalchemy_engine() -> Engine:
-    return cast(Engine, build_sqlalchemy_engine(storage_settings))
+    return build_sqlalchemy_engine(storage_settings)
 
 
 def _shared_sqlalchemy_engine() -> Engine | None:
