@@ -710,10 +710,14 @@ a native Rust path. Deployment labels must reflect the actual request path.
    capability execution. In particular, Python and Rust SQLite handles do not
    overlap on one database in one process; handoff closes/releases ownership
    according to the existing SQLite interop contract. Participating Python and
-   Rust entrypoints also use cooperative cross-process authority locks for the
-   database path and file identity: POSIX file locks and Windows named mutexes.
-   Existing tests cover bounded startup, contention, crash, and handoff cases;
-   see the open `DL-07E` gate for remaining platform and entrypoint coverage.
+   Rust entrypoints also use the shared cross-process authority protocol for
+   database path and file identity. A short exclusive admission lock serializes
+   ownership checks; each implementation then holds a shared lease lock, so
+   multiple same-language processes may use SQLite concurrently while a
+   Python/Rust overlap fails closed. POSIX uses `flock`; Windows uses
+   `LockFileEx`. SQLite transactions still provide write serialization. The
+   focused Windows tests cover both same-language sharing and cross-language
+   rejection; the refreshed POSIX protocol awaits hosted Linux CI evidence.
    These locks do not govern non-participating SQLite clients or guarantee
    behavior on every filesystem or Windows session. Deployments must establish
    equivalent ownership for clients outside this protocol.

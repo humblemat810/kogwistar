@@ -1,6 +1,5 @@
 use super::*;
 
-#[cfg(not(windows))]
 use fs2::FileExt;
 
 static PROCESS_AUTHORITY_LOCKS: OnceLock<Mutex<BTreeMap<PathBuf, Weak<File>>>> = OnceLock::new();
@@ -22,86 +21,9 @@ pub(super) fn database_initialization_lock(database: &Path) -> Arc<Mutex<()>> {
     lock
 }
 
-#[cfg(windows)]
-static WINDOWS_PROCESS_AUTHORITY_MUTEXES: OnceLock<
-    Mutex<BTreeMap<String, Weak<WindowsAuthorityMutex>>>,
-> = OnceLock::new();
-
-#[cfg(windows)]
-#[derive(Debug)]
-struct WindowsAuthorityMutex {
-    handle: winapi::shared::ntdef::HANDLE,
-}
-
-#[cfg(windows)]
-unsafe impl Send for WindowsAuthorityMutex {}
-
-#[cfg(windows)]
-unsafe impl Sync for WindowsAuthorityMutex {}
-
-#[cfg(windows)]
-impl Drop for WindowsAuthorityMutex {
-    fn drop(&mut self) {
-        unsafe {
-            winapi::um::handleapi::CloseHandle(self.handle);
-        }
-    }
-}
-
-#[cfg(windows)]
-fn acquire_windows_authority_mutex(
-    authority_key: &str,
-    display_path: &Path,
-) -> SqliteStoreResult<Arc<WindowsAuthorityMutex>> {
-    let key = format!(
-        "Local\\KogwistarSQLiteAuthority-{}",
-        Uuid::new_v5(&Uuid::NAMESPACE_OID, authority_key.as_bytes())
-    );
-    let mutexes = WINDOWS_PROCESS_AUTHORITY_MUTEXES.get_or_init(|| Mutex::new(BTreeMap::new()));
-    let mut active = mutexes
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(mutex) = active.get(&key).and_then(Weak::upgrade) {
-        return Ok(mutex);
-    }
-
-    let name: Vec<u16> = key.encode_utf16().chain(std::iter::once(0)).collect();
-    let existing = unsafe { winapi::um::synchapi::OpenMutexW(0x001F0001, 0, name.as_ptr()) };
-    if !existing.is_null() {
-        unsafe {
-            winapi::um::handleapi::CloseHandle(existing);
-        }
-        return Err(SqliteStoreError::AuthorityConflict {
-            path: display_path.display().to_string(),
-            message: "named Windows authority mutex is already owned".to_owned(),
-        });
-    }
-    let handle =
-        unsafe { winapi::um::synchapi::CreateMutexW(std::ptr::null_mut(), 1, name.as_ptr()) };
-    if handle.is_null() {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let already_exists = unsafe { winapi::um::errhandlingapi::GetLastError() }
-        == winapi::shared::winerror::ERROR_ALREADY_EXISTS;
-    if already_exists {
-        unsafe {
-            winapi::um::handleapi::CloseHandle(handle);
-        }
-        return Err(SqliteStoreError::AuthorityConflict {
-            path: display_path.display().to_string(),
-            message: "named Windows authority mutex is already owned".to_owned(),
-        });
-    }
-    let mutex = Arc::new(WindowsAuthorityMutex { handle });
-    active.insert(key, Arc::downgrade(&mutex));
-    Ok(mutex)
-}
-
 #[derive(Debug)]
 struct AuthorityLockHandle {
     _file: Arc<File>,
-    #[cfg(windows)]
-    _mutex: Arc<WindowsAuthorityMutex>,
 }
 
 fn acquire_authority_lock_handle(
@@ -109,50 +31,50 @@ fn acquire_authority_lock_handle(
     _authority_key: &str,
     display_path: &Path,
 ) -> SqliteStoreResult<AuthorityLockHandle> {
+    let gate_path = PathBuf::from(format!("{}.admission", lock_path.display()));
+    let own_path = PathBuf::from(format!("{}.rust", lock_path.display()));
+    let other_path = PathBuf::from(format!("{}.python", lock_path.display()));
     let locks = PROCESS_AUTHORITY_LOCKS.get_or_init(|| Mutex::new(BTreeMap::new()));
     let mut active = locks
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    if let Some(file) = active.get(&lock_path).and_then(Weak::upgrade) {
-        #[cfg(windows)]
-        {
-            let mutex = acquire_windows_authority_mutex(_authority_key, display_path)?;
-            return Ok(AuthorityLockHandle {
-                _file: file,
-                _mutex: mutex,
-            });
-        }
-        #[cfg(not(windows))]
+    if let Some(file) = active.get(&own_path).and_then(Weak::upgrade) {
         return Ok(AuthorityLockHandle { _file: file });
     }
 
+    let gate = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&gate_path)?;
+    gate.lock_exclusive()?;
     let file = OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
         .write(true)
-        .open(&lock_path)?;
-    #[cfg(windows)]
-    {
-        let mutex = acquire_windows_authority_mutex(_authority_key, display_path)?;
-        let file = Arc::new(file);
-        active.insert(lock_path, Arc::downgrade(&file));
-        Ok(AuthorityLockHandle {
-            _file: file,
-            _mutex: mutex,
-        })
+        .open(&own_path)?;
+    file.lock_shared()?;
+    let other = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(&other_path)?;
+    if let Err(error) = other.try_lock_exclusive() {
+        let _ = FileExt::unlock(&file);
+        let _ = FileExt::unlock(&gate);
+        return Err(SqliteStoreError::AuthorityConflict {
+            path: display_path.display().to_string(),
+            message: error.to_string(),
+        });
     }
-    #[cfg(not(windows))]
-    {
-        file.try_lock_exclusive()
-            .map_err(|error| SqliteStoreError::AuthorityConflict {
-                path: display_path.display().to_string(),
-                message: error.to_string(),
-            })?;
-        let file = Arc::new(file);
-        active.insert(lock_path, Arc::downgrade(&file));
-        Ok(AuthorityLockHandle { _file: file })
-    }
+    FileExt::unlock(&other)?;
+    FileExt::unlock(&gate)?;
+    let file = Arc::new(file);
+    active.insert(own_path, Arc::downgrade(&file));
+    Ok(AuthorityLockHandle { _file: file })
 }
 
 #[derive(Debug)]

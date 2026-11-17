@@ -17,14 +17,29 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 if os.name == "nt":
     import ctypes
+    import msvcrt
+    from ctypes import wintypes
 
     _kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    _kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
-    _kernel32.CreateMutexW.restype = ctypes.c_void_p
-    _kernel32.OpenMutexW.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_wchar_p]
-    _kernel32.OpenMutexW.restype = ctypes.c_void_p
-    _kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-    _kernel32.CloseHandle.restype = ctypes.c_int
+    class _Overlapped(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_size_t),
+            ("InternalHigh", ctypes.c_size_t),
+            ("Offset", wintypes.DWORD),
+            ("OffsetHigh", wintypes.DWORD),
+            ("hEvent", wintypes.HANDLE),
+        ]
+
+    _kernel32.LockFileEx.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        wintypes.DWORD, ctypes.POINTER(_Overlapped),
+    ]
+    _kernel32.LockFileEx.restype = wintypes.BOOL
+    _kernel32.UnlockFileEx.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD,
+        ctypes.POINTER(_Overlapped),
+    ]
+    _kernel32.UnlockFileEx.restype = wintypes.BOOL
 else:
     import fcntl
 
@@ -50,8 +65,7 @@ _active_path_identities: dict[str, tuple[tuple[object, ...] | None, int]] = {}
 _native_session_leases: dict[tuple[str, str], SQLiteDatabaseLease] = {}
 _native_reusable_sessions: set[tuple[str, str]] = set()
 _native_active_transactions: set[tuple[str, str]] = set()
-_process_authority_locks: dict[str, tuple[BinaryIO, int]] = {}
-_process_authority_mutexes: dict[str, int] = {}
+_process_authority_locks: dict[tuple[str, str], tuple[BinaryIO, int, object | None]] = {}
 P = ParamSpec("P")
 R = TypeVar("R")
 
@@ -276,7 +290,7 @@ class SQLiteDatabaseLease:
                 identity_lock_key = _file_identity_authority_key(
                     file_identity, database
                 )
-                _acquire_process_authority_lock(identity_lock_key)
+                _acquire_process_authority_lock(identity_lock_key, self.implementation)
                 self._process_identity_lock_key = identity_lock_key
             for key in new_keys - self._keys:
                 owners = _active_implementations.setdefault(key, {})
@@ -304,9 +318,13 @@ class SQLiteDatabaseLease:
                 if not owners:
                     _active_implementations.pop(key, None)
             if self._process_lock_key is not None:
-                _release_process_authority_lock(self._process_lock_key)
+                _release_process_authority_lock(
+                    self._process_lock_key, self.implementation
+                )
             if self._process_identity_lock_key is not None:
-                _release_process_authority_lock(self._process_identity_lock_key)
+                _release_process_authority_lock(
+                    self._process_identity_lock_key, self.implementation
+                )
             identity, count = _active_path_identities[self._path_key]
             if count <= 1:
                 _active_path_identities.pop(self._path_key, None)
@@ -359,15 +377,17 @@ def acquire_sqlite_database(
                     "KOGWISTAR_SQLITE_DATABASE_ENGINE_CONFLICT",
                 )
         if implementation == "python" and not private_memory:
-            _acquire_process_authority_lock(path_key)
+            _acquire_process_authority_lock(path_key, implementation)
             try:
                 if file_identity is not None:
                     process_identity_lock_key = _file_identity_authority_key(
                         file_identity, database
                     )
-                    _acquire_process_authority_lock(process_identity_lock_key)
+                    _acquire_process_authority_lock(
+                        process_identity_lock_key, implementation
+                    )
             except BaseException:
-                _release_process_authority_lock(path_key)
+                _release_process_authority_lock(path_key, implementation)
                 raise
         try:
             for key in keys:
@@ -375,9 +395,11 @@ def acquire_sqlite_database(
                 owners[implementation] = owners.get(implementation, 0) + 1
         except BaseException:
             if implementation == "python" and not private_memory:
-                _release_process_authority_lock(path_key)
+                _release_process_authority_lock(path_key, implementation)
                 if process_identity_lock_key is not None:
-                    _release_process_authority_lock(process_identity_lock_key)
+                    _release_process_authority_lock(
+                        process_identity_lock_key, implementation
+                    )
             raise
         identity, count = active_identity or (file_identity, 0)
         if identity is None and file_identity is not None:
@@ -480,70 +502,100 @@ def _file_identity_authority_key(
     return f"file-id:{device:x}:{inode:x}"
 
 
-def _authority_mutex_name(path_key: str) -> str:
-    identifier = uuid.uuid5(uuid.NAMESPACE_OID, path_key)
-    return f"Local\\KogwistarSQLiteAuthority-{identifier}"
+def _lock_file(file: BinaryIO, *, exclusive: bool, blocking: bool) -> object | None:
+    if os.name == "nt":
+        overlap = _Overlapped()
+        flags = (2 if exclusive else 0) | (0 if blocking else 1)
+        if not _kernel32.LockFileEx(
+            wintypes.HANDLE(msvcrt.get_osfhandle(file.fileno())),
+            flags, 0, 1, 0, ctypes.byref(overlap)
+        ):
+            raise OSError(ctypes.get_last_error(), "LockFileEx failed")
+        return overlap
+    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    if not blocking:
+        operation |= fcntl.LOCK_NB
+    fcntl.flock(file.fileno(), operation)
+    return None
 
 
-def _acquire_process_authority_lock(path_key: str) -> None:
-    existing = _process_authority_locks.get(path_key)
+def _unlock_file(file: BinaryIO, overlap: object | None) -> None:
+    if os.name == "nt":
+        assert isinstance(overlap, _Overlapped)
+        if not _kernel32.UnlockFileEx(
+            wintypes.HANDLE(msvcrt.get_osfhandle(file.fileno())),
+            0, 1, 0, ctypes.byref(overlap)
+        ):
+            raise OSError(ctypes.get_last_error(), "UnlockFileEx failed")
+    else:
+        fcntl.flock(file.fileno(), fcntl.LOCK_UN)
+
+
+def _acquire_process_authority_lock(path_key: str, implementation: str) -> None:
+    own_key = (implementation, path_key)
+    existing = _process_authority_locks.get(own_key)
     if existing is not None:
-        handle, count = existing
-        _process_authority_locks[path_key] = (handle, count + 1)
+        handle, count, overlap = existing
+        _process_authority_locks[own_key] = (handle, count + 1, overlap)
         return
 
-    lock_path = _authority_lock_path(path_key)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+b")
+    base = _authority_lock_path(path_key)
+    base.parent.mkdir(parents=True, exist_ok=True)
+    gate_file = base.with_name(base.name + ".admission").open("a+b")
+    own_path = base.with_name(base.name + f".{implementation}")
+    other_implementation = "rust" if implementation == "python" else "python"
+    other_path = base.with_name(base.name + f".{other_implementation}")
+    handle = own_path.open("a+b")
+    gate_overlap: object | None = None
+    overlap: object | None = None
+    other_file: BinaryIO | None = None
     try:
-        handle.seek(0)
-        if os.name == "nt":
-            existing = _kernel32.OpenMutexW(
-                0x001F0001, 0, _authority_mutex_name(path_key)
-            )
-            if existing:
-                _kernel32.CloseHandle(existing)
-                raise OSError(13, "named Windows authority mutex is already owned")
-            mutex = _kernel32.CreateMutexW(None, 1, _authority_mutex_name(path_key))
-            if not mutex:
-                raise OSError(ctypes.get_last_error(), "CreateMutexW failed")
-            if ctypes.get_last_error() == 183:
-                _kernel32.CloseHandle(mutex)
-                raise OSError(13, "named Windows authority mutex is already owned")
-            _process_authority_mutexes[path_key] = int(mutex)
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        gate_overlap = _lock_file(gate_file, exclusive=True, blocking=True)
+        overlap = _lock_file(handle, exclusive=False, blocking=True)
+        other_file = other_path.open("a+b")
+        other_overlap = _lock_file(other_file, exclusive=True, blocking=False)
+        _unlock_file(other_file, other_overlap)
+        other_file.close()
+        other_file = None
+        _unlock_file(gate_file, gate_overlap)
+        gate_overlap = None
+        gate_file.close()
     except OSError as exc:
-        if os.name == "nt":
-            mutex = _process_authority_mutexes.pop(path_key, None)
-            if mutex is not None:
-                _kernel32.CloseHandle(mutex)
+        if overlap is not None:
+            try:
+                _unlock_file(handle, overlap)
+            except OSError:
+                pass
         handle.close()
+        if other_file is not None:
+            other_file.close()
+        if gate_overlap is not None:
+            try:
+                _unlock_file(gate_file, gate_overlap)
+            except OSError:
+                pass
+        gate_file.close()
         raise SQLiteContextError(
-            "SQLite database authority is held by another process",
+            "SQLite database authority is held by another implementation",
             "KOGWISTAR_SQLITE_PROCESS_AUTHORITY_CONFLICT",
         ) from exc
-    _process_authority_locks[path_key] = (handle, 1)
+    _process_authority_locks[own_key] = (handle, 1, overlap)
 
 
-def _release_process_authority_lock(path_key: str) -> None:
-    existing = _process_authority_locks.get(path_key)
+def _release_process_authority_lock(path_key: str, implementation: str) -> None:
+    own_key = (implementation, path_key)
+    existing = _process_authority_locks.get(own_key)
     if existing is None:
         return
-    handle, count = existing
+    handle, count, overlap = existing
     if count > 1:
-        _process_authority_locks[path_key] = (handle, count - 1)
+        _process_authority_locks[own_key] = (handle, count - 1, overlap)
         return
     try:
-        if os.name != "nt":
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        else:
-            mutex = _process_authority_mutexes.pop(path_key, None)
-            if mutex is not None:
-                _kernel32.CloseHandle(mutex)
+        _unlock_file(handle, overlap)
     finally:
         handle.close()
-        _process_authority_locks.pop(path_key, None)
+        _process_authority_locks.pop(own_key, None)
 
 
 def native_sqlite_enter(
