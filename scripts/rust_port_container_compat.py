@@ -508,6 +508,8 @@ def main() -> int:
         str(args.shards),
         "--pytest-workers",
         str(pytest_workers),
+        "--wheel-sha256",
+        str(metadata["wheel_sha256"]),
     ]
     if args.meta_store_mode is not None:
         common_args.extend(("--meta-store-mode", args.meta_store_mode))

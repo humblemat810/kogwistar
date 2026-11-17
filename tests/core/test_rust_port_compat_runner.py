@@ -261,6 +261,57 @@ def test_candidate_identity_ignores_job_local_paths_but_keeps_runtime_abi() -> N
     ) != runner._candidate_identity_fingerprint(changed_abi)
 
 
+def test_candidate_identity_binds_source_wheel_abi_pins_and_backend() -> None:
+    runner = _runner()
+    base = {
+        "candidate_source_sha256": "a" * 64,
+        "wheel_sha256": "b" * 64,
+        "python_abi": "cp313",
+        "core_commit": "core-a",
+        "application_core_pin_commit": "pin-a",
+        "parser_commit": "parser-a",
+        "sink_commit": "sink-a",
+        "backend": "docker-clean-dual-venv-sharded",
+    }
+
+    for key, value in (
+        ("candidate_source_sha256", "c" * 64),
+        ("wheel_sha256", "d" * 64),
+        ("python_abi", "cp312"),
+        ("application_core_pin_commit", "pin-b"),
+        ("parser_commit", "parser-b"),
+        ("sink_commit", "sink-b"),
+        ("backend", "local"),
+    ):
+        assert runner._candidate_identity_fingerprint(
+            {**base, key: value}
+        ) != runner._candidate_identity_fingerprint(base)
+
+
+def test_candidate_wheel_digest_argument_requires_sha256_hex(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    monkeypatch.setattr(
+        "sys.argv", [str(SCRIPT), "--wheel-sha256", "not-a-digest"]
+    )
+
+    with pytest.raises(SystemExit):
+        runner._parse_args(MANIFEST)
+
+
+def test_milestone_identity_requires_candidate_wheel_digest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = _runner()
+    monkeypatch.setattr(
+        "sys.argv", [str(SCRIPT), "--profile", "milestone", "--identity-only"]
+    )
+
+    with pytest.raises(SystemExit, match="requires --wheel-sha256"):
+        runner.main()
+
+
 def test_verification_harness_fingerprint_changes_with_runner_or_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

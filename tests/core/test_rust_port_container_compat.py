@@ -122,6 +122,14 @@ def test_wheel_build_report_must_match_candidate_digest(tmp_path: Path) -> None:
         harness._wheel_build_report(wheel, tmp_path)
 
 
+def test_container_runner_binds_verified_wheel_digest_into_candidate_identity() -> None:
+    source = (ROOT / "scripts" / "rust_port_container_compat.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"--wheel-sha256",\n        str(metadata["wheel_sha256"]),' in source
+
+
 def test_container_harness_defaults_xdist_off_after_controlled_slowdown(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
