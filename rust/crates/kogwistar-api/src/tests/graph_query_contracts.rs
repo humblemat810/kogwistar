@@ -326,7 +326,9 @@
             workspace_id: fixture["scope"]["workspace_id"]
                 .as_str()
                 .map(str::to_owned),
-            graph_space: None,
+            graph_space: fixture["scope"]["graph_space"]
+                .as_str()
+                .map(str::to_owned),
         };
         for (entity_kind, table, entities) in [
             ("node", "gke_nodes", &fixture["nodes"]),
@@ -334,6 +336,14 @@
         ] {
             for entity in entities.as_array().unwrap() {
                 let entity_id = entity["id"].as_str().unwrap();
+                let entity_scope = GraphScope {
+                    graph_space: entity
+                        .get("graph_space")
+                        .and_then(Value::as_str)
+                        .or_else(|| fixture["scope"]["graph_space"].as_str())
+                        .map(str::to_owned),
+                    ..scope.clone()
+                };
                 let mut metadata = Map::new();
                 metadata.insert("entity_type".to_owned(), json!(entity_kind));
                 if entity_kind == "node" {
@@ -342,6 +352,13 @@
                     metadata.insert("source_ids".to_owned(), entity["source_ids"].clone());
                     metadata.insert("target_ids".to_owned(), entity["target_ids"].clone());
                 }
+                metadata.insert(
+                    "graph_space".to_owned(),
+                    entity
+                        .get("graph_space")
+                        .cloned()
+                        .unwrap_or_else(|| json!("facts")),
+                );
                 if let Some(lifecycle_status) = entity["lifecycle_status"].as_str() {
                     metadata.insert("lifecycle_status".to_owned(), json!(lifecycle_status));
                 }
@@ -351,7 +368,7 @@
                 service
                     .store
                     .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                        scope: scope.clone(),
+                        scope: entity_scope.clone(),
                         table: table.to_owned(),
                         record: GraphRecord {
                             id: entity_id.to_owned(),
@@ -386,7 +403,7 @@
                 service
                     .store
                     .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                        scope: scope.clone(),
+                        scope: entity_scope,
                         table: "gke_nodes".to_owned(),
                         record: GraphRecord {
                             id: format!("acl-{entity_id}"),
@@ -454,11 +471,13 @@
 
         for principal in fixture["principals"].as_array().unwrap() {
             let subject = principal["id"].as_str().unwrap();
+            let graph_scope_expected = &fixture["graph_space_expected"][subject];
             let mut principal_claims = json!({
                 "sub": subject,
                 "ns": scope.namespace,
                 "storage_ns": scope.namespace,
                 "workspace_id": scope.workspace_id,
+                "graph_space": graph_scope_expected["graph_space"],
                 "capabilities": ["read_graph"]
             });
             if let Some(scope_parts) = principal.get("scope_parts") {
@@ -475,6 +494,9 @@
                     "metric": fixture["metric"],
                     "truth_graph": fixture["truth_graph"],
                     "n_results": fixture["n_results"],
+                    "where": {
+                        "graph_space": graph_scope_expected["graph_space"]
+                    },
                     "include": ["distances"]
                 });
                 let response = service
@@ -490,19 +512,20 @@
                 let result: Value = serde_json::from_slice(&response.body).unwrap();
                 assert_eq!(
                     result["ids"],
-                    principal["expected"][expected_key],
+                    graph_scope_expected[expected_key],
                     "unexpected {entity_kind} vector results for {subject}"
                 );
                 let redirect = &fixture["current_vector_redirect_contract"][entity_kind];
-                for row in result["ids"].as_array().unwrap() {
-                    let ids = row.as_array().unwrap();
-                    assert!(!ids.contains(&redirect["source_id"]));
-                    assert!(ids.contains(&redirect["target_id"]));
+                if graph_scope_expected["graph_space"] == fixture["scope"]["graph_space"] {
+                    for row in result["ids"].as_array().unwrap() {
+                        let ids = row.as_array().unwrap();
+                        assert!(!ids.contains(&redirect["source_id"]));
+                        assert!(ids.contains(&redirect["target_id"]));
+                    }
                 }
                 let actual_distances = result["distances"].as_array().unwrap();
-                let expected_distances = principal["expected"]["distances"][expected_key]
-                    .as_array()
-                    .unwrap();
+                let expected_distances = graph_scope_expected["distances"][expected_key]
+                    .as_array().unwrap();
                 assert_eq!(actual_distances.len(), expected_distances.len());
                 for (actual, expected) in actual_distances.iter().zip(expected_distances) {
                     let actual = actual.as_array().unwrap();
@@ -517,6 +540,7 @@
                         );
                     }
                 }
+
             }
         }
 
@@ -947,7 +971,9 @@
             .unwrap();
         let connection_task = tokio::spawn(connection);
         client
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
             .await
             .unwrap();
         drop(client);

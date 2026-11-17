@@ -865,13 +865,17 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
     engine = GraphKnowledgeEngine(
         persist_directory=str(tmp_path / "acl_vector_query"),
         backend_factory=build_fake_backend,
+        namespace=fixture["scope"]["namespace"],
         kg_graph_type=fixture["truth_graph"],
         embedding_function=build_test_embedding_function("constant", dim=2),
         acl_enabled=True,
     )
     nodes = {}
     for spec in fixture["nodes"]:
-        metadata = {"visibility": spec["mode"]}
+        metadata = {
+            "visibility": spec["mode"],
+            "graph_space": spec.get("graph_space", "facts"),
+        }
         if "security_scope" in spec:
             metadata["security_scope"] = spec["security_scope"]
         if "owner_id" in spec:
@@ -891,7 +895,10 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
 
     edges = []
     for spec in fixture["edges"]:
-        metadata = {"visibility": spec["mode"]}
+        metadata = {
+            "visibility": spec["mode"],
+            "graph_space": spec.get("graph_space", "facts"),
+        }
         if "security_scope" in spec:
             metadata["security_scope"] = spec["security_scope"]
         if "owner_id" in spec:
@@ -950,6 +957,23 @@ def test_acl_vector_query_matches_shared_python_rust_ranking_fixture(tmp_path):
             assert [[edge.id for edge in batch] for batch in edge_results] == principal[
                 "expected"
             ]["edges"]
+            scoped_expected = fixture["graph_space_expected"][principal["id"]]
+            scoped_nodes = engine.read.query_nodes(
+                query_embeddings=fixture["query_embeddings"],
+                n_results=fixture["n_results"],
+                where={"graph_space": scoped_expected["graph_space"]},
+            )
+            scoped_edges = engine.read.query_edges(
+                query_embeddings=fixture["query_embeddings"],
+                n_results=fixture["n_results"],
+                where={"graph_space": scoped_expected["graph_space"]},
+            )
+            assert [[node.id for node in batch] for batch in scoped_nodes] == (
+                scoped_expected["nodes"]
+            ), principal["id"]
+            assert [[edge.id for edge in batch] for batch in scoped_edges] == (
+                scoped_expected["edges"]
+            ), principal["id"]
             assert all(
                 fixture["current_vector_redirect_contract"]["edge"]["source_id"]
                 not in [edge.id for edge in batch]

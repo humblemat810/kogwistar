@@ -3,7 +3,8 @@
   "truth_graph": "knowledge",
   "scope": {
     "namespace": "vector-query-test",
-    "workspace_id": "workspace-a"
+    "workspace_id": "workspace-a",
+    "graph_space": "facts"
   },
   "metric": "cosine",
   "n_results": 3,
@@ -36,7 +37,8 @@
       "embedding": [0.0, 1.0],
       "mode": "scope",
       "owner_id": "other-owner",
-      "security_scope": "project-a"
+      "security_scope": "project-a",
+      "graph_space": "archive"
     },
     {
       "id": "tombstoned-public",
@@ -76,8 +78,9 @@
       "mode": "scope",
       "owner_id": "other-owner",
       "security_scope": "project-a",
-      "source_ids": ["visible-public"],
-      "target_ids": ["visible-public"]
+      "graph_space": "archive",
+      "source_ids": ["visible-project"],
+      "target_ids": ["visible-project"]
     },
     {
       "id": "edge-tombstoned-public",
@@ -143,6 +146,7 @@
     },
     {
       "id": "project-reader",
+      "graph_space": "archive",
       "scope_parts": {
         "project": "project-a"
       },
@@ -159,5 +163,37 @@
         }
       }
     }
-  ]
+  ],
+  "graph_space_expected": {
+    "reader-a": {
+      "graph_space": "facts",
+      "nodes": [["visible-public"], ["visible-public"]],
+      "edges": [["edge-public"], ["edge-public"]],
+      "distances": {"nodes": [[0.2], [0.4]], "edges": [[0.2], [0.4]]}
+    },
+    "owner-b": {
+      "graph_space": "facts",
+      "nodes": [["near-private", "visible-scope", "visible-public"], ["visible-public", "visible-scope", "near-private"]],
+      "edges": [["edge-private-endpoint", "edge-scope", "edge-public"], ["edge-public", "edge-scope", "edge-private-endpoint"]],
+      "distances": {
+        "nodes": [[0.0, 0.0061162653, 0.2], [0.4, 0.8895684739, 1.0]],
+        "edges": [[0.0, 0.08085497, 0.2], [0.4, 0.6060807, 1.0]]
+      }
+    },
+    "scope-reader": {
+      "graph_space": "facts",
+      "nodes": [["visible-scope", "visible-public"], ["visible-public", "visible-scope"]],
+      "edges": [["edge-scope", "edge-public"], ["edge-public", "edge-scope"]],
+      "distances": {
+        "nodes": [[0.0061162653, 0.2], [0.4, 0.8895684739]],
+        "edges": [[0.08085497, 0.2], [0.4, 0.6060807]]
+      }
+    },
+    "project-reader": {
+      "graph_space": "archive",
+      "nodes": [["visible-project"], ["visible-project"]],
+      "edges": [["edge-project"], ["edge-project"]],
+      "distances": {"nodes": [[1.0], [0.0]], "edges": [[1.0], [0.0]]}
+    }
+  }
 }

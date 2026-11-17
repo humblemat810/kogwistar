@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **17/67 PASS (25.4%)**; **8 IN PROGRESS**; **42 NOT STARTED**.
+**Progress:** **18/67 PASS (26.9%)**; **7 IN PROGRESS**; **42 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -79,7 +79,7 @@ the closed ADR-022 evidence inventories.
 | GRF-03B | `graph-pgvector` | NOT STARTED | Invariant: visible evidence preserves exact source span and source-map reference. Cell: Rust PostgreSQL edge/evidence read. Oracle: offsets, revision, and evidence IDs equal shared fixture. Check: add/run `test_postgres_edge_evidence_span_parity`. |
 | GRF-03C | `graph-pgvector` | NOT STARTED | Invariant: hidden source ACL prevents edge/evidence leakage. Cell: authorized edge with unauthorized source evidence. Oracle: response omits protected edge/evidence as Python does. Check: add/run `test_postgres_hidden_source_evidence_is_not_leaked`. |
 | GRF-04 | `graph-pgvector` | PARENT | Vector-query semantics requirement; children: GRF-04A,GRF-04B,GRF-04C. | Parent closes when all leaves pass. |
-| GRF-04A | `graph-pgvector` | IN PROGRESS | Invariant: supported vector filters return same eligible IDs. Cell: shared PostgreSQL Python/Rust fixture for tenant, namespace, graph-space, and ACL filters. Oracle: ordered eligible-ID sets equal. Check: finish `test_postgres_vector_query_filter_parity`. |
+| GRF-04A | `graph-pgvector` | PASS | Invariant: supported vector filters return same eligible IDs. Cell: shared golden fixture across Python and Rust PostgreSQL for namespace, facts/archive graph-space, tenant/workspace/project ACL scope, node and edge. Oracle: ordered eligible-ID sets equal. Evidence: `tests/mcp/test_chat_mcp_tools.py::test_acl_vector_query_matches_shared_python_rust_ranking_fixture` (**1 passed**); ignored Rust `tests::postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available` against disposable pgvector:pg16 (**1 passed**, 2.78s, with expected-distance assertions); `cargo fmt --all --check` passed. Cross-graph-space edge endpoints are not covered; distance/tie parity remains GRF-04B. |
 | GRF-04B | `graph-pgvector` | NOT STARTED | Invariant: metric, distance, and deterministic tie ordering match Python. Cell: equal-distance PostgreSQL vector candidates. Oracle: same scores and stable tie order. Check: add/run `test_postgres_vector_query_metric_and_ties_match_python`. |
 | GRF-04C | `graph-pgvector` | NOT STARTED | Invariant: unsupported query forms fail closed without Python fallback. Cell: malformed/unsupported Rust vector-query request. Oracle: explicit contract error and zero Python seam calls. Check: add/run `test_postgres_vector_query_unsupported_form_fails_closed`. |
 | GRF-05 | `graph-pgvector` | PARENT | Durable indexing/projection recovery requirement; children: GRF-05A,GRF-05B,GRF-05C. | Parent closes when all leaves pass. |
