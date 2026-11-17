@@ -438,6 +438,21 @@ def test_rust_native_promotion_and_python_recovery_are_both_available(
         assert backend.node_get(
             ids=[rust_success_id], include=["embeddings", "metadatas"]
         )["embeddings"][0] == pytest.approx([0.6, 0.8])
+        promoted_reader = GraphKnowledgeEngine(
+            backend=PgVectorBackend(engine=sql_engine, embedding_dim=2, schema=schema),
+            namespace=namespace,
+            embedding_profile_mode="inspect",
+            embedding_function=lambda _texts: pytest.fail(
+                "vector retrieval must use the promoted embedding, not re-embed"
+            ),
+        )
+        try:
+            ranked = promoted_reader.read.query_nodes(
+                query_embeddings=[[0.6, 0.8]], n_results=10
+            )
+            assert rust_success_id in [node.id for node in ranked[0]], ranked
+        finally:
+            promoted_reader.close()
         assert embedding_requests == [[staged["document"]], [success_staged["document"]]]
     finally:
         if rust_process is not None:
