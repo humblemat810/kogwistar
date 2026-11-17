@@ -135,3 +135,17 @@ def test_host_native_builder_and_smoke_are_persisted_and_abi_exact() -> None:
     assert '"transaction_id": None' in smoke_source
     assert '"KOGWISTAR_API_TOKEN": token' in server_smoke_source
     assert '"workflow.visibility_snapshot"' in server_smoke_source
+
+
+def test_rust_native_smoke_checks_no_python_runtime_or_child_process() -> None:
+    smoke = ROOT / "scripts" / "rust_native_no_python_smoke.sh"
+    source = smoke.read_text(encoding="utf-8")
+
+    assert "cargo build --release --locked" in source
+    assert "--bin kogwistar-server" in source
+    assert "cargo tree --locked" in source
+    assert "kogwistar-python|pyo3" in source
+    assert "ldd \"$SERVER\"" in source
+    assert '"/proc/$server_pid/exe"' in source
+    assert '"/proc/$server_pid/task/$server_pid/children"' in source
+    assert "HTTP/1.1 200" in source

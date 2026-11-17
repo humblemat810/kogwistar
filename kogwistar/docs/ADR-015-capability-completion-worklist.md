@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **51/67 PASS (76.1%)**; **0 IN PROGRESS**; **16 NOT STARTED**.
+**Progress:** **52/67 PASS (77.6%)**; **0 IN PROGRESS**; **15 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -130,7 +130,7 @@ the closed ADR-022 evidence inventories.
 | REL-03D | All six | NOT STARTED | Invariant: PyPy 3.11 declared lane has accurate best-effort/required result. Cell: hosted PyPy lane. Oracle: status matches support policy; failure cannot be reported as pass. Check: inspect exact-commit PyPy result. |
 | REL-04 | All six | PARENT | Language-boundary isolation requirement; children: REL-04A,REL-04B,REL-04C. | Parent closes when all leaves pass. |
 | REL-04A | All six | PASS | Invariant: Python-only public path never loads/calls Rust. Cell: instrumented Python server and memory workflow. Oracle: zero native imports/calls; expected state. Evidence: answer workflow fake end-to-end (**1 passed**); Python-default server/memory/REST path group (**11 passed**, includes submit/SSE); each replaces `_load_extension` with a failing sentinel. |
-| REL-04B | All six | NOT STARTED | Invariant: Rust-native container path never starts Python worker/interpreter. Cell: clean Linux Docker UAT. Oracle: process/call instrumentation reports no Python execution and empty seam list. Check: add/run Rust-native no-Python container test. |
+| REL-04B | All six | PASS | Invariant: Rust-native container path never starts Python worker/interpreter. Cell: Linux Docker builder image, direct `kogwistar-server` binary launch. Evidence: `scripts/rust_native_no_python_smoke.sh` built locked release binary; `cargo tree -p kogwistar-api --edges normal` contained no `kogwistar-python`/PyO3 seam; `ldd` showed no Python runtime; `/proc/<pid>/exe` matched native binary; process had zero child processes; native HTTP `/health` returned 200 and `mode=rust`. Cached Cargo build completed in 1.37s. |
 | REL-04C | All six | NOT STARTED | Invariant: mixed mode crosses only declared serialization seams. Cell: one traced end-to-end operation per configured seam. Oracle: observed seam set equals declared set; undeclared crossing fails. Check: add/run mixed-boundary inventory guard. |
 | REL-05 | All six | PASS | Resource-matched end-to-end comparison requirement; children: REL-05A,REL-05B,REL-05C,REL-05D. | All four child leaves PASS. |
 | REL-05A | All six | PASS | Python HTTP baseline: fixed 100-item/300-operation trace, 4 CPU/8 GiB Docker limits verified, 1 warm-up + 3 fresh samples. Equal canonical digest `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`; median 5,315 ms, 56.44 ops/s, startup 77.34 ms, CPU 5,481 ms, RSS delta -2.47 MiB; trace SHA `bc539bc8c2bb7247f3d1d2d10d1c338854447ae4cdd4eceda6820031a77c478d`. Evidence: `.tmp/mixed-runtime-matrix-20261118-rel05a/endpoint/endpoint-report.v1.json`; source revision `278689982e356ab4360fb9d04c4a25708451734c`, source manifest SHA `241b2e88770f7a2e31ab6b4c0ee5b4ce3c08fc1cb7dae1481d89b9aefbc10af3`. |

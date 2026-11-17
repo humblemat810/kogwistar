@@ -1335,11 +1335,11 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
 
     assert len(parents) == 16
     assert len(rows) == 67
-    assert statuses.count("PASS") == 51
+    assert statuses.count("PASS") == 52
     assert statuses.count("IN PROGRESS") == 0
-    assert statuses.count("NOT STARTED") == 16
+    assert statuses.count("NOT STARTED") == 15
     assert capability_ids == incomplete_capabilities
-    assert "**Progress:** **51/67 PASS (76.1%)**; **0 IN PROGRESS**; **16 NOT STARTED**." in worklist
+    assert "**Progress:** **52/67 PASS (77.6%)**; **0 IN PROGRESS**; **15 NOT STARTED**." in worklist
     assert "| QLL-03 | `queues-leases-lanes` | PASS |" in worklist
     assert "| QLL-03A | `queues-leases-lanes` | PASS |" in worklist
     assert "| QLL-03B | `queues-leases-lanes` | PASS |" in worklist
@@ -1361,6 +1361,7 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     assert "| SRV-06 | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-06B | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-06C | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| REL-04B | All six | PASS |" in worklist
     assert (
         "No separate customer traffic fleet or percentage canary is required"
         in worklist
