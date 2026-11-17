@@ -3,7 +3,7 @@
 **Scope:** Execution tasklets for the still-open gates in [ADR-015 implementation status](ADR-015-implementation-status.md). Adds no requirements; expands only its unchecked rollout gates.
 **Progress:** **0/63 PASS (0%)**. Counts production/deployment work only; not code completion or overall Rust migration percentage.
 **Baseline:** ADR-015 reports 2/8 Rust-target capabilities locally ready, 6/8 not ready, and 0/40 production canary stage observations. This worklist tracks the remaining production gates. Each promotion requires its own evidence; no capability inherits another's result.
-**Excludes:** ADR-022 evidence inventory (910/911 fine tasklets pass; DL-07E has one open verification row), completed NSV worklist (5/5), and Python-owned Chroma adapter.
+**Excludes:** ADR-022 evidence inventory (911/911 fine tasklets pass), completed NSV worklist (5/5), and Python-owned Chroma adapter.
 
 ## Counting Rules
 

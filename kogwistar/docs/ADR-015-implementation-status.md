@@ -78,7 +78,7 @@ external-worker and inline-server modes, plus PostgreSQL/pgvector in both modes
 (**6 passed**). PostgreSQL used disposable per-run schemas, removed by fixture
 teardown. These runs are isolated local/Docker UAT evidence only; Docker is a
 separate UAT environment, not production cutover or a production canary. Hosted
-Ubuntu CI remains pending for the refreshed SQLite lock protocol.
+Ubuntu CI run [43708852346](https://github.com/humblemat810/kogwistar/actions/runs/43708852346), job `SQLite context invariants (ubuntu-latest / CPython 3.13)`, passed the refreshed lock suite (**37 passed**) and SQLite differential step. This closes the hosted-CI verification gate for that SQLite lock protocol only; unrelated failures in the enclosing workflow remain separate, and Docker/local runs remain UAT rather than production evidence.
 The Python-only memory runtime E2E sync/async cells also passed (**2 passed**)
 with Rust extension loading patched to fail if attempted; `cargo tree` confirmed
 the native API's normal dependency closure contains no Python binding/PyO3
