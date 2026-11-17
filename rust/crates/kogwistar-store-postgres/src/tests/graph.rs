@@ -433,6 +433,88 @@ async fn postgres_graph_vector_metrics_match_shared_distance_and_similarity_cont
         }
     }
 
+    for case in fixture["tie_cases"].as_array().unwrap() {
+        for vector in case["vectors"].as_array().unwrap() {
+            let id = vector["id"].as_str().unwrap();
+            let metadata = Map::from_iter([
+                ("lifecycle_status".to_owned(), serde_json::json!("active")),
+                ("tie_metric".to_owned(), case["metric"].clone()),
+            ]);
+            let embedding = vector["embedding"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect::<Vec<_>>();
+            store
+                .apply_graph_mutation(GraphMutation {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("tie-{id}-{}", std::process::id()),
+                    op: "ADD".to_owned(),
+                    payload: serde_json::json!({"id": id, "metadata": metadata}),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(id.to_owned()),
+                        metadata,
+                        embedding: Some(embedding),
+                    },
+                    embedding_dim: 2,
+                })
+                .await?;
+        }
+
+        let metric = match case["metric"].as_str().unwrap() {
+            "cosine" => DistanceMetric::Cosine,
+            "l2" => DistanceMetric::L2,
+            "ip" => DistanceMetric::InnerProduct,
+            other => panic!("unknown tie fixture metric {other}"),
+        };
+        let hits = store
+            .graph_projection_vector_query(GraphProjectionVectorQuery {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                query: VectorQuery {
+                    embedding: fixture["query_embedding"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|value| value.as_f64().unwrap() as f32)
+                        .collect(),
+                    limit: 2,
+                    metadata: MetadataFilter {
+                        equals: [("tie_metric".to_owned(), case["metric"].clone())]
+                            .into_iter()
+                            .collect(),
+                    },
+                    metric,
+                },
+                embedding_dim: 2,
+            })
+            .await?;
+        let expected_ids = case["expected_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        let actual_ids = hits
+            .iter()
+            .map(|hit| hit.record.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_ids, expected_ids, "tie order for {}", case["metric"]);
+        for hit in hits {
+            let expected = case["expected_distance"].as_f64().unwrap();
+            assert!(
+                (hit.distance - expected).abs() < 1e-5,
+                "tie distance for {}: {} != {expected}",
+                case["metric"],
+                hit.distance
+            );
+        }
+    }
+
     let client = store.client().await?;
     client
         .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))

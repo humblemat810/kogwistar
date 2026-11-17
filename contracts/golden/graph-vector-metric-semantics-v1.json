@@ -28,5 +28,34 @@
       "expected_distances": [-2.0, -0.8, 0.0],
       "expected_similarities": [2.0, 0.8, 0.0]
     }
+  ],
+  "tie_cases": [
+    {
+      "metric": "cosine",
+      "vectors": [
+        { "id": "tie-cosine-z", "embedding": [2.0, 0.0] },
+        { "id": "tie-cosine-a", "embedding": [3.0, 0.0] }
+      ],
+      "expected_ids": ["tie-cosine-a", "tie-cosine-z"],
+      "expected_distance": 0.0
+    },
+    {
+      "metric": "l2",
+      "vectors": [
+        { "id": "tie-l2-z", "embedding": [1.0, 1.0] },
+        { "id": "tie-l2-a", "embedding": [1.0, -1.0] }
+      ],
+      "expected_ids": ["tie-l2-a", "tie-l2-z"],
+      "expected_distance": 1.0
+    },
+    {
+      "metric": "ip",
+      "vectors": [
+        { "id": "tie-ip-z", "embedding": [0.0, 1.0] },
+        { "id": "tie-ip-a", "embedding": [0.0, -1.0] }
+      ],
+      "expected_ids": ["tie-ip-a", "tie-ip-z"],
+      "expected_distance": 0.0
+    }
   ]
 }

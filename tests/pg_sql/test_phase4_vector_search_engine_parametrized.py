@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 pytestmark = pytest.mark.core
@@ -78,6 +81,61 @@ def test_engine_vector_search_nodes_orders_neighbors(
     _insert_three(eng.backend)
     got = eng.vector_search_nodes([1.0, 0.0, 0.0], top_k=3)
     assert got["ids"][0] == ["A", "B", "C"]
+
+
+@pytest.mark.ci_full
+def test_postgres_vector_query_metric_and_ties_match_python(
+    request: pytest.FixtureRequest,
+):
+    """Python PostgreSQL ranking matches shared metric and ID tie-order oracle."""
+    pytest.importorskip("sqlalchemy")
+    pytest.importorskip("pgvector")
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+    sa_engine = request.getfixturevalue("sa_engine")
+    pg_schema = request.getfixturevalue("pg_schema")
+    if sa_engine is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-vector-metric-semantics-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    seed = PgVectorBackend(
+        engine=sa_engine, embedding_dim=2, distance="cosine", schema=pg_schema
+    )
+    seed.ensure_schema()
+    vectors = [vector for case in fixture["tie_cases"] for vector in case["vectors"]]
+    seed.node_add(
+        ids=[vector["id"] for vector in vectors],
+        documents=[vector["id"] for vector in vectors],
+        metadatas=[
+            {"tie_metric": case["metric"]}
+            for case in fixture["tie_cases"]
+            for _ in case["vectors"]
+        ],
+        embeddings=[vector["embedding"] for vector in vectors],
+    )
+
+    for case in fixture["tie_cases"]:
+        backend = PgVectorBackend(
+            engine=sa_engine,
+            embedding_dim=2,
+            distance=case["metric"],
+            schema=pg_schema,
+        )
+        result = backend.node_query(
+            query_embeddings=[fixture["query_embedding"]],
+            n_results=2,
+            where={"tie_metric": case["metric"]},
+            include=["distances"],
+        )
+        assert result["ids"] == [case["expected_ids"]]
+        assert result["distances"][0] == pytest.approx(
+            [case["expected_distance"]] * 2
+        )
 
 
 @pytest.mark.ci_full
