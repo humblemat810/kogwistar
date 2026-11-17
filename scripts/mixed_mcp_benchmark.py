@@ -37,6 +37,32 @@ AVAILABLE_MODES = (
 SYNC_MODES = frozenset(
     {"in_process", "rust_authority", "rust_authority_batch_write"}
 )
+DECLARED_SERIALIZATION_SEAMS = {
+    "in_process": frozenset({"mcp_tool_dispatch"}),
+    "http": frozenset({"mcp_tool_dispatch", "mcp_http_json"}),
+    "rust_authority": frozenset({"mcp_tool_dispatch", "python_rust_json_ffi"}),
+    "rust_authority_http": frozenset(
+        {"mcp_tool_dispatch", "mcp_http_json", "python_rust_json_ffi"}
+    ),
+    "rust_authority_batch_write": frozenset(
+        {"mcp_tool_dispatch", "python_rust_json_ffi"}
+    ),
+    "rust_native": frozenset({"mcp_tool_dispatch", "mcp_http_json"}),
+}
+DECLARED_RUST_FFI_OPERATIONS = frozenset(
+    {
+        "open_init",
+        "close",
+        "begin_transaction",
+        "commit_transaction",
+        "rollback_transaction",
+        "raw_append",
+        "replace_named_projection",
+        "get_named_projection",
+        "exclusive_raw_replay",
+        "batch",
+    }
+)
 MCP_OPERATION_TIMEOUT_SECONDS = 30
 MCP_SESSION_TIMEOUT_SECONDS = 600
 NATIVE_HTTP_TIMEOUT_SECONDS = 30
@@ -196,6 +222,31 @@ def _bind_trace_identity(
     if transaction_owner is None:
         raise RuntimeError(f"benchmark sample has unknown transaction owner for {mode!r}")
 
+    observed_seams = {"mcp_tool_dispatch"}
+    if expected_transport_requests:
+        observed_seams.add("mcp_http_json")
+    ffi_calls = seam_metrics.get("ffi_calls", 0)
+    if isinstance(ffi_calls, bool) or not isinstance(ffi_calls, int) or ffi_calls < 0:
+        raise RuntimeError("benchmark sample has an invalid FFI call counter")
+    if ffi_calls:
+        observed_seams.add("python_rust_json_ffi")
+    if observed_seams != DECLARED_SERIALIZATION_SEAMS[mode]:
+        raise RuntimeError(
+            f"benchmark observed seams {sorted(observed_seams)}; "
+            f"declared seams for {mode} are "
+            f"{sorted(DECLARED_SERIALIZATION_SEAMS[mode])}"
+        )
+    if "python_rust_json_ffi" in observed_seams:
+        ffi_operations = seam_metrics.get("ffi_by_operation")
+        if not isinstance(ffi_operations, dict) or not ffi_operations:
+            raise RuntimeError("Rust-authority trace lacks declared FFI operation counters")
+        unknown_operations = set(ffi_operations) - DECLARED_RUST_FFI_OPERATIONS
+        if unknown_operations:
+            raise RuntimeError(
+                f"Rust-authority trace crossed undeclared FFI operations: "
+                f"{sorted(unknown_operations)}"
+            )
+
     trace_join: dict[str, object] = {
         "mode": mode,
         "run_id": run_id,
@@ -207,6 +258,7 @@ def _bind_trace_identity(
         "serialized_bytes": seam_metrics.get("serialized_bytes"),
         "transaction_boundaries": seam_metrics.get("transaction_boundaries"),
         "transaction_owner": transaction_owner,
+        "observed_serialization_seams": sorted(observed_seams),
     }
     if mode in {"rust_authority", "rust_authority_http", "rust_authority_batch_write"}:
         native = result.get("native_bridge_trace")
