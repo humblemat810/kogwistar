@@ -107,6 +107,22 @@
             );
         for (table, kind, entity) in entities {
             let id = entity["id"].as_str().unwrap();
+            let mut stored_document = entity.clone();
+            let mut metadata = json!({"entity_type":kind,"visibility":"public"});
+            if id == "e-hyper" {
+                stored_document["mentions"] = json!([{
+                    "spans": [{
+                        "collection_page_url": "document_collection/doc-source-map-fixture",
+                        "document_page_url": "document/doc-source-map-fixture",
+                        "doc_id": "doc-source-map-fixture",
+                        "insertion_method": "parser",
+                        "start_char": 5,
+                        "end_char": 10,
+                        "excerpt": " beta"
+                    }]
+                }]);
+                metadata["_kogwistar_source_revision"] = json!(23);
+            }
             service
                 .store
                 .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
@@ -114,11 +130,8 @@
                     table: table.to_owned(),
                     record: GraphRecord {
                         id: id.to_owned(),
-                        document: Some(entity.to_string()),
-                        metadata: json!({"entity_type":kind,"visibility":"public"})
-                            .as_object()
-                            .unwrap()
-                            .clone(),
+                        document: Some(stored_document.to_string()),
+                        metadata: metadata.as_object().unwrap().clone(),
                         embedding: None,
                     },
                     embedding_dim: 0,
@@ -138,6 +151,37 @@
                             "acl_truth_graph":"knowledge",
                             "acl_target_entity_id":id,
                             "acl_target_grain":kind,
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+        for (grain, item_id) in [
+            ("grounding", "e-hyper::mention::0"),
+            ("span", "e-hyper::mention::0::span::0"),
+        ] {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-e-hyper-{grain}"),
+                        document: None,
+                        metadata: json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"e-hyper",
+                            "acl_target_grain":grain,
+                            "acl_target_item_id":item_id,
                             "acl_version":1,
                             "acl_mode":"public"
                         })
@@ -190,6 +234,19 @@
         ] {
             assert_eq!(edge_document[field], fixture_edge[field], "field={field}");
         }
+        assert_eq!(
+            edge_document["mentions"][0]["spans"][0],
+            json!({
+                "collection_page_url":"document_collection/doc-source-map-fixture",
+                "document_page_url":"document/doc-source-map-fixture",
+                "doc_id":"doc-source-map-fixture",
+                "insertion_method":"parser",
+                "start_char":5,
+                "end_char":10,
+                "excerpt":" beta"
+            })
+        );
+        assert_eq!(records["edges"][0]["metadata"]["_kogwistar_source_revision"], 23);
 
         drop(service);
         let cleanup_dsn = dsn
