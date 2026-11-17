@@ -448,7 +448,15 @@
                 ("acl_target_entity_id", json!(id)),
                 ("acl_target_grain", json!("node")),
                 ("acl_version", json!(1)),
-                ("acl_mode", json!("public")),
+                ("acl_mode", json!("private")),
+                (
+                    "owner_id",
+                    json!(if conversation_id == "conversation-1" {
+                        "alice"
+                    } else {
+                        "bob"
+                    }),
+                ),
             ] {
                 acl_metadata.insert(key.to_owned(), value);
             }
@@ -918,6 +926,34 @@
             &EncodingKey::from_secret(b"tool-audit-mcp-secret"),
         )
         .unwrap();
+        let foreign_owner_token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "mallory",
+                "role": "ro",
+                "ns": ["conversation"],
+                "storage_ns": "conversation",
+                "capabilities": ["read_graph"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(b"tool-audit-mcp-secret"),
+        )
+        .unwrap();
+        let wrong_namespace_token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "ro",
+                "ns": ["workflow"],
+                "storage_ns": "conversation",
+                "capabilities": ["read_graph"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(b"tool-audit-mcp-secret"),
+        )
+        .unwrap();
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -944,6 +980,42 @@
             serde_json::from_slice(&to_bytes(http_audit.into_body(), 65_536).await.unwrap())
                 .unwrap();
         assert_eq!(http_audit, audit);
+
+        for (bearer, expected_status, expect_empty) in [
+            (&foreign_owner_token, StatusCode::OK, true),
+            (&wrong_namespace_token, StatusCode::FORBIDDEN, false),
+        ] {
+            let denied = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/syscall/v1/receive_message")
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .body(Body::from(
+                            json!({
+                                "version":"v1",
+                                "op":"receive_message",
+                                "args":{"conversation_id":"conversation-1","limit":10}
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), expected_status);
+            let body = to_bytes(denied.into_body(), 8192).await.unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(!body.contains("first"), "denied response leaked user turn: {body}");
+            assert!(!body.contains("second"), "denied response leaked assistant turn: {body}");
+            if expect_empty {
+                let payload: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(payload["status"], "ok");
+                assert_eq!(payload["result"]["messages"], json!([]));
+            }
+        }
 
         let mcp_audit = app
             .oneshot(
