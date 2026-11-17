@@ -229,6 +229,37 @@
         );
         assert!(!private_payload.to_string().contains("private snapshot"));
 
+        let foreign_namespace_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "run-1",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "workflow",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            foreign_namespace_response.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert!(!String::from_utf8_lossy(&foreign_namespace_response.body)
+            .contains("latest snapshot"));
+
         let invoke_snapshot_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
