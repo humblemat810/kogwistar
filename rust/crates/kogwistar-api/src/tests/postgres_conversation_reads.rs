@@ -299,6 +299,37 @@
                 "snapshot": expected
             })
         );
+        let denied_model_tool = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {
+                        "tool_name": "resource_snapshot",
+                        "capabilities": ["project_view", "read_security_scope"]
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": []
+                }),
+            })
+            .await;
+        assert_eq!(
+            denied_model_tool.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&denied_model_tool.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
         let invoke_audit_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -322,8 +353,9 @@
             .iter()
             .filter(|event| event["op"] == "invoke_tool")
             .collect::<Vec<_>>();
-        assert_eq!(invoke_events.len(), 1, "successful built-in call must be audited once");
+        assert_eq!(invoke_events.len(), 2, "both allowed and denied calls must be audited");
         assert_eq!(invoke_events[0]["status"], "ok");
+        assert_eq!(invoke_events[1]["status"], "error");
         let initial_invoke_digest = format!(
             "{:x}",
             sha2::Sha256::digest(

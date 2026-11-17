@@ -428,6 +428,23 @@
             serde_json::from_slice::<Value>(&resource_snapshot_denied.body).unwrap()["code"],
             "KOGWISTAR_CAPABILITY_FORBIDDEN"
         );
+
+        let model_claimed_authority = service
+            .execute(make_request(
+                "resource_snapshot",
+                json!({
+                    "capabilities": ["project_view", "read_security_scope"]
+                }),
+            ))
+            .await;
+        assert_eq!(
+            model_claimed_authority.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&model_claimed_authority.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
     }
 
     #[tokio::test]
