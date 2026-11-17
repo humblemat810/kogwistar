@@ -195,10 +195,12 @@ Only these local items remain in scope before production rollout:
   lane transaction, and Python worker adapter stay within this item. Current
   native evidence is `.tmp/adr015-runtime-refresh-pg/native-report.json` for
   source `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`.
-  Additional in-memory evidence: the authenticated two-step Rust-native route
-  test confirms frontier successor scheduling and completion; store-memory
-  tests passed 46/46 and API in-memory tests 23/23 in isolated Linux Docker UAT.
-  This does not promote `workflow-runtime` readiness or production cutover.
+  Additional current-source evidence: the authenticated two-step Rust-native
+  route test confirms frontier successor scheduling and completion. Full Linux
+  Docker UAT unit suites passed: runtime 49, store-memory 46, API 409 (40
+  ignored). `cargo check -p kogwistar-api --tests` and `cargo fmt --check` also
+  passed on Windows. These local checks do not promote `workflow-runtime`
+  readiness or production cutover.
 - [x] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
   terminal suites; recorded state/event/terminal-result parity; crash/restart;
   cancellation/backpressure; and Python-worker restart gates. The persisted
