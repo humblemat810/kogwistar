@@ -590,11 +590,39 @@
             .unwrap()
             .len();
 
+        // Reopen the API against the same durable PostgreSQL schema before
+        // retrying, so recovery does not depend on the original process state.
+        server.abort();
+        let _ = server.await;
+        let reopened_service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        reopened_service.ensure_schema().await.unwrap();
+        let reopened_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(reopened_service.clone()),
+        );
+        let reopened_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let reopened_address = reopened_listener.local_addr().unwrap();
+        let reopened_server =
+            tokio::spawn(async move { axum::serve(reopened_listener, reopened_app).await.unwrap() });
+        let reopened_base = format!("http://{reopened_address}");
+
         // The caller did not observe the first response and retries the exact
         // request. Graph, index intent, runtime event, and lane ack share one
         // PostgreSQL transaction and must remain single-application effects.
         let retry = client
-            .post(format!("{base}/internal/runtime/results"))
+            .post(format!("{reopened_base}/internal/runtime/results"))
             .bearer_auth(&owner_token)
             .json(&worker_result)
             .send()
@@ -602,7 +630,7 @@
             .unwrap();
         assert_eq!(retry.status(), StatusCode::OK);
         assert_eq!(
-            service
+            reopened_service
                 .store
                 .list_server_run_events("owned-run", 0, usize::MAX)
                 .await
@@ -610,7 +638,7 @@
                 .len(),
             run_events_after_commit
         );
-        let replayed_events = service
+        let replayed_events = reopened_service
             .store
             .replay_raw_events("alpha", 0, 100)
             .await
@@ -622,7 +650,57 @@
                 .count(),
             1
         );
-        let replayed_records = service
+        let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let python = std::env::var_os("KOGWISTAR_PYTHON").unwrap_or_else(|| "python".into());
+        let python_probe = r#"
+import os
+import json
+import sqlalchemy as sa
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+dsn = os.environ["KOGWISTAR_TEST_PG_DSN"]
+if dsn.startswith("postgres://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgres://")
+elif dsn.startswith("postgresql://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgresql://")
+engine = sa.create_engine(dsn)
+try:
+    store = EnginePostgresMetaStore(
+        engine=engine, schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"]
+    )
+    matching = [
+        event
+        for event in store.iter_entity_event_envelopes(namespace="alpha")
+        if event.event_id == "owner-check-event"
+    ]
+    assert len(matching) == 1, f"expected one canonical event, got {matching!r}"
+    event = matching[0]
+    payload = json.loads(event.payload_json)
+    assert (event.entity_kind, event.entity_id, event.op) == (
+        "node", "owner-check-node", "ADD"
+    ), event
+    assert payload["id"] == "owner-check-node", payload
+finally:
+    engine.dispose()
+"#;
+        let python_result = std::process::Command::new(python)
+            .arg("-c")
+            .arg(python_probe)
+            .current_dir(&repository_root)
+            .env("KOGWISTAR_TEST_PG_DSN", &dsn)
+            .env("KOGWISTAR_TEST_PG_SCHEMA", &schema)
+            .output()
+            .expect("launch Python PostgreSQL event reader");
+        assert!(
+            python_result.status.success(),
+            "Python reader must observe exactly one committed worker effect; stdout={}; stderr={}",
+            String::from_utf8_lossy(&python_result.stdout),
+            String::from_utf8_lossy(&python_result.stderr)
+        );
+        let replayed_records = reopened_service
             .store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
@@ -638,7 +716,7 @@
             .await
             .unwrap();
         assert_eq!(replayed_records.len(), 1);
-        let replayed_jobs = service
+        let replayed_jobs = reopened_service
             .store
             .list_index_jobs(Some("alpha"), None, None, None, None, 100)
             .await
@@ -651,7 +729,7 @@
             1
         );
         assert_eq!(
-            service
+            reopened_service
                 .store
                 .get_projected_lane_message("lane-1")
                 .await
@@ -660,5 +738,5 @@
                 .status,
             "completed"
         );
-        server.abort();
+        reopened_server.abort();
     }

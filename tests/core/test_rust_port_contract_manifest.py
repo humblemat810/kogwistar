@@ -1271,12 +1271,17 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         for line in worklist.splitlines()
         if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV|REL)-[A-Z0-9-]+ \|", line)
     ]
-    parents = [line for line in all_rows if "| PARENT |" in line]
-    rows = [line for line in all_rows if "| PARENT |" not in line]
+    parents = [line for line in all_rows if "children:" in line]
     row_by_id = {
         re.match(r"\| ([A-Z0-9-]+) \|", line).group(1): line
         for line in all_rows
     }
+    parent_ids = {re.match(r"\| ([A-Z0-9-]+) \|", line).group(1) for line in parents}
+    rows = [
+        line
+        for line in all_rows
+        if re.match(r"\| ([A-Z0-9-]+) \|", line).group(1) not in parent_ids
+    ]
     referenced_children: set[str] = set()
     for parent in parents:
         parent_id = re.match(r"\| ([A-Z0-9-]+) \|", parent).group(1)
@@ -1293,6 +1298,17 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
             if row_id.startswith(f"{parent_id}") and row_id != parent_id
         }
         assert set(child_ids) == expected_children, parent
+        child_statuses = {
+            re.search(
+                r"\| (PASS|IN PROGRESS|NOT STARTED) \|", row_by_id[child_id]
+            ).group(1)
+            for child_id in child_ids
+        }
+        parent_status = re.search(r"\| (PASS|PARENT) \|", parent).group(1)
+        if child_statuses == {"PASS"}:
+            assert parent_status == "PASS", parent
+        else:
+            assert parent_status == "PARENT", parent
     detailed_children = {
         row_id for row_id in row_by_id if re.search(r"-\d+[A-Z]$", row_id)
     }
@@ -1319,11 +1335,14 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
 
     assert len(parents) == 16
     assert len(rows) == 67
-    assert statuses.count("PASS") == 37
+    assert statuses.count("PASS") == 39
     assert statuses.count("IN PROGRESS") == 0
-    assert statuses.count("NOT STARTED") == 30
+    assert statuses.count("NOT STARTED") == 28
     assert capability_ids == incomplete_capabilities
-    assert "**Progress:** **37/67 PASS (55.2%)**" in worklist
+    assert "**Progress:** **39/67 PASS (58.2%)**" in worklist
+    assert "| QLL-03 | `queues-leases-lanes` | PASS |" in worklist
+    assert "| QLL-03A | `queues-leases-lanes` | PASS |" in worklist
+    assert "| QLL-03B | `queues-leases-lanes` | PASS |" in worklist
     assert (
         "No separate customer traffic fleet or percentage canary is required"
         in worklist
