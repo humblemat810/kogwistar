@@ -9,12 +9,23 @@ the optional native execution paths are specified in
 
 Updated: 2026-11-17
 
-Active production-cutover tasklets and their sole completion count are tracked
-in [`ADR-015-cutover-worklist.md`](ADR-015-cutover-worklist.md). ADR-022's fine
-worklist remains a closed evidence inventory, not active rollout tracking.
-Remaining local implementation gaps have a separate fixed-scope ledger in
-[`ADR-015-implementation-tasklets.md`](ADR-015-implementation-tasklets.md);
-it does not change the production cutover count.
+Active Rust capability implementation and library-UAT tasklets, with the sole
+current completion count, are tracked in
+[`ADR-015-capability-completion-worklist.md`](ADR-015-capability-completion-worklist.md).
+Its fixed baseline is **14/31 PASS (45.2%)**, **11 IN PROGRESS**, and
+**6 NOT STARTED**. Kogwistar is a library: clean Docker UAT on one identified
+candidate is its deployment-grade end-to-end acceptance. No customer fleet,
+traffic percentage, or external canary is required for library completion.
+The closed ADR-022 worklist remains a historical evidence inventory.
+[`ADR-015-implementation-tasklets.md`](ADR-015-implementation-tasklets.md)
+contains 11 already-closed implementation slices; it is supporting evidence,
+not a second active progress denominator.
+
+**Historical-note boundary:** Remaining sections below preserve dated test and
+design history. Any wording there that requires customer production canaries,
+traffic percentages, or customer-fleet promotion is superseded for Kogwistar
+library completion by the active capability worklist above. Candidate Docker
+UAT and required CI are the relevant end-to-end acceptance evidence.
 
 ## Current Source and Release Boundary
 
@@ -140,7 +151,11 @@ PyPy 3.11, Rust, native-wheel smoke, and lint. Local dependency-boundary and
 Rust contract checks also passed. This records verification evidence only; it
 does not promote any Rust capability to production authority.
 
-## Scope-locked completion ledger
+## Historical Candidate Evidence Ledger
+
+The following dated ledger records prior candidate evidence and decisions. It
+is not the active checklist or completion denominator; use
+[`ADR-015-capability-completion-worklist.md`](ADR-015-capability-completion-worklist.md).
 
 This ledger replaces percentage-complete estimates. Percentages mixed local
 implementation effort with production rollout gates and therefore overstated
@@ -242,7 +257,7 @@ Only these local items remain in scope before production rollout:
   wheel evidence: `.tmp/adr015-phase3-refresh-native.json`. These counts are
   local-only mixed-path evidence; each `rust_cutover_ready` remains false until
   same-candidate staged canary and rollback evidence exists. Remaining rollout
-  tasklets are tracked in `ADR-015-cutover-worklist.md`.
+  tasklets are tracked in `ADR-015-capability-completion-worklist.md`.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current

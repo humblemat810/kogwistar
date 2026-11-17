@@ -1,11 +1,13 @@
 # ADR-015 Remaining Implementation Tasklets
 
-**Progress:** **11/11 PASS (100%)**. Implementation-tasklet list complete; this is not production or cutover readiness.
+**Progress:** **11/11 PASS (100%)**. Closed implementation slices; not the active capability-completion denominator.
 **Purpose:** Track remaining library implementation work, not production rollout.
 **Parent:** [ADR-015 implementation status](ADR-015-implementation-status.md).
-**Separate gates:** Production canaries and promotion remain exclusively in
-[ADR-015 cutover worklist](ADR-015-cutover-worklist.md). Closed parity evidence
-remains in the ADR-022 inventory.
+**Active remaining work:** [ADR-015 capability completion worklist](ADR-015-capability-completion-worklist.md).
+Kogwistar is a library; its deployment-grade end-to-end acceptance is clean
+Docker UAT on one identified candidate. External customer canaries and adopter
+promotion are outside library completion. Closed parity evidence remains in
+the ADR-022 inventory.
 
 ## Rules
 
@@ -18,8 +20,8 @@ remains in the ADR-022 inventory.
   not passed. `NOT STARTED` includes intentionally fail-closed Rust operations.
 - Preserve Python support, Python-written data compatibility, ACL/scope checks,
   transaction ownership, and fail-closed behavior. No silent language fallback.
-- Do not mark production readiness here. Local implementation evidence cannot
-  satisfy a canary, promotion, or deployment task.
+- Do not use this closed list as the current completion percentage. Update the
+  active capability worklist only when its stated oracle passes.
 
 ## Runtime Semantics
 
@@ -55,11 +57,11 @@ until its authority, authorization, persistence, and transport oracle passes.
 | SRV-01 | PASS | `DELETE /admin/doc/{doc_id}` is verified through native REST, rollback, backend-appropriate index/projection cleanup, and Python-readable durable events. Rust SQLite/in-memory: `cargo test -p kogwistar-api admin_document_delete --lib -- --nocapture` (**2 passed**) verifies role denial, tombstone, SQLite two-stage `node_embedding` DELETE intent, source-projection removal + reopen, and in-memory dispatch. Cross-language: native server build succeeded; `pytest tests/runtime/test_rust_admin_document_delete_interop.py -q -p no:cacheprovider` (**1 passed**) proves Python `EngineSQLite` and `read_canonical_entity_revision` observe the native server's durable tombstone. Live PostgreSQL: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api postgres_admin_document_delete_enforces_scope_and_commits_rollback --lib -- --ignored --nocapture` (**1 passed**, existing `kogwistar-adr015-pg16`) verifies JWT role/namespace denial, workspace/graph-space isolation, scoped tombstone event, and source-projection removal. PostgreSQL uses synchronous vector/projection semantics; SQLite-only embedding queue expectation is not imposed. Rust authorization matches Python `require_role("rw")`; no extra capability gate. |
 | SRV-02 | PASS | Python and Rust share optional-key validation, stable run/turn IDs, and request fingerprints; Rust persists only the fingerprint in `run.created`, never the raw key. MCP admits the optional key and rejects blank values; shared MCP schema/fixture include it. Evidence: Python retry/conflict + rollback (**2 passed**); Python MCP contract/registry (**8 passed**); Rust MCP transport contract (**1 passed**); SQLite+Chroma exact replay + changed-payload conflict (**1 passed**); live PostgreSQL `postgres_send_message_admission_is_one_graph_run_event_lane_transaction` (**1 passed**) verifies atomic event/lane/graph admission, exact retry, changed-payload conflict, barrier-synchronized concurrent duplicate, and replay after constructing a fresh service on the same schema. Live Rust HTTP/Python interoperability: `test_rust_postgres_graph_read_tools_match_python_over_shared_projection` (**1 passed**) sends the same MCP key twice, confirms stable run/turn IDs, processes the admitted run, and confirms Python `Engine` reads exactly one matching turn. Authorization, workflow ACL, and projection path are exercised; no raw key is durable. |
 | SRV-03 | PASS | `mount_memory` returns the same bounded public snapshot contract in Python and Rust, enforces namespace/capability plus canonical snapshot ACL, and hides private snapshot IDs/content from non-owners. Python checks: `.venv\\Scripts\\python.exe -m pytest tests/server/test_mount_memory_wire_contract.py tests/server/test_chat_server_api.py::test_latest_snapshot_uses_python_defaults_and_checks_namespace tests/server/test_chat_server_api.py::test_mount_memory_acl_and_payload_survive_python_engine_reopen -q -p no:cacheprovider --tb=short --show-capture=no` (**3 passed**) verify the shared fixture, owner access, wrong-namespace 403, outsider 404 without leakage, and identical payload after closing/reopening persistent Chroma engines. Rust checks: `mount_memory_syscall_checks_namespace_and_capability_before_storage` (**1 passed**); `snapshot_syscall_compatibility_drops_rust_only_fields` (**1 passed**, shared `mount-memory-result-v1.json`); and `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` (**1 passed**, local fake-Chroma loopback) verify denied namespace/capability, private snapshot denial before and after service reopen, canonical SQLite ACL replay, and unchanged authorized response after reopen. Rust keeps Chroma as graph projection; test does not claim Chroma-server restart durability. `cargo fmt --manifest-path rust/Cargo.toml --all -- --check` passed. |
-| SRV-04 | PASS | Python's `invoke_tool` contract is four read-only built-ins only (`list_transcript`, `latest_snapshot`, `capability_snapshot`, `resource_snapshot`); no dynamic host tool catalog, tool-result writes, or MCP operation. Python shared-fixture + REST reference: **2 passed**. Rust in-memory built-ins/ACL/public snapshot parity + authenticated JWT REST route: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api in_memory_invoke_ --lib -- --nocapture` (**2 passed**). SQLite+Chroma all-built-ins, ACL, audit, and result-shape integration: `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` (**1 passed**, embedded fake Chroma loopback). Public snapshot projection compatibility: `snapshot_syscall_compatibility_drops_rust_only_fields` (**1 passed**). PostgreSQL live isolated-UAT end-to-end: `postgres_agentic_answer_workflow_executes_durably_without_python_worker` (**1 passed**; includes `resource_snapshot` syscall). Frozen syscall-group deferral remains because three other syscalls and group cutover evidence remain incomplete; no generic mutating tool execution, MCP parity, or production readiness is claimed. Docker/PostgreSQL run is UAT evidence only, never a production canary. |
+| SRV-04 | PASS | Python's `invoke_tool` contract is four read-only built-ins only (`list_transcript`, `latest_snapshot`, `capability_snapshot`, `resource_snapshot`); no dynamic host tool catalog, tool-result writes, or MCP operation. Python shared-fixture + REST reference: **2 passed**. Rust in-memory built-ins/ACL/public snapshot parity + authenticated JWT REST route: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api in_memory_invoke_ --lib -- --nocapture` (**2 passed**). SQLite+Chroma all-built-ins, ACL, audit, and result-shape integration: `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` (**1 passed**, embedded fake Chroma loopback). Public snapshot projection compatibility: `snapshot_syscall_compatibility_drops_rust_only_fields` (**1 passed**). PostgreSQL live isolated-UAT end-to-end: `postgres_agentic_answer_workflow_executes_durably_without_python_worker` (**1 passed**; includes `resource_snapshot` syscall). Frozen syscall-group deferral remains because three other syscalls and group cutover evidence remain incomplete; no generic mutating tool execution, MCP parity, or full capability completion is claimed. Docker/PostgreSQL run is deployment-grade UAT evidence for this library. |
 
 ## Completion Boundary
 
 Passing all 11 tasklets closes this implementation list only. It does not change
-`rust_cutover_ready`, satisfy any production canary, make Rust the default, or
-authorize removal of Python. Those decisions remain governed by ADR-015 and its
-cutover worklist.
+`rust_cutover_ready`, make Rust the default, or authorize removal of Python.
+Native-default policy remains explicit; capability completion is tracked in
+[ADR-015 capability completion worklist](ADR-015-capability-completion-worklist.md).

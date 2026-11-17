@@ -177,6 +177,7 @@ pub(super) fn allocation_sql(tables: &Tables) -> String {
     )
 }
 
+// PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-postgres/src/event_projection.rs#append_raw_entity_event; python=kogwistar/engine_core/engine_postgres_meta.py#append_entity_event; fixture=none (uses the typed raw-append DTO); rust_test=rust/crates/kogwistar-store-postgres/src/tests/events.rs#postgres_integration_event_store_core; python_test=tests/core/test_rust_store_postgres_differential.py#test_rust_postgres_lost_ack_replays_committed_event_after_reopen; note=event identity makes post-commit lost-ACK retries return the canonical committed row across a fresh process.
 pub(super) async fn append_raw_entity_event<C>(
     client: &C,
     tables: &Tables,

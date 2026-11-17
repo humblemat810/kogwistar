@@ -1258,6 +1258,51 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
     assert "**Overall Rust cutover:** **NOT COMPLETE**" in worklist
 
 
+def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
+    worklist_path = (
+        ROOT
+        / "kogwistar"
+        / "docs"
+        / "ADR-015-capability-completion-worklist.md"
+    )
+    worklist = worklist_path.read_text(encoding="utf-8")
+    rows = [
+        line
+        for line in worklist.splitlines()
+        if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV|REL)-\d+ \|", line)
+    ]
+    statuses = []
+    for line in rows:
+        match = re.search(r"\| (PASS|IN PROGRESS|NOT STARTED) \|", line)
+        assert match is not None, line
+        statuses.append(match.group(1))
+    capability_ids = {
+        re.search(r"\| ([A-Z]{3})-\d+ \| `([^`]+)` \|", line).group(2)
+        for line in rows
+        if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV)-\d+ \|", line)
+    }
+    manifest = json.loads(
+        (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    incomplete_capabilities = {
+        item["capability"]
+        for item in manifest["capability_ownership"]
+        if item["target_authoritative_writer"] == "rust"
+        and not item["rust_cutover_ready"]
+    }
+
+    assert len(rows) == 31
+    assert statuses.count("PASS") == 14
+    assert statuses.count("IN PROGRESS") == 11
+    assert statuses.count("NOT STARTED") == 6
+    assert capability_ids == incomplete_capabilities
+    assert "**Progress:** **14/31 PASS (45.2%)**" in worklist
+    assert (
+        "No separate customer traffic fleet or percentage canary is required"
+        in worklist
+    )
+
+
 def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:
     matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     entries = {item["id"]: item for item in matrix["capabilities"]}
