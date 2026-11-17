@@ -1515,6 +1515,24 @@
         );
         assert!(answer_lanes.iter().any(|lane| lane.msg_type == "workflow.run.execute"));
         assert!(answer_lanes.iter().all(|lane| lane.status == "completed"));
+        let answer_events = service
+            .store
+            .list_server_run_events(answer_run_id, 0, 100)
+            .await
+            .unwrap();
+        let admission_events = answer_events
+            .iter()
+            .filter(|event| event.event_type == "run.created")
+            .collect::<Vec<_>>();
+        assert_eq!(admission_events.len(), 1, "REST admission must create one durable run event");
+        let admission_payload: Value =
+            serde_json::from_str(&admission_events[0].payload_json).unwrap();
+        assert_eq!(admission_payload["run_id"], answer_run_id);
+        assert_eq!(admission_payload["turn_node_id"], answer_turn_id);
+        assert_eq!(
+            admission_payload["runtime_owner_binding"]["user_id"],
+            "conversation-owner"
+        );
         let spoofed_create = client
             .post(format!("{base_url}/api/conversations"))
             .bearer_auth(&conversation_token)

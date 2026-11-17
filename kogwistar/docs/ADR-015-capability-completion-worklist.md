@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **23/67 PASS (34.3%)**; **6 IN PROGRESS**; **38 NOT STARTED**.
+**Progress:** **24/67 PASS (35.8%)**; **5 IN PROGRESS**; **38 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -92,7 +92,7 @@ the closed ADR-022 evidence inventories.
 | WFR-04 | `workflow-runtime` | PASS | A declared Rust-native workflow completes ingress-to-persistence with no Python worker and trace `seam_crossings=[]`. | Linux Docker UAT, Rust 1.97.1 + CPython 3.11, `test_rust_native_workflow_runs_through_real_server_without_python_worker` SQLite `external-worker` and `inline-server`: **2 passed**; durable run/checkpoint/steps, MCP trace authority, no Python handoff, empty seams verified. |
 | SRV-01 | `server-rest-sse-mcp-cli` | PASS | Implemented REST/SSE/MCP operations preserve contract, authentication, scope, and error behavior. | Phase-5 server gate recorded 197 passed; current-candidate revalidation is REL-01/REL-02. |
 | SRV-02 | `server-rest-sse-mcp-cli` | PARENT | Native `send_message` admission requirement; children: SRV-02A,SRV-02B,SRV-02C. | Parent closes when all leaves pass. |
-| SRV-02A | `server-rest-sse-mcp-cli` | IN PROGRESS | Invariant: valid REST send admits one turn in Rust. Cell: PostgreSQL REST ingress. Oracle: response and one atomic run/turn/event/lane state. Check: finish `test_postgres_rest_send_message_native_admission`. |
+| SRV-02A | `server-rest-sse-mcp-cli` | PASS | Invariant: valid REST send admits one turn in Rust. Cell: PostgreSQL REST ingress. Oracle: response and durable run/turn/event/lane state. Evidence: `tests::postgres_agentic_answer::postgres_agentic_answer_workflow_executes_durably_without_python_worker` (**1 passed**, live `kogwistar-adr015-pg16`); HTTP `202`, user turn persisted, exactly one matching `run.created`, run and lane persisted, Rust-native workflow completed. |
 | SRV-02B | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: MCP send exact retry is idempotent. Cell: PostgreSQL MCP ingress, same idempotency key. Oracle: same admission response and no duplicate durable rows. Check: add/run `test_postgres_mcp_send_message_retry_is_idempotent`. |
 | SRV-02C | `server-rest-sse-mcp-cli` | NOT STARTED | Invariant: wrong owner/capability cannot admit a turn. Cell: REST and MCP denied send requests. Oracle: authorization denial and unchanged run/event/lane counts. Check: add/run `test_postgres_send_message_denial_has_no_effects`. |
 | SRV-03 | `server-rest-sse-mcp-cli` | PARENT | Native `receive_message` projection requirement; children: SRV-03A,SRV-03B,SRV-03C. | Parent closes when all leaves pass. |
