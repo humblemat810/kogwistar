@@ -291,6 +291,21 @@
             })
             .await;
         assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+        let unsupported_filter = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: br#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine","where":{"$gt":2}}"#.to_vec(),
+                principal: json!({"sub":"alice","capabilities":["read_graph"]}),
+            })
+            .await;
+        assert_eq!(
+            unsupported_filter.status,
+            StatusCode::UNPROCESSABLE_ENTITY.as_u16(),
+            "unsupported query syntax must fail before PostgreSQL access or fallback"
+        );
     }
 
     #[tokio::test]
