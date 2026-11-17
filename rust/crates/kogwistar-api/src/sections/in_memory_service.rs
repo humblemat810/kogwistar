@@ -229,6 +229,9 @@ impl InMemoryGraphApplicationService {
         let Some(lane) = claimed.pop() else {
             return Ok(false);
         };
+        let claim_message_id = lane.message_id.clone();
+        let claim_owner = claimed_by.clone();
+        let operation = async move {
         let message_id = lane.message_id.clone();
         let run_id = lane.run_id.clone().unwrap_or_default();
         let cancel_requested =
@@ -427,7 +430,23 @@ impl InMemoryGraphApplicationService {
             .await?;
             return Err(error.to_string());
         }
-        Ok(true)
+        Ok::<bool, String>(true)
+        };
+        match kogwistar_engine::with_lane_claim_renewal(
+            &self.store,
+            &claim_message_id,
+            &claim_owner,
+            60,
+            operation,
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            Ok(None) => Err(
+                "native runtime lane lease was lost; result was not committed".to_owned(),
+            ),
+            Err(error) => Err(format!("native runtime lane lease renewal failed: {error}")),
+        }
     }
 
     async fn in_memory_native_graph_effect_batch(

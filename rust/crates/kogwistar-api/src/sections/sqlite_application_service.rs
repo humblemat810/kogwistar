@@ -35,11 +35,15 @@ impl ApplicationService for SqliteRunApplicationService {
                 run_id: None,
                 recipient_ids: vec!["rust-native-worker".to_owned()],
             };
+            let lease_seconds = input.lease_seconds;
             let recipients = effective_runtime_claim_recipients(&input.recipient_ids)?;
             let mut claimed = self.claim_runtime_work_items(input, recipients)?;
             let Some(work) = claimed.pop() else {
                 return Ok(false);
             };
+            let message_id = work.message_id.clone();
+            let claimed_by = work.claimed_by.clone();
+            let operation = async move {
             let operation = work
                 .payload
                 .get("op")
@@ -279,7 +283,23 @@ impl ApplicationService for SqliteRunApplicationService {
                     applied.status
                 ));
             }
-            Ok(true)
+            Ok::<bool, String>(true)
+            };
+            match kogwistar_engine::with_lane_claim_renewal(
+                &self.store,
+                &message_id,
+                &claimed_by,
+                lease_seconds,
+                operation,
+            )
+            .await
+            {
+                Ok(Some(result)) => result,
+                Ok(None) => Err(
+                    "native runtime lane lease was lost; result was not committed".to_owned(),
+                ),
+                Err(error) => Err(format!("native runtime lane lease renewal failed: {error}")),
+            }
         })
     }
 

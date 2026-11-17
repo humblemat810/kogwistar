@@ -234,9 +234,11 @@ fn lane_claim_renewal_requires_current_live_owner() {
         })
         .unwrap();
     let old_deadline = live[0].lease_until.as_ref().unwrap().as_i64().unwrap();
-    assert!(!store
-        .renew_projected_lane_message_claim("renew-live", "other-worker", 120)
-        .unwrap());
+    assert!(
+        !store
+            .renew_projected_lane_message_claim("renew-live", "other-worker", 120)
+            .unwrap()
+    );
     assert!(
         store
             .renew_projected_lane_message_claim("renew-live", "attempt-1", 120)

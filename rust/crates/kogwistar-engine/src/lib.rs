@@ -15,6 +15,7 @@ pub mod embedding;
 pub mod index_worker;
 pub mod projection_worker;
 mod worker_lease;
+pub use worker_lease::with_lane_claim_renewal;
 
 const STATE_VERSION: i64 = 1;
 
