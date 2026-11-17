@@ -1016,11 +1016,11 @@
       "source": "rust/crates/kogwistar-api/src/sections/in_memory_service.rs#InMemoryRunApplicationService.execute",
       "dispatches": [
         "create_conversation",
+        "invoke_tool",
         "receive_message"
       ],
       "unavailable": [
         "checkpoint",
-        "invoke_tool",
         "mount_memory",
         "project_view",
         "request_approval",
@@ -1030,6 +1030,7 @@
         "terminate_process"
       ],
       "cutover_deferred": [
+        "invoke_tool",
         "receive_message"
       ],
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"

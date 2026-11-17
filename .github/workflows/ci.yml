@@ -484,6 +484,30 @@ jobs:
               )
           PY
 
+      - name: Verify Rust-native workflow backend matrix
+        if: matrix.label == 'cpython313'
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/rust-native-workflow-matrix.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
+          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
+          if tests != 7 or skipped or failures or errors:
+              raise SystemExit(
+                  "Rust-native workflow matrix incomplete: "
+                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
+              )
+          PY
+
       - name: Verify PostgreSQL facade and sequential handoff contracts
         if: matrix.label == 'cpython314'
         shell: bash

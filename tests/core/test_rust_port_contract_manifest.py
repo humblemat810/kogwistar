@@ -985,6 +985,7 @@ def test_dual_language_surface_inventory_is_current() -> None:
     ]
     assert backend_syscalls["in-memory"]["dispatches"] == [
         "create_conversation",
+        "invoke_tool",
         "receive_message",
     ]
 
