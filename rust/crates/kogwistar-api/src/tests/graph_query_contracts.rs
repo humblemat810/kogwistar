@@ -68,6 +68,129 @@
         assert_eq!(projected["target_edge_ids"], json!(["edge-child"]));
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#authorized_evidence_records; python=tests/core/test_graph_model_adapter.py#test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences; rust_unit=semantic_edge_projection_preserves_node_and_edge_endpoint_ids
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+    async fn postgres_edge_hydration_preserves_hyperedge_endpoint_ids() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_edge_hydration_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let namespace = format!("edge-hydration-{}", uuid::Uuid::new_v4().simple());
+        let scope = GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        for (table, id, kind, document) in [
+            (
+                "gke_nodes",
+                "node-a",
+                "node",
+                json!({"id":"node-a","label":"A"}),
+            ),
+            (
+                "gke_nodes",
+                "node-b",
+                "node",
+                json!({"id":"node-b","label":"B"}),
+            ),
+            (
+                "gke_nodes",
+                "node-c",
+                "node",
+                json!({"id":"node-c","label":"C"}),
+            ),
+            (
+                "gke_edges",
+                "edge-hyper",
+                "edge",
+                json!({
+                    "id":"edge-hyper",
+                    "source_ids":["node-a", "node-b"],
+                    "target_ids":["node-c"],
+                    "source_edge_ids":["edge-parent"],
+                    "target_edge_ids":["edge-child"]
+                }),
+            ),
+        ] {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: table.to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(document.to_string()),
+                        metadata: json!({"entity_type":kind,"visibility":"public"})
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let records = match service
+            .authorized_evidence_records(
+                &json!({
+                    "sub":"reader",
+                    "role":"ro",
+                    "ns":"knowledge",
+                    "storage_ns":namespace,
+                    "capabilities":["read_graph"]
+                }),
+                &[],
+                &["edge-hyper".to_owned()],
+                "knowledge",
+            )
+            .await
+        {
+            Ok(records) => records,
+            Err(_) => panic!("authorized edge hydration rejected public hyperedge"),
+        };
+        let edge_document: Value = serde_json::from_str(
+            records["edges"][0]["document"]
+                .as_str()
+                .expect("hydrated edge document is serialized JSON"),
+        )
+        .unwrap();
+        assert_eq!(edge_document["source_ids"], json!(["node-a", "node-b"]));
+        assert_eq!(edge_document["target_ids"], json!(["node-c"]));
+        assert_eq!(edge_document["source_edge_ids"], json!(["edge-parent"]));
+        assert_eq!(edge_document["target_edge_ids"], json!(["edge-child"]));
+
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
     #[test]
     fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
         let request: GraphNeighborsRequestV1 =
