@@ -92,6 +92,13 @@ binary's PostgreSQL UAT passed the `[pg]` case (**1 passed**, 351.97s) against
 the disposable pgvector container with temporary-schema cleanup. These are
 bounded local UAT results only; neither Docker nor local runs are production
 canary/cutover evidence, and capability readiness remains unchanged.
+The current-source all-Rust-native HTTP workflow matrix also passed (**7/7**,
+340.56s) against the rebuilt server: in-memory inline-server, and SQLite,
+SQLite+Chroma, and PostgreSQL in both external-worker and inline-server modes.
+Every trace reported `implementation_authority=rust-native` and
+`seam_crossings=[]`; PostgreSQL used a disposable schema with teardown. This
+proves these tested UAT paths only, not unrestricted stack parity or production
+readiness.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
