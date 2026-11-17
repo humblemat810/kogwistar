@@ -871,7 +871,17 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
         last_exec_node: Any | None = resume_last_exec_node or wf_run_root_node
         cancel_requested = _CANCEL_REQUESTED_CTX.get() or self.cancel_requested
         ready_completed: list[
-            tuple[int, int, int, str, str, str | None, StepRunResult, float]
+            tuple[
+                int,
+                int,
+                int,
+                str,
+                str,
+                str | None,
+                StepRunResult,
+                TraceContext | None,
+                float,
+            ]
         ] = []
         next_apply_step_seq = seq
 
@@ -880,7 +890,17 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
 
         async def _run_one(
             item: tuple[int, int, str, str, str | None],
-        ) -> tuple[int, int, int, str, str, str | None, StepRunResult, float]:
+        ) -> tuple[
+            int,
+            int,
+            int,
+            str,
+            str,
+            str | None,
+            StepRunResult,
+            TraceContext | None,
+            float,
+        ]:
             nonlocal seq
             launch_seq, mask, node_id, token_id, parent_token_id = item
             node = nodes[node_id]
@@ -1000,6 +1020,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 token_id,
                 parent_token_id,
                 out,
+                ctx.trace_ctx,
                 float(time.perf_counter()),
             )
 
@@ -1106,7 +1127,17 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
             inflight_records.clear()
 
         async def _apply_completed_result(
-            item: tuple[int, int, int, str, str, str | None, StepRunResult, float],
+            item: tuple[
+                int,
+                int,
+                int,
+                str,
+                str,
+                str | None,
+                StepRunResult,
+                TraceContext | None,
+                float,
+            ],
         ) -> None:
             nonlocal status, failure_errors, last_processed_node_id
             nonlocal accepted_step_seq, last_exec_node, run_suspended, dispatch_seq
@@ -1119,6 +1150,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 token_id,
                 parent_token_id,
                 out,
+                step_trace_context,
                 _completed_at,
             ) = item
             if not node_id:
@@ -1199,6 +1231,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                     parent_token_id=parent_token_id,
                     join_mask=int(mask),
                     last_exec_node=last_exec_node,
+                    trace_context=step_trace_context,
                 )
                 if child_failed:
                     _maybe_persist_checkpoint(
@@ -1231,6 +1264,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 parent_token_id=parent_token_id,
                 join_mask=int(mask),
                 last_exec_node=last_exec_node,
+                trace_context=step_trace_context,
             )
             last_exec_node = step_exec_node
 
@@ -1531,7 +1565,17 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                 break
 
             completed: list[
-                tuple[int, int, int, str, str, str | None, StepRunResult, float]
+                tuple[
+                    int,
+                    int,
+                    int,
+                    str,
+                    str,
+                    str | None,
+                    StepRunResult,
+                    TraceContext | None,
+                    float,
+                ]
             ] = []
             for task in done:
                 item = inflight_records.pop(task, None)
@@ -1559,6 +1603,7 @@ class AsyncWorkflowRuntime(BaseRuntime[AsyncStepResolver], WorkflowExecutor):
                                 state_update=[],
                                 errors=[str(exc)],
                             ),
+                            None,
                             float(time.perf_counter()),
                         )
                     )
