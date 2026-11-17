@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **27/67 PASS (40.3%)**; **2 IN PROGRESS**; **38 NOT STARTED**.
+**Progress:** **28/67 PASS (41.8%)**; **1 IN PROGRESS**; **38 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -129,7 +129,7 @@ the closed ADR-022 evidence inventories.
 | REL-03C | All six | NOT STARTED | Invariant: CPython 3.14 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Check: inspect exact-commit CI run. |
 | REL-03D | All six | NOT STARTED | Invariant: PyPy 3.11 declared lane has accurate best-effort/required result. Cell: hosted PyPy lane. Oracle: status matches support policy; failure cannot be reported as pass. Check: inspect exact-commit PyPy result. |
 | REL-04 | All six | PARENT | Language-boundary isolation requirement; children: REL-04A,REL-04B,REL-04C. | Parent closes when all leaves pass. |
-| REL-04A | All six | IN PROGRESS | Invariant: Python-only public path never loads/calls Rust. Cell: instrumented Python server and memory workflow. Oracle: zero native imports/calls; expected state. Check: finish Python-only boundary guard. |
+| REL-04A | All six | PASS | Invariant: Python-only public path never loads/calls Rust. Cell: instrumented Python server and memory workflow. Oracle: zero native imports/calls; expected state. Evidence: answer workflow fake end-to-end (**1 passed**); Python-default server/memory/REST path group (**11 passed**, includes submit/SSE); each replaces `_load_extension` with a failing sentinel. |
 | REL-04B | All six | NOT STARTED | Invariant: Rust-native container path never starts Python worker/interpreter. Cell: clean Linux Docker UAT. Oracle: process/call instrumentation reports no Python execution and empty seam list. Check: add/run Rust-native no-Python container test. |
 | REL-04C | All six | NOT STARTED | Invariant: mixed mode crosses only declared serialization seams. Cell: one traced end-to-end operation per configured seam. Oracle: observed seam set equals declared set; undeclared crossing fails. Check: add/run mixed-boundary inventory guard. |
 | REL-05 | All six | PARENT | Resource-matched end-to-end comparison requirement; children: REL-05A,REL-05B,REL-05C,REL-05D. | Parent closes when all leaves pass. |
