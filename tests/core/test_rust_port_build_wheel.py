@@ -120,9 +120,11 @@ def test_wheel_builder_source_fingerprint_tracks_dirty_and_untracked_inputs(
 def test_host_native_builder_and_smoke_are_persisted_and_abi_exact() -> None:
     host_builder = ROOT / "scripts" / "host_native_wheel_builder.py"
     smoke = ROOT / "scripts" / "native_extension_abi_smoke.py"
+    server_smoke = ROOT / "scripts" / "rust_server_wheel_smoke.py"
 
     source = host_builder.read_text(encoding="utf-8")
     smoke_source = smoke.read_text(encoding="utf-8")
+    server_smoke_source = server_smoke.read_text(encoding="utf-8")
 
     assert "--interpreter" in source
     assert "--locked" in source
@@ -131,3 +133,5 @@ def test_host_native_builder_and_smoke_are_persisted_and_abi_exact() -> None:
     assert "candidate_source_fingerprint" in source
     assert "--expected-extension" in smoke_source
     assert '"transaction_id": None' in smoke_source
+    assert '"KOGWISTAR_API_TOKEN": token' in server_smoke_source
+    assert '"workflow.visibility_snapshot"' in server_smoke_source
