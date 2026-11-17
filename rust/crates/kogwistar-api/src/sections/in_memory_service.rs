@@ -3,6 +3,7 @@
 struct InMemoryGraphApplicationService {
     store: InMemoryStore,
     capabilities: SharedCapabilityState,
+    native_operations: kogwistar_runtime::NativeOperationRegistry,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
     transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
@@ -15,6 +16,7 @@ impl Default for InMemoryGraphApplicationService {
         Self {
             store: InMemoryStore::default(),
             capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+            native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
             embedding_provider: None,
             chat_completion_provider: None,
             transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
@@ -25,6 +27,17 @@ impl Default for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
+    /// Compose trusted Rust-native application operations for the in-memory
+    /// backend, matching the persistent runtime service extension point.
+    #[cfg(test)]
+    fn with_native_operations(
+        mut self,
+        native_operations: kogwistar_runtime::NativeOperationRegistry,
+    ) -> Self {
+        self.native_operations = native_operations;
+        self
+    }
+
     async fn resolve_inline_native_owner_principal(
         &self,
         run_id: &str,
@@ -262,25 +275,6 @@ impl InMemoryGraphApplicationService {
                 )
                 .map(str::to_owned)
             });
-        if !matches!(
-            operation.as_deref(),
-            Some(
-                "noop"
-                    | "increment-counter"
-                    | "emit-result"
-                    | "agent.event.request"
-                    | "agent.event.receive"
-                    | "agent.event.ack"
-            )
-        ) {
-            self.dead_letter_native_lane(
-                &message_id,
-                &claimed_by,
-                "in-memory inline runtime does not support this native operation",
-            )
-            .await?;
-            return Ok(true);
-        }
         let expected_event_seq = payload["expected_event_seq"].as_i64().unwrap_or_default();
         let work = runtime_claimed_work(lane, &claimed_by, run_id, payload, expected_event_seq);
         let (handoff, mut native_request) = match native_request_for_claimed_work(&work) {
@@ -295,6 +289,18 @@ impl InMemoryGraphApplicationService {
                 return Err(error);
             }
         };
+        if !self
+            .native_operations
+            .supports(&native_request.operation, &native_request.op_version)
+        {
+            self.dead_letter_native_lane(
+                &message_id,
+                &claimed_by,
+                "native operation is not registered",
+            )
+            .await?;
+            return Ok(true);
+        }
         let result = match if operation.as_deref() == Some("agent.event.request") {
             self.execute_in_memory_native_provider_event_request(handoff.clone(), native_request)
                 .await
@@ -332,7 +338,7 @@ impl InMemoryGraphApplicationService {
             native_result_from_request(
                 handoff.clone(),
                 native_request,
-                &kogwistar_runtime::NativeOperationRegistry::default(),
+                &self.native_operations,
             )
         } {
             Ok(result) => result,
@@ -355,7 +361,41 @@ impl InMemoryGraphApplicationService {
             .await?;
             return Err("native noop did not produce a worker effect".to_owned());
         };
-        let commit = if effect.provider_event_acknowledgements.is_empty() {
+        let commit = if effect.graph_mutation_batch.is_some()
+            || effect.graph_mutation_batch_v2.is_some()
+        {
+            if !effect.provider_event_acknowledgements.is_empty() {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "combined graph effects and provider-event acknowledgements are unsupported",
+                )
+                .await?;
+                return Err("combined graph effects and provider-event acknowledgements are unsupported".to_owned());
+            }
+            match self
+                .in_memory_native_graph_effect_batch(&handoff, &effect)
+                .await
+            {
+                Ok((batch, acl_snapshot)) => self
+                    .store
+                    .apply_claimed_recorded_worker_effect_with_graph_effects(
+                        handoff,
+                        effect,
+                        batch,
+                        acl_snapshot,
+                    ),
+                Err(error) => {
+                    self.dead_letter_native_lane(
+                        &message_id,
+                        &claimed_by,
+                        "native graph effect preparation failed",
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            }
+        } else if effect.provider_event_acknowledgements.is_empty() {
             self.store.apply_claimed_recorded_worker_effect(handoff, effect)
         } else {
             match self
@@ -388,6 +428,142 @@ impl InMemoryGraphApplicationService {
             return Err(error.to_string());
         }
         Ok(true)
+    }
+
+    async fn in_memory_native_graph_effect_batch(
+        &self,
+        handoff: &RecordedWorkerHandoff,
+        effect: &RecordedWorkerSuccessEffect,
+    ) -> Result<(GraphMutationBatch, Option<kogwistar_store_memory::GraphAclSnapshot>), String> {
+        let (mutations, index_jobs, truth_graph) = match (
+            effect.graph_mutation_batch.as_ref(),
+            effect.graph_mutation_batch_v2.as_ref(),
+        ) {
+            (Some(_), Some(_)) => {
+                return Err("worker effect cannot carry both graph batch versions".to_owned());
+            }
+            (Some(batch), None) => {
+                let input: GraphMutationBatchInput = batch.clone();
+                let mutations = graph_mutation_batch_value(input.clone())?;
+                validate_graph_mutation_envelopes(&input, &mutations)?;
+                validate_runtime_graph_mutations(&mutations)?;
+                let index_jobs = graph_index_jobs_value(&input, &mutations)?;
+                (mutations, index_jobs, None)
+            }
+            (None, Some(batch)) => {
+                let (mutations, index_jobs) = graph_mutation_batch_v2_value(batch.clone())?;
+                validate_runtime_graph_mutations(&mutations)?;
+                (mutations, index_jobs, Some(batch.default_acl.truth_graph.clone()))
+            }
+            (None, None) => return Err("worker graph effect is missing".to_owned()),
+        };
+        if effect.status != kogwistar_runtime::RuntimeWorkerEffectStatus::Success {
+            return Err("graph effects require a successful worker result".to_owned());
+        }
+
+        let principal = self
+            .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+            .await
+            .map_err(|_| "native graph effect owner authorization failed closed".to_owned())?;
+        if !capability_allowed_for_principal(
+            &principal,
+            &self.capabilities,
+            "write_graph",
+            &["write_graph"],
+        ) || !principal_strings(&principal, "capabilities")
+            .iter()
+            .any(|capability| capability == "write_graph")
+        {
+            return Err("native graph effect requires current write_graph authority".to_owned());
+        }
+        let run = kogwistar_store::ServerRunReadStore::server_run(&self.store, &handoff.run_id)
+            .await
+            .map_err(|_| "native graph effect run lookup failed".to_owned())?
+            .ok_or_else(|| "native graph effect run is missing".to_owned())?;
+        let owner_id = authenticated_run_owner_id(&principal)
+            .filter(|owner| Some(*owner) == run.user_id.as_deref())
+            .ok_or_else(|| "native graph effect owner differs from durable run owner".to_owned())?
+            .to_ascii_lowercase();
+        let security_scope = security_scope_value(&principal);
+        if mutations
+            .iter()
+            .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+        {
+            return Err("native graph effect scope exceeds run-owner scope".to_owned());
+        }
+
+        let mut graph_batch = GraphMutationBatch {
+            mutations,
+            index_jobs,
+        };
+        let acl_snapshot = if let Some(truth_graph) = truth_graph {
+            let scope = graph_batch
+                .mutations
+                .first()
+                .map(|mutation| mutation.scope.clone())
+                .ok_or_else(|| "ACL-aware graph batch must not be empty".to_owned())?;
+            let targets = acl_targets_for_graph_mutations(&graph_batch.mutations).0;
+            let target_ids = acl_target_entity_ids(&targets);
+            let mut existing_acl = Vec::new();
+            for target_id in &target_ids {
+                let mut filter = MetadataFilter::default();
+                filter.equals.insert("entity_type".to_owned(), json!("acl_record"));
+                filter
+                    .equals
+                    .insert("acl_truth_graph".to_owned(), json!(truth_graph));
+                filter
+                    .equals
+                    .insert("acl_target_entity_id".to_owned(), json!(target_id));
+                existing_acl.extend(
+                    self.store
+                        .graph_projection_records(GraphProjectionRead {
+                            scope: scope.clone(),
+                            table: "gke_nodes".to_owned(),
+                            ids: None,
+                            metadata: filter,
+                            limit: 10000,
+                        })
+                        .await
+                        .map_err(|_| "native graph ACL lookup failed closed".to_owned())?,
+                );
+            }
+            let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+                &scope,
+                &graph_batch.mutations,
+                targets,
+                existing_acl.clone(),
+                AclDefaultsContext {
+                    truth_graph: &truth_graph,
+                    owner_id: &graph_acl_principal_id(&principal),
+                    security_scope: security_scope["security_scope"].as_str(),
+                    effect_id: &effect.effect_id,
+                },
+            )?;
+            graph_batch.mutations.extend(acl_mutations);
+            graph_batch.index_jobs.extend(acl_jobs);
+            Some(kogwistar_store_memory::GraphAclSnapshot {
+                scope,
+                truth_graph,
+                target_entity_ids: target_ids,
+                records: existing_acl,
+            })
+        } else {
+            None
+        };
+
+        let current = self
+            .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+            .await
+            .map_err(|_| "native graph owner authorization changed before commit".to_owned())?;
+        if authenticated_run_owner_id(&current) != Some(owner_id.as_str())
+            || security_scope_value(&current) != security_scope
+            || !principal_strings(&current, "capabilities")
+                .iter()
+                .any(|capability| capability == "write_graph")
+        {
+            return Err("native graph owner capability or scope changed before commit".to_owned());
+        }
+        Ok((graph_batch, acl_snapshot))
     }
 
     async fn in_memory_provider_event_ack_graph_batch(
@@ -803,7 +979,7 @@ impl InMemoryGraphApplicationService {
         native_result_from_request(
             handoff,
             request,
-            &kogwistar_runtime::NativeOperationRegistry::default(),
+            &self.native_operations,
         )
     }
 
@@ -3267,6 +3443,7 @@ impl InMemoryGraphApplicationService {
                 )
             }));
         }
+        let registered_native_operations = self.native_operations.registered_operations();
         if effective_node_ops.is_empty()
             || !effective_node_ops.contains_key(&effective_start_node_id)
             || !effective_node_environment_ids.is_empty()
@@ -3275,21 +3452,16 @@ impl InMemoryGraphApplicationService {
                 !matches!(
                     effective_node_executor_targets.get(node_id).map(String::as_str),
                     Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
-                ) || effective_node_versions.get(node_id).map(String::as_str) != Some("v1")
-                    || !matches!(
-                        kogwistar_runtime::native_operation_for_target(
-                            operation,
-                            effective_node_executor_targets.get(node_id).map(String::as_str),
-                        ),
-                        Some(
-                            "noop"
-                                | "increment-counter"
-                                | "emit-result"
-                                | "agent.event.request"
-                                | "agent.event.receive"
-                                | "agent.event.ack"
-                        )
+                ) || !kogwistar_runtime::native_operation_for_target(
+                        operation,
+                        effective_node_executor_targets.get(node_id).map(String::as_str),
                     )
+                    .is_some_and(|name| {
+                        registered_native_operations.iter().any(|(registered, version)| {
+                            registered == name
+                                && effective_node_versions.get(node_id) == Some(version)
+                        })
+                    })
             })
             || effective_node_executor_targets
                 .keys()

@@ -18,6 +18,16 @@ use kogwistar_store::{
 };
 
 pub type GraphNodeEdgeVectorSnapshot = (Vec<GraphRecord>, Vec<GraphRecord>, Vec<Vec<VectorMatch>>);
+
+/// Optimistic guard for ACL records read before building a worker graph batch.
+/// The guarded records are compared again under the store write lock.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphAclSnapshot {
+    pub scope: GraphScope,
+    pub truth_graph: String,
+    pub target_entity_ids: Vec<String>,
+    pub records: Vec<GraphRecord>,
+}
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
