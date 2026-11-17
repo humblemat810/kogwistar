@@ -508,6 +508,77 @@ async fn provider_event_ack_requires_the_live_claim_owner() -> PostgresStoreResu
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn lane_claim_renewal_requires_current_live_owner() -> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("lane_claim_renewal");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: "renew-live".to_owned(),
+            namespace: "runtime".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            recipient_id: "python-worker".to_owned(),
+            sender_id: "scheduler".to_owned(),
+            msg_type: "workflow.worker.request.v1".to_owned(),
+            status: "pending".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some("run-target".to_owned()),
+            step_id: Some("step".to_owned()),
+            correlation_id: Some("run-target".to_owned()),
+            payload_json: Some("{}".to_owned()),
+            error_json: None,
+        })
+        .await?;
+    let claimed = store
+        .claim_projected_lane_messages("runtime", "python-workers", "attempt-1", 1, 60)
+        .await?;
+    assert_eq!(claimed.len(), 1);
+    let old_deadline = claimed[0].lease_until.clone();
+    assert!(
+        !store
+            .renew_projected_lane_message_claim("renew-live", "other-worker", 120)
+            .await?
+    );
+    assert!(
+        store
+            .renew_projected_lane_message_claim("renew-live", "attempt-1", 120)
+            .await?
+    );
+    let renewed = store
+        .get_projected_lane_message("renew-live")
+        .await?
+        .unwrap();
+    assert_ne!(renewed.lease_until, old_deadline);
+    assert!(
+        store
+            .ack_projected_lane_message("renew-live", "attempt-1")
+            .await
+            .is_ok()
+    );
+    assert!(
+        !store
+            .renew_projected_lane_message_claim("renew-live", "attempt-1", 120)
+            .await?
+    );
+
+    let client = store.client().await?;
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn provider_event_ack_and_runtime_transition_share_one_transaction() -> PostgresStoreResult<()>
 {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")

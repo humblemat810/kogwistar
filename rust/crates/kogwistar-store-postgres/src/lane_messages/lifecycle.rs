@@ -40,6 +40,36 @@ where
     }
     Ok(())
 }
+
+pub(crate) async fn renew_projected_lane_message_claim<C>(
+    c: &C,
+    t: &Tables,
+    id: &str,
+    owner: &str,
+    lease_seconds: i64,
+) -> PostgresStoreResult<bool>
+where
+    C: GenericClient + Sync,
+{
+    if lease_seconds <= 0 {
+        return Err(PostgresStoreError::RecordedRuntimeConflict(
+            "lane message lease duration must be positive".to_owned(),
+        ));
+    }
+    let lease_seconds = lease_seconds.to_string();
+    let changed = c
+        .execute(
+            &format!(
+                "UPDATE {} SET lease_until=NOW()+($1::TEXT||' seconds')::interval WHERE message_id=$2 AND status='claimed' AND claimed_by=$3 AND lease_until>=NOW()",
+                t.projected_lane_messages
+            ),
+            &[&lease_seconds, &id, &owner],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(changed == 1)
+}
+
 pub(crate) async fn requeue_projected_lane_message<C>(
     c: &C,
     t: &Tables,

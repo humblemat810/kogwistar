@@ -112,6 +112,14 @@ impl SqliteUnitOfWork<'_> {
     ) -> SqliteStoreResult<()> {
         ack_projected_lane_message(self.transaction, message_id, claimed_by)
     }
+    pub fn renew_projected_lane_message_claim(
+        &mut self,
+        message_id: &str,
+        claimed_by: &str,
+        lease_seconds: i64,
+    ) -> SqliteStoreResult<bool> {
+        renew_projected_lane_message_claim(self.transaction, message_id, claimed_by, lease_seconds)
+    }
     pub fn ack_claimed_projected_lane_message(
         &mut self,
         message_id: &str,
