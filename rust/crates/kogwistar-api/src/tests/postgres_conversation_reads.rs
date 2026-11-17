@@ -330,6 +330,35 @@
             serde_json::from_slice::<Value>(&denied_model_tool.body).unwrap()["code"],
             "KOGWISTAR_CAPABILITY_FORBIDDEN"
         );
+        let unsupported_tool = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {"tool_name": "not_registered"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            unsupported_tool.status,
+            StatusCode::NOT_FOUND.as_u16(),
+            "unknown built-in tools must fail explicitly, not silently fall back"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&unsupported_tool.body).unwrap()["code"],
+            "KOGWISTAR_TOOL_NOT_FOUND"
+        );
         let invoke_audit_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -353,9 +382,10 @@
             .iter()
             .filter(|event| event["op"] == "invoke_tool")
             .collect::<Vec<_>>();
-        assert_eq!(invoke_events.len(), 2, "both allowed and denied calls must be audited");
+        assert_eq!(invoke_events.len(), 3, "all invoke_tool outcomes must be audited");
         assert_eq!(invoke_events[0]["status"], "ok");
         assert_eq!(invoke_events[1]["status"], "error");
+        assert_eq!(invoke_events[2]["status"], "error");
         let initial_invoke_digest = format!(
             "{:x}",
             sha2::Sha256::digest(
