@@ -1,4 +1,5 @@
 #!/bin/sh
+# Keep this entrypoint POSIX/LF so Linux containers can execute it from Windows checkouts.
 set -eu
 
 mkdir -p /workspace/core /workspace/application/logs

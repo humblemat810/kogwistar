@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = [pytest.mark.ci, pytest.mark.core]
+pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.requires_cargo]
 
 
 def _module():

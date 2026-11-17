@@ -115,7 +115,7 @@ def _state_snapshot(backend: Any) -> dict[str, Any]:
                     "embedding": embedding,
                 }
             )
-    meta = backend._engine.meta_sqlite
+    meta = backend._engine.metadata
     events = [
         {
             "namespace": namespace,
@@ -159,7 +159,7 @@ def _build_dataset(items: int) -> tuple[Any, dict[str, Any]]:
         else:
             embeddings.append([1.0, 0.0] if index % 2 == 0 else [0.0, 1.0])
     backend.node.add(ids=ids, documents=documents, metadatas=metadata, embeddings=embeddings)
-    meta = backend._engine.meta_sqlite
+    meta = backend._engine.metadata
     for index, row_id in enumerate(ids):
         meta.append_entity_event(
             namespace="phase2",
@@ -242,7 +242,7 @@ def _python_event_replay(backend: Any) -> list[dict[str, Any]]:
             "op": op,
             "payload": json.loads(payload_json),
         }
-        for seq, entity_kind, entity_id, op, payload_json in backend._engine.meta_sqlite.iter_entity_events(
+        for seq, entity_kind, entity_id, op, payload_json in backend._engine.metadata.iter_entity_events(
             namespace="phase2", from_seq=1
         )
     ]
@@ -253,7 +253,7 @@ def _python_cycle(backend: Any, limit: int) -> dict[str, Any]:
         "graph_records": _python_graph_records(backend),
         "vector_query": _python_vector_query(backend, limit),
         "replay_events": _python_event_replay(backend),
-        "named_projections": backend._engine.meta_sqlite.list_named_projections("bridge_governance"),
+        "named_projections": backend._engine.metadata.list_named_projections("bridge_governance"),
     }
 
 

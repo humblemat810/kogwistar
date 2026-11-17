@@ -428,14 +428,18 @@ def _pytest_args(values: list[str]) -> list[str]:
 
 
 def _marker_expression(layer: str, profile: str) -> str:
-    exclusions = "not manual and not llm_real and not legacy and not requires_ollama"
+    exclusions = (
+        "not manual and not llm_real and not legacy and not requires_ollama "
+        "and not requires_cargo"
+    )
     if profile == "feature":
         if layer == "sink":
             # Sink marker debt: retain its deterministic unmarked suite until
             # the consumer classifies feature/regression tests explicitly.
             return (
                 "not slow and not manual and not integration and not longrun "
-                "and not external and not llm_real and not requires_ollama"
+                "and not external and not llm_real and not requires_ollama "
+                "and not requires_cargo"
             )
         return f"(ci or regression) and not slow and {exclusions}"
     if profile == "regression":
@@ -444,12 +448,12 @@ def _marker_expression(layer: str, profile: str) -> str:
         if layer in {"core", "parser"}:
             return (
                 "(ci or ci_full) and not slow and not manual and not llm_real "
-                "and not legacy and not requires_ollama"
+                "and not legacy and not requires_ollama and not requires_cargo"
             )
         if layer == "application":
             return (
                 "(ci or ci_full) and not slow and not manual and not llm_real "
-                "and not legacy and not requires_ollama"
+                "and not legacy and not requires_ollama and not requires_cargo"
             )
         if layer == "sink":
             # The sink does not classify its deterministic tests with ci markers.

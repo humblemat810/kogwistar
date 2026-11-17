@@ -5,6 +5,7 @@ FROM ${BASE_IMAGE}
 COPY --from=ghcr.io/astral-sh/uv:0.10.10 /uv /uvx /bin/
 
 ARG WHEEL_NAME
+ARG REQUESTED_LAYERS=core,parser,sink,application
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_HTTP_TIMEOUT=60 \
@@ -23,5 +24,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python /opt/core/bin/python "/wheel/${WHEEL_NAME}[full,test]" "pytest-xdist>=3.8,<4" \
     && uv pip install --python /opt/consumer/bin/python "/wheel/${WHEEL_NAME}[test,chroma]" \
         "pytest-xdist>=3.8,<4" fastapi langchain-openai \
-        /build/kg-doc-parser /build/kogwistar-obsidian-sink \
+    && case ",${REQUESTED_LAYERS}," in \
+        *,parser,*|*,sink,*|*,application,*) \
+            uv pip install --python /opt/consumer/bin/python \
+                /build/kg-doc-parser /build/kogwistar-obsidian-sink ;; \
+        *) : ;; \
+    esac \
     && rm -rf /build

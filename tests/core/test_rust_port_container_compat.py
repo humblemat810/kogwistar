@@ -49,6 +49,8 @@ def test_container_harness_uses_dual_venv_and_cleans_native_bridge() -> None:
     assert "--mount=type=cache,target=/root/.cache/uv" in dockerfile
     assert "uv pip install --python /opt/core/bin/python" in dockerfile
     assert "uv pip install --python /opt/consumer/bin/python" in dockerfile
+    assert "ARG REQUESTED_LAYERS=core,parser,sink,application" in dockerfile
+    assert "*,parser,*|*,sink,*|*,application,*)" in dockerfile
     assert "/opt/core/bin/pip install" not in dockerfile
     assert "/opt/consumer/bin/pip install" not in dockerfile
 
@@ -59,8 +61,45 @@ def test_container_harness_uses_dual_venv_and_cleans_native_bridge() -> None:
     )
 
 
+def test_container_stage_includes_pypy_contract_and_vision_fixture_inputs() -> None:
+    harness = _harness()
+    source = (ROOT / "scripts" / "rust_port_container_compat.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '"requirements-pypy-3.11-experimental.txt"' in source
+    assert '"constraints-pypy-3.12.txt"' in source
+    assert '"examples/vision_rag"' in source
+
+
+def test_compat_profiles_exclude_direct_cargo_benchmarks() -> None:
+    source = (ROOT / "scripts" / "rust_port_compat.py").read_text(encoding="utf-8")
+
+    assert "and not requires_cargo" in source
+
+
 def test_container_harness_default_image_is_patch_pinned() -> None:
     assert _harness().DEFAULT_IMAGE == "python:3.13.14-slim-bookworm"
+
+
+def test_layer_selection_is_part_of_container_image_identity(tmp_path: Path) -> None:
+    harness = _harness()
+    application = tmp_path / "application"
+    parser = application / "kg-doc-parser" / "pyproject.toml"
+    sink = application / "kogwistar-obsidian-sink" / "pyproject.toml"
+    parser.parent.mkdir(parents=True)
+    sink.parent.mkdir(parents=True)
+    parser.write_text("parser", encoding="utf-8")
+    sink.write_text("sink", encoding="utf-8")
+    wheel = tmp_path / "kogwistar.whl"
+    wheel.write_bytes(b"wheel")
+
+    core_tag = harness._test_image_tag(application, wheel, "python:test", ("core",))
+    full_tag = harness._test_image_tag(
+        application, wheel, "python:test", ("core", "parser", "sink", "application")
+    )
+
+    assert core_tag != full_tag
 
 
 def test_wheel_build_report_must_match_candidate_digest(tmp_path: Path) -> None:

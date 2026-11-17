@@ -167,8 +167,13 @@ def _dependency_fingerprint(application: Path, wheel: Path, base_image: str) -> 
     return digest.hexdigest()
 
 
-def _test_image_tag(application: Path, wheel: Path, base_image: str) -> str:
+def _test_image_tag(
+    application: Path, wheel: Path, base_image: str, layers: tuple[str, ...]
+) -> str:
     fingerprint = _dependency_fingerprint(application, wheel, base_image)
+    fingerprint = hashlib.sha256(
+        f"{fingerprint}:{','.join(layers)}".encode()
+    ).hexdigest()
     return f"kogwistar-adr015-compat:{fingerprint[:20]}"
 
 
@@ -237,6 +242,9 @@ def _source_stage(root: Path, application: Path, target: Path) -> dict[str, int]
             "contracts",
             "scripts",
             "tests",
+            "examples/vision_rag",
+            "requirements-pypy-3.11-experimental.txt",
+            "constraints-pypy-3.12.txt",
             "pyproject.toml",
             "pytest.ini",
             "Dockerfile",
@@ -329,9 +337,14 @@ def _cleanup_containers(names: list[str]) -> None:
 
 
 def _ensure_test_image(
-    *, application: Path, wheel: Path, base_image: str, rebuild: bool
+    *,
+    application: Path,
+    wheel: Path,
+    base_image: str,
+    layers: tuple[str, ...],
+    rebuild: bool,
 ) -> str:
-    tag = _test_image_tag(application, wheel, base_image)
+    tag = _test_image_tag(application, wheel, base_image, layers)
     if not rebuild and _image_exists(tag):
         return tag
     with tempfile.TemporaryDirectory(prefix="adr015-image-") as raw_context:
@@ -351,6 +364,8 @@ def _ensure_test_image(
                 f"BASE_IMAGE={base_image}",
                 "--build-arg",
                 f"WHEEL_NAME={wheel.name}",
+                "--build-arg",
+                f"REQUESTED_LAYERS={','.join(layers)}",
                 "--tag",
                 tag,
                 str(context),
@@ -476,6 +491,7 @@ def main() -> int:
         application=application,
         wheel=wheel,
         base_image=args.image,
+        layers=tuple(args.layer or _LAYERS),
         rebuild=args.rebuild_image,
     )
 
