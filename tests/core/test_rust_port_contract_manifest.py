@@ -1315,10 +1315,10 @@ def test_projection_snapshot_registry_is_evidenced_but_not_cutover_ready() -> No
     assert support["mixed"]["status"] == "disabled"
     assert coverage["rust_coverage"] == "not-cutover-ready"
     assert coverage["mixed_coverage"].startswith("partial;")
-    assert "bb0850773f41b372babec13e419de2a9fcb7938c39379eec249d6d3e85260f72" in coverage[
+    assert "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092" in coverage[
         "mixed_coverage"
     ]
-    assert ".tmp/goal-projection-capability-report.json" in coverage["mixed_coverage"]
+    assert ".tmp/adr015-phase3-refresh-capabilities.json" in coverage["mixed_coverage"]
     assert {
         "projection-rebuild-and-snapshot-parity",
         "restart-resume-and-stale-state",
@@ -1356,7 +1356,34 @@ def test_queue_capability_is_opt_in_until_all_conformance_gates_pass() -> None:
     assert support["rust"]["status"] == "opt-in"
     assert support["mixed"]["status"] == "opt-in"
     assert coverage["rust_coverage"] == "not-cutover-ready"
-    assert "full parity open" in coverage["mixed_coverage"]
+    assert "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092" in coverage[
+        "mixed_coverage"
+    ]
+    assert ".tmp/adr015-phase3-refresh-capabilities.json" in coverage["mixed_coverage"]
+    assert "full parity" in coverage["mixed_coverage"]
+
+
+def test_phase3_local_refresh_evidence_covers_all_four_without_promoting_cutover() -> None:
+    expected_counts = {
+        "postgres-sequence-event-log": "passed 4 ",
+        "projections-snapshots-run-registry": "passed 6 ",
+        "queues-leases-lanes": "passed 3 ",
+        "graph-pgvector": "passed 47 ",
+    }
+    source_sha = "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092"
+    report_path = ".tmp/adr015-phase3-refresh-capabilities.json"
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = {item["id"]: item for item in support_matrix["capabilities"]}
+    coverage = {item["id"]: item for item in conformance["capabilities"]}
+
+    for capability_id, count_fragment in expected_counts.items():
+        assert coverage[capability_id]["rust_coverage"] == "not-cutover-ready"
+        assert source_sha in coverage[capability_id]["mixed_coverage"]
+        assert report_path in coverage[capability_id]["mixed_coverage"]
+        assert count_fragment in coverage[capability_id]["mixed_coverage"]
+        assert support[capability_id]["rust"]["status"] != "enabled"
+        assert support[capability_id]["mixed"]["status"] != "enabled"
 
 
 def test_graph_pgvector_capability_is_opt_in_until_graph_conformance_passes() -> None:

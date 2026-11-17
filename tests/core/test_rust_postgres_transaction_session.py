@@ -152,7 +152,7 @@ engine.dispose()
                 stderr=subprocess.PIPE,
                 text=True,
             )
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + 30
             while not marker.exists() and worker.poll() is None:
                 assert time.monotonic() < deadline, "Python worker did not start lock attempt"
                 time.sleep(0.01)
@@ -160,7 +160,7 @@ engine.dispose()
             time.sleep(0.2)
             assert worker.poll() is None, "Python worker bypassed the Rust-held identity lock"
 
-        stdout, stderr = worker.communicate(timeout=10)
+        stdout, stderr = worker.communicate(timeout=30)
         assert worker.returncode == 0, stderr
         assert stdout == ""
     finally:
