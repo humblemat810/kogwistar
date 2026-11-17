@@ -2462,3 +2462,41 @@ Rust inline reached 2.76x throughput for this trivial callback and SQLite
 trace. This is the first resource-matched reverse-seam measurement; still only
 two samples, sequential workload, no graph mutation inside callbacks. Raw
 verified report: `.tmp/runtime-seam-limited/runtime-seam/runtime-seam-report.json`.
+
+### 2026-11-18 current-source endpoint refresh
+
+Rebuilt and ran the existing resource-matched endpoint harness on source
+revision `278689982e356ab4360fb9d04c4a25708451734c` (source manifest SHA
+`241b2e88770f7a2e31ab6b4c0ee5b4ce3c08fc1cb7dae1481d89b9aefbc10af3`). The
+container verified 4 CPUs and 8 GiB memory. One warm-up and three fresh samples
+per mode used the same 100-item, 300-operation trace, trace SHA
+`bc539bc8c2bb7247f3d1d2d10d1c338854447ae4cdd4eceda6820031a77c478d`.
+All modes produced digest
+`a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`.
+
+| Mode | Median elapsed | Throughput | Startup | CPU | RSS evidence | Seam evidence |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| Python HTTP | 5.315 s | 56.44 ops/s | 77 ms | 5.481 s | host RSS delta -2.47 MiB | 0 FFI; Python metadata owner |
+| Python HTTP + Rust authority | 5.320 s | 56.39 ops/s | 71 ms | 5.461 s | host RSS delta 0.68 MiB | 1,000 FFI; Rust metadata owner |
+| Rust-native HTTP | 0.775 s | 387.25 ops/s | 23 ms | native 0.560 s | native peak RSS 7.73 MiB | 0 FFI; Rust-native store |
+
+Per-operation mean of the three sample-level latency percentiles (ms):
+
+| Mode | Operation | p50 | p95 | p99 |
+| --- | --- | ---: | ---: | ---: |
+| Python HTTP | Event read | 13.19 | 15.37 | 17.53 |
+| Python HTTP | Projection read | 13.00 | 15.33 | 17.31 |
+| Python HTTP | Write | 25.69 | 29.34 | 32.08 |
+| Python HTTP + Rust authority | Event read | 11.30 | 13.19 | 14.40 |
+| Python HTTP + Rust authority | Projection read | 13.45 | 15.72 | 17.40 |
+| Python HTTP + Rust authority | Write | 27.65 | 30.26 | 33.37 |
+| Rust-native HTTP | Event read | 1.96 | 2.44 | 2.69 |
+| Rust-native HTTP | Projection read | 2.42 | 3.07 | 3.42 |
+| Rust-native HTTP | Write | 2.83 | 3.74 | 6.52 |
+
+Elapsed sample coefficient of variation was 1.17%, 2.14%, and 6.71%,
+respectively. These three-sample tails are descriptive, not stable population
+estimates. Result closes the Python baseline, mixed seam, and Rust-native
+measurement tasklets only; the comparison/report-verifier task remains open.
+Raw machine report and manifest are retained locally under the ignored
+`.tmp/mixed-runtime-matrix-20261118-rel05a/` directory.
