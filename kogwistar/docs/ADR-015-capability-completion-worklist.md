@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **16/67 PASS (23.9%)**; **9 IN PROGRESS**; **42 NOT STARTED**.
+**Progress:** **17/67 PASS (25.4%)**; **8 IN PROGRESS**; **42 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -75,7 +75,7 @@ the closed ADR-022 evidence inventories.
 | GRF-02B | `graph-pgvector` | NOT STARTED | Invariant: denied node read cannot expose cross-tenant or cross-namespace node. Cell: Rust route/store read with mismatched scope and ACL. Oracle: denied/empty per Python contract; no hidden payload. Check: add/run `test_postgres_node_read_scope_denial_parity`. |
 | GRF-02C | `graph-pgvector` | NOT STARTED | Invariant: denied node mutation has no durable effects. Cell: Rust PostgreSQL graph write with denied ACL/scope. Oracle: denial plus unchanged event/projection/index-job counts. Check: add/run `test_postgres_node_write_denial_is_side_effect_free`. |
 | GRF-03 | `graph-pgvector` | PARENT | Edge/evidence read integrity requirement; children: GRF-03A,GRF-03B,GRF-03C. | Parent closes when all leaves pass. |
-| GRF-03A | `graph-pgvector` | IN PROGRESS | Invariant: visible edge hydration preserves node and edge endpoints. Cell: Python/Rust PostgreSQL reads over shared hyperedge fixture. Oracle: endpoint kinds and canonical IDs match. Evidence: Python `test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences` passed; Rust `semantic_edge_projection_preserves_node_and_edge_endpoint_ids` passed; new `postgres_edge_hydration_preserves_hyperedge_endpoint_ids` compiles under `cargo check -p kogwistar-api --tests` (2m21). Live test not run: Docker API access denied and `KOGWISTAR_TEST_PG_DSN` unset. Check: run live test, then compare same shared fixture via Python and Rust. |
+| GRF-03A | `graph-pgvector` | PASS | Invariant: visible edge hydration preserves node and edge endpoints. Cell: Python/Rust over shared `visualization-hyperedge-v1.json`; Rust PostgreSQL projection read. Oracle: endpoint kinds and canonical IDs match. Evidence: Python `test_hyperedge_visualization_matches_shared_python_contract` passed; Rust `postgres_edge_hydration_preserves_hyperedge_endpoint_ids` passed against disposable pgvector:pg16 (1 passed, 2.31s). Live test exposed missing edge-to-edge endpoint hydration; Rust now loads referenced edges recursively under a 1000-record cap, then applies existing ACL visibility checks before returning selected records. |
 | GRF-03B | `graph-pgvector` | NOT STARTED | Invariant: visible evidence preserves exact source span and source-map reference. Cell: Rust PostgreSQL edge/evidence read. Oracle: offsets, revision, and evidence IDs equal shared fixture. Check: add/run `test_postgres_edge_evidence_span_parity`. |
 | GRF-03C | `graph-pgvector` | NOT STARTED | Invariant: hidden source ACL prevents edge/evidence leakage. Cell: authorized edge with unauthorized source evidence. Oracle: response omits protected edge/evidence as Python does. Check: add/run `test_postgres_hidden_source_evidence_is_not_leaked`. |
 | GRF-04 | `graph-pgvector` | PARENT | Vector-query semantics requirement; children: GRF-04A,GRF-04B,GRF-04C. | Parent closes when all leaves pass. |

@@ -1319,11 +1319,11 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
 
     assert len(parents) == 16
     assert len(rows) == 67
-    assert statuses.count("PASS") == 16
-    assert statuses.count("IN PROGRESS") == 9
+    assert statuses.count("PASS") == 17
+    assert statuses.count("IN PROGRESS") == 8
     assert statuses.count("NOT STARTED") == 42
     assert capability_ids == incomplete_capabilities
-    assert "**Progress:** **16/67 PASS (23.9%)**" in worklist
+    assert "**Progress:** **17/67 PASS (25.4%)**" in worklist
     assert (
         "No separate customer traffic fleet or percentage canary is required"
         in worklist

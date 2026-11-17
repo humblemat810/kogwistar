@@ -1220,12 +1220,41 @@ impl PostgresRunApplicationService {
                         uow.graph_projection_records(read("gke_nodes", &node_ids))
                             .await?
                     };
-                    let edges = if edge_ids.is_empty() {
+                    let mut edges = if edge_ids.is_empty() {
                         Vec::new()
                     } else {
                         uow.graph_projection_records(read("gke_edges", &edge_ids))
                             .await?
                     };
+                    // Python's ACLAwareReadSubsystem resolves all edge endpoint
+                    // kinds before deciding whether an edge is visible. Keep the
+                    // Rust hydration bounded and let ACL filtering reject missing refs.
+                    let mut attempted_edge_ids = edge_ids.iter().cloned().collect::<BTreeSet<_>>();
+                    loop {
+                        let referenced_edge_ids = edges
+                            .iter()
+                            .flat_map(|edge| {
+                                graph_record_string_ids(edge, "source_edge_ids")
+                                    .into_iter()
+                                    .chain(graph_record_string_ids(edge, "target_edge_ids"))
+                            })
+                            .collect::<BTreeSet<_>>();
+                        let missing_edge_ids = referenced_edge_ids
+                            .difference(&attempted_edge_ids)
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if missing_edge_ids.is_empty() {
+                            break;
+                        }
+                        if attempted_edge_ids.len().saturating_add(missing_edge_ids.len()) > 1000 {
+                            return Ok(Err(NativeEvidenceRecordError::Rejected));
+                        }
+                        attempted_edge_ids.extend(missing_edge_ids.iter().cloned());
+                        edges.extend(
+                            uow.graph_projection_records(read("gke_edges", &missing_edge_ids))
+                                .await?,
+                        );
+                    }
                     let endpoint_ids = edges
                         .iter()
                         .flat_map(|edge| {
