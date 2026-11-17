@@ -1227,7 +1227,7 @@ jobs:
           PIP_RETRIES: "10"
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[test,server,full]"
+          python -m pip install -e ".[test,server,full,benchmark]"
 
       - name: Run full CI tests
         env:
