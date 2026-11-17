@@ -116,6 +116,12 @@ database cases against the same disposable service, excluding four live-Chroma
 tests and one manual Python-MCP SDK smoke. The first run had 34 passes and one
 harness precondition failure because `kogwistar-server` had not been built;
 after building that binary, the remaining native-answer workflow test passed.
+Commit `7cfcc5bc` adds the previously missing SQLite+Chroma inline graph-V2
+success cell: canonical SQLite event, host-derived ACL record, durable index
+job, successful run, and completed lane are asserted together. The focused test
+and owner-revocation regression passed; the full API library suite passed
+**411 tests, 40 ignored**, and `cargo check --locked -p kogwistar-api --tests`
+passed. This remains isolated Docker UAT, not production evidence.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
