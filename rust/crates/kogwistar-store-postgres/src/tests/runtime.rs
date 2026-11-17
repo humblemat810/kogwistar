@@ -188,6 +188,144 @@ async fn graph_run_event_and_worker_lane_share_one_transaction() -> PostgresStor
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_index_intent_recovery_after_reopen_when_dsn_available() -> PostgresStoreResult<()>
+{
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("index_intent_reopen");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(3, GraphTableNames::default())
+        .await?;
+
+    let namespace = format!("index-intent-reopen-{}", std::process::id());
+    let node_id = "reopened-index-intent-node";
+    let scope = GraphScope {
+        namespace: namespace.clone(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    store
+        .apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+            mutations: vec![GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("event-{node_id}"),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({"id": node_id, "entity_type": "node"}),
+                record: GraphRecord {
+                    id: node_id.to_owned(),
+                    document: Some("index intent reopen probe".to_owned()),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 3,
+            }],
+            index_jobs: vec![NewIndexJob {
+                job_id: format!("job-{node_id}"),
+                namespace: namespace.clone(),
+                entity_kind: "node".to_owned(),
+                entity_id: node_id.to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        })
+        .await?;
+    drop(store);
+
+    let reopened = PostgresStore::from_dsn(&dsn, &schema)?;
+    let pending = reopened
+        .list_index_jobs(Some(&namespace), Some("PENDING"), None, None, None, 10)
+        .await?;
+    assert_eq!(
+        pending.len(),
+        1,
+        "committed intent must survive reopen once"
+    );
+    assert_eq!(pending[0].job_id, format!("job-{node_id}"));
+    assert_eq!(
+        reopened.replay_raw_events(&namespace, 0, 10).await?.len(),
+        1,
+        "reopening must not duplicate canonical graph event"
+    );
+
+    let provider_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = provider_calls.clone();
+    let summary =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &reopened,
+            &reopened,
+            1,
+            30,
+            Some(&namespace),
+            move |input| {
+                let calls = calls.clone();
+                async move {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(GraphRecord {
+                        id: input.entity_id,
+                        document: Some("index intent reopen probe".to_owned()),
+                        metadata: Map::new(),
+                        embedding: Some(vec![0.0, 1.0, 0.0]),
+                    })
+                }
+            },
+        )
+        .await?;
+    assert_eq!(summary.projected, 1);
+    assert_eq!(provider_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+    let second_pass =
+        kogwistar_engine::projection_worker::run_graph_projection_jobs_once_with_provider_input(
+            &reopened,
+            &reopened,
+            1,
+            30,
+            Some(&namespace),
+            |_input| async { panic!("completed intent must not be replayed") },
+        )
+        .await?;
+    assert_eq!(second_pass.claimed, 0);
+    assert_eq!(
+        reopened
+            .list_index_jobs(Some(&namespace), Some("DONE"), None, None, None, 10)
+            .await?
+            .len(),
+        1
+    );
+    let projected = reopened
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![node_id.to_owned()]),
+            metadata: kogwistar_store::MetadataFilter::default(),
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].embedding, Some(vec![0.0, 1.0, 0.0]));
+    assert_eq!(
+        reopened.replay_raw_events(&namespace, 0, 10).await?.len(),
+        1
+    );
+
+    let client = reopened.client().await?;
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA {} CASCADE",
+            Tables::new(&schema)?.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn rust_projection_worker_uses_postgres_native_writes_and_tombstone_gate()
 -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
