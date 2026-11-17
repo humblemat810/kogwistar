@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **28/67 PASS (41.8%)**; **1 IN PROGRESS**; **38 NOT STARTED**.
+**Progress:** **29/67 PASS (43.3%)**; **1 IN PROGRESS**; **37 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -72,7 +72,7 @@ the closed ADR-022 evidence inventories.
 | GRF-01 | `graph-pgvector` | PASS | Graph mutation event, node/edge state, and transaction rollback remain mutually readable across Python/Rust. | Current candidate Phase-3 graph/transaction group, 47 passed. |
 | GRF-02 | `graph-pgvector` | PARENT | Node read/write scope and ACL requirement; children: GRF-02A,GRF-02B,GRF-02C. | Parent closes when all leaves pass. |
 | GRF-02A | `graph-pgvector` | PASS | Invariant: authorized semantic node read returns Python-compatible canonical payload. Cell: Python and rebuilt Rust PostgreSQL semantic query under reader and owner ACL claims. Oracle: visible IDs/order and full visible seed JSON match, including LLM field slicing and default `redirect_to_id`. Evidence: `test_rust_postgres_graph_read_tools_match_python_over_shared_projection` (**1 passed**, disposable `pgvector:pg16`, 120.08s); Rust `semantic_graph_record_projection_matches_python_llm_slice` (**1 passed**); `cargo fmt --check` passed. |
-| GRF-02B | `graph-pgvector` | NOT STARTED | Invariant: denied node read cannot expose cross-tenant or cross-namespace node. Cell: Rust route/store read with mismatched scope and ACL. Oracle: denied/empty per Python contract; no hidden payload. Check: add/run `test_postgres_node_read_scope_denial_parity`. |
+| GRF-02B | `graph-pgvector` | PASS | Invariant: denied node read cannot expose cross-scope node. Cell: Rust PostgreSQL route/store with mismatched workspace and project ACL. Oracle: foreign endpoint and project-restricted nodes/edges omitted; no payload leak. Evidence: `postgres_graph_neighbors_omit_cross_scope_endpoint` and `postgres_graph_neighbors_enforce_project_and_source_evidence_acl` both passed against `kogwistar-adr015-pg16` (2 tests). |
 | GRF-02C | `graph-pgvector` | NOT STARTED | Invariant: denied node mutation has no durable effects. Cell: Rust PostgreSQL graph write with denied ACL/scope. Oracle: denial plus unchanged event/projection/index-job counts. Check: add/run `test_postgres_node_write_denial_is_side_effect_free`. |
 | GRF-03 | `graph-pgvector` | PARENT | Edge/evidence read integrity requirement; children: GRF-03A,GRF-03B,GRF-03C. | Parent closes when all leaves pass. |
 | GRF-03A | `graph-pgvector` | PASS | Invariant: visible edge hydration preserves node and edge endpoints. Cell: Python/Rust over shared `visualization-hyperedge-v1.json`; Rust PostgreSQL projection read. Oracle: endpoint kinds and canonical IDs match. Evidence: Python `test_hyperedge_visualization_matches_shared_python_contract` passed; Rust `postgres_edge_hydration_preserves_hyperedge_endpoint_ids` passed against disposable pgvector:pg16 (1 passed, 2.31s). Live test exposed missing edge-to-edge endpoint hydration; Rust now loads referenced edges recursively under a 1000-record cap, then applies existing ACL visibility checks before returning selected records. |
