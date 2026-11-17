@@ -27,7 +27,8 @@ def main() -> None:
     native_file = Path(native.__file__).resolve()
     assert package_file.is_relative_to(Path(sys.prefix))
     assert native_file.is_relative_to(Path(sys.prefix))
-    assert native.CONTRACT_VERSION >= 1
+    contract_major = int(str(native.CONTRACT_VERSION).split(".", maxsplit=1)[0])
+    assert contract_major >= 1
     assert hasattr(native, "api_run_server")
     assert any(
         item.name == "kogwistar-rust-server"

@@ -7,9 +7,9 @@ from pathlib import Path
 from typing import Iterator
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.server.chat_service import ChatRunService
 from kogwistar.server.run_registry import RunRegistry
-from tests._helpers.fake_backend import build_fake_backend
 
 
 class FakeEmbeddingFunction:
@@ -27,19 +27,19 @@ def build_demo_service() -> Iterator[ChatRunService]:
             persist_directory=str(root / "kg"),
             kg_graph_type="knowledge",
             embedding_function=ef,
-            backend_factory=build_fake_backend,
+            backend_factory=build_in_memory_backend,
         )
         conversation = GraphKnowledgeEngine(
             persist_directory=str(root / "conversation"),
             kg_graph_type="conversation",
             embedding_function=ef,
-            backend_factory=build_fake_backend,
+            backend_factory=build_in_memory_backend,
         )
         workflow = GraphKnowledgeEngine(
             persist_directory=str(root / "workflow"),
             kg_graph_type="workflow",
             embedding_function=ef,
-            backend_factory=build_fake_backend,
+            backend_factory=build_in_memory_backend,
         )
         service = ChatRunService(
             get_knowledge_engine=lambda: knowledge,

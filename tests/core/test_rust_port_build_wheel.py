@@ -2,11 +2,37 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "rust_port_build_wheel.py"
+
+
+def test_demo_package_import_does_not_require_tests_package() -> None:
+    code = "\n".join(
+        [
+            "import builtins",
+            "original_import = builtins.__import__",
+            "def reject_tests_package(name, *args, **kwargs):",
+            "    if name == 'tests._helpers' or name.startswith('tests._helpers.'):",
+            "        raise ModuleNotFoundError('tests package unavailable')",
+            "    return original_import(name, *args, **kwargs)",
+            "builtins.__import__ = reject_tests_package",
+            "import kogwistar.demo",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _load() -> ModuleType:
@@ -35,6 +61,10 @@ def test_wheel_builder_uses_persisted_inspectable_entrypoints() -> None:
     assert "--release" in worker and "--locked" in worker
     assert "bash -c" not in source
     assert "python -c" not in source
+    assert 'CARGO_CACHE_VOLUME = "kogwistar-adr015-cargo-cache"' in source
+    assert 'RUST_TARGET_VOLUME = "kogwistar-adr015-rust-target"' in source
+    assert "source={CARGO_CACHE_VOLUME},target=/cargo" in source
+    assert "source={RUST_TARGET_VOLUME},target=/target" in source
 
 
 def test_wheel_builder_report_fingerprints_persisted_build_logic(tmp_path: Path) -> None:

@@ -27,6 +27,8 @@ DOCKERFILE = ROOT / "scripts" / "wheel_builder.Dockerfile"
 WORKER = ROOT / "scripts" / "build_wheel.sh"
 SOURCE_IDENTITY = ROOT / "scripts" / "source_fingerprint.py"
 DEFAULT_IMAGE = "kogwistar-adr015-wheel-builder:rust-1.91.1"
+CARGO_CACHE_VOLUME = "kogwistar-adr015-cargo-cache"
+RUST_TARGET_VOLUME = "kogwistar-adr015-rust-target"
 
 
 def _args() -> argparse.Namespace:
@@ -97,6 +99,10 @@ def main() -> int:
             f"type=bind,src={ROOT},dst=/source,readonly",
             "--mount",
             f"type=bind,src={output},dst=/wheelhouse",
+            "--mount",
+            f"type=volume,source={CARGO_CACHE_VOLUME},target=/cargo",
+            "--mount",
+            f"type=volume,source={RUST_TARGET_VOLUME},target=/target",
             args.image,
         ]
     )
