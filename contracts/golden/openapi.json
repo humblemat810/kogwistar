@@ -1526,6 +1526,17 @@
       },
       "SubmitAnswerIn": {
         "properties": {
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
           "text": {
             "minLength": 1,
             "title": "Text",
