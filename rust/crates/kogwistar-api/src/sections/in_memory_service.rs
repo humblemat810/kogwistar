@@ -3699,12 +3699,12 @@ impl InMemoryGraphApplicationService {
         syscall_result(&input.version, "send_message", response)
     }
 
-        request: &ApiEffectRequest,
-        input: &SyscallInput,
-    ) -> ApiEffectResponse {
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_receive_message_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_transcript; fixture=contracts/golden/receive-message-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_receive_message_matches_shared_python_contract; python_test=tests/server/test_receive_message_wire_contract.py#test_python_receive_message_result_matches_shared_wire_fixture
     async fn in_memory_receive_message_effect(
         &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
         if !syscall_allowed_in_namespace(
             request,
             &self.capabilities,
@@ -4365,6 +4365,15 @@ impl InMemoryGraphApplicationService {
         if let Some(binding) = runtime_owner_binding_v1(&request.principal, &self.capabilities) {
             admission_payload["runtime_owner_binding"] = json!(binding);
         }
+        if let Some(admission) = conversation_admission.as_ref() {
+            admission_payload["admission_actor"] = json!({
+                "user_id": admission.actor_user_id,
+                "operation": "send_message",
+            });
+            if let Some(fingerprint) = &admission.request_fingerprint {
+                admission_payload["request_fingerprint"] = json!(fingerprint);
+            }
+        }
         let run = ServerRunCreate {
             run_id: run_id.clone(),
             conversation_id: conversation_id.to_owned(),
@@ -4378,15 +4387,6 @@ impl InMemoryGraphApplicationService {
             message_id,
             namespace: "workflow".to_owned(),
             purpose: "system".to_owned(),
-        if let Some(admission) = conversation_admission.as_ref() {
-            admission_payload["admission_actor"] = json!({
-                "user_id": admission.actor_user_id,
-                "operation": "send_message",
-            });
-            if let Some(fingerprint) = &admission.request_fingerprint {
-                admission_payload["request_fingerprint"] = json!(fingerprint);
-            }
-        }
             inbox_id: "workflow-runtime".to_owned(),
             conversation_id: conversation_id.to_owned(),
             recipient_id: "rust-native-worker".to_owned(),
