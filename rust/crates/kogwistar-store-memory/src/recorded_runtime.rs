@@ -12,15 +12,24 @@ use kogwistar_runtime::{
     transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    EntityEvent, GraphMutation, GraphMutationBatch, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, RUNTIME_CURRENT_STATE_NAMESPACE, ServerRunCreate, StoreError,
-    StoreResult, runtime_checkpoint_namespace, runtime_projection_write, runtime_status_namespace,
-    timestamp_i64, validate_graph_mutation_batch, validate_graph_mutation_replay,
+    EntityEvent, GraphMutation, GraphMutationBatch, GraphProjectionRead, GraphRecord, NewIndexJob,
+    NewProjectedLaneMessage, ProjectedLaneMessage, RUNTIME_CURRENT_STATE_NAMESPACE,
+    ServerRunCreate, StoreError, StoreResult, runtime_checkpoint_namespace,
+    runtime_projection_write, runtime_status_namespace, timestamp_i64,
+    validate_graph_mutation_batch, validate_graph_mutation_replay,
 };
 use serde_json::Value;
 use std::sync::{Arc, RwLock};
 
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
+
+/// Projection rows that must remain unchanged when graph effects and a new
+/// runtime are admitted together.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphProjectionExpectation {
+    pub read: GraphProjectionRead,
+    pub records: Vec<GraphRecord>,
+}
 
 // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#persist_provider_event_publication; python=kogwistar/engine_core/in_memory_meta.py#append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_publication_commits_graph_lane_and_trace_atomically_and_idempotently; python_test=tests/agent/test_provider_event_cross_language_contract.py; note=Rust memory backend atomically publishes graph projection, inbox record, and trace under one process-local lock; Python components remain independently callable.
 /// One provider event and every graph/runtime projection derived from it.
@@ -375,6 +384,27 @@ impl InMemoryStore {
         transition: RecordedRuntimeTransition,
         lane: NewProjectedLaneMessage,
     ) -> StoreResult<RecordedTransitionResult> {
+        self.admit_server_run_with_graph_and_start_if_unchanged(
+            graph_batch,
+            &[],
+            run,
+            admission_payload,
+            transition,
+            lane,
+        )
+    }
+
+    /// Atomically admits graph effects and runtime state only if each supplied
+    /// projection snapshot still matches under the writer lock.
+    pub fn admit_server_run_with_graph_and_start_if_unchanged(
+        &self,
+        graph_batch: GraphMutationBatch,
+        expected_projections: &[GraphProjectionExpectation],
+        run: ServerRunCreate,
+        admission_payload: Value,
+        transition: RecordedRuntimeTransition,
+        lane: NewProjectedLaneMessage,
+    ) -> StoreResult<RecordedTransitionResult> {
         validate_graph_mutation_batch(&graph_batch)?;
 
         let mut committed = self.state.write().expect("in-memory store lock poisoned");
@@ -413,6 +443,35 @@ impl InMemoryStore {
                 {
                     return Err(runtime_conflict(
                         "runtime admission replay changed its graph index intent",
+                    ));
+                }
+            }
+        }
+
+        if !replaying_existing_run {
+            for expectation in expected_projections {
+                let read = &expectation.read;
+                let mut rows = committed
+                    .graph_projections
+                    .get(&read.scope)
+                    .map(|projection| {
+                        projection
+                            .record_order
+                            .iter()
+                            .filter(|(table, _)| table == &read.table)
+                            .filter_map(|key| projection.records.get(key))
+                            .filter(|record| read.metadata.matches(&record.metadata))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if let Some(ids) = &read.ids {
+                    rows.retain(|record| ids.contains(&record.id));
+                }
+                rows.truncate(read.limit);
+                if rows != expectation.records {
+                    return Err(runtime_conflict(
+                        "graph projection changed during runtime admission",
                     ));
                 }
             }
@@ -2324,6 +2383,126 @@ mod tests {
                 .unwrap()
                 .status,
             "pending"
+        );
+    }
+
+    #[test]
+    fn runtime_admission_rejects_stale_graph_projection_without_partial_writes() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: None,
+            graph_space: Some("conversation".to_owned()),
+        };
+        let tail_read = GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["existing-tail".to_owned()]),
+            metadata: Default::default(),
+            limit: 1,
+        };
+        let expectation = GraphProjectionExpectation {
+            records: block_on(store.graph_projection_records(tail_read.clone())).unwrap(),
+            read: tail_read,
+        };
+        assert!(expectation.records.is_empty());
+
+        block_on(store.apply_graph_mutation(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "concurrent-tail-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id": "existing-tail", "metadata": {}}),
+            record: GraphRecord {
+                id: "existing-tail".to_owned(),
+                document: Some("concurrent conversation turn".to_owned()),
+                metadata: serde_json::Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        }))
+        .unwrap();
+
+        let mut transition = pending_start();
+        transition.expected_event_seq = 1;
+        transition.node_id = Some("noop".to_owned());
+        transition.user_turn_node_id = Some("new-turn".to_owned());
+        let mut admission_payload = runtime_admission_payload();
+        admission_payload["turn_node_id"] = json!("new-turn");
+        let batch = GraphMutationBatch {
+            mutations: vec![GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "new-turn-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id": "new-turn", "metadata": {}}),
+                record: GraphRecord {
+                    id: "new-turn".to_owned(),
+                    document: Some("stale submitted turn".to_owned()),
+                    metadata: serde_json::Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }],
+            index_jobs: vec![NewIndexJob {
+                job_id: "new-turn-index".to_owned(),
+                namespace: "conversation".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: "new-turn".to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
+        let error = store
+            .admit_server_run_with_graph_and_start_if_unchanged(
+                batch,
+                &[expectation],
+                ServerRunCreate {
+                    run_id: "memory-run".to_owned(),
+                    conversation_id: "memory-conversation".to_owned(),
+                    workflow_id: "memory-workflow".to_owned(),
+                    user_id: Some("user-1".to_owned()),
+                    user_turn_node_id: "new-turn".to_owned(),
+                    status: "queued".to_owned(),
+                },
+                admission_payload,
+                transition,
+                worker_lane(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("graph projection changed"));
+        assert!(block_on(store.server_run("memory-run")).unwrap().is_none());
+        assert!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["new-turn".to_owned()]),
+                metadata: Default::default(),
+                limit: 1,
+            }))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            block_on(store.index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                Some("node"),
+                Some("new-turn"),
+                Some("node_embedding"),
+                10,
+            ))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .is_none()
         );
     }
 

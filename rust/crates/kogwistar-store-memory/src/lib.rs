@@ -34,7 +34,7 @@ use std::sync::{Arc, RwLock};
 
 mod documents;
 mod recorded_runtime;
-pub use recorded_runtime::ProviderEventPublicationCommit;
+pub use recorded_runtime::{GraphProjectionExpectation, ProviderEventPublicationCommit};
 
 /// Cloned handles share one process-local writer lock and volatile state. A new
 /// store starts empty; state is not persisted across process or store lifetimes.
