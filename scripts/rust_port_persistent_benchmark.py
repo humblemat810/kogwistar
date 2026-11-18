@@ -45,6 +45,9 @@ WORKLOADS = (
     "projection_list",
     "mixed_interleaved",
 )
+MAX_P95_LATENCY_RATIO = 1.10
+MIN_THROUGHPUT_RATIO = 0.95
+MAX_PEAK_RSS_RATIO = 1.10
 
 
 def _peak_rss_bytes() -> int:
@@ -550,6 +553,39 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def evaluate_persistent_performance_gate(
+    ratios: dict[str, dict[str, dict[str, float]]], rss_ratio: float
+) -> dict[str, Any]:
+    """Evaluate Rust-vs-Python thresholds without running a timed benchmark."""
+    rust_workloads = ratios.get("rust", {})
+    if not rust_workloads:
+        raise ValueError("Rust workload ratios are required")
+
+    latency_values = [
+        value["p95_latency_over_python"] for value in rust_workloads.values()
+    ]
+    throughput_values = [
+        value["throughput_over_python"] for value in rust_workloads.values()
+    ]
+    checks = {
+        "p95_latency_no_worse_than_110_percent": all(
+            math.isfinite(value) and value <= MAX_P95_LATENCY_RATIO
+            for value in latency_values
+        ),
+        "throughput_at_least_95_percent": all(
+            math.isfinite(value) and value >= MIN_THROUGHPUT_RATIO
+            for value in throughput_values
+        ),
+        "peak_rss_no_worse_than_110_percent": (
+            math.isfinite(rss_ratio) and rss_ratio <= MAX_PEAK_RSS_RATIO
+        ),
+    }
+    return {
+        "checks": checks,
+        "status": "passed" if all(checks.values()) else "failed",
+    }
+
+
 def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
                   samples: int) -> dict[str, Any]:
     output_root.mkdir(parents=True, exist_ok=True)
@@ -603,17 +639,7 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
         modes["rust"]["p95_peak_rss_bytes"]
         / modes["python"]["p95_peak_rss_bytes"]
     )
-    gate_checks = {
-        "p95_latency_no_worse_than_110_percent": all(
-            value["p95_latency_over_python"] <= 1.10
-            for value in ratios["rust"].values()
-        ),
-        "throughput_at_least_95_percent": all(
-            value["throughput_over_python"] >= 0.95
-            for value in ratios["rust"].values()
-        ),
-        "peak_rss_no_worse_than_110_percent": rss_ratio <= 1.10,
-    }
+    gate = evaluate_persistent_performance_gate(ratios, rss_ratio)
     return {
         "benchmark_version": BENCHMARK_VERSION,
         "dataset": DATASET,
@@ -631,10 +657,7 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
         "modes": modes,
         "ratios": ratios,
         "peak_rss_rust_over_python": rss_ratio,
-        "gate": {
-            "checks": gate_checks,
-            "status": "passed" if all(gate_checks.values()) else "failed",
-        },
+        "gate": gate,
         "interpretation": (
             "rust_native calls SqliteStore directly in one Rust process; Python only "
             "launches the executable and verifies its final state after it exits. "

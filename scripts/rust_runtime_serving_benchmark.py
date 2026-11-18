@@ -121,6 +121,28 @@ def _p95(values: list[float]) -> float:
     return sorted(values)[math.ceil(len(values) * 0.95) - 1]
 
 
+def evaluate_growth_gate(
+    ratios: dict[str, float], *, max_growth_ratio: float = MAX_GROWTH_RATIO
+) -> dict[str, Any]:
+    """Evaluate deterministic scaling thresholds independently of timing runs."""
+    if not math.isfinite(max_growth_ratio) or max_growth_ratio <= 0:
+        raise ValueError("max_growth_ratio must be finite and positive")
+    if not ratios:
+        raise ValueError("at least one growth ratio is required")
+
+    checks = {
+        name: math.isfinite(value) and value <= max_growth_ratio
+        for name, value in ratios.items()
+    }
+    return {
+        "max_growth_ratio": max_growth_ratio,
+        "ratio_basis": "median of independent sample means",
+        "ratios": ratios,
+        "checks": checks,
+        "status": "passed" if all(checks.values()) else "failed",
+    }
+
+
 def run(output_root: Path, *, samples: int, iterations: int) -> dict[str, Any]:
     if samples < 2 or iterations < 1:
         raise ValueError("samples must be >= 2 and iterations must be positive")
@@ -159,9 +181,7 @@ def run(output_root: Path, *, samples: int, iterations: int) -> dict[str, Any]:
         "state_read_median_large_over_small": summary["large"]["state_read_median_ns"]
         / max(float(summary["small"]["state_read_median_ns"]), 1.0),
     }
-    checks = {
-        name: value <= MAX_GROWTH_RATIO for name, value in median_ratios.items()
-    }
+    gate = evaluate_growth_gate(median_ratios)
     return {
         "benchmark_version": 1,
         "dataset": DATASET,
@@ -172,13 +192,7 @@ def run(output_root: Path, *, samples: int, iterations: int) -> dict[str, Any]:
         "scope": "indexed exact retry and warm current-state projection lookup",
         "summary": summary,
         "ratios": ratios,
-        "gate": {
-            "max_growth_ratio": MAX_GROWTH_RATIO,
-            "ratio_basis": "median of independent sample means",
-            "ratios": median_ratios,
-            "checks": checks,
-            "status": "passed" if all(checks.values()) else "failed",
-        },
+        "gate": gate,
         "raw_samples": measured,
     }
 
