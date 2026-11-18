@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      performance:
+        description: Run the live Python/Rust persistent performance gate
+        required: false
+        type: boolean
+        default: false
       pypy_url:
         description: Optional immutable PyPy 3.12 beta archive URL
         required: false
@@ -30,6 +35,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  live-performance-gate:
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.performance == true)
+    name: Live Python/Rust performance gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Install package, benchmark, and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,benchmark]"
+
+      - name: Run live persistent performance test
+        env:
+          KOGWISTAR_RUN_PERFORMANCE_GATES: "1"
+          KOGWISTAR_PERFORMANCE_REPORT: ${{ runner.temp }}/rust-persistent-performance.json
+        run: >-
+          python -m pytest
+          tests/core/test_rust_port_persistent_benchmark.py
+          tests/core/test_rust_port_live_performance_gate.py
+          -q -p no:cacheprovider
+
+      - name: Preserve benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-persistent-performance-${{ github.run_id }}
+          path: ${{ runner.temp }}/rust-persistent-performance.json
+          if-no-files-found: ignore
+
   ci:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
     name: CI (${{ matrix.label }})

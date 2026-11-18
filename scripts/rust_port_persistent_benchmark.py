@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -171,7 +172,7 @@ def _run_mode(
     read_cycles: int,
     trace: list[WorkloadOperation],
 ) -> dict[str, Any]:
-    if mode == "rust_cached":
+    if mode in {"rust_cached", "rust_batched"}:
         EngineSQLite(path.parent, filename=path.name).ensure_initialized()
         with sqlite_execution_context("rust"):
             return _run_mode_bound(
@@ -203,7 +204,7 @@ def _run_mode_bound(
         return store_sqlite(
             path=path,
             operation=operation,
-            reuse_session=mode == "rust_cached",
+            reuse_session=mode in {"rust_cached", "rust_batched"},
         )
 
     if mode == "python":
@@ -317,50 +318,79 @@ def _run_mode_bound(
             })) for _ in range(read_cycles))
 
         def mixed_interleaved() -> int:
-            if mode == "rust_cached":
+            if mode in {"rust_cached", "rust_batched"}:
                 # The cached operation session and the transactional facade
                 # intentionally cannot own one SQLite execution context at the
-                # same time. Close the raw session before opening UoWs; this
-                # workload measures the supported atomic transaction path.
+                # same time. Close the raw session before opening the facade;
+                # rust_batched then owns one explicit facade session.
                 call({"kind": "close"})
             rust_store = RustEngineSQLite(path.parent, filename=path.name)
             operations = 0
-            for step in trace:
-                index = step["index"]
-                entity_id = step["expected_entity_id"]
-                projection_key = f"mixed-key-{index:05d}"
-                if step["operation"] == "write_record":
-                    with rust_store.transaction():
-                        rust_store.append_entity_event(
+            session = (
+                rust_store.session() if mode == "rust_batched" else nullcontext()
+            )
+            with session:
+                for step in trace:
+                    index = step["index"]
+                    entity_id = step["expected_entity_id"]
+                    projection_key = f"mixed-key-{index:05d}"
+                    if step["operation"] == "write_record":
+                        if mode == "rust_batched":
+                            rust_store.execute_batch(
+                                [
+                                    {
+                                        "kind": "raw_append",
+                                        "namespace": "mixed_interleaved",
+                                        "event_id": f"mixed-event-{index:05d}",
+                                        "entity_kind": "node",
+                                        "entity_id": entity_id,
+                                        "op": "UPSERT",
+                                        "payload_json": _canonical(
+                                            {"id": entity_id, "revision": 1}
+                                        ),
+                                    },
+                                    {
+                                        "kind": "replace_named_projection",
+                                        "namespace": "mixed_interleaved_projection",
+                                        "key": projection_key,
+                                        **_projection(index),
+                                    },
+                                ]
+                            )
+                        else:
+                            with rust_store.transaction():
+                                rust_store.append_entity_event(
+                                    namespace="mixed_interleaved",
+                                    event_id=f"mixed-event-{index:05d}",
+                                    entity_kind="node",
+                                    entity_id=entity_id,
+                                    op="UPSERT",
+                                    payload_json=_canonical(
+                                        {"id": entity_id, "revision": 1}
+                                    ),
+                                )
+                                rust_store.replace_named_projection(
+                                    "mixed_interleaved_projection",
+                                    projection_key,
+                                    **_projection(index),
+                                )
+                    elif step["operation"] == "read_event":
+                        rows = list(rust_store.iter_entity_events(
                             namespace="mixed_interleaved",
-                            event_id=f"mixed-event-{index:05d}",
-                            entity_kind="node",
-                            entity_id=entity_id,
-                            op="UPSERT",
-                            payload_json=_canonical({"id": entity_id, "revision": 1}),
-                        )
-                        rust_store.replace_named_projection(
+                            from_seq=index + 1,
+                            batch_size=1,
+                        ))
+                        if not rows or rows[0][2] != entity_id:
+                            raise RuntimeError("interleaved Rust event read did not observe its write")
+                    elif step["operation"] == "read_projection":
+                        projection = rust_store.get_named_projection(
                             "mixed_interleaved_projection",
                             projection_key,
-                            **_projection(index),
                         )
-                elif step["operation"] == "read_event":
-                    rows = list(rust_store.iter_entity_events(
-                        namespace="mixed_interleaved",
-                        from_seq=index + 1,
-                        batch_size=1,
-                    ))
-                    if not rows or rows[0][2] != entity_id:
-                        raise RuntimeError("interleaved Rust event read did not observe its write")
-                elif step["operation"] == "read_projection":
-                    projection = rust_store.get_named_projection(
-                        "mixed_interleaved_projection",
-                        projection_key,
-                    )
-                    payload = projection.get("payload") if projection is not None else None
-                    if not isinstance(payload, dict) or payload.get("index") != index:
-                        raise RuntimeError("interleaved Rust projection read did not observe its write")
-                operations += 1
+                        payload = projection.get("payload") if projection is not None else None
+                        if not isinstance(payload, dict) or payload.get("index") != index:
+                            raise RuntimeError("interleaved Rust projection read did not observe its write")
+                    operations += 1
             return operations
 
     metrics = {
@@ -596,21 +626,35 @@ def evaluate_persistent_performance_gate(
     }
 
 
-def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
-                  samples: int) -> dict[str, Any]:
+def run_benchmark(
+    output_root: Path,
+    *,
+    items: int,
+    read_cycles: int,
+    samples: int,
+    selected_modes: tuple[str, ...] = ("python", "rust", "rust_cached", "rust_native"),
+) -> dict[str, Any]:
+    supported_modes = {"python", "rust", "rust_cached", "rust_native", "rust_batched"}
+    if (
+        len(set(selected_modes)) != len(selected_modes)
+        or not {"python", "rust"}.issubset(selected_modes)
+        or not set(selected_modes).issubset(supported_modes)
+    ):
+        raise ValueError("benchmark modes must include python and rust exactly once")
     output_root.mkdir(parents=True, exist_ok=True)
     trace_path = output_root / "read_after_write_trace.v1.json"
     trace = write_trace(trace_path, items)
-    subprocess.run(
-        [
-            "cargo", "build", "--release", "-p", "kogwistar-store-sqlite",
-            "--example", "sqlite_native_authority_benchmark",
-        ],
-        cwd=RUST_ROOT,
-        check=True,
-    )
+    if "rust_native" in selected_modes:
+        subprocess.run(
+            [
+                "cargo", "build", "--release", "-p", "kogwistar-store-sqlite",
+                "--example", "sqlite_native_authority_benchmark",
+            ],
+            cwd=RUST_ROOT,
+            check=True,
+        )
     modes: dict[str, Any] = {}
-    for mode in ("python", "rust", "rust_cached", "rust_native"):
+    for mode in selected_modes:
         warmup_path = output_root / f"{mode}-warmup.sqlite3"
         for suffix in ("", "-wal", "-shm"):
             Path(f"{warmup_path}{suffix}").unlink(missing_ok=True)
@@ -686,9 +730,18 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--read-cycles", type=int, default=20)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        choices=("python", "rust", "rust_cached", "rust_batched", "rust_native"),
+        default=("python", "rust", "rust_cached", "rust_native"),
+        help="benchmark modes; defaults preserve the standard comparison",
+    )
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
-        "--mode", choices=("python", "rust", "rust_cached"), help=argparse.SUPPRESS
+        "--mode",
+        choices=("python", "rust", "rust_cached", "rust_batched"),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--path", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--trace", type=Path, help=argparse.SUPPRESS)
@@ -711,7 +764,8 @@ def main() -> int:
     if args.output_root is None:
         raise SystemExit("--output-root is required")
     report = run_benchmark(args.output_root.resolve(), items=args.items,
-                           read_cycles=args.read_cycles, samples=args.samples)
+                           read_cycles=args.read_cycles, samples=args.samples,
+                           selected_modes=tuple(args.modes))
     payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     print(payload, end="")
     report_path = args.report or (args.output_root.resolve() / "report.v3.json")
