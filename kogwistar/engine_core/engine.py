@@ -6,7 +6,7 @@ import pathlib
 import threading
 import time
 import uuid
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from contextlib import (
     AbstractContextManager,
     AbstractAsyncContextManager,
@@ -457,6 +457,19 @@ except Exception:
 from kogwistar.engine_core.embedding_factory import (
     get_embedding_function,  # backwards compat alias → OllamaEmbeddingFunction
 )
+
+
+class _ChromaInputEmbeddingAdapter:
+    """Translate Chroma's required ``input`` callback to Kogwistar's embedder API."""
+
+    def __init__(self, delegate: EmbeddingFunctionLike) -> None:
+        self._delegate = delegate
+
+    def name(self) -> str:
+        return self._delegate.name()
+
+    def __call__(self, input: Sequence[str]) -> Embeddings:
+        return self._delegate(input)
 
 
 def engine_context(
@@ -1599,7 +1612,9 @@ class GraphKnowledgeEngine:
                 embedding_profile_checked = True
             # IMPORTANT: pass embedding_function to vector collections
             collection_embedding_function = (
-                None if self.embedding_profile_mode == "inspect" else self._ef
+                None
+                if self.embedding_profile_mode == "inspect"
+                else _ChromaInputEmbeddingAdapter(self._ef)
             )
             collection_metric = (
                 self.embedding_profile.similarity_metric
