@@ -487,6 +487,11 @@ def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     ) in workflow
     assert "tests/server/test_rust_api_postgres_worker_interop_live.py::" in workflow
     assert "test_rust_native_promotion_and_python_recovery_are_both_available" in workflow
+    assert "Set up Python for Rust/Python PostgreSQL interop" in workflow
+    assert (
+        'python -m pip install "sqlalchemy[asyncio]>=2.0" "psycopg[binary]>=3.1"'
+        in workflow
+    )
     assert "if tests != 3 or skipped:" in workflow
 
 

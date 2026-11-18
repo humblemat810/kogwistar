@@ -314,6 +314,14 @@ jobs:
       - name: Make Rust API server executable
         run: chmod +x target/debug/kogwistar-server
 
+      - name: Set up Python for Rust/Python PostgreSQL interop
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install Python PostgreSQL interop dependencies
+        run: python -m pip install "sqlalchemy[asyncio]>=2.0" "psycopg[binary]>=3.1"
+
       - name: Test Rust workspace
         env:
           KOGWISTAR_TEST_CHROMA_ENDPOINT: http://127.0.0.1:8000

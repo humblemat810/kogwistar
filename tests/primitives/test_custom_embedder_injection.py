@@ -87,3 +87,12 @@ def test_chroma_adapter_preserves_legacy_embedder_parameter_name():
     chroma_types.validate_embedding_function(adapter)
     assert adapter.name() == "LegacyEmbedder"
     assert adapter(["abc", "xy"]) == [[3.0], [2.0]]
+    assert adapter(("abc", "xy")) == [[3.0], [2.0]]
+
+    class UnnamedEmbedder:
+        def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
+            return [[float(len(text))] for text in documents_or_texts]
+
+    unnamed_adapter = _ChromaInputEmbeddingAdapter(UnnamedEmbedder())
+    chroma_types.validate_embedding_function(unnamed_adapter)
+    assert unnamed_adapter.name() == "UnnamedEmbedder"

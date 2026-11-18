@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover - py<3.10 compatibility
     from typing import TypeAlias
 
 from .json_types import JsonObject, JsonValue
-from .engine_core.types import GraphEntityKind
+from .graph_types import GraphEntityKind
 
 if TYPE_CHECKING:
     from .engine_core.models import (

@@ -38,22 +38,24 @@
         );
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/wisdom_retrieval.rs#graph_record_document_json; python=tests/core/test_graph_model_adapter.py#test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/wisdom_retrieval.rs#graph_record_document_json; python=tests/core/test_graph_model_adapter.py#test_python_hyperedge_round_trips_shared_backend_fixture; fixture=contracts/golden/python-graph-model-payloads-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#semantic_edge_projection_preserves_node_and_edge_endpoint_ids; python_test=tests/core/test_graph_model_adapter.py#test_python_hyperedge_round_trips_shared_backend_fixture
     #[test]
     fn semantic_edge_projection_preserves_node_and_edge_endpoint_ids() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let edge = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "edge_with_edge_endpoints")
+            .unwrap()["payload"]
+            .clone();
         let record = GraphRecord {
-            id: "edge-hyper-1".to_owned(),
-            document: Some(
-                json!({
-                    "id":"edge-hyper-1",
-                    "source_ids":["node-a", "node-b"],
-                    "target_ids":["node-c"],
-                    "source_edge_ids":["edge-parent"],
-                    "target_edge_ids":["edge-child"]
-                })
-                .to_string(),
-            ),
-            metadata: json!({"lifecycle_status":"active"})
+            id: edge["id"].as_str().unwrap().to_owned(),
+            document: Some(edge.to_string()),
+            metadata: edge["metadata"]
                 .as_object()
                 .unwrap()
                 .clone(),
@@ -62,10 +64,10 @@
 
         let projected: Value =
             serde_json::from_str(&graph_record_document_json(&record).unwrap()).unwrap();
-        assert_eq!(projected["source_ids"], json!(["node-a", "node-b"]));
-        assert_eq!(projected["target_ids"], json!(["node-c"]));
-        assert_eq!(projected["source_edge_ids"], json!(["edge-parent"]));
-        assert_eq!(projected["target_edge_ids"], json!(["edge-child"]));
+        assert_eq!(projected["source_ids"], edge["source_ids"]);
+        assert_eq!(projected["target_ids"], edge["target_ids"]);
+        assert_eq!(projected["source_edge_ids"], edge["source_edge_ids"]);
+        assert_eq!(projected["target_edge_ids"], edge["target_edge_ids"]);
     }
 
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#authorized_evidence_records; python=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract; fixture=contracts/golden/visualization-hyperedge-v1.json

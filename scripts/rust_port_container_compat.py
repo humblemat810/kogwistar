@@ -38,6 +38,11 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _wheel_identity_args(wheel: Path) -> list[str]:
+    """Bind the verified wheel artifact to the worker candidate identity."""
+    return ["--wheel-sha256", _sha256(wheel)]
+
+
 def _wheel_build_report(wheel: Path, root: Path = ROOT) -> dict[str, object] | None:
     path = wheel.parent / "build-report.json"
     if not path.is_file():
@@ -260,7 +265,19 @@ def _source_stage(root: Path, application: Path, target: Path) -> dict[str, int]
             "src",
             "tests",
             "scripts",
+            "requirements",
+            "skills",
+            "doc/pypy_3_12_support_action_plan.md",
+            "doc/testing_guide.md",
+            "integrations/hermes-agent",
+            "frontend/public/compose.html",
+            "frontend/src/App.tsx",
+            "data/seed_bundles/rl_llm_agent_tool_use_v1.json",
             ".vscode",
+            ".github",
+            "docker",
+            "compose*.yml",
+            "Dockerfile*",
             "pyproject.toml",
             "pytest.ini",
             ".env.example",
@@ -283,7 +300,7 @@ def _source_stage(root: Path, application: Path, target: Path) -> dict[str, int]
     core_pin_files = _snapshot_files(
         application / "kogwistar",
         consumer / "kogwistar",
-        ("tests/_helpers",),
+        ("tests/_helpers", "constraints-pypy-3.12.txt", "pyproject.toml"),
     )
     return {
         "core": len(core_files),
@@ -391,6 +408,21 @@ def _pytest_args(values: list[str]) -> list[str]:
     return values[1:] if values[:1] == ["--"] else values
 
 
+def _postgres_dsn_for_shard(template: str, shard_index: int) -> str:
+    """Resolve a secret DSN template without writing it into candidate reports."""
+    if template.count("{shard}") != 1:
+        raise ValueError("GKE_PG_DSN_TEMPLATE must contain exactly one {shard} token")
+    return template.replace("{shard}", str(shard_index))
+
+
+def _group_run_succeeded(layer: str, profile: str, returncode: object) -> bool:
+    """Mirror rust_port_compat's profile-aware pytest exit contract."""
+    return returncode == 0 or (
+        returncode == 5
+        and (profile == "regression" or layer == "parser" or profile == "milestone")
+    )
+
+
 def _merge_shard_reports(paths: list[Path], output: Path) -> dict[str, object]:
     reports = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     if not reports:
@@ -478,7 +510,9 @@ def _merge_shard_reports(paths: list[Path], output: Path) -> dict[str, object]:
             ):
                 raise ValueError(f"{name} runs are missing or duplicated")
             for run in raw_runs:
-                if run.get("returncode") != 0 or not isinstance(run.get("command"), list):
+                if not _group_run_succeeded(
+                    name, str(part.get("test_profile", "")), run.get("returncode")
+                ) or not isinstance(run.get("command"), list):
                     raise ValueError(f"{name} contains an unverified group run")
                 runs.append(run)
         if sorted(selected) != list(range(target_count)):
@@ -543,6 +577,7 @@ def main() -> int:
         layers=tuple(args.layer or _LAYERS),
         rebuild=args.rebuild_image,
     )
+    wheel_sha256 = _sha256(wheel)
 
     common_args = [
         "--implementation-mode",
@@ -550,16 +585,19 @@ def main() -> int:
         "--profile",
         args.profile,
         "--backend",
-        "docker-clean-dual-venv-sharded",
+        (
+            "docker-clean-dual-venv-sharded-pgvector"
+            if os.environ.get("GKE_PG_DSN_TEMPLATE") is not None
+            else "docker-clean-dual-venv-sharded"
+        ),
         "--storage-root",
         "container-local-isolated",
         "--shard-count",
         str(args.shards),
         "--pytest-workers",
         str(pytest_workers),
-        "--wheel-sha256",
-        str(metadata["wheel_sha256"]),
     ]
+    common_args.extend(_wheel_identity_args(wheel))
     if args.meta_store_mode is not None:
         common_args.extend(("--meta-store-mode", args.meta_store_mode))
     provenance = _commit_provenance(application)
@@ -588,12 +626,13 @@ def main() -> int:
     if args.resume:
         common_args.append("--resume")
     pytest_args = _pytest_args(args.pytest_args)
+    postgres_dsn_template = os.environ.get("GKE_PG_DSN_TEMPLATE")
 
     metadata = {
         "base_image": args.image,
         "test_image": image,
         "wheel": str(wheel),
-        "wheel_sha256": _sha256(wheel),
+        "wheel_sha256": wheel_sha256,
         "wheel_build_report": build_report,
         "application_root": str(application),
         "report": str(report),
@@ -601,6 +640,7 @@ def main() -> int:
         "pytest_workers": pytest_workers,
         "commit_provenance": provenance,
         "container_orchestrator_sha256": _orchestrator_fingerprint(),
+        "external_pgvector_enabled": postgres_dsn_template is not None,
     }
     print(json.dumps(metadata, indent=2, sort_keys=True), flush=True)
 
@@ -621,6 +661,21 @@ def main() -> int:
                 command = ["docker", "run", "--name", container_name]
                 if not args.keep_container:
                     command.append("--rm")
+                process_env = os.environ.copy()
+                for env_name, provenance_key in (
+                    ("KOGWISTAR_REVISION", "core"),
+                    ("KG_DOC_PARSER_REVISION", "parser"),
+                    ("OBSIDIAN_SINK_REVISION", "sink"),
+                ):
+                    revision = provenance.get(provenance_key)
+                    if revision is not None:
+                        process_env[env_name] = revision
+                        command.extend(("--env", f"{env_name}={revision}"))
+                if postgres_dsn_template is not None:
+                    process_env["GKE_PG_DSN"] = _postgres_dsn_for_shard(
+                        postgres_dsn_template, shard_index
+                    )
+                    command.extend(("--env", "GKE_PG_DSN"))
                 command.extend(
                     [
                         "--mount",
@@ -644,7 +699,7 @@ def main() -> int:
                     ]
                 )
                 print(f"[{container_name}] starting", flush=True)
-                processes.append(subprocess.Popen(command))
+                processes.append(subprocess.Popen(command, env=process_env))
         except FileNotFoundError:
             raise SystemExit("docker executable not found") from None
 

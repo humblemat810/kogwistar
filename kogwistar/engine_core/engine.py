@@ -466,10 +466,17 @@ class _ChromaInputEmbeddingAdapter:
         self._delegate = delegate
 
     def name(self) -> str:
-        return self._delegate.name()
+        delegate_name = getattr(self._delegate, "name", None)
+        if callable(delegate_name):
+            resolved_name = delegate_name()
+            if isinstance(resolved_name, str):
+                return resolved_name
+        if isinstance(delegate_name, str):
+            return delegate_name
+        return type(self._delegate).__name__
 
-    def __call__(self, input: Sequence[str]) -> Embeddings:
-        return self._delegate(input)
+    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+        return self._delegate(list(input))
 
 
 def engine_context(
