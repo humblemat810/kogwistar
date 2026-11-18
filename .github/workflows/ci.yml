@@ -320,7 +320,17 @@ jobs:
           python-version: "3.13"
 
       - name: Install Python PostgreSQL interop dependencies
-        run: python -m pip install "sqlalchemy[asyncio]>=2.0" "psycopg[binary]>=3.1"
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as project_file:
+              project = tomllib.load(project_file)["project"]
+          dependencies = project["dependencies"] + project["optional-dependencies"]["pgvector"]
+          subprocess.run([sys.executable, "-m", "pip", "install", *dependencies], check=True)
+          PY
 
       - name: Test Rust workspace
         env:
