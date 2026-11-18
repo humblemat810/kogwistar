@@ -68,6 +68,27 @@ This confirms the live gate measures per-workload throughput and tail latency;
 read-handle reuse preserves visibility but does not pass the gate. The JSON
 report remains under ignored `.tmp` benchmark output.
 
+### Cached Write-Transaction Handle
+
+Windows CPython 3.13.3, 2026-11-19: same 100-item, 20-cycle, 5-sample live
+gate, after using the cached autocommit handle for `BEGIN IMMEDIATE` writes.
+The pre-change numbers above used the same local host and workload. Write
+throughput improved materially, while the overall gate remains failed because
+projection listing is still below threshold.
+
+| Workload | Before throughput | After throughput | After p95 latency |
+|---|---:|---:|---:|
+| Event append | 0.63x | 1.068x | 0.942x |
+| Event replay | 1.63x | 1.599x | 0.646x |
+| Projection replace | 0.61x | 1.070x | 0.937x |
+| Projection list | 0.67x | 0.715x | 1.307x |
+| Mixed interleaved | 0.99x | 0.999x | 1.002x |
+
+Peak RSS ratio was 0.983x. `kogwistar-store-sqlite` tests passed (72 passed,
+1 ignored), including external-commit visibility across cached reads and
+writes. This slice removes per-write connection setup; it does not close the
+performance gate. JSON report: ignored `.tmp/sqlite-cached-write-performance.json`.
+
 ### Experimental Batched Seam
 
 Windows CPython 3.13.3, 2026-11-19: 20 items, 2 read cycles, 2 samples. Python,
