@@ -847,13 +847,24 @@ class InMemoryMetaStore(LaneMessageMetaStoreMixin):
     ) -> Iterator[tuple[int, str, str, str, str]]:
         next_seq = int(from_seq)
         while True:
-            with self._lock:
-                rows = [
-                    event
-                    for event in self._state.entity_events.get(str(namespace), [])
-                    if int(event.seq) >= next_seq
-                    and (to_seq is None or int(event.seq) <= int(to_seq))
-                ]
+            active = _active_in_memory_meta_txn.get()
+            if active is not None and active.owner is self:
+                with self._lock:
+                    source_events = active.state.entity_events.get(str(namespace), [])
+                    rows = [
+                        event
+                        for event in source_events
+                        if int(event.seq) >= next_seq
+                        and (to_seq is None or int(event.seq) <= int(to_seq))
+                    ]
+            else:
+                with self._lock:
+                    rows = [
+                        event
+                        for event in self._state.entity_events.get(str(namespace), [])
+                        if int(event.seq) >= next_seq
+                        and (to_seq is None or int(event.seq) <= int(to_seq))
+                    ]
             rows.sort(key=lambda item: item.seq)
             rows = rows[: int(batch_size)]
             if not rows:

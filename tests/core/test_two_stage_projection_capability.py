@@ -11,6 +11,7 @@ from kogwistar.engine_core.chroma_backend import (
     _chroma_safe_kwargs,
 )
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.engine_core.postgres_backend import PgVectorBackend
 from kogwistar.engine_core.storage_backend import (
     TwoStageProjectionCapability,
@@ -36,6 +37,26 @@ def test_postgres_stage1_row_lock_requires_active_sync_uow(monkeypatch) -> None:
             entity_id="n1",
             for_update=True,
         )
+
+
+def test_in_memory_entity_event_iteration_reads_events_in_active_transaction() -> None:
+    metadata = InMemoryMetaStore()
+    with metadata.transaction():
+        metadata.append_entity_event(
+            namespace="conversation",
+            event_id="event-1",
+            entity_kind="node",
+            entity_id="node-1",
+            op="ADD",
+            payload_json='{"id":"node-1"}',
+        )
+        assert list(metadata.iter_entity_events(namespace="conversation")) == [
+            (1, "node", "node-1", "ADD", '{"id":"node-1"}')
+        ]
+
+    assert list(metadata.iter_entity_events(namespace="conversation")) == [
+        (1, "node", "node-1", "ADD", '{"id":"node-1"}')
+    ]
 
 
 @pytest.mark.asyncio
