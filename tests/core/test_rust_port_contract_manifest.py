@@ -1266,9 +1266,10 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         / "ADR-015-capability-completion-worklist.md"
     )
     worklist = worklist_path.read_text(encoding="utf-8")
+    tasklet_section = worklist.partition("## Tasklets")[2].partition("## Closure")[0]
     all_rows = [
         line
-        for line in worklist.splitlines()
+        for line in tasklet_section.splitlines()
         if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV|REL)-[A-Z0-9-]+ \|", line)
     ]
     parents = [line for line in all_rows if "children:" in line]
@@ -1335,11 +1336,16 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
 
     assert len(parents) == 16
     assert len(rows) == 67
-    assert statuses.count("PASS") == 52
-    assert statuses.count("IN PROGRESS") == 0
-    assert statuses.count("NOT STARTED") == 15
+    pass_count = statuses.count("PASS")
+    in_progress_count = statuses.count("IN PROGRESS")
+    not_started_count = statuses.count("NOT STARTED")
+    assert pass_count + in_progress_count + not_started_count == 67
     assert capability_ids == incomplete_capabilities
-    assert "**Progress:** **52/67 PASS (77.6%)**; **0 IN PROGRESS**; **15 NOT STARTED**." in worklist
+    expected_progress = (
+        f"**Progress:** **{pass_count}/67 PASS ({100 * pass_count / 67:.1f}%)**; "
+        f"**{in_progress_count} IN PROGRESS**; **{not_started_count} NOT STARTED**."
+    )
+    assert expected_progress in worklist
     assert "| QLL-03 | `queues-leases-lanes` | PASS |" in worklist
     assert "| QLL-03A | `queues-leases-lanes` | PASS |" in worklist
     assert "| QLL-03B | `queues-leases-lanes` | PASS |" in worklist

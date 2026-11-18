@@ -20,7 +20,10 @@ def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workdir", type=Path)
     parser.add_argument("--report", type=Path)
-    parser.add_argument("--worker-step", choices=("rust-write", "python-write", "rust-read"))
+    parser.add_argument(
+        "--worker-step",
+        choices=("rust-write", "python-rollback", "python-write", "rust-read"),
+    )
     parser.add_argument("--database", type=Path)
     return parser.parse_args()
 
@@ -101,6 +104,42 @@ def _worker(step: str, database: Path) -> int:
         observed = store.get_index_applied_fingerprint(
             namespace="adr015-consumer-uat", coalesce_key="consumer.sqlite"
         )
+    elif step == "python-rollback":
+        from kogwistar.engine_core.engine_sqlite import EngineSQLite
+
+        store = _store("python", directory)
+        if not isinstance(store, EngineSQLite):
+            raise RuntimeError("public Python selector did not choose EngineSQLite")
+        store.ensure_initialized()
+        key = "consumer.sqlite"
+        observed = store.get_index_applied_fingerprint(
+            namespace="adr015-consumer-uat", coalesce_key=key
+        )
+        if observed != "rust-first":
+            raise RuntimeError(f"Python rollback precondition read {observed!r}")
+        try:
+            with store.transaction() as connection:
+                connection.execute(
+                    "UPDATE index_applied_state SET applied_fingerprint = ? "
+                    "WHERE namespace = ? AND coalesce_key = ?",
+                    ("python-uncommitted", "adr015-consumer-uat", key),
+                )
+                raise RuntimeError("intentional Python rollback")
+        except RuntimeError as error:
+            if str(error) != "intentional Python rollback":
+                raise
+        else:
+            raise RuntimeError("Python transaction unexpectedly committed")
+        observed = store.get_index_applied_fingerprint(
+            namespace="adr015-consumer-uat", coalesce_key=key
+        )
+        if observed != "rust-first":
+            raise RuntimeError(f"Python rollback left partial state {observed!r}")
+        rust = _store("rust", directory)
+        if rust.get_index_applied_fingerprint(
+            namespace="adr015-consumer-uat", coalesce_key=key
+        ) != "rust-first":
+            raise RuntimeError("Rust-authored state changed after Python rollback")
     else:
         from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
 
@@ -126,7 +165,7 @@ def _parent(args: argparse.Namespace) -> int:
         raise SystemExit(f"refusing existing database: {database}")
     workdir.mkdir(parents=True, exist_ok=True)
     steps: list[dict[str, Any]] = []
-    for step in ("rust-write", "python-write", "rust-read"):
+    for step in ("rust-write", "python-rollback", "python-write", "rust-read"):
         result = subprocess.run(
             [sys.executable, str(Path(__file__).resolve()), "--worker-step", step,
              "--database", str(database)],
@@ -142,7 +181,13 @@ def _parent(args: argparse.Namespace) -> int:
         "python": str(Path(sys.executable).resolve()),
         "database": str(database),
         "steps": steps,
-        "status": "passed" if len(steps) == 3 and all(item["returncode"] == 0 for item in steps) else "failed",
+        "status": (
+            "passed"
+            if [item["step"] for item in steps]
+            == ["rust-write", "python-rollback", "python-write", "rust-read"]
+            and all(item["returncode"] == 0 for item in steps)
+            else "failed"
+        ),
     }
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
