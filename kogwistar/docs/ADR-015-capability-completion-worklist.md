@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **63/67 PASS (94.0%)**; **4 IN PROGRESS**; **0 NOT STARTED**.
+**Progress:** **67/67 PASS (100.0%)**; **0 IN PROGRESS**; **0 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -22,8 +22,9 @@ the closed ADR-022 evidence inventories.
 - One row = one invariant, one capability/backend cell, one observable oracle,
   and one focused check. Parent capability names do not count as tasklets.
 - Each leaf targets at most 30 minutes of active engineering; test/CI/runtime
-  wait time is excluded. A leaf must prove one outcome only. Parent closes
-  mechanically when every explicitly listed child is `PASS`.
+  wait time is excluded. A leaf must prove one outcome only with its smallest
+  runnable unit/contract/static check, preferably without a new build. Parent
+  closes mechanically when every explicitly listed child is `PASS`.
 - **Verification cadence:** each leaf has one small, directly runnable oracle:
   prefer Python contract/unit tests, static checks, or tests using already-built
   artifacts; do not start Docker/server for leaf checks. For Rust changes, run
@@ -53,33 +54,16 @@ the closed ADR-022 evidence inventories.
 - Current-source reports must use one candidate identity. Docker UAT, supported
   interpreter CI, and backward-readable persisted data are release evidence.
 
-## Open-Leaf Verification Map
+## Verification State
 
-This map adds execution order, not tasklets or acceptance criteria. A fast check
-is diagnostic evidence only; it cannot set a leaf to `PASS`. Reuse the exact
-candidate wheel and existing Docker image where their inputs have not changed.
-If a source, dependency, or Dockerfile input changes, invalidate only affected
-artifacts and rerun the corresponding parent closeout once after its leaves are
-ready.
-
-| Open leaf | Fast check before expensive work | One parent closeout |
-| --- | --- | --- |
-| REL-01E | Run source-staging and report-contract tests without Docker; run each currently failing application test group directly against the same candidate wheel. Fix only reproduced causes. | Run the complete application milestone profile once against the exact candidate and staged source; require reconciled selection/run counts and zero failures. |
-| REL-02A | Install the already-built candidate wheel in a disposable clean Python environment; run `pip check`. No wheel or image rebuild. | Run the shared REL-02 clean-consumer Docker profile once; record the exact wheel hash. |
-| REL-02B | In the same disposable environment, import the native extension and assert package version, ABI/runtime identity, and absence of source-checkout imports. | Covered by the same REL-02 Docker consumer run as REL-02A. |
-| REL-02C | Use the prebuilt candidate artifacts with a focused SQLite handoff test: Rust write, process reopen, Python read, then Rust read; compare canonical digest. | Include the focused handoff in the shared clean-consumer run; rebuild only if tested source or binary inputs changed. |
-| REL-02D | Use the prebuilt candidate artifacts with a focused Python fault-injection test after Rust-authored data; assert rollback leaves no partial Python writes and Rust data remains readable. | Include the rollback case in the same REL-02 clean-consumer run as REL-02A–C. |
-| REL-03A | Run Python CI-workflow contract tests locally; no Rust or Docker build. | Inspect required CPython 3.12 jobs for the exact candidate commit after hosted CI completes. |
-| REL-03B | Same local workflow-contract test run as REL-03A. | Inspect required CPython 3.13 jobs for the exact candidate commit after hosted CI completes. |
-| REL-03C | Same local workflow-contract test run as REL-03A. | Inspect required CPython 3.14 jobs for the exact candidate commit after hosted CI completes. |
-| REL-03D | Run PyPy workflow-policy/contract tests locally; no Rust or Docker build. | Inspect the exact candidate's hosted PyPy 3.11 result and report according to its best-effort policy; never convert a failure or missing run into `PASS`. |
-
-Batch REL-03 local contract tests once, not once per interpreter leaf. Hosted
-results remain the acceptance oracle for REL-03. Rust tests may compile/link
-when Cargo inputs or cache are stale; run `cargo check` first and batch tests
-once per parent using the existing target directory. The phrase “no-build fast
-check” means no Docker/native rebuild, not a guarantee that every test command
-performs zero compilation.
+No open leaf tasklets. The fixed 67-leaf worklist is complete. For future
+regressions, keep the same cost-saving cadence: run each focused unit/contract
+check first, reuse built artifacts and Cargo cache, batch Rust tests once per
+crate/parent, then run Docker/native release builds only once for the affected
+major parent closeout. Shared clean-consumer and hosted CI gates run once for
+the candidate, not once per leaf. Rust test binaries can compile when cache or
+inputs are stale; “no-build” means no repeated Docker/native release build, not
+zero Cargo compilation.
 
 ## Tasklets
 
@@ -154,11 +138,11 @@ performs zero compilation.
 | REL-02B | All six | PASS | Invariant: installed wheel imports native extension with expected ABI/version. Cell: same clean consumer. Oracle: import and version handshake succeed without source checkout. Evidence: package version `0.7.0`, contract version `1.0.0`; package and `kogwistar._rust.abi3.so` both resolved under `/opt/consumer/lib/python3.13/site-packages` in the existing image. |
 | REL-02C | All six | PASS | Invariant: persisted graph written Rust→Python→Rust remains readable and canonical. Cell: one durable DB shared sequentially across clean processes. Oracle: expected values survive process reopen. Evidence: `.codex/wheelhouse-rel01e-chroma-fix/rel02-clean-consumer-python-rollback-final3.json`, status `passed`; Rust wrote `rust-first`, Python reopened/read it and wrote `python-second`, Rust reopened/read `python-second`. |
 | REL-02D | All six | PASS | Invariant: Python rollback remains effective after Rust-authored data. Cell: injected Python transaction failure in clean-wheel consumer. Oracle: no partial Python writes; Rust-authored canonical state remains readable. Evidence: same final3 report; Python deliberately updated to `python-uncommitted`, raised inside transaction, then verified Python and Rust both still read `rust-first`. All four process steps returned 0. |
-| REL-03 | All six | PARENT | Supported interpreter CI requirement; children: REL-03A,REL-03B,REL-03C,REL-03D. | Parent closes when all leaves pass. |
-| REL-03A | All six | IN PROGRESS | Invariant: CPython 3.12 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
-| REL-03B | All six | IN PROGRESS | Invariant: CPython 3.13 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
-| REL-03C | All six | IN PROGRESS | Invariant: CPython 3.14 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
-| REL-03D | All six | IN PROGRESS | Invariant: PyPy 3.11 declared lane has accurate best-effort/required result. Cell: hosted PyPy lane. Oracle: status matches support policy; failure cannot be reported as pass. Fast preflight passed: `test_pypy_ci_excludes_native_extension_tests`. Run #815 exposed an omitted `kogwistar/graph_types.py` source module (`ModuleNotFoundError`); added and pushed in `403b4c0af01bd56543b45d8ff7d9c75fad8c1d18`. Exact-head run #816 is pending; no pass claimed. |
+| REL-03 | All six | PASS | Supported interpreter CI requirement; children: REL-03A,REL-03B,REL-03C,REL-03D. | All four leaves pass on exact candidate `3920d6f8ca6cd9aa80b085a36dccffecce8bc36c`; required CI workflow run 820 succeeded. |
+| REL-03A | All six | PASS | Invariant: CPython 3.12 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Evidence: CI run 820, `CI (cpython312)` and `rust-python-interop (cpython312, 3.12, false)` both succeeded; native wheel smoke passed on Ubuntu, Windows, and macOS. |
+| REL-03B | All six | PASS | Invariant: CPython 3.13 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Evidence: CI run 820, `CI (cpython313)` and `rust-python-interop (cpython313, 3.13, false)` both succeeded; native wheel smoke passed on Ubuntu, Windows, and macOS. |
+| REL-03C | All six | PASS | Invariant: CPython 3.14 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Evidence: CI run 820, `CI (cpython314)` and `rust-python-interop (cpython314, 3.14, false)` both succeeded; native wheel smoke passed on Ubuntu, Windows, and macOS. |
+| REL-03D | All six | PASS | Invariant: supported PyPy 3.11 lane reports its declared result accurately. Cell: hosted PyPy lane. Oracle: required PyPy 3.11 tests and interop pass; experimental PyPy 3.12 failure remains explicitly best-effort and is not misreported as supported. Evidence: CI run 820, `CI (pypy311)` and `rust-python-interop (pypy311, pypy-3.11-v7.3.20, true)` succeeded. Optional `pypy-beta-best-effort` failed at PyPy 3.12 `pydantic_core` ABI (`_Py_Dealloc`); this unsupported experimental lane does not block supported-runtime acceptance. |
 | REL-04 | All six | PASS | Language-boundary isolation requirement; children: REL-04A,REL-04B,REL-04C. | All three leaves PASS; Python-only, mixed, and Rust-native boundaries verified. |
 | REL-04A | All six | PASS | Invariant: Python-only public path never loads/calls Rust. Cell: instrumented Python server and memory workflow. Oracle: zero native imports/calls; expected state. Evidence: answer workflow fake end-to-end (**1 passed**); Python-default server/memory/REST path group (**11 passed**, includes submit/SSE); each replaces `_load_extension` with a failing sentinel. |
 | REL-04B | All six | PASS | Invariant: Rust-native container path never starts Python worker/interpreter. Cell: Linux Docker builder image, direct `kogwistar-server` binary launch. Evidence: `scripts/rust_native_no_python_smoke.sh` built locked release binary; `cargo tree -p kogwistar-api --edges normal` contained no `kogwistar-python`/PyO3 seam; `ldd` showed no Python runtime; `/proc/<pid>/exe` matched native binary; process had zero child processes; native HTTP `/health` returned 200 and `mode=rust`. Cached Cargo build completed in 1.37s. |
