@@ -868,6 +868,7 @@ def mcp_admin_server(tmp_path: Path) -> Iterator[dict[str, Any]]:
     env["MCP_CHROMA_DIR_CONVERSATION"] = str(data_root / "conversation")
     env["MCP_CHROMA_DIR_WORKFLOW"] = str(data_root / "workflow")
     env["MCP_CHROMA_DIR_WISDOM"] = str(data_root / "wisdom")
+    env["AUTH_MODE"] = "dev"
     ensure_test_jwt_env(env)
 
     cmd = [
