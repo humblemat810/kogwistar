@@ -508,8 +508,8 @@
     "contract_version": 1,
     "status": "versioned-intentionally-deferred",
     "owner": "python-rollback-deployment",
-    "rule": "A deferred operation remains listed in Rust's PENDING_SERVER_CUTOVER_ROUTES or PENDING_SYSCALL_CUTOVER_OPS and retains the Python rollback route. Deferred means not approved for cutover/readiness promotion; it does not disable an implemented Rust handler in an explicitly selected local or isolated UAT path. Production use still requires the listed authority and exit evidence; transport registration alone is insufficient.",
-    "execution_policy": "Explicit Rust selection may exercise implemented handlers in local or isolated UAT with normal authorization and authority checks. This inventory blocks cutover/readiness claims, not handler execution. Production deployment remains subject to change control and capability-specific evidence.",
+    "rule": "A deferred operation remains listed in Rust's PENDING_SERVER_CUTOVER_ROUTES or PENDING_SYSCALL_CUTOVER_OPS and retains the Python fallback route. Deferred means not approved for capability readiness; it does not disable an implemented Rust handler in an explicitly selected local or isolated Docker UAT path. Capability-specific authority and exit evidence remain required; transport registration alone is insufficient.",
+    "execution_policy": "Explicit Rust selection may exercise implemented handlers in local or isolated Docker UAT with normal authorization and authority checks. This inventory blocks capability-readiness claims, not handler execution. Library acceptance requires capability-specific tests and same-candidate Docker UAT; no customer traffic rollout is implied.",
     "route_groups": [],
     "syscall_group": {
       "owner": "python",
