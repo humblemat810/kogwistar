@@ -50,7 +50,11 @@ def test_container_harness_uses_dual_venv_and_cleans_native_bridge() -> None:
     assert "uv pip install --python /opt/core/bin/python" in dockerfile
     assert "uv pip install --python /opt/consumer/bin/python" in dockerfile
     assert "ARG REQUESTED_LAYERS=core,parser,sink,application" in dockerfile
-    assert "*,parser,*|*,sink,*|*,application,*)" in dockerfile
+    assert "*,parser,*|*,application,*)" in dockerfile
+    assert "*,sink,*|*,application,*)" in dockerfile
+    assert "/build/kg-doc-parser ;;" in dockerfile
+    assert "/build/kogwistar-obsidian-sink ;;" in dockerfile
+    assert "/build/kg-doc-parser /build/kogwistar-obsidian-sink" not in dockerfile
     assert "/opt/core/bin/pip install" not in dockerfile
     assert "/opt/consumer/bin/pip install" not in dockerfile
 

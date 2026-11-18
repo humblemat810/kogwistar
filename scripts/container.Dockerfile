@@ -25,9 +25,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && uv pip install --python /opt/consumer/bin/python "/wheel/${WHEEL_NAME}[test,chroma]" \
         "pytest-xdist>=3.8,<4" fastapi langchain-openai \
     && case ",${REQUESTED_LAYERS}," in \
-        *,parser,*|*,sink,*|*,application,*) \
-            uv pip install --python /opt/consumer/bin/python \
-                /build/kg-doc-parser /build/kogwistar-obsidian-sink ;; \
+        *,parser,*|*,application,*) \
+            uv pip install --python /opt/consumer/bin/python /build/kg-doc-parser ;; \
+        *) : ;; \
+    esac \
+    && case ",${REQUESTED_LAYERS}," in \
+        *,sink,*|*,application,*) \
+            uv pip install --python /opt/consumer/bin/python /build/kogwistar-obsidian-sink ;; \
         *) : ;; \
     esac \
     && rm -rf /build
