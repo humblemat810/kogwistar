@@ -106,6 +106,7 @@ def test_runtime_serving_benchmark_smoke_preserves_near_constant_lookup(tmp_path
         "retry_median_large_over_small",
         "state_read_median_large_over_small",
     }
+    assert report["gate"]["status"] == "passed", report["gate"]
     assert all(
         report["summary"][size][metric] > 0
         for size in ("small", "large")
