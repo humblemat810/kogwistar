@@ -227,7 +227,7 @@ async fn in_memory_create_conversation_is_atomic_and_matches_shared_contract() {
 }
 
 #[tokio::test]
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_send_message_admits_turn_and_run_atomically; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_send_message_admits_turn_and_run_atomically; python_test=tests/server/test_capability_kernel_contract.py#test_submit_turn_for_answer_replays_idempotency_key_and_rejects_payload_change
 async fn in_memory_send_message_admits_turn_and_run_atomically() {
     let auth_path = std::env::temp_dir().join(format!(
         "kogwistar-memory-send-auth-{}.sqlite",
