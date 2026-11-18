@@ -37,7 +37,7 @@ from mixed_workload import (
     write_trace,
 )
 
-BENCHMARK_VERSION = 3
+BENCHMARK_VERSION = 4
 DATASET = "kogwistar-mixed-rewrite-workload-v2"
 WORKLOADS = (
     "event_append",
@@ -140,7 +140,7 @@ def _sample_variation(values: list[float]) -> dict[str, float]:
     }
 
 
-def _measure(operation: Callable[[], int]) -> dict[str, float | int]:
+def _measure(operation: Callable[[], int]) -> dict[str, Any]:
     started = time.perf_counter_ns()
     cpu_started = time.process_time_ns()
     count = operation()
@@ -151,6 +151,18 @@ def _measure(operation: Callable[[], int]) -> dict[str, float | int]:
         "cpu_elapsed_ms": cpu_elapsed_ns / 1_000_000,
         "operations": count,
         "throughput_ops_per_sec": count * 1_000_000_000 / elapsed_ns,
+    }
+
+
+def _operation_latency_summary(samples_ns: list[int]) -> dict[str, float | int]:
+    if not samples_ns:
+        raise RuntimeError("workload produced no operation latency samples")
+    samples_ms = [value / 1_000_000 for value in samples_ns]
+    return {
+        "operation_count": len(samples_ms),
+        "p50_ms": _percentile(samples_ms, 0.50),
+        "p95_ms": _percentile(samples_ms, 0.95),
+        "p99_ms": _percentile(samples_ms, 0.99),
     }
 
 
@@ -199,6 +211,15 @@ def _run_mode_bound(
     if initialize_python_store:
         python_store.ensure_initialized()
     baseline_peak_rss_bytes = _peak_rss_bytes()
+    operation_latencies_ns: dict[str, list[int]] = {
+        workload: [] for workload in WORKLOADS
+    }
+
+    def timed_operation(workload: str, operation: Callable[[], Any]) -> Any:
+        started = time.perf_counter_ns()
+        result = operation()
+        operation_latencies_ns[workload].append(time.perf_counter_ns() - started)
+        return result
 
     def call(operation: dict[str, Any]) -> Any:
         return store_sqlite(
@@ -210,40 +231,62 @@ def _run_mode_bound(
     if mode == "python":
         def append_events() -> int:
             for index in range(items):
-                python_store.append_entity_event(
-                    namespace=namespace,
-                    event_id=f"event-{index:05d}",
-                    entity_kind="node",
-                    entity_id=f"node-{index:05d}",
-                    op="UPSERT",
-                    payload_json=_canonical({"replacement": {"id": f"node-{index:05d}"}}),
+                timed_operation(
+                    "event_append",
+                    lambda: python_store.append_entity_event(
+                        namespace=namespace,
+                        event_id=f"event-{index:05d}",
+                        entity_kind="node",
+                        entity_id=f"node-{index:05d}",
+                        op="UPSERT",
+                        payload_json=_canonical(
+                            {"replacement": {"id": f"node-{index:05d}"}}
+                        ),
+                    ),
                 )
             return items
 
         def replay_events() -> int:
             count = 0
             for _ in range(read_cycles):
-                count += len(list(python_store.iter_entity_events(
-                    namespace=namespace, from_seq=1, batch_size=items + 1
-                )))
+                rows = timed_operation(
+                    "event_replay",
+                    lambda: list(
+                        python_store.iter_entity_events(
+                            namespace=namespace, from_seq=1, batch_size=items + 1
+                        )
+                    ),
+                )
+                count += len(rows)
             return count
 
         def replace_projections() -> int:
             for index in range(items):
-                python_store.replace_named_projection(
-                    projection_namespace, f"key-{index:05d}", **_projection(index)
+                timed_operation(
+                    "projection_replace",
+                    lambda: python_store.replace_named_projection(
+                        projection_namespace, f"key-{index:05d}", **_projection(index)
+                    ),
                 )
             return items
 
         def list_projections() -> int:
             return sum(
-                len(python_store.list_named_projections(projection_namespace))
+                len(
+                    timed_operation(
+                        "projection_list",
+                        lambda: python_store.list_named_projections(
+                            projection_namespace
+                        ),
+                    )
+                )
                 for _ in range(read_cycles)
             )
 
         def mixed_interleaved() -> int:
             operations = 0
             for step in trace:
+                operation_started = time.perf_counter_ns()
                 index = step["index"]
                 entity_id = step["expected_entity_id"]
                 projection_key = f"mixed-key-{index:05d}"
@@ -278,44 +321,77 @@ def _run_mode_bound(
                     if not isinstance(payload, dict) or payload.get("index") != index:
                         raise RuntimeError("interleaved projection read did not observe its write")
                 operations += 1
+                operation_latencies_ns["mixed_interleaved"].append(
+                    time.perf_counter_ns() - operation_started
+                )
             return operations
     else:
         def append_events() -> int:
             for index in range(items):
-                call({
-                    "kind": "raw_append",
-                    "namespace": namespace,
-                    "event_id": f"event-{index:05d}",
-                    "entity_kind": "node",
-                    "entity_id": f"node-{index:05d}",
-                    "op": "UPSERT",
-                    "payload_json": _canonical({"replacement": {"id": f"node-{index:05d}"}}),
-                })
+                timed_operation(
+                    "event_append",
+                    lambda: call(
+                        {
+                            "kind": "raw_append",
+                            "namespace": namespace,
+                            "event_id": f"event-{index:05d}",
+                            "entity_kind": "node",
+                            "entity_id": f"node-{index:05d}",
+                            "op": "UPSERT",
+                            "payload_json": _canonical(
+                                {"replacement": {"id": f"node-{index:05d}"}}
+                            ),
+                        }
+                    ),
+                )
             return items
 
         def replay_events() -> int:
-            return sum(len(call({
-                "kind": "exclusive_raw_replay",
-                "namespace": namespace,
-                "after_seq": 0,
-                "limit": items + 1,
-            })) for _ in range(read_cycles))
+            count = 0
+            for _ in range(read_cycles):
+                rows = timed_operation(
+                    "event_replay",
+                    lambda: call(
+                        {
+                            "kind": "exclusive_raw_replay",
+                            "namespace": namespace,
+                            "after_seq": 0,
+                            "limit": items + 1,
+                        }
+                    ),
+                )
+                count += len(rows)
+            return count
 
         def replace_projections() -> int:
             for index in range(items):
-                call({
-                    "kind": "replace_named_projection",
-                    "namespace": projection_namespace,
-                    "key": f"key-{index:05d}",
-                    **_projection(index),
-                })
+                timed_operation(
+                    "projection_replace",
+                    lambda: call(
+                        {
+                            "kind": "replace_named_projection",
+                            "namespace": projection_namespace,
+                            "key": f"key-{index:05d}",
+                            **_projection(index),
+                        }
+                    ),
+                )
             return items
 
         def list_projections() -> int:
-            return sum(len(call({
-                "kind": "list_named_projections",
-                "namespace": projection_namespace,
-            })) for _ in range(read_cycles))
+            total = 0
+            for _ in range(read_cycles):
+                rows = timed_operation(
+                    "projection_list",
+                    lambda: call(
+                        {
+                            "kind": "list_named_projections",
+                            "namespace": projection_namespace,
+                        }
+                    ),
+                )
+                total += len(rows)
+            return total
 
         def mixed_interleaved() -> int:
             if mode in {"rust_cached", "rust_batched"}:
@@ -331,6 +407,7 @@ def _run_mode_bound(
             )
             with session:
                 for step in trace:
+                    operation_started = time.perf_counter_ns()
                     index = step["index"]
                     entity_id = step["expected_entity_id"]
                     projection_key = f"mixed-key-{index:05d}"
@@ -391,14 +468,22 @@ def _run_mode_bound(
                         if not isinstance(payload, dict) or payload.get("index") != index:
                             raise RuntimeError("interleaved Rust projection read did not observe its write")
                     operations += 1
+                    operation_latencies_ns["mixed_interleaved"].append(
+                        time.perf_counter_ns() - operation_started
+                    )
             return operations
 
+    def measure_workload(name: str, operation: Callable[[], int]) -> dict[str, Any]:
+        result = _measure(operation)
+        result["operation_latency_ns"] = operation_latencies_ns[name]
+        return result
+
     metrics = {
-        "event_append": _measure(append_events),
-        "event_replay": _measure(replay_events),
-        "projection_replace": _measure(replace_projections),
-        "projection_list": _measure(list_projections),
-        "mixed_interleaved": _measure(mixed_interleaved),
+        "event_append": measure_workload("event_append", append_events),
+        "event_replay": measure_workload("event_replay", replay_events),
+        "projection_replace": measure_workload("projection_replace", replace_projections),
+        "projection_list": measure_workload("projection_list", list_projections),
+        "mixed_interleaved": measure_workload("mixed_interleaved", mixed_interleaved),
     }
     if mode == "python":
         events = [
@@ -548,11 +633,27 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         cpu_elapsed = [float(value) for value in cpu_values if value is not None]
         throughput = [float(sample["metrics"][workload]["throughput_ops_per_sec"])
                       for sample in samples]
+        all_operation_latencies_ns: list[int] = []
+        for sample in samples:
+            sample_metrics = sample["metrics"][workload]
+            latency_samples = sample_metrics.pop("operation_latency_ns", None)
+            if not isinstance(latency_samples, list) or not latency_samples:
+                raise RuntimeError(f"{workload} sample lacks operation latency evidence")
+            if any(not isinstance(value, int) or value <= 0 for value in latency_samples):
+                raise RuntimeError(f"{workload} sample has invalid operation latencies")
+            all_operation_latencies_ns.extend(latency_samples)
+            sample_metrics["operation_latency_ms"] = _operation_latency_summary(
+                latency_samples
+            )
         metrics[workload] = {
             "median_elapsed_ms": statistics.median(elapsed),
             "elapsed_sample_variation": _sample_variation(elapsed),
+            # These are per-sample whole-workload durations, not individual calls.
             "p95_elapsed_ms": _percentile(elapsed, 0.95),
             "p99_elapsed_ms": _percentile(elapsed, 0.99),
+            "operation_latency_ms": _operation_latency_summary(
+                all_operation_latencies_ns
+            ),
             "median_cpu_elapsed_ms": (
                 statistics.median(cpu_elapsed)
                 if len(cpu_elapsed) == len(samples)
@@ -680,6 +781,10 @@ def run_benchmark(
                     / modes["python"]["metrics"][workload]["median_throughput_ops_per_sec"]
                 ),
                 "p95_latency_over_python": (
+                    mode["metrics"][workload]["operation_latency_ms"]["p95_ms"]
+                    / modes["python"]["metrics"][workload]["operation_latency_ms"]["p95_ms"]
+                ),
+                "trace_elapsed_p95_over_python": (
                     mode["metrics"][workload]["p95_elapsed_ms"]
                     / modes["python"]["metrics"][workload]["p95_elapsed_ms"]
                 ),

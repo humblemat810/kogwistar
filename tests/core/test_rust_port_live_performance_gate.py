@@ -24,7 +24,7 @@ def test_live_persistent_python_rust_performance_gate(tmp_path: Path) -> None:
         selected_modes=("python", "rust"),
     )
     report_path = Path(
-        os.environ.get("KOGWISTAR_PERFORMANCE_REPORT", output_root / "report.v3.json")
+        os.environ.get("KOGWISTAR_PERFORMANCE_REPORT", output_root / "report.v4.json")
     )
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(

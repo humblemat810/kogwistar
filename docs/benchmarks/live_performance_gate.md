@@ -25,6 +25,46 @@ and peak RSS may not exceed Python by more than 10%. A failing host is evidence
 to investigate or explicitly scope a platform-specific contract, not permission
 to silently widen the threshold.
 
+### Benchmark Version 4 Timing Contract
+
+The gate now records latency around each logical storage operation and computes
+`operation_latency_ms.p50_ms`, `p95_ms`, and `p99_ms` over all operations in all
+fresh samples. Append/replace measure one committed write each; replay/list
+measure one query call each; mixed mode measures one complete trace step,
+including its transaction boundary. Throughput retains the prior workload
+counting contract.
+
+`p95_elapsed_ms` remains only as a compatibility field for p95 across whole
+workload sample durations. With five samples it is effectively the slowest of
+five whole-workload runs; it is not per-operation p95 and is no longer used by
+the version-4 performance gate. The release validator independently recomputes
+version-4 operation-latency and throughput ratios from mode measurements, then
+checks the recorded ratios and expected operation counts from workload size and
+sample count. Forged `passed` flags, stale ratios, or incomplete samples cannot
+satisfy the gate. Version-1/3 historical reports retain their legacy validation
+path and are not operation-tail evidence.
+
+### Version-4 Live Measurement
+
+Windows CPython, 2026-11-19: 100 items, 20 read cycles, 5 fresh samples per
+mode. Canonical digests matched. Gate **failed**; thresholds unchanged. Table
+shows actual per-operation p95 and throughput ratios, Rust relative to Python.
+Read/list counts are 100; append/replace 500; mixed trace steps 1,500 per mode.
+
+| Workload | Python p95 ms | Rust p95 ms | p95 ratio | Throughput ratio |
+|---|---:|---:|---:|---:|
+| Event append | 33.38 | 32.65 | 0.98x | 1.07x |
+| Event replay | 50.12 | 34.51 | 0.69x | 1.58x |
+| Projection replace | 32.62 | 37.95 | 1.16x | 0.98x |
+| Projection list | 24.67 | 42.03 | 1.70x | 0.67x |
+| Mixed interleaved step | 49.95 | 51.07 | 1.02x | 1.01x |
+
+Peak RSS ratio was 0.98x. Projection listing is dominant regression; projection
+replace also misses p95 limit despite near-parity throughput. Rust replay and
+append improve. Do not infer whole-trace tail from operation p95: per-sample
+mixed trace p95 ratio was 1.25x, while pooled mixed-step p95 was 1.02x. Both
+measurements remain visible, keeping operation and workload latency distinct.
+
 ## Local Diagnostic Result
 
 Windows CPython 3.13.3 diagnostic, 2026-11-19: 100 items, 20 read cycles, 2
@@ -64,9 +104,8 @@ facade relative to Python; the run **did not pass** the current thresholds.
 
 Peak RSS ratio was 0.98x. The prior 0.57x projection-list value used only two
 samples, so these measurements are not a controlled before/after comparison.
-This confirms the live gate measures per-workload throughput and tail latency;
-read-handle reuse preserves visibility but does not pass the gate. The JSON
-report remains under ignored `.tmp` benchmark output.
+These version-3 p95 values are whole-workload sample tails, not per-operation
+tails. The JSON report remains under ignored `.tmp` benchmark output.
 
 ### Cached Write-Transaction Handle
 

@@ -127,7 +127,7 @@ def _validate_runtime_performance(report: dict[str, Any]) -> list[str]:
 
 def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
     version = report.get("benchmark_version", 1)
-    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 3}:
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 3, 4}:
         return ["persistent-store benchmark version is unsupported"]
     gate = report.get("gate")
     if not isinstance(gate, dict) or gate.get("status") != "passed":
@@ -138,7 +138,87 @@ def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
 
     ratios = report.get("ratios")
     rss_ratio = report.get("peak_rss_rust_over_python")
-    if isinstance(ratios, dict) and isinstance(ratios.get("rust"), dict):
+    if version >= 4:
+        items = report.get("items")
+        read_cycles = report.get("read_cycles")
+        samples_per_mode = report.get("samples_per_mode")
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+            for value in (items, read_cycles, samples_per_mode)
+        ):
+            return ["persistent-store workload dimensions are missing or invalid"]
+        expected_operation_counts = {
+            "event_append": items * samples_per_mode,
+            "event_replay": read_cycles * samples_per_mode,
+            "projection_replace": items * samples_per_mode,
+            "projection_list": read_cycles * samples_per_mode,
+            "mixed_interleaved": items * 3 * samples_per_mode,
+        }
+        modes = report.get("modes")
+        if not isinstance(modes, dict):
+            return ["persistent-store Python/Rust mode summaries are missing"]
+        python_mode = modes.get("python")
+        rust_mode = modes.get("rust")
+        if not isinstance(python_mode, dict) or not isinstance(rust_mode, dict):
+            return ["persistent-store Python/Rust mode summaries are missing"]
+        python_metrics = python_mode.get("metrics")
+        rust_metrics = rust_mode.get("metrics")
+        if not isinstance(python_metrics, dict) or not isinstance(rust_metrics, dict):
+            return ["persistent-store Python/Rust workload metrics are missing"]
+        if set(python_metrics) != PERSISTENT_PERFORMANCE_WORKLOADS or set(
+            rust_metrics
+        ) != PERSISTENT_PERFORMANCE_WORKLOADS:
+            return ["persistent-store Python/Rust workloads do not match"]
+        derived_ratios: dict[str, dict[str, float]] = {}
+        for workload in sorted(PERSISTENT_PERFORMANCE_WORKLOADS):
+            py_values = python_metrics[workload]
+            rust_values = rust_metrics[workload]
+            py_latency = py_values.get("operation_latency_ms")
+            rust_latency = rust_values.get("operation_latency_ms")
+            if not isinstance(py_latency, dict) or not isinstance(rust_latency, dict):
+                return [f"persistent-store operation latency metrics are missing: {workload}"]
+            py_p95 = py_latency.get("p95_ms")
+            rust_p95 = rust_latency.get("p95_ms")
+            py_count = py_latency.get("operation_count")
+            rust_count = rust_latency.get("operation_count")
+            py_throughput = py_values.get("median_throughput_ops_per_sec")
+            rust_throughput = rust_values.get("median_throughput_ops_per_sec")
+            if (
+                not _is_finite_number(py_p95)
+                or py_p95 <= 0
+                or not _is_finite_number(rust_p95)
+                or rust_p95 <= 0
+                or not isinstance(py_count, int)
+                or isinstance(py_count, bool)
+                or py_count <= 0
+                or not isinstance(rust_count, int)
+                or isinstance(rust_count, bool)
+                or rust_count <= 0
+                or py_count != rust_count
+                or py_count != expected_operation_counts[workload]
+                or not _is_finite_number(py_throughput)
+                or py_throughput <= 0
+                or not _is_finite_number(rust_throughput)
+                or rust_throughput <= 0
+            ):
+                return [f"persistent-store operation measurements are invalid: {workload}"]
+            derived_ratios[workload] = {
+                "p95_latency_over_python": rust_p95 / py_p95,
+                "throughput_over_python": rust_throughput / py_throughput,
+            }
+        recorded_rust_ratios = ratios.get("rust") if isinstance(ratios, dict) else None
+        if not isinstance(recorded_rust_ratios, dict):
+            return ["persistent-store Rust performance ratios are missing"]
+        for workload, derived in derived_ratios.items():
+            recorded = recorded_rust_ratios.get(workload)
+            if not isinstance(recorded, dict) or any(
+                not _is_finite_number(recorded.get(key))
+                or not math.isclose(recorded[key], value, rel_tol=1e-9, abs_tol=1e-12)
+                for key, value in derived.items()
+            ):
+                return [f"persistent-store performance ratios do not match measurements: {workload}"]
+        rust_ratios = derived_ratios
+    elif isinstance(ratios, dict) and isinstance(ratios.get("rust"), dict):
         rust_ratios = ratios["rust"]
     else:
         # Version-1 reports predate explicit ratio fields; derive them from the

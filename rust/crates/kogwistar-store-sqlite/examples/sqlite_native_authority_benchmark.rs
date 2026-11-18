@@ -51,6 +51,16 @@ where
     }))
 }
 
+fn measure_operation<T, F>(latencies_ns: &mut Vec<u128>, operation: F) -> BenchResult<T>
+where
+    F: FnOnce() -> BenchResult<T>,
+{
+    let started = Instant::now();
+    let result = operation()?;
+    latencies_ns.push(started.elapsed().as_nanos());
+    Ok(result)
+}
+
 fn database_footprint_bytes(path: &Path) -> BenchResult<u64> {
     let mut total = 0;
     for suffix in ["", "-wal", "-shm"] {
@@ -85,64 +95,90 @@ fn main() -> BenchResult<()> {
     let event_namespace = "benchmark";
     let projection_namespace = "benchmark_projection";
 
-    let event_append = measure(|| {
+    let mut event_append_latencies_ns = Vec::new();
+    let mut event_append = measure(|| {
         for index in 0..items {
             let entity_id = format!("node-{index:05}");
-            store.append_raw_entity_event(
-                event_namespace,
-                NewRawEntityEvent {
-                    event_id: format!("event-{index:05}"),
-                    entity_kind: "node".to_owned(),
-                    entity_id: entity_id.clone(),
-                    op: "UPSERT".to_owned(),
-                    payload_json: json!({"replacement": {"id": entity_id}}).to_string(),
-                },
-            )?;
+            measure_operation(&mut event_append_latencies_ns, || {
+                store
+                    .append_raw_entity_event(
+                        event_namespace,
+                        NewRawEntityEvent {
+                            event_id: format!("event-{index:05}"),
+                            entity_kind: "node".to_owned(),
+                            entity_id: entity_id.clone(),
+                            op: "UPSERT".to_owned(),
+                            payload_json: json!({"replacement": {"id": entity_id}}).to_string(),
+                        },
+                    )
+                    .map_err(Into::into)
+            })?;
         }
         Ok(items)
     })?;
+    event_append["operation_latency_ns"] = json!(event_append_latencies_ns);
 
-    let event_replay = measure(|| {
+    let mut event_replay_latencies_ns = Vec::new();
+    let mut event_replay = measure(|| {
         let mut count = 0;
         for _ in 0..read_cycles {
-            count += store
-                .replay_raw_events(event_namespace, 0, items + 1)?
-                .len();
+            count += measure_operation(&mut event_replay_latencies_ns, || {
+                store
+                    .replay_raw_events(event_namespace, 0, items + 1)
+                    .map_err(Into::into)
+            })?
+            .len();
         }
         Ok(count)
     })?;
+    event_replay["operation_latency_ns"] = json!(event_replay_latencies_ns);
 
-    let projection_replace = measure(|| {
+    let mut projection_replace_latencies_ns = Vec::new();
+    let mut projection_replace = measure(|| {
         for index in 0..items {
             let mut payload = Map::new();
             payload.insert("index".to_owned(), json!(index));
             payload.insert("label".to_owned(), json!(format!("row-{index:05}")));
-            store.replace_named_projection(
-                projection_namespace,
-                &format!("key-{index:05}"),
-                NamedProjectionWrite {
-                    payload,
-                    last_authoritative_seq: index as i64 + 1,
-                    last_materialized_seq: index as i64 + 1,
-                    projection_schema_version: 1,
-                    materialization_status: "ready".to_owned(),
-                },
-            )?;
+            measure_operation(&mut projection_replace_latencies_ns, || {
+                store
+                    .replace_named_projection(
+                        projection_namespace,
+                        &format!("key-{index:05}"),
+                        NamedProjectionWrite {
+                            payload,
+                            last_authoritative_seq: index as i64 + 1,
+                            last_materialized_seq: index as i64 + 1,
+                            projection_schema_version: 1,
+                            materialization_status: "ready".to_owned(),
+                        },
+                    )
+                    .map_err(Into::into)
+            })?;
         }
         Ok(items)
     })?;
+    projection_replace["operation_latency_ns"] = json!(projection_replace_latencies_ns);
 
-    let projection_list = measure(|| {
+    let mut projection_list_latencies_ns = Vec::new();
+    let mut projection_list = measure(|| {
         let mut count = 0;
         for _ in 0..read_cycles {
-            count += store.list_named_projections(projection_namespace)?.len();
+            count += measure_operation(&mut projection_list_latencies_ns, || {
+                store
+                    .list_named_projections(projection_namespace)
+                    .map_err(Into::into)
+            })?
+            .len();
         }
         Ok(count)
     })?;
+    projection_list["operation_latency_ns"] = json!(projection_list_latencies_ns);
 
-    let mixed_interleaved = measure(|| {
+    let mut mixed_interleaved_latencies_ns = Vec::new();
+    let mut mixed_interleaved = measure(|| {
         let mut operations = 0;
         for step in &trace.operations {
+            let operation_started = Instant::now();
             let index = step.index;
             let projection_key = format!("mixed-key-{index:05}");
             match step.operation.as_str() {
@@ -200,10 +236,12 @@ fn main() -> BenchResult<()> {
                     return Err(format!("unknown workload operation {operation:?}").into());
                 }
             }
+            mixed_interleaved_latencies_ns.push(operation_started.elapsed().as_nanos());
             operations += 1;
         }
         Ok(operations)
     })?;
+    mixed_interleaved["operation_latency_ns"] = json!(mixed_interleaved_latencies_ns);
 
     let events: Vec<Value> = store
         .replay_raw_events(event_namespace, 0, items + 1)?

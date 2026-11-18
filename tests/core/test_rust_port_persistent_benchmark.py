@@ -46,6 +46,7 @@ def test_selected_modes_skip_native_build_and_keep_comparable_gate(
                     "cpu_elapsed_ms": 0.5,
                     "operations": 1,
                     "throughput_ops_per_sec": 100.0,
+                    "operation_latency_ns": [1_000_000],
                 }
                 for workload in benchmark.WORKLOADS
             },
@@ -76,6 +77,46 @@ def test_selected_modes_skip_native_build_and_keep_comparable_gate(
     assert set(report["modes"]) == {"python", "rust", "rust_batched"}
     assert calls == Counter({"python": 3, "rust": 3, "rust_batched": 3})
     assert report["gate"]["status"] == "passed"
+
+
+def test_persistent_summary_reports_operation_tails_separately_from_trace_tails() -> None:
+    benchmark = _module()
+    samples = []
+    for elapsed_ms, offset in ((10.0, 0), (100.0, 3)):
+        metrics = {
+            workload: {
+                "elapsed_ms": elapsed_ms,
+                "cpu_elapsed_ms": elapsed_ms / 2,
+                "operations": 1,
+                "throughput_ops_per_sec": 100.0,
+                "operation_latency_ns": [
+                    (offset + value) * 1_000_000 for value in (1, 2, 3)
+                ],
+            }
+            for workload in benchmark.WORKLOADS
+        }
+        samples.append(
+            {
+                "state_digest": "same",
+                "metrics": metrics,
+                "peak_rss_bytes": 100,
+                "workload_peak_rss_delta_bytes": 10,
+            }
+        )
+
+    summary = benchmark._summary(samples)
+    metric = summary["metrics"]["event_append"]
+    assert metric["p95_elapsed_ms"] == 100.0
+    assert metric["operation_latency_ms"] == {
+        "operation_count": 6,
+        "p50_ms": 3.0,
+        "p95_ms": 6.0,
+        "p99_ms": 6.0,
+    }
+    assert all(
+        "operation_latency_ns" not in sample["metrics"]["event_append"]
+        for sample in summary["samples"]
+    )
 
 
 @pytest.mark.parametrize(

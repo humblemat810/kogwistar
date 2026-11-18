@@ -71,6 +71,47 @@ def _runtime_performance() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _persistent_v4_report() -> dict:
+    report = json.loads(
+        (ROOT / "contracts" / "benchmarks" / "rust-persistent-sqlite-current-linux.json")
+        .read_text(encoding="utf-8")
+    )
+    report["benchmark_version"] = 4
+    report["items"] = 100
+    report["read_cycles"] = 20
+    report["samples_per_mode"] = 5
+    workloads = _gate().PERSISTENT_PERFORMANCE_WORKLOADS
+    expected_counts = {
+        "event_append": 500,
+        "event_replay": 100,
+        "projection_replace": 500,
+        "projection_list": 100,
+        "mixed_interleaved": 1500,
+    }
+    for mode_name in ("python", "rust"):
+        mode = report["modes"][mode_name]
+        for workload in workloads:
+            metric = mode["metrics"].setdefault(workload, {})
+            metric["median_throughput_ops_per_sec"] = 100.0
+            metric["operation_latency_ms"] = {
+                "operation_count": expected_counts[workload],
+                "p50_ms": 1.0,
+                "p95_ms": 1.0,
+                "p99_ms": 1.0,
+            }
+    report["ratios"] = {
+        "rust": {
+            workload: {
+                "p95_latency_over_python": 1.0,
+                "throughput_over_python": 1.0,
+            }
+            for workload in workloads
+        }
+    }
+    report["gate"]["status"] = "passed"
+    return report
+
+
 def test_release_gate_rejects_duplicate_layer_report() -> None:
     reports = _compatibility("a" * 64)
     reports[0]["layers"].append(dict(reports[0]["layers"][0]))
@@ -207,6 +248,46 @@ def test_persistent_performance_validator_recomputes_numeric_thresholds() -> Non
     errors = gate._validate_persistent_performance(report)
 
     assert "persistent-store latency threshold failed: event_append" in errors
+
+
+def test_persistent_v4_release_gate_uses_measured_operation_latency() -> None:
+    gate = _gate()
+    report = _persistent_v4_report()
+    assert gate._validate_persistent_performance(report) == []
+
+    report["modes"]["rust"]["metrics"]["event_append"]["operation_latency_ms"][
+        "p95_ms"
+    ] = 2.0
+    report["ratios"]["rust"]["event_append"]["p95_latency_over_python"] = 1.0
+    assert "persistent-store performance ratios do not match measurements: event_append" in (
+        gate._validate_persistent_performance(report)
+    )
+
+
+def test_persistent_v4_release_gate_rejects_slow_operations_despite_pass_flags() -> None:
+    gate = _gate()
+    report = _persistent_v4_report()
+    report["modes"]["rust"]["metrics"]["event_append"]["operation_latency_ms"][
+        "p95_ms"
+    ] = 1.2
+    report["ratios"]["rust"]["event_append"]["p95_latency_over_python"] = 1.2
+    report["gate"]["checks"]["p95_latency_no_worse_than_110_percent"] = True
+
+    assert "persistent-store latency threshold failed: event_append" in (
+        gate._validate_persistent_performance(report)
+    )
+
+
+def test_persistent_v4_release_gate_rejects_incomplete_operation_samples() -> None:
+    gate = _gate()
+    report = _persistent_v4_report()
+    report["modes"]["rust"]["metrics"]["projection_list"]["operation_latency_ms"][
+        "operation_count"
+    ] -= 1
+
+    assert gate._validate_persistent_performance(report) == [
+        "persistent-store operation measurements are invalid: projection_list"
+    ]
 
 
 def test_release_gate_rejects_missing_test_group_run() -> None:
