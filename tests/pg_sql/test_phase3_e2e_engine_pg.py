@@ -18,8 +18,9 @@ from kogwistar.engine_core.postgres_backend import (
 pytestmark = pytest.mark.ci_full
 
 
-def _dummy_grounding() -> models.Grounding:
+def _dummy_grounding(doc_id: str) -> models.Grounding:
     sp = models.Span.from_dummy_for_document()
+    sp.doc_id = doc_id
     return models.Grounding(spans=[sp])
 
 
@@ -30,7 +31,7 @@ def _make_node(*, summary: str, label: str, doc_id: str) -> models.Node:
         summary=summary,
         domain_id=None,
         canonical_entity_id=None,
-        mentions=[_dummy_grounding()],
+        mentions=[_dummy_grounding(doc_id)],
         doc_id=doc_id,
         metadata={},
         embedding=None,
@@ -44,7 +45,7 @@ def _make_edge(*, src: str, tgt: str, relation: str, doc_id: str) -> models.Edge
         summary=f"{src} {relation} {tgt}",
         domain_id=None,
         canonical_entity_id=None,
-        mentions=[_dummy_grounding()],
+        mentions=[_dummy_grounding(doc_id)],
         doc_id=doc_id,
         metadata={},
         embedding=None,
