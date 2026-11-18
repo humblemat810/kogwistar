@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **58/67 PASS (86.6%)**; **0 IN PROGRESS**; **9 NOT STARTED**.
+**Progress:** **58/67 PASS (86.6%)**; **1 IN PROGRESS**; **8 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -24,20 +24,23 @@ the closed ADR-022 evidence inventories.
 - Each leaf targets at most 30 minutes of active engineering; test/CI/runtime
   wait time is excluded. A leaf must prove one outcome only. Parent closes
   mechanically when every explicitly listed child is `PASS`.
-- **Verification cadence:** a leaf's first check must be a focused unit or
-  contract test, with no Docker/server startup. For Rust changes, run
-  `cargo check -p <crate>` for fast compile feedback, then add sibling unit
-  tests and execute them together in one `cargo test -p <crate> <parent-filter>`
-  invocation per parent, not one build per leaf. Rust unit tests still require a
-  test-binary link; batching avoids repeating it. Keep the existing Cargo target
-  cache and never `cargo clean` for this loop.
-- **Expensive closeout:** run each parent's required live-backend or server test
-  group once after its leaves are implemented. Reuse one disposable PostgreSQL
-  fixture for that group where supported. Build the server/container only for
-  end-to-end parent closeout; run clean-consumer Docker UAT and hosted CI once
-  for the shared REL gates, not for each leaf. A unit test or `cargo check` is
-  not a substitute for the required live closeout, and stale binaries do not
-  count after source changes.
+- **Verification cadence:** each leaf has one small, directly runnable oracle:
+  prefer Python contract/unit tests, static checks, or tests using already-built
+  artifacts; do not start Docker/server for leaf checks. For Rust changes, run
+  `cargo check -p <crate>` for fast compile feedback, then batch sibling Rust
+  unit tests into one `cargo test -p <crate> <parent-filter>` invocation per
+  parent, not one invocation/build per leaf. Rust unit tests inherently compile
+  and link a test binary, so “no-build” means no fresh Docker/native release
+  build; it cannot promise zero Cargo compilation. Reuse the existing Cargo
+  target cache and never `cargo clean` for this loop.
+- **Expensive closeout:** after all leaves under a major capability parent pass
+  their fast checks, run that parent's required live-backend/server group once.
+  Reuse one disposable PostgreSQL fixture for that group where supported. Build
+  the release binary/container only for parent closeout; run clean-consumer
+  Docker UAT and hosted CI once for shared REL gates, never once per leaf. A
+  unit test or `cargo check` is not a substitute for required live closeout;
+  source changes invalidate affected binaries, but unrelated artifacts remain
+  reusable.
 - `PASS` records behavioral evidence. Shared candidate-release checks remain
   separate and must pass before claiming the full library candidate verified.
 - A false `rust_cutover_ready` value keeps Rust from becoming an implicit
@@ -49,6 +52,34 @@ the closed ADR-022 evidence inventories.
   seams; native Rust path claims require a measured empty seam list.
 - Current-source reports must use one candidate identity. Docker UAT, supported
   interpreter CI, and backward-readable persisted data are release evidence.
+
+## Open-Leaf Verification Map
+
+This map adds execution order, not tasklets or acceptance criteria. A fast check
+is diagnostic evidence only; it cannot set a leaf to `PASS`. Reuse the exact
+candidate wheel and existing Docker image where their inputs have not changed.
+If a source, dependency, or Dockerfile input changes, invalidate only affected
+artifacts and rerun the corresponding parent closeout once after its leaves are
+ready.
+
+| Open leaf | Fast check before expensive work | One parent closeout |
+| --- | --- | --- |
+| REL-01E | Run source-staging and report-contract tests without Docker; run each currently failing application test group directly against the same candidate wheel. Fix only reproduced causes. | Run the complete application milestone profile once against the exact candidate and staged source; require reconciled selection/run counts and zero failures. |
+| REL-02A | Install the already-built candidate wheel in a disposable clean Python environment; run `pip check`. No wheel or image rebuild. | Run the shared REL-02 clean-consumer Docker profile once; record the exact wheel hash. |
+| REL-02B | In the same disposable environment, import the native extension and assert package version, ABI/runtime identity, and absence of source-checkout imports. | Covered by the same REL-02 Docker consumer run as REL-02A. |
+| REL-02C | Use the prebuilt candidate artifacts with a focused SQLite handoff test: Rust write, process reopen, Python read, then Rust read; compare canonical digest. | Include the focused handoff in the shared clean-consumer run; rebuild only if tested source or binary inputs changed. |
+| REL-02D | Use the prebuilt candidate artifacts with a focused Python fault-injection test after Rust-authored data; assert rollback leaves no partial Python writes and Rust data remains readable. | Include the rollback case in the same REL-02 clean-consumer run as REL-02A–C. |
+| REL-03A | Run Python CI-workflow contract tests locally; no Rust or Docker build. | Inspect required CPython 3.12 jobs for the exact candidate commit after hosted CI completes. |
+| REL-03B | Same local workflow-contract test run as REL-03A. | Inspect required CPython 3.13 jobs for the exact candidate commit after hosted CI completes. |
+| REL-03C | Same local workflow-contract test run as REL-03A. | Inspect required CPython 3.14 jobs for the exact candidate commit after hosted CI completes. |
+| REL-03D | Run PyPy workflow-policy/contract tests locally; no Rust or Docker build. | Inspect the exact candidate's hosted PyPy 3.11 result and report according to its best-effort policy; never convert a failure or missing run into `PASS`. |
+
+Batch REL-03 local contract tests once, not once per interpreter leaf. Hosted
+results remain the acceptance oracle for REL-03. Rust tests may compile/link
+when Cargo inputs or cache are stale; run `cargo check` first and batch tests
+once per parent using the existing target directory. The phrase “no-build fast
+check” means no Docker/native rebuild, not a guarantee that every test command
+performs zero compilation.
 
 ## Tasklets
 
@@ -116,7 +147,7 @@ the closed ADR-022 evidence inventories.
 | REL-01B | All six | PASS | Invariant: core compatibility layer passes exact required tests. Cell: candidate identity `68044b8e2b25515eba24548d5835881ce689a513c3307106aa4ec7aae1d3795b` (core `c8133f390a8a52b109c1f202f906d887f3068bb1`, wheel SHA-256 `a30949a2b658f6249dbc9ae7497918c5125b71f047f973dc0715eda1eadeeb51`). Oracle: clean Docker core milestone profile green, no failures, no unapproved skips. Evidence: `.tmp/adr015-rel01b-c8133f39/report.json`, status `passed`; 413 test-file groups reconciled across 3 shards (138/138/137), shard durations 1290.4/1549.6/1513.4s; only skip is `tests/cdc/test_sigma_cdc_playwright.py`, whose module uses `pytest.importorskip("playwright.sync_api")` and Playwright is an optional `browser` extra (`pyproject.toml`), therefore approved. Empty/deselected shard groups return pytest code 5 and are accepted by the harness; all selected groups passed. Includes live pgvector regression `tests/pg_sql/test_phase3_e2e_engine_pg.py::test_phase3_e2e_engine_edges_by_doc_pg`. |
 | REL-01C | All six | PASS | Invariant: parser compatibility layer passes exact required tests. Cell: immutable candidate identity `f43661306ffa37308f8808d501a2d1c1003b79af15b7b0973370170779924d8b`; core pin `kogwistar==0.7.0`. Before build, fixed core import cycle by moving `GraphEntityKind` to lightweight `kogwistar.graph_types` while preserving `engine_core.types` re-export; parser demo root-shape and OCR fixture-path fixes included. No-build tests: import-boundary **2 passed**, parser OCR scaling **3 collected**, focused demo/OCR **4 passed**, Ruff passed. Exact Docker milestone: `.codex/wheelhouse-rel01c-import-cycle/parser-report.json`, **passed**, 84/84 parser test-file groups reconciled across 3 shards (54 executed, 30 returned pytest code 5 for no selected tests); shard durations 630/844/309s, no failed groups. Candidate source SHA-256 `06ba836f53855f702ee1f1936c7cf78bbd3f53cef6882b68a83f9017a4b8dffc`; wheel SHA-256 `5c7067ebfc38f68f19b92da7a60b31c07f390c3197dea907c823fbe1f294438d`. Full Docker profile passed, closing this parser layer gate. |
 | REL-01D | All six | PASS | Invariant: sink compatibility layer passes exact required tests against the same candidate identity and pins. Cell: clean CPython 3.13 Docker consumer with candidate `kogwistar==0.7.0` wheel and sink `0.2.3`. Oracle: sink profile exits 0, all selected tests pass. Evidence: `tests/test_demo_vault_smoke.py`, `tests/test_event_consumer.py`, and `tests/test_obsidian_sink.py` **19 passed** locally without build; `scripts/rust_port_container_compat.py --profile milestone --layer sink --shards 3` passed against wheel SHA-256 `5c7067ebfc38f68f19b92da7a60b31c07f390c3197dea907c823fbe1f294438d`; raw report `.codex/wheelhouse-rel01c-import-cycle/sink-report.json`, sink commit `b7f39c9a1d530688692d1ba87a467574189cd7a5`, candidate identity `b7c788502593f66c72f011fbf6e72456a9c416cbf6c1071be15ef12ef7af1e2d`, test image `kogwistar-adr015-compat:e880af62d5482b8af695`. Sink pin/lock resolve `kogwistar==0.7.0`; `poetry check --lock` passed. |
-| REL-01E | All six | NOT STARTED | Invariant: application compatibility layer passes exact required tests. Cell: same candidate identity and pins. Oracle: app profile green with exact coverage. Check: run application Docker shard. |
+| REL-01E | All six | IN PROGRESS | Invariant: application compatibility layer passes exact required tests. Cell: candidate `1e9749de184c30041e44bf1efba02d12a4e73840845cd6a583d30c196e31302f`. Docker shards found six failures: source staging omitted core `pyproject.toml`; two-stage in-memory jobs missed transaction-local events; crosslink ACL test used obsolete hard-coded grounding IDs; worker fixture lacked `metadata`; durable lane message used temporary rather than background namespace. Fixed causes with focused tests: affected app tests **6 passed**; core transaction visibility + two-stage tests **2 passed**; container compatibility tests **22 passed**. Recheck this turn: app crosslink/worker regressions **3 passed**; core two-stage plus container harness **24 passed**. These source changes invalidate the old candidate identity. Next: create one new immutable candidate, rerun affected shared identity/artifact checks, then run full application Docker profile once. Not PASS until exact-candidate report reconciles all selected tests with zero failures. |
 | REL-01F | All six | PASS | Invariant: layer reports reconcile to one candidate and no missing/duplicate tests. Cell: merged four-layer report. Oracle: identities equal and required-test set equals expected set. Evidence: shard merger and release-gate verification, `tests/core/test_rust_port_container_compat.py` plus `tests/core/test_rust_port_release_gate.py` (**29 passed**, `-p no:cacheprovider`; no Docker/Rust build). Covers missing/duplicate layers, selected/run mismatch, and missing runs. Ruff unavailable (`No module named ruff`). |
 | REL-02 | All six | PARENT | Clean consumer wheel and persisted-data compatibility requirement; children: REL-02A,REL-02B,REL-02C,REL-02D. | Parent closes when all leaves pass. |
 | REL-02A | All six | NOT STARTED | Invariant: clean Docker consumer installs the exact candidate wheel and passes dependency validation. Cell: isolated consumer image. Oracle: install and `pip check` succeed. Check: run clean-wheel install smoke. |
