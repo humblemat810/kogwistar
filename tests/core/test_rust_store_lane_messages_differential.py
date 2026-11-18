@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 from pathlib import Path
 import time
 from typing import Any
+import uuid
 
 import pytest
 
@@ -238,6 +240,132 @@ def test_lane_unknown_field_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(RustParityError) as error:
         _sqlite(tmp_path / "lane.db", {**_row("bad"), "unexpected": True})
     assert error.value.code == "KOGWISTAR_STORE_INVALID_PAYLOAD"
+
+
+def test_postgres_queue_lane_valid_invalid_fixture_matches_python_rust(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    if not pg_dsn or not pg_schema:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "postgres-queue-lane-parity-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    suffix = uuid.uuid4().hex
+    namespace = f"golden-{suffix}"
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=pg_schema)
+    python.ensure_initialized()
+
+    def rust(operation: dict[str, Any]) -> Any:
+        return store_postgres(dsn=pg_dsn, schema=pg_schema, operation=operation)
+
+    queue = fixture["valid_queue_operation"]
+    job_id = f"{queue['job_id']}-{suffix}"
+    assert python.enqueue_index_job(
+        job_id=job_id,
+        namespace=namespace,
+        entity_kind=queue["entity_kind"],
+        entity_id=queue["entity_id"],
+        index_kind=queue["index_kind"],
+        op=queue["op"],
+    ) == job_id
+    assert rust({"kind": "list_index_jobs", "namespace": namespace})[0]["job_id"] == job_id
+
+    rust_queue = {
+        **queue,
+        "job_id": f"rust-{job_id}",
+        "namespace": namespace,
+        "entity_id": f"rust-{queue['entity_id']}-{suffix}",
+    }
+    assert rust(rust_queue) == rust_queue["job_id"]
+    python_jobs = python.list_index_jobs(namespace=namespace)
+    assert {
+        (job.job_id, job.namespace, job.entity_id, job.op) for job in python_jobs
+    } == {
+        (job_id, namespace, queue["entity_id"], queue["op"]),
+        (rust_queue["job_id"], namespace, rust_queue["entity_id"], rust_queue["op"]),
+    }
+
+    lane = {
+        **fixture["valid_lane_operation"],
+        "message_id": f"lane-{suffix}",
+        "namespace": namespace,
+    }
+    python.project_lane_message(
+        message_id=lane["message_id"],
+        namespace=namespace,
+        inbox_id=lane["inbox_id"],
+        conversation_id=lane["conversation_id"],
+        recipient_id=lane["recipient_id"],
+        sender_id=lane["sender_id"],
+        msg_type=lane["msg_type"],
+        status=lane["status"],
+        created_at=lane["created_at"],
+        available_at=lane["available_at"],
+        run_id=lane["run_id"],
+        step_id=lane["step_id"],
+        correlation_id=lane["correlation_id"],
+        payload_json=lane["payload_json"],
+        error_json=lane["error_json"],
+    )
+    rust_read_lane = rust(
+        {"kind": "get_projected_lane_message", "message_id": lane["message_id"]}
+    )
+    lane_fields = (
+        "message_id",
+        "namespace",
+        "inbox_id",
+        "conversation_id",
+        "recipient_id",
+        "sender_id",
+        "msg_type",
+        "status",
+        "run_id",
+        "step_id",
+        "correlation_id",
+        "payload_json",
+        "error_json",
+    )
+    assert {field: rust_read_lane[field] for field in lane_fields} == {
+        field: lane[field] for field in lane_fields
+    }
+
+    rust_lane = {**lane, "message_id": f"rust-{lane['message_id']}"}
+    rust(rust_lane)
+    python_lanes = python.list_projected_lane_messages(namespace=namespace)
+    python_lane_fields = (
+        "message_id",
+        "namespace",
+        "inbox_id",
+        "conversation_id",
+        "recipient_id",
+        "sender_id",
+        "msg_type",
+        "status",
+        "run_id",
+        "step_id",
+        "correlation_id",
+        "payload_json",
+        "error_json",
+    )
+    assert {
+        tuple(getattr(item, field) for field in python_lane_fields) for item in python_lanes
+    } == {
+        tuple(lane[field] for field in python_lane_fields),
+        tuple(rust_lane[field] for field in python_lane_fields),
+    }
+
+    expected_error = fixture["expected_invalid_error"]
+    for invalid in (fixture["invalid_queue_operation"], fixture["invalid_lane_operation"]):
+        invalid_operation = {**invalid, "namespace": namespace}
+        with pytest.raises(RustParityError) as rejected:
+            rust(invalid_operation)
+        assert rejected.value.code == expected_error
+    assert len(python.list_index_jobs(namespace=namespace)) == 2
+    assert len(python.list_projected_lane_messages(namespace=namespace)) == 2
 
 
 def test_postgres_lane_python_rust_and_concurrency(sa_engine, pg_dsn: str | None, pg_schema: str | None) -> None:

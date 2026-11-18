@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "valid_queue_operation": {
+    "kind": "enqueue_index_job",
+    "job_id": "golden-queue-job",
+    "namespace": "golden-namespace",
+    "entity_kind": "node",
+    "entity_id": "golden-node",
+    "index_kind": "doc",
+    "op": "UPSERT"
+  },
+  "invalid_queue_operation": {
+    "kind": "list_index_jobs",
+    "namespace": "golden-namespace",
+    "unexpected": true
+  },
+  "valid_lane_operation": {
+    "kind": "project_lane_message",
+    "message_id": "golden-lane-message",
+    "namespace": "golden-namespace",
+    "inbox_id": "golden-inbox",
+    "conversation_id": "golden-conversation",
+    "recipient_id": "lane:worker:golden",
+    "sender_id": "lane:foreground",
+    "msg_type": "request.golden",
+    "status": "pending",
+    "created_at": 1,
+    "available_at": 0,
+    "run_id": "golden-run",
+    "step_id": "golden-step",
+    "correlation_id": "golden-correlation",
+    "payload_json": "{\"value\":\"golden\"}",
+    "error_json": null
+  },
+  "invalid_lane_operation": {
+    "kind": "project_lane_message",
+    "message_id": "golden-invalid-lane-message",
+    "namespace": "golden-namespace",
+    "inbox_id": "golden-inbox",
+    "conversation_id": "golden-conversation",
+    "recipient_id": "lane:worker:golden",
+    "sender_id": "lane:foreground",
+    "msg_type": "request.golden",
+    "status": "pending",
+    "created_at": 1,
+    "available_at": 0,
+    "run_id": "golden-run",
+    "step_id": "golden-step",
+    "correlation_id": "golden-correlation",
+    "payload_json": "{\"value\":\"golden\"}",
+    "error_json": null,
+    "unexpected": true
+  },
+  "expected_invalid_error": "KOGWISTAR_STORE_INVALID_PAYLOAD"
+}
