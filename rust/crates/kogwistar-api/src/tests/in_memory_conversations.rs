@@ -229,6 +229,11 @@ async fn in_memory_create_conversation_is_atomic_and_matches_shared_contract() {
 #[tokio::test]
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_send_message_admits_turn_and_run_atomically; python_test=tests/server/test_capability_kernel_contract.py#test_submit_turn_for_answer_replays_idempotency_key_and_rejects_payload_change
 async fn in_memory_send_message_admits_turn_and_run_atomically() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
     let auth_path = std::env::temp_dir().join(format!(
         "kogwistar-memory-send-auth-{}.sqlite",
         uuid::Uuid::new_v4().simple()
@@ -364,6 +369,40 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
     };
     assert!(service.supports_http_operation("POST", "/api/syscall/v1/send_message"));
 
+    let secret = "in-memory-send-message-http-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"memory-send-owner", "user_id":"memory-send-owner",
+            "actor_id":"memory-send-owner", "role":"rw", "roles":["rw"],
+            "ns":"conversation", "storage_ns":"conversation",
+            "workspace":"workspace-a", "graph_space":"conversation",
+            "capabilities":["send_message", "write_graph", "read_graph", "spawn_process", "workflow.run.write"],
+            "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+
     let denied_run_id = conversation_send_message_id(
         "conversation.send_message.run",
         "memory-send-owner",
@@ -396,11 +435,24 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
         limit: 1,
     }).await.unwrap().is_empty());
 
-    let first = service
-        .execute(send_message("memory-send-ok", "hello from memory", "same-request"))
+    let first = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/send_message")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    send_message("memory-send-ok", "hello from memory", "same-request").body,
+                ))
+                .unwrap(),
+        )
         .await;
-    assert_eq!(first.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&first.body));
-    let first: Value = serde_json::from_slice(&first.body).unwrap();
+    let first = first.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first: Value =
+        serde_json::from_slice(&to_bytes(first.into_body(), 65_536).await.unwrap()).unwrap();
     assert_eq!(first["op"], "send_message");
     let run_id = first["result"]["run_id"].as_str().unwrap();
     let turn_id = first["result"]["user_turn_node_id"].as_str().unwrap();
