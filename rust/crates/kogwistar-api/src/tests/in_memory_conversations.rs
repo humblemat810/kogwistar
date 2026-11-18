@@ -605,6 +605,7 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
 }
 
 #[tokio::test]
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_receive_message_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_transcript; fixture=contracts/golden/receive-message-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_receive_message_matches_shared_python_contract; python_test=tests/server/test_receive_message_wire_contract.py#test_python_receive_message_result_matches_shared_wire_fixture
 async fn in_memory_receive_message_matches_shared_python_contract() {
     let service = InMemoryGraphApplicationService::default();
     let path = "/api/syscall/v1/receive_message";
@@ -794,6 +795,82 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
     .unwrap();
     assert_eq!(response["op"], "receive_message");
     assert_eq!(response["result"], contract);
+
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
+    let secret = "in-memory-receive-message-http-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader-1", "user_id":"reader-1", "role":"ro", "roles":["ro"],
+            "ns":"conversation", "storage_ns":"scope-a",
+            "workspace_id":"workspace-a", "graph_space":"conversation",
+            "capabilities":["read_graph"], "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service),
+    );
+    let request_body = json!({
+        "version":"v1",
+        "op":"receive_message",
+        "args":{"conversation_id":"c1"}
+    })
+    .to_string();
+    let unauthenticated = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(request_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        unauthenticated.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ));
+    let authenticated = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(path)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(request_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(authenticated.status(), StatusCode::OK);
+    let authenticated: Value = serde_json::from_slice(
+        &to_bytes(authenticated.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(authenticated["result"], contract);
 }
 
 #[tokio::test]
