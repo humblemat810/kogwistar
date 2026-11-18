@@ -164,16 +164,10 @@ impl SqliteStore {
             .connection
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if conn.is_autocommit() && !is_private_memory_database(self.path.as_ref()) {
-            drop(conn);
-            // A Python EngineSQLite connection may commit between native
-            // calls. A fresh read handle prevents an autocommit snapshot from
-            // hiding those external commits while transaction reads still
-            // use the Rust-owned connection above.
-            let fresh = configured_connection(self.path.as_ref())?;
-            operation(&fresh)
-        } else {
-            operation(&conn)
-        }
+        // Each completed SQLite statement releases its implicit read
+        // transaction. Reusing this handle therefore sees commits from Python
+        // or another Rust store on the next call, without reopening a
+        // connection for every projection/read operation.
+        operation(&conn)
     }
 }

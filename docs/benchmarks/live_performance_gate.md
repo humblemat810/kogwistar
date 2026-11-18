@@ -46,6 +46,28 @@ benchmark-only `rust_batched` mode now tests one event+projection batch per
 record, preserving that record's atomic commit and the sequential visibility
 trace; it does not change product defaults.
 
+### Autocommit Read-Handle Reuse
+
+Windows CPython 3.13.3, 2026-11-19: 100 items, 20 read cycles, 5 samples per
+mode, with the Rust store reusing its cached handle for autocommit reads. All
+Python/Rust samples produced the same canonical state digest. Rust writes kept
+the existing fresh-connection `BEGIN IMMEDIATE` path. Ratios below are Rust
+facade relative to Python; the run **did not pass** the current thresholds.
+
+| Workload | Throughput ratio | p95 latency ratio |
+|---|---:|---:|
+| Event append | 0.63x | 1.62x |
+| Event replay | 1.63x | 0.62x |
+| Projection replace | 0.61x | 1.62x |
+| Projection list | 0.67x | 1.50x |
+| Mixed interleaved | 0.99x | 1.02x |
+
+Peak RSS ratio was 0.98x. The prior 0.57x projection-list value used only two
+samples, so these measurements are not a controlled before/after comparison.
+This confirms the live gate measures per-workload throughput and tail latency;
+read-handle reuse preserves visibility but does not pass the gate. The JSON
+report remains under ignored `.tmp` benchmark output.
+
 ### Experimental Batched Seam
 
 Windows CPython 3.13.3, 2026-11-19: 20 items, 2 read cycles, 2 samples. Python,

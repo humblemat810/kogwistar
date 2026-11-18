@@ -100,13 +100,25 @@ fn newer_schema_version_is_rejected_without_mutating_database() {
 }
 
 #[test]
-fn autocommit_reads_observe_commits_from_an_external_connection() {
+fn autocommit_handle_observes_external_commits_across_reads_and_writes() {
     let (store, path) = store("external-read");
     let external = Connection::open(&path).unwrap();
+    assert_eq!(store.current_global_seq().unwrap(), 0);
     external
         .execute("UPDATE global_seq SET value = 1 WHERE rowid = 1", [])
         .unwrap();
     assert_eq!(store.current_global_seq().unwrap(), 1);
+    assert_eq!(store.next_global_seq().unwrap(), 2);
+    let external_value: i64 = external
+        .query_row("SELECT value FROM global_seq WHERE rowid = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(external_value, 2);
+    external
+        .execute("UPDATE global_seq SET value = 3 WHERE rowid = 1", [])
+        .unwrap();
+    assert_eq!(store.current_global_seq().unwrap(), 3);
     drop(external);
     drop(store);
     fs::remove_file(path).unwrap();
