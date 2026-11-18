@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,26 @@ REQUIRED_PHASE4_RUNTIME_GROUPS = {
     "suspend-terminal",
     "postgres",
 }
+RUNTIME_PERFORMANCE_CHECKS = {
+    "retry_median_large_over_small",
+    "state_read_median_large_over_small",
+}
+LEGACY_RUNTIME_PERFORMANCE_CHECKS = {
+    "retry_p95_large_over_small",
+    "state_read_p95_large_over_small",
+}
+PERSISTENT_PERFORMANCE_CHECKS = {
+    "p95_latency_no_worse_than_110_percent",
+    "throughput_at_least_95_percent",
+    "peak_rss_no_worse_than_110_percent",
+}
+PERSISTENT_PERFORMANCE_WORKLOADS = {
+    "event_append",
+    "event_replay",
+    "projection_replace",
+    "projection_list",
+    "mixed_interleaved",
+}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -58,6 +79,131 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path} must contain a JSON object")
     return payload
+
+
+def _is_finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _validate_runtime_performance(report: dict[str, Any]) -> list[str]:
+    gate = report.get("gate")
+    if not isinstance(gate, dict):
+        return ["runtime serving scale benchmark gate is missing"]
+    if gate.get("status") != "passed":
+        return ["runtime serving scale benchmark has not passed"]
+
+    checks = gate.get("checks")
+    threshold = gate.get("max_growth_ratio")
+    if not isinstance(checks, dict):
+        return ["runtime serving scale benchmark checks are incomplete"]
+    ratios = gate.get("ratios")
+    if isinstance(ratios, dict):
+        expected_checks = RUNTIME_PERFORMANCE_CHECKS
+    else:
+        ratios = report.get("ratios")
+        expected_checks = LEGACY_RUNTIME_PERFORMANCE_CHECKS
+    if not isinstance(ratios, dict) or set(checks) != expected_checks or set(ratios) != expected_checks:
+        return ["runtime serving scale benchmark ratios are incomplete"]
+    if not _is_finite_number(threshold) or threshold <= 0:
+        return ["runtime serving scale benchmark threshold is invalid"]
+
+    errors = []
+    for name in sorted(expected_checks):
+        ratio = ratios[name]
+        valid_ratio = _is_finite_number(ratio)
+        if checks[name] is not True or not valid_ratio or ratio > threshold:
+            errors.append(f"runtime serving scale benchmark check failed: {name}")
+    return errors
+
+
+def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
+    version = report.get("benchmark_version", 1)
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 3}:
+        return ["persistent-store benchmark version is unsupported"]
+    gate = report.get("gate")
+    if not isinstance(gate, dict) or gate.get("status") != "passed":
+        return ["generic persistent public-store performance gate remains failed"]
+    checks = gate.get("checks")
+    if not isinstance(checks, dict) or set(checks) != PERSISTENT_PERFORMANCE_CHECKS:
+        return ["persistent-store performance checks are incomplete"]
+
+    ratios = report.get("ratios")
+    rss_ratio = report.get("peak_rss_rust_over_python")
+    if isinstance(ratios, dict) and isinstance(ratios.get("rust"), dict):
+        rust_ratios = ratios["rust"]
+    else:
+        # Version-1 reports predate explicit ratio fields; derive them from the
+        # recorded Python/Rust summaries instead of trusting their status flag.
+        modes = report.get("modes")
+        if not isinstance(modes, dict):
+            return ["persistent-store Rust performance ratios are missing"]
+        python_mode = modes.get("python")
+        rust_mode = modes.get("rust")
+        if not isinstance(python_mode, dict) or not isinstance(rust_mode, dict):
+            return ["persistent-store Python/Rust mode summaries are missing"]
+        if python_mode.get("state_digest") != rust_mode.get("state_digest"):
+            return ["persistent-store Python/Rust state digests differ"]
+        python_metrics = python_mode.get("metrics")
+        rust_metrics = rust_mode.get("metrics")
+        if not isinstance(python_metrics, dict) or not isinstance(rust_metrics, dict):
+            return ["persistent-store Python/Rust workload metrics are missing"]
+        workloads = set(python_metrics) & set(rust_metrics)
+        if not workloads or workloads != set(python_metrics) or workloads != set(rust_metrics):
+            return ["persistent-store Python/Rust workloads do not match"]
+        rust_ratios = {}
+        for workload in workloads:
+            python_values = python_metrics[workload]
+            rust_values = rust_metrics[workload]
+            if not isinstance(python_values, dict) or not isinstance(rust_values, dict):
+                return [f"persistent-store workload metrics are invalid: {workload}"]
+            try:
+                rust_ratios[workload] = {
+                    "p95_latency_over_python": (
+                        rust_values["p95_elapsed_ms"] / python_values["p95_elapsed_ms"]
+                    ),
+                    "throughput_over_python": (
+                        rust_values["median_throughput_ops_per_sec"]
+                        / python_values["median_throughput_ops_per_sec"]
+                    ),
+                }
+            except (KeyError, TypeError, ZeroDivisionError):
+                return [f"persistent-store workload metrics are incomplete: {workload}"]
+        try:
+            rss_ratio = rust_mode["p95_peak_rss_bytes"] / python_mode["p95_peak_rss_bytes"]
+        except (KeyError, TypeError, ZeroDivisionError):
+            return ["persistent-store peak RSS measurements are missing"]
+
+    expected_workloads = (
+        PERSISTENT_PERFORMANCE_WORKLOADS
+        if report.get("benchmark_version", 1) >= 3
+        else {"event_append", "event_replay", "projection_replace", "projection_list"}
+    )
+    if set(rust_ratios) != expected_workloads:
+        return ["persistent-store performance workloads are incomplete"]
+
+    errors = []
+    for name in sorted(PERSISTENT_PERFORMANCE_CHECKS):
+        if checks[name] is not True:
+            errors.append(f"persistent-store performance check failed: {name}")
+    for workload, values in rust_ratios.items():
+        if not isinstance(values, dict):
+            errors.append(f"persistent-store performance ratios are invalid: {workload}")
+            continue
+        latency = values.get("p95_latency_over_python")
+        throughput = values.get("throughput_over_python")
+        if not _is_finite_number(latency) or latency > 1.10:
+            errors.append(f"persistent-store latency threshold failed: {workload}")
+        if not _is_finite_number(throughput) or throughput < 0.95:
+            errors.append(f"persistent-store throughput threshold failed: {workload}")
+    if (
+        not _is_finite_number(rss_ratio) or rss_ratio > 1.10
+    ):
+        errors.append("persistent-store peak RSS threshold failed")
+    return errors
 
 
 def _readiness_module():
@@ -456,19 +602,26 @@ def evaluate_release_gate(
     ):
         blockers.append({"gate": "server-local", "detail": detail})
 
-    performance_status = runtime_performance.get("gate", {}).get("status")
-    if performance_status != "passed":
-        blockers.append(
-            {"gate": "performance", "detail": "runtime serving scale benchmark has not passed"}
-        )
+    runtime_performance_errors = _validate_runtime_performance(runtime_performance)
+    for detail in runtime_performance_errors:
+        blockers.append({"gate": "performance", "detail": detail})
     persistent = manifest.get("current_persistent_evidence", {})
-    if persistent.get("gate_status") != "passed":
+    persistent_report_path = persistent.get("benchmark_report")
+    persistent_report = None
+    if isinstance(persistent_report_path, str):
+        candidate_path = (ROOT / persistent_report_path).resolve()
+        try:
+            candidate_path.relative_to(ROOT.resolve())
+            persistent_report = _load_json(candidate_path)
+        except (OSError, ValueError):
+            persistent_report = None
+    if persistent.get("gate_status") != "passed" or persistent_report is None:
         blockers.append(
-            {
-                "gate": "performance",
-                "detail": "generic persistent public-store performance gate remains failed",
-            }
+            {"gate": "performance", "detail": "persistent-store benchmark evidence is missing or failed"}
         )
+    else:
+        for detail in _validate_persistent_performance(persistent_report):
+            blockers.append({"gate": "performance", "detail": detail})
 
     for detail in validate_server_operation_deferrals(manifest):
         blockers.append({"gate": "server-deferral", "detail": detail})
@@ -556,7 +709,9 @@ def evaluate_release_gate(
         "compatibility_layers": {
             layer: by_layer.get(layer, {}).get("status", "missing") for layer in LAYERS
         },
-        "runtime_performance_status": performance_status,
+        "runtime_performance_status": (
+            "passed" if not runtime_performance_errors else "failed"
+        ),
         "dual_language_support": {"status": "passed" if not support_errors else "blocked"},
         "server_operation_deferrals": {
             "status": "passed" if not validate_server_operation_deferrals(manifest) else "blocked"

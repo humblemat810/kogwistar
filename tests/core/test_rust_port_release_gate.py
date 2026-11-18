@@ -63,6 +63,11 @@ def _evaluate_compatibility(reports: list[dict]) -> dict:
     )
 
 
+def _runtime_performance() -> dict:
+    path = ROOT / "contracts" / "benchmarks" / "rust-runtime-serving-current-windows.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def test_release_gate_rejects_duplicate_layer_report() -> None:
     reports = _compatibility("a" * 64)
     reports[0]["layers"].append(dict(reports[0]["layers"][0]))
@@ -72,6 +77,39 @@ def test_release_gate_rejects_duplicate_layer_report() -> None:
     assert "core layer appears more than once" in {
         row["detail"] for row in result["blockers"]
     }
+
+
+def test_release_gate_rejects_status_only_performance_report() -> None:
+    gate = _gate()
+    manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text())
+
+    result = gate.evaluate_release_gate(
+        manifest=manifest,
+        compatibility_reports=_compatibility("a" * 64),
+        runtime_performance={"gate": {"status": "passed"}},
+        phase3_capability_evidence={},
+        phase4_runtime_evidence={},
+        phase5_server_evidence={},
+    )
+
+    performance_details = {
+        row["detail"] for row in result["blockers"] if row["gate"] == "performance"
+    }
+    assert "runtime serving scale benchmark checks are incomplete" in performance_details
+
+
+def test_persistent_performance_validator_recomputes_numeric_thresholds() -> None:
+    gate = _gate()
+    report_path = ROOT / "contracts" / "benchmarks" / "rust-persistent-sqlite-current-linux.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert gate._validate_persistent_performance(report) == []
+
+    report["modes"]["rust"]["metrics"]["event_append"]["p95_elapsed_ms"] = 99.0
+    report["gate"]["status"] = "passed"
+    report["gate"]["checks"]["p95_latency_no_worse_than_110_percent"] = True
+    errors = gate._validate_persistent_performance(report)
+
+    assert "persistent-store latency threshold failed: event_append" in errors
 
 
 def test_release_gate_rejects_missing_test_group_run() -> None:
@@ -213,7 +251,7 @@ def test_gate_passes_with_containerized_library_uat_and_all_capability_evidence(
     result = _gate().evaluate_release_gate(
         manifest=manifest,
         compatibility_reports=_compatibility("a" * 64),
-        runtime_performance={"gate": {"status": "passed"}},
+        runtime_performance=_runtime_performance(),
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
@@ -284,7 +322,7 @@ def test_gate_rejects_python_retirement_despite_full_rust_evidence(
     result = gate.evaluate_release_gate(
         manifest=manifest,
         compatibility_reports=_compatibility("a" * 64),
-        runtime_performance={"gate": {"status": "passed"}},
+        runtime_performance=_runtime_performance(),
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
@@ -330,7 +368,7 @@ def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
     result = _gate().evaluate_release_gate(
         manifest=manifest,
         compatibility_reports=_compatibility("a" * 64),
-        runtime_performance={"gate": {"status": "passed"}},
+        runtime_performance=_runtime_performance(),
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
@@ -347,7 +385,7 @@ def test_gate_rejects_historical_compatibility_report_after_source_changes() -> 
     result = _gate().evaluate_release_gate(
         manifest=manifest,
         compatibility_reports=_compatibility("a" * 64, "f" * 64),
-        runtime_performance={"gate": {"status": "passed"}},
+        runtime_performance=_runtime_performance(),
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
@@ -366,7 +404,7 @@ def test_gate_rejects_stale_or_skipped_phase5_async_sse_evidence() -> None:
     result = _gate().evaluate_release_gate(
         manifest=manifest,
         compatibility_reports=_compatibility("a" * 64),
-        runtime_performance={"gate": {"status": "passed"}},
+        runtime_performance=_runtime_performance(),
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=evidence,
@@ -386,7 +424,7 @@ def test_gate_rejects_stale_or_skipped_phase3_capability_evidence() -> None:
     result = _gate().evaluate_release_gate(
         manifest=manifest,
         compatibility_reports=_compatibility("a" * 64),
-        runtime_performance={"gate": {"status": "passed"}},
+        runtime_performance=_runtime_performance(),
         phase3_capability_evidence=evidence,
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
@@ -406,7 +444,7 @@ def test_gate_rejects_stale_or_skipped_phase4_runtime_evidence() -> None:
     result = _gate().evaluate_release_gate(
         manifest=manifest,
         compatibility_reports=_compatibility("a" * 64),
-        runtime_performance={"gate": {"status": "passed"}},
+        runtime_performance=_runtime_performance(),
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=evidence,
         phase5_server_evidence=_phase5_evidence(),
