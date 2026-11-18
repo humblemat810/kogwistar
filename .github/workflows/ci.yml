@@ -326,7 +326,7 @@ jobs:
           import sys
           import tomllib
 
-          with open("pyproject.toml", "rb") as project_file:
+          with open("../pyproject.toml", "rb") as project_file:
               project = tomllib.load(project_file)["project"]
           dependencies = project["dependencies"] + project["optional-dependencies"]["pgvector"]
           subprocess.run([sys.executable, "-m", "pip", "install", *dependencies], check=True)
