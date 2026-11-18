@@ -561,6 +561,14 @@ def evaluate_persistent_performance_gate(
     if not rust_workloads:
         raise ValueError("Rust workload ratios are required")
 
+    def valid_ratio(value: object) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value > 0
+        )
+
     latency_values = [
         value["p95_latency_over_python"] for value in rust_workloads.values()
     ]
@@ -569,15 +577,17 @@ def evaluate_persistent_performance_gate(
     ]
     checks = {
         "p95_latency_no_worse_than_110_percent": all(
-            math.isfinite(value) and value <= MAX_P95_LATENCY_RATIO
+            valid_ratio(value)
+            and value <= MAX_P95_LATENCY_RATIO
             for value in latency_values
         ),
         "throughput_at_least_95_percent": all(
-            math.isfinite(value) and value >= MIN_THROUGHPUT_RATIO
+            valid_ratio(value) and value >= MIN_THROUGHPUT_RATIO
             for value in throughput_values
         ),
         "peak_rss_no_worse_than_110_percent": (
-            math.isfinite(rss_ratio) and rss_ratio <= MAX_PEAK_RSS_RATIO
+            valid_ratio(rss_ratio)
+            and rss_ratio <= MAX_PEAK_RSS_RATIO
         ),
     }
     return {

@@ -101,6 +101,100 @@ def test_release_gate_rejects_status_only_performance_report() -> None:
     assert "runtime serving scale benchmark checks are incomplete" in performance_details
 
 
+@pytest.mark.parametrize("ratio", [0.0, -0.01, True, float("nan"), float("inf")])
+def test_runtime_performance_gate_rejects_non_positive_or_non_finite_ratios(
+    ratio: float,
+) -> None:
+    gate = _gate()
+    report = _runtime_performance()
+    metric = next(iter(report["ratios"]))
+    report["ratios"][metric] = ratio
+    report["gate"]["checks"][metric] = True
+
+    errors = gate._validate_runtime_performance(report)
+
+    assert f"runtime serving scale benchmark check failed: {metric}" in errors
+
+
+def test_runtime_performance_gate_accepts_positive_ratio_at_threshold() -> None:
+    gate = _gate()
+    report = _runtime_performance()
+    metric = next(iter(report["ratios"]))
+    report["ratios"][metric] = report["gate"]["max_growth_ratio"]
+    report["gate"]["checks"][metric] = True
+
+    assert gate._validate_runtime_performance(report) == []
+
+
+@pytest.mark.parametrize(
+    ("latency_ratio", "throughput_ratio", "rss_ratio", "expected_check"),
+    [
+        (0.0, 1.0, 1.0, "p95_latency_no_worse_than_110_percent"),
+        (-0.1, 1.0, 1.0, "p95_latency_no_worse_than_110_percent"),
+        (True, 1.0, 1.0, "p95_latency_no_worse_than_110_percent"),
+        (float("nan"), 1.0, 1.0, "p95_latency_no_worse_than_110_percent"),
+        (1.0, True, 1.0, "throughput_at_least_95_percent"),
+        (1.0, float("inf"), 1.0, "throughput_at_least_95_percent"),
+        (1.0, 1.0, 0.0, "peak_rss_no_worse_than_110_percent"),
+        (1.0, 1.0, -0.1, "peak_rss_no_worse_than_110_percent"),
+        (1.0, 1.0, True, "peak_rss_no_worse_than_110_percent"),
+        (1.0, 1.0, float("nan"), "peak_rss_no_worse_than_110_percent"),
+    ],
+)
+def test_persistent_performance_gate_rejects_invalid_ratios(
+    latency_ratio: float,
+    throughput_ratio: float,
+    rss_ratio: float,
+    expected_check: str,
+) -> None:
+    benchmark = importlib.util.spec_from_file_location(
+        "rust_port_persistent_benchmark",
+        ROOT / "scripts" / "rust_port_persistent_benchmark.py",
+    )
+    assert benchmark is not None and benchmark.loader is not None
+    module = importlib.util.module_from_spec(benchmark)
+    benchmark.loader.exec_module(module)
+
+    result = module.evaluate_persistent_performance_gate(
+        {
+            "rust": {
+                "mixed_interleaved": {
+                    "p95_latency_over_python": latency_ratio,
+                    "throughput_over_python": throughput_ratio,
+                }
+            }
+        },
+        rss_ratio,
+    )
+
+    assert result["status"] == "failed"
+    assert result["checks"][expected_check] is False
+
+
+@pytest.mark.parametrize(
+    ("metric", "expected_error"),
+    [
+        ("latency", "persistent-store latency threshold failed: event_append"),
+        ("rss", "persistent-store peak RSS threshold failed"),
+    ],
+)
+def test_persistent_release_validator_rejects_zero_measurements_even_if_marked_passed(
+    metric: str, expected_error: str
+) -> None:
+    gate = _gate()
+    report = json.loads(
+        (ROOT / "contracts" / "benchmarks" / "rust-persistent-sqlite-current-linux.json")
+        .read_text(encoding="utf-8")
+    )
+    report["gate"]["status"] = "passed"
+    if metric == "latency":
+        report["modes"]["rust"]["metrics"]["event_append"]["p95_elapsed_ms"] = 0
+    else:
+        report["modes"]["rust"]["p95_peak_rss_bytes"] = 0
+
+    assert expected_error in gate._validate_persistent_performance(report)
+
+
 def test_persistent_performance_validator_recomputes_numeric_thresholds() -> None:
     gate = _gate()
     report_path = ROOT / "contracts" / "benchmarks" / "rust-persistent-sqlite-current-linux.json"

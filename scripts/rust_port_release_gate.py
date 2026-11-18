@@ -115,7 +115,12 @@ def _validate_runtime_performance(report: dict[str, Any]) -> list[str]:
     for name in sorted(expected_checks):
         ratio = ratios[name]
         valid_ratio = _is_finite_number(ratio)
-        if checks[name] is not True or not valid_ratio or ratio > threshold:
+        if (
+            checks[name] is not True
+            or not valid_ratio
+            or ratio <= 0
+            or ratio > threshold
+        ):
             errors.append(f"runtime serving scale benchmark check failed: {name}")
     return errors
 
@@ -195,12 +200,12 @@ def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
             continue
         latency = values.get("p95_latency_over_python")
         throughput = values.get("throughput_over_python")
-        if not _is_finite_number(latency) or latency > 1.10:
+        if not _is_finite_number(latency) or latency <= 0 or latency > 1.10:
             errors.append(f"persistent-store latency threshold failed: {workload}")
         if not _is_finite_number(throughput) or throughput < 0.95:
             errors.append(f"persistent-store throughput threshold failed: {workload}")
     if (
-        not _is_finite_number(rss_ratio) or rss_ratio > 1.10
+        not _is_finite_number(rss_ratio) or rss_ratio <= 0 or rss_ratio > 1.10
     ):
         errors.append("persistent-store peak RSS threshold failed")
     return errors
