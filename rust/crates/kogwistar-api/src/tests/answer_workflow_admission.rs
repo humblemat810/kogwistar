@@ -1,6 +1,6 @@
     #[test]
     fn answer_workflow_admission_supports_per_node_python_and_registered_rust_executors() {
-        let native_operations = crate::native_answer_persist::registry().unwrap();
+        let native_operations = InMemoryGraphApplicationService::default().native_operations;
         let contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
         ))

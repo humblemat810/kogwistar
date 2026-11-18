@@ -16,7 +16,9 @@ impl Default for InMemoryGraphApplicationService {
         Self {
             store: InMemoryStore::default(),
             capabilities: Arc::new(Mutex::new(CapabilityState::default())),
-            native_operations: kogwistar_runtime::NativeOperationRegistry::default(),
+            // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#default; python=kogwistar/conversation/agentic_answering.py#AgenticAnsweringAgent; rust_test=rust/crates/kogwistar-api/src/tests/answer_workflow_admission.rs#answer_workflow_admission_supports_per_node_python_and_registered_rust_executors; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
+            native_operations: crate::native_answer_persist::registry()
+                .expect("built-in Rust-native answer operation registry must be valid"),
             embedding_provider: None,
             chat_completion_provider: None,
             transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
