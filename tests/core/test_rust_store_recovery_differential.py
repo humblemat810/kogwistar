@@ -183,6 +183,7 @@ def _run_recovery_contract(
     append_rust: Any,
     call: Any,
     projection: Any,
+    read_python_projection: Any,
     cursor: Any,
     event_count: Any,
 ) -> None:
@@ -246,6 +247,9 @@ def _run_recovery_contract(
     baseline = projection("entity_projection", "main")
     assert baseline is not None
     _assert_projection_shape(baseline["payload"])
+    python_projection = read_python_projection("entity_projection", "main")
+    assert python_projection == baseline
+    assert python_projection["payload"] == json.loads(third["canonical_payload"])
 
     # Replaying a caught-up consumer is idempotent, including canonical bytes.
     idempotent = call(_recover())
@@ -267,6 +271,9 @@ def _run_recovery_contract(
     assert rebuilt["canonical_payload"] == rebuilt_again["canonical_payload"]
     assert rebuilt["digest"] == rebuilt_again["digest"]
     assert rebuilt_again["new_cursor"] == 5
+    rebuilt_projection = projection("entity_projection", "main")
+    assert rebuilt_projection == read_python_projection("entity_projection", "main")
+    assert rebuilt_projection["payload"] == json.loads(rebuilt["canonical_payload"])
     assert event_count() == 5
 
     # Invalid authoritative payload must roll back the named projection and cursor.
@@ -348,6 +355,7 @@ def test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop(tmp_path
         append_rust=append_rust,
         call=call,
         projection=projection,
+        read_python_projection=python.get_named_projection,
         cursor=cursor,
         event_count=event_count,
     )
@@ -1073,6 +1081,7 @@ def test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop(
         append_rust=append_rust,
         call=call,
         projection=projection,
+        read_python_projection=python.get_named_projection,
         cursor=cursor,
         event_count=event_count,
     )
