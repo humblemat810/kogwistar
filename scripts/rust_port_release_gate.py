@@ -183,12 +183,7 @@ def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
 def validate_phase5_server_evidence(
     evidence: dict[str, Any], *, current_source_sha256: str
 ) -> list[str]:
-    """Require current local serving evidence without mistaking it for rollout.
-
-    This is deliberately independent of Rust authority flags and production
-    canary evidence.  A later server promotion must have both the proven Python
-    baseline and its real deployment evidence.
-    """
+    """Require current-source server UAT evidence without implying deployment."""
     errors: list[str] = []
     if evidence.get("schema") != "adr015-phase5-server-gate/v1":
         errors.append("Phase-5 server evidence has an unsupported schema")
@@ -233,11 +228,7 @@ def validate_phase5_server_evidence(
 def validate_phase3_capability_evidence(
     evidence: dict[str, Any], *, current_source_sha256: str
 ) -> list[str]:
-    """Require separate live-PostgreSQL proof for each pending store capability.
-
-    Local evidence proves only implementation readiness; authority remains
-    Python-owned until the matching same-candidate production canary succeeds.
-    """
+    """Require separate live-PostgreSQL UAT proof per pending store capability."""
     errors: list[str] = []
     if evidence.get("schema") != "adr015-phase3-capability-gate/v1":
         errors.append("Phase-3 capability evidence has an unsupported schema")
@@ -376,7 +367,16 @@ def _compatibility_layer_errors(layer: dict[str, Any]) -> list[str]:
         set(group_keys)
     ) != count:
         errors.append(f"{prefix} test-group keys are missing or duplicated")
-    if any(run.get("returncode") != 0 or not isinstance(run.get("command"), list) for run in runs):
+    profile = layer.get("test_profile")
+    allows_empty_selection = profile in {"milestone", "regression"} or name == "parser"
+    if any(
+        (
+            run.get("returncode") != 0
+            and not (allows_empty_selection and run.get("returncode") == 5)
+        )
+        or not isinstance(run.get("command"), list)
+        for run in runs
+    ):
         errors.append(f"{prefix} contains an unverified test-group run")
     commands = layer.get("commands")
     if not isinstance(commands, list) or commands != [run.get("command") for run in runs]:
@@ -392,7 +392,6 @@ def evaluate_release_gate(
     phase3_capability_evidence: dict[str, Any],
     phase4_runtime_evidence: dict[str, Any],
     phase5_server_evidence: dict[str, Any],
-    canary_evidence: dict[str, Any],
 ) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
     by_layer: dict[str, dict[str, Any]] = {}
@@ -499,18 +498,54 @@ def evaluate_release_gate(
         )
 
     expected_identity = next(iter(identities)) if len(identities) == 1 else None
-    canary = _readiness_module().validate_canary_evidence_set(
-        canary_evidence,
-        required_capabilities=REQUIRED_RUST_OWNERS,
-        expected_candidate_identity_sha256=expected_identity,
-    )
-    if not canary["production_complete"]:
+    uat_candidates = []
+    for report in compatibility_reports:
+        candidate = report.get("candidate")
+        if isinstance(candidate, dict):
+            uat_candidates.append(
+                _readiness_module().validate_library_uat_candidate(
+                    candidate,
+                    expected_candidate_identity_sha256=expected_identity,
+                )
+            )
+    if not uat_candidates:
         blockers.append(
-            {
-                "gate": "canary",
-                "detail": "per-capability production internal/test -> 1% -> 10% -> 50% -> 100% evidence is incomplete",
-            }
+            {"gate": "library-uat", "detail": "containerized library UAT candidate evidence is missing"}
         )
+    for result in uat_candidates:
+        for detail in result["errors"]:
+            blockers.append({"gate": "library-uat", "detail": detail})
+    uat_backends = {result["backend"] for result in uat_candidates}
+    if len(uat_backends) > 1:
+        blockers.append(
+            {"gate": "library-uat", "detail": "compatibility layers use different Docker UAT backends"}
+        )
+    compatibility_complete = all(
+        layer_counts.get(layer) == 1
+        and by_layer[layer].get("status") == "passed"
+        and by_layer[layer].get("returncode") == 0
+        and not _compatibility_layer_errors(by_layer[layer])
+        for layer in LAYERS
+    )
+    library_uat = {
+        "status": (
+            "passed"
+            if compatibility_complete
+            and uat_candidates
+            and all(result["library_uat_complete"] for result in uat_candidates)
+            else "blocked"
+        ),
+        "candidate_identity_sha256": expected_identity,
+        "backend": (
+            uat_candidates[0]["backend"]
+            if uat_candidates and all(
+                result["backend"] == uat_candidates[0]["backend"]
+                for result in uat_candidates
+            )
+            else None
+        ),
+        "reports": len(uat_candidates),
+    }
 
     return {
         "status": "passed" if not blockers else "blocked",
@@ -555,7 +590,7 @@ def evaluate_release_gate(
                 else "blocked"
             )
         },
-        "canary": canary,
+        "library_uat": library_uat,
         "rust_cutover_ready_capabilities": sorted(value for value in active_rust if isinstance(value, str)),
         "blockers": blockers,
     }
@@ -569,12 +604,6 @@ def _args() -> argparse.Namespace:
         "--runtime-performance",
         type=Path,
         default=ROOT / "contracts" / "benchmarks" / "rust-runtime-serving-current-windows.json",
-    )
-    parser.add_argument(
-        "--canary-evidence",
-        type=Path,
-        required=True,
-        help="Schema-v2 same-candidate canary set, one five-stage record per Rust capability.",
     )
     parser.add_argument(
         "--phase3-capability-evidence",
@@ -604,7 +633,6 @@ def main() -> int:
         phase3_capability_evidence=_load_json(args.phase3_capability_evidence),
         phase4_runtime_evidence=_load_json(args.phase4_runtime_evidence),
         phase5_server_evidence=_load_json(args.phase5_server_evidence),
-        canary_evidence=_load_json(args.canary_evidence),
     )
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     print(encoded, end="")

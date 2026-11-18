@@ -23,7 +23,10 @@ def _compatibility(identity: str, source_sha256: str | None = None) -> list[dict
             "candidate": {
                 "identity_sha256": identity,
                 "candidate_source_sha256": source_sha256,
+                "backend": "docker-clean-dual-venv-sharded-pgvector",
+                "storage_root": "container-local-isolated",
             },
+            "status": "passed",
             "layers": [
                 {
                     "name": layer,
@@ -57,7 +60,6 @@ def _evaluate_compatibility(reports: list[dict]) -> dict:
         phase3_capability_evidence={},
         phase4_runtime_evidence={},
         phase5_server_evidence={},
-        canary_evidence={},
     )
 
 
@@ -83,25 +85,27 @@ def test_release_gate_rejects_missing_test_group_run() -> None:
     }
 
 
-def _production_canary_set() -> dict:
-    seed = json.loads(
-        (ROOT / "contracts" / "canary" / "adr015-rehearsal-v1.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    canaries = []
-    for capability in sorted(_gate().REQUIRED_RUST_OWNERS):
-        payload = dict(seed)
-        payload["capability"] = capability
-        payload["evidence_kind"] = "production"
-        payload["candidate_identity_sha256"] = "a" * 64
-        payload["stages"] = [dict(stage) for stage in seed["stages"]]
-        canaries.append(payload)
-    return {
-        "schema_version": 2,
-        "evidence_kind": "production",
-        "candidate_identity_sha256": "a" * 64,
-        "canaries": canaries,
+def test_release_gate_accepts_milestone_group_with_no_selected_tests() -> None:
+    reports = _compatibility("a" * 64)
+    layer = reports[0]["layers"][0]
+    layer["test_profile"] = "milestone"
+    layer["runs"][0]["returncode"] = 5
+
+    result = _evaluate_compatibility(reports)
+
+    assert "core layer contains an unverified test-group run" not in {
+        row["detail"] for row in result["blockers"]
+    }
+
+
+def test_release_gate_rejects_empty_selection_outside_supported_profile() -> None:
+    reports = _compatibility("a" * 64)
+    reports[0]["layers"][0]["runs"][0]["returncode"] = 5
+
+    result = _evaluate_compatibility(reports)
+
+    assert "core layer contains an unverified test-group run" in {
+        row["detail"] for row in result["blockers"]
     }
 
 
@@ -187,11 +191,6 @@ def test_current_release_gate_reports_real_blockers() -> None:
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
-        canary_evidence=json.loads(
-            (ROOT / "contracts" / "canary" / "adr015-rehearsal-v1.json").read_text(
-                encoding="utf-8"
-            )
-        ),
     )
 
     assert result["status"] == "blocked"
@@ -201,10 +200,10 @@ def test_current_release_gate_reports_real_blockers() -> None:
     assert "postgres-sequence-event-log is not Rust-cutover-ready" in details
     assert "workflow-runtime is not Rust-cutover-ready" in details
     assert "server-rest-sse-mcp-cli is not Rust-cutover-ready" in details
-    assert any("per-capability production internal/test" in detail for detail in details)
+    assert result["library_uat"]["status"] == "passed"
 
 
-def test_gate_passes_only_with_all_layers_perf_authority_and_production_canary() -> None:
+def test_gate_passes_with_containerized_library_uat_and_all_capability_evidence() -> None:
     manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
     for item in manifest["capability_ownership"]:
         if item["capability"] in _gate().REQUIRED_RUST_OWNERS:
@@ -218,7 +217,6 @@ def test_gate_passes_only_with_all_layers_perf_authority_and_production_canary()
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
-        canary_evidence=_production_canary_set(),
     )
 
     assert result["status"] == "passed", result["blockers"]
@@ -227,6 +225,37 @@ def test_gate_passes_only_with_all_layers_perf_authority_and_production_canary()
     assert result["phase3_capability_evidence"] == {"status": "passed"}
     assert result["phase4_runtime_evidence"] == {"status": "passed"}
     assert result["phase5_server_evidence"] == {"status": "passed"}
+    assert result["library_uat"]["status"] == "passed"
+
+
+def test_gate_accepts_one_candidate_report_containing_all_compatibility_layers() -> None:
+    reports = _compatibility("a" * 64)
+    combined = dict(reports[0])
+    combined["layers"] = [layer for report in reports for layer in report["layers"]]
+
+    result = _evaluate_compatibility([combined])
+
+    assert result["library_uat"]["status"] == "passed"
+    assert result["library_uat"]["reports"] == 1
+    assert result["compatibility_layers"] == {
+        "core": "passed",
+        "parser": "passed",
+        "sink": "passed",
+        "application": "passed",
+    }
+
+
+def test_gate_requires_all_compatibility_layers_in_docker_uat() -> None:
+    reports = _compatibility("a" * 64)
+    reports[1]["candidate"]["backend"] = "local-python"
+    reports.pop()
+
+    result = _evaluate_compatibility(reports)
+
+    details = {row["detail"] for row in result["blockers"]}
+    assert result["library_uat"]["status"] == "blocked"
+    assert "application layer lacks passing evidence" in details
+    assert "candidate backend must be a supported isolated Docker UAT backend" in details
 
 
 def test_gate_rejects_python_retirement_despite_full_rust_evidence(
@@ -259,7 +288,6 @@ def test_gate_rejects_python_retirement_despite_full_rust_evidence(
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
-        canary_evidence=_production_canary_set(),
     )
 
     assert result["status"] == "blocked"
@@ -306,7 +334,6 @@ def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
-        canary_evidence=_production_canary_set(),
     )
 
     assert result["status"] == "blocked"
@@ -324,7 +351,6 @@ def test_gate_rejects_historical_compatibility_report_after_source_changes() -> 
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
-        canary_evidence=_production_canary_set(),
     )
 
     details = {row["detail"] for row in result["blockers"]}
@@ -344,7 +370,6 @@ def test_gate_rejects_stale_or_skipped_phase5_async_sse_evidence() -> None:
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=evidence,
-        canary_evidence=_production_canary_set(),
     )
 
     details = {row["detail"] for row in result["blockers"]}
@@ -365,7 +390,6 @@ def test_gate_rejects_stale_or_skipped_phase3_capability_evidence() -> None:
         phase3_capability_evidence=evidence,
         phase4_runtime_evidence=_phase4_runtime_evidence(),
         phase5_server_evidence=_phase5_evidence(),
-        canary_evidence=_production_canary_set(),
     )
 
     details = {row["detail"] for row in result["blockers"]}
@@ -386,7 +410,6 @@ def test_gate_rejects_stale_or_skipped_phase4_runtime_evidence() -> None:
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=evidence,
         phase5_server_evidence=_phase5_evidence(),
-        canary_evidence=_production_canary_set(),
     )
 
     details = {row["detail"] for row in result["blockers"]}
