@@ -18,6 +18,7 @@ use kogwistar_store::{
     timestamp_i64, validate_graph_mutation_batch, validate_graph_mutation_replay,
 };
 use serde_json::Value;
+use std::sync::{Arc, RwLock};
 
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
 
@@ -360,6 +361,83 @@ impl InMemoryStore {
         let started = apply_transition(&mut state, transition, None, false)?;
         insert_initial_lane(&mut state, lane);
         Ok(started)
+    }
+
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#admit_server_run_with_graph_and_start; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; rust_test=recorded_runtime::tests::runtime_admission_commits_graph_and_run_as_one_unit; python_test=tests/server/test_chat_service.py#test_submit_turn_for_answer_is_transactional
+    /// Atomically commits initial graph/index effects and run/start/lane state
+    /// under the same in-process writer lock, matching Python's conversation
+    /// unit-of-work boundary. This is volatile memory atomicity, not durability.
+    pub fn admit_server_run_with_graph_and_start(
+        &self,
+        graph_batch: GraphMutationBatch,
+        run: ServerRunCreate,
+        admission_payload: Value,
+        transition: RecordedRuntimeTransition,
+        lane: NewProjectedLaneMessage,
+    ) -> StoreResult<RecordedTransitionResult> {
+        validate_graph_mutation_batch(&graph_batch)?;
+
+        let mut committed = self.state.write().expect("in-memory store lock poisoned");
+        let replaying_existing_run = committed.server_runs.contains_key(&run.run_id);
+        if replaying_existing_run {
+            for mutation in &graph_batch.mutations {
+                let existing = committed
+                    .namespaces
+                    .get(&mutation.scope.namespace)
+                    .and_then(|namespace| {
+                        namespace
+                            .event_seq_by_id
+                            .get(&mutation.event_id)
+                            .and_then(|seq| namespace.events.iter().find(|event| event.seq == *seq))
+                    })
+                    .ok_or_else(|| {
+                        runtime_conflict(
+                            "runtime admission replay is missing its committed graph events",
+                        )
+                    })?;
+                validate_graph_mutation_replay(mutation, existing)?;
+            }
+            for job in &graph_batch.index_jobs {
+                let existing = committed.index_jobs.get(&job.job_id).ok_or_else(|| {
+                    runtime_conflict(
+                        "runtime admission replay is missing its committed index intents",
+                    )
+                })?;
+                if existing.namespace != job.namespace
+                    || existing.entity_kind != job.entity_kind
+                    || existing.entity_id != job.entity_id
+                    || existing.index_kind != job.index_kind
+                    || existing.op != job.op
+                    || existing.max_retries != job.max_retries
+                    || existing.payload_json != job.payload_json
+                {
+                    return Err(runtime_conflict(
+                        "runtime admission replay changed its graph index intent",
+                    ));
+                }
+            }
+        }
+
+        // Stage against a private copy. The original store lock remains held,
+        // so readers cannot observe graph effects without the run admission.
+        let staged_store = InMemoryStore {
+            state: Arc::new(RwLock::new(committed.clone())),
+        };
+        if !replaying_existing_run {
+            let mut staged = staged_store
+                .state
+                .write()
+                .expect("staged in-memory store lock poisoned");
+            super::apply_graph_mutation_batch_to_state(&mut staged, graph_batch)?;
+        }
+        let result =
+            staged_store.admit_server_run_with_start(run, admission_payload, transition, lane)?;
+        *committed = staged_store
+            .state
+            .read()
+            .expect("staged in-memory store lock poisoned")
+            .clone();
+        Ok(result)
     }
 
     /// Atomically records a Rust/Python-compatible runtime transition in the
@@ -2078,6 +2156,174 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn runtime_admission_commits_graph_and_run_as_one_unit() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: None,
+            graph_space: Some("conversation".to_owned()),
+        };
+        let graph_batch = || GraphMutationBatch {
+            mutations: vec![GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "conversation-turn-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id": "conversation-turn", "metadata": {}}),
+                record: GraphRecord {
+                    id: "conversation-turn".to_owned(),
+                    document: Some("user turn".to_owned()),
+                    metadata: serde_json::Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }],
+            index_jobs: vec![NewIndexJob {
+                job_id: "conversation-turn-index".to_owned(),
+                namespace: "conversation".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: "conversation-turn".to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
+        let run = ServerRunCreate {
+            run_id: "memory-run".to_owned(),
+            conversation_id: "memory-conversation".to_owned(),
+            workflow_id: "memory-workflow".to_owned(),
+            user_id: Some("user-1".to_owned()),
+            user_turn_node_id: "conversation-turn".to_owned(),
+            status: "queued".to_owned(),
+        };
+        let mut transition = pending_start();
+        transition.expected_event_seq = 1;
+        transition.node_id = Some("noop".to_owned());
+        transition.user_turn_node_id = Some("conversation-turn".to_owned());
+        let mut admission_payload = runtime_admission_payload();
+        admission_payload["turn_node_id"] = json!("conversation-turn");
+
+        let mut invalid = transition.clone();
+        invalid.expected_event_seq = 0;
+        assert!(
+            store
+                .admit_server_run_with_graph_and_start(
+                    graph_batch(),
+                    run.clone(),
+                    admission_payload.clone(),
+                    invalid,
+                    worker_lane(),
+                )
+                .is_err()
+        );
+        assert!(block_on(store.server_run("memory-run")).unwrap().is_none());
+        assert!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["conversation-turn".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            block_on(store.index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                Some("node"),
+                Some("conversation-turn"),
+                Some("node_embedding"),
+                10,
+            ))
+            .unwrap()
+            .is_empty()
+        );
+
+        let first = store
+            .admit_server_run_with_graph_and_start(
+                graph_batch(),
+                run.clone(),
+                admission_payload.clone(),
+                transition.clone(),
+                worker_lane(),
+            )
+            .unwrap();
+        assert!(!first.idempotent);
+        let replay = store
+            .admit_server_run_with_graph_and_start(
+                graph_batch(),
+                run.clone(),
+                admission_payload.clone(),
+                transition.clone(),
+                worker_lane(),
+            )
+            .unwrap();
+        assert!(replay.idempotent);
+        let mut changed_graph = graph_batch();
+        changed_graph.mutations[0].payload["summary"] = json!("changed");
+        assert!(
+            store
+                .admit_server_run_with_graph_and_start(
+                    changed_graph,
+                    run.clone(),
+                    admission_payload.clone(),
+                    transition.clone(),
+                    worker_lane(),
+                )
+                .is_err()
+        );
+        let mut changed_index = graph_batch();
+        changed_index.index_jobs[0].op = "DELETE".to_owned();
+        assert!(
+            store
+                .admit_server_run_with_graph_and_start(
+                    changed_index,
+                    run,
+                    admission_payload,
+                    transition,
+                    worker_lane(),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["conversation-turn".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                Some("node"),
+                Some("conversation-turn"),
+                Some("node_embedding"),
+                10,
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
         );
     }
 
