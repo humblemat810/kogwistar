@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **58/67 PASS (86.6%)**; **1 IN PROGRESS**; **8 NOT STARTED**.
+**Progress:** **58/67 PASS (86.6%)**; **5 IN PROGRESS**; **4 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -155,10 +155,10 @@ performs zero compilation.
 | REL-02C | All six | NOT STARTED | Invariant: persisted graph written Rust→Python→Rust remains readable and canonical. Cell: one durable DB shared sequentially across clean processes. Oracle: exact record/event digest equality. Check: add/run `test_clean_wheel_bidirectional_persisted_handoff`. |
 | REL-02D | All six | NOT STARTED | Invariant: Python rollback remains effective after Rust-authored data. Cell: injected Python transaction failure in consumer. Oracle: no partial Python writes; Rust-authored canonical state remains readable. Check: add/run `test_clean_wheel_python_rollback_after_rust_write`. |
 | REL-03 | All six | PARENT | Supported interpreter CI requirement; children: REL-03A,REL-03B,REL-03C,REL-03D. | Parent closes when all leaves pass. |
-| REL-03A | All six | NOT STARTED | Invariant: CPython 3.12 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Check: inspect exact-commit CI run. |
-| REL-03B | All six | NOT STARTED | Invariant: CPython 3.13 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Check: inspect exact-commit CI run. |
-| REL-03C | All six | NOT STARTED | Invariant: CPython 3.14 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Check: inspect exact-commit CI run. |
-| REL-03D | All six | NOT STARTED | Invariant: PyPy 3.11 declared lane has accurate best-effort/required result. Cell: hosted PyPy lane. Oracle: status matches support policy; failure cannot be reported as pass. Check: inspect exact-commit PyPy result. |
+| REL-03A | All six | IN PROGRESS | Invariant: CPython 3.12 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
+| REL-03B | All six | IN PROGRESS | Invariant: CPython 3.13 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
+| REL-03C | All six | IN PROGRESS | Invariant: CPython 3.14 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
+| REL-03D | All six | IN PROGRESS | Invariant: PyPy 3.11 declared lane has accurate best-effort/required result. Cell: hosted PyPy lane. Oracle: status matches support policy; failure cannot be reported as pass. Fast preflight passed: `test_pypy_ci_excludes_native_extension_tests`; exact-candidate hosted result remains. |
 | REL-04 | All six | PASS | Language-boundary isolation requirement; children: REL-04A,REL-04B,REL-04C. | All three leaves PASS; Python-only, mixed, and Rust-native boundaries verified. |
 | REL-04A | All six | PASS | Invariant: Python-only public path never loads/calls Rust. Cell: instrumented Python server and memory workflow. Oracle: zero native imports/calls; expected state. Evidence: answer workflow fake end-to-end (**1 passed**); Python-default server/memory/REST path group (**11 passed**, includes submit/SSE); each replaces `_load_extension` with a failing sentinel. |
 | REL-04B | All six | PASS | Invariant: Rust-native container path never starts Python worker/interpreter. Cell: Linux Docker builder image, direct `kogwistar-server` binary launch. Evidence: `scripts/rust_native_no_python_smoke.sh` built locked release binary; `cargo tree -p kogwistar-api --edges normal` contained no `kogwistar-python`/PyO3 seam; `ldd` showed no Python runtime; `/proc/<pid>/exe` matched native binary; process had zero child processes; native HTTP `/health` returned 200 and `mode=rust`. Cached Cargo build completed in 1.37s. |
