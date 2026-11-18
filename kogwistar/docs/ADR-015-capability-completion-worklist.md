@@ -3,7 +3,7 @@
 **Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
 in `contracts/rust-port-v1.json`. This is the active implementation and
 verification worklist; it does not track external production rollout.
-**Progress:** **58/67 PASS (86.6%)**; **5 IN PROGRESS**; **4 NOT STARTED**.
+**Progress:** **58/67 PASS (86.6%)**; **7 IN PROGRESS**; **2 NOT STARTED**.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -152,8 +152,8 @@ performs zero compilation.
 | REL-02 | All six | PARENT | Clean consumer wheel and persisted-data compatibility requirement; children: REL-02A,REL-02B,REL-02C,REL-02D. | Parent closes when all leaves pass. |
 | REL-02A | All six | NOT STARTED | Invariant: clean Docker consumer installs the exact candidate wheel and passes dependency validation. Cell: isolated consumer image. Oracle: install and `pip check` succeed. Check: run clean-wheel install smoke. |
 | REL-02B | All six | NOT STARTED | Invariant: installed wheel imports native extension with expected ABI/version. Cell: same clean consumer. Oracle: import and version handshake succeed without source checkout. Check: run native-wheel import smoke. |
-| REL-02C | All six | NOT STARTED | Invariant: persisted graph written Rust→Python→Rust remains readable and canonical. Cell: one durable DB shared sequentially across clean processes. Oracle: exact record/event digest equality. Check: add/run `test_clean_wheel_bidirectional_persisted_handoff`. |
-| REL-02D | All six | NOT STARTED | Invariant: Python rollback remains effective after Rust-authored data. Cell: injected Python transaction failure in consumer. Oracle: no partial Python writes; Rust-authored canonical state remains readable. Check: add/run `test_clean_wheel_python_rollback_after_rust_write`. |
+| REL-02C | All six | IN PROGRESS | Invariant: persisted graph written Rust→Python→Rust remains readable and canonical. Cell: one durable DB shared sequentially across clean processes. Oracle: exact record/event digest equality. Fast preflight passed: `test_rust_python_sqlite_handoff_repeated_commits_are_strictly_visible` and `test_rust_sqlite_batch_is_immediate_atomic_and_durable_after_reopen` (**2 passed**); exact clean-wheel run remains. |
+| REL-02D | All six | IN PROGRESS | Invariant: Python rollback remains effective after Rust-authored data. Cell: injected Python transaction failure in consumer. Oracle: no partial Python writes; Rust-authored canonical state remains readable. Fast preflight passed: `test_rust_authority_database_is_readable_after_python_rollback` (**1 passed**); clean-wheel fault-injection check remains. |
 | REL-03 | All six | PARENT | Supported interpreter CI requirement; children: REL-03A,REL-03B,REL-03C,REL-03D. | Parent closes when all leaves pass. |
 | REL-03A | All six | IN PROGRESS | Invariant: CPython 3.12 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
 | REL-03B | All six | IN PROGRESS | Invariant: CPython 3.13 required CI lane passes on exact candidate. Cell: hosted GitHub check. Oracle: required jobs green; no hidden skips. Fast preflight passed: `test_rust_python_interop_uses_parallel_supported_runtime_matrix`; exact-candidate hosted run remains. |
