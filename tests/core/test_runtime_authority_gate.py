@@ -62,7 +62,7 @@ def test_phase4_junit_counts_handles_suite_root_and_nested_suites(tmp_path: Path
     }
 
 
-def test_phase4_postgres_group_rejects_skip_but_non_live_group_allows_it(
+def test_phase4_live_postgres_groups_reject_skips(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gate = _gate()
@@ -90,11 +90,11 @@ def test_phase4_postgres_group_rejects_skip_but_non_live_group_allows_it(
         name="durable-worker",
         tests=gate.GROUPS["durable-worker"][0],
         output_root=tmp_path,
-        live_postgres=False,
+        live_postgres=True,
     )
 
     assert postgres["status"] == "failed"
-    assert worker["status"] == "passed"
+    assert worker["status"] == "failed"
 
 
 def test_phase4_group_timeout_is_recorded_as_failure(
@@ -118,7 +118,7 @@ def test_phase4_group_timeout_is_recorded_as_failure(
         name="durable-worker",
         tests=gate.GROUPS["durable-worker"][0],
         output_root=tmp_path,
-        live_postgres=False,
+        live_postgres=True,
     )
 
     assert result["status"] == "failed"

@@ -38,7 +38,7 @@ GROUPS: dict[str, tuple[tuple[str, ...], bool]] = {
             "tests/runtime/test_rust_runtime_worker_handoff.py",
             "tests/runtime/test_rust_runtime_checkpoint_slice.py",
         ),
-        False,
+        True,
     ),
     "bijection": (
         (
