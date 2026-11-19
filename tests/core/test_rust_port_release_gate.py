@@ -452,7 +452,10 @@ def test_capability_clause_results_follow_named_test_outcomes() -> None:
     phase5 = _phase5_evidence()
 
     results, errors = gate.evaluate_capability_clause_tests(
-        phase3=phase3, phase4=phase4, phase5=phase5
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
     )
     assert len(results) == 22
     assert all(row["status"] == "passed" for row in results)
@@ -461,10 +464,36 @@ def test_capability_clause_results_follow_named_test_outcomes() -> None:
     rust_group = next(group for group in phase5["groups"] if group["name"] == "rust-api")
     rust_group["test_results"][0]["status"] = "failed"
     results, errors = gate.evaluate_capability_clause_tests(
-        phase3=phase3, phase4=phase4, phase5=phase5
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
     )
     assert any(row["status"] == "blocked" for row in results)
     assert errors
+
+
+def test_capability_clause_results_reject_stale_candidate_test_evidence() -> None:
+    gate = _gate()
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    phase4["candidate_source_sha256"] = "0" * 64
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+
+    assert len(results) == 22
+    assert all(row["status"] == "blocked" for row in results)
+    assert all(
+        all(test["status"] == "stale" for test in row["tests"])
+        for row in results
+    )
+    assert errors == ["capability test evidence does not match current candidate source"]
 
 
 def test_current_release_gate_reports_real_blockers() -> None:

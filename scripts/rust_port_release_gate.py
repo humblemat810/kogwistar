@@ -524,8 +524,9 @@ def evaluate_capability_clause_tests(
     phase3: dict[str, Any],
     phase4: dict[str, Any],
     phase5: dict[str, Any],
+    current_source_sha256: str,
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Evaluate every pending profile clause against named test outcomes."""
+    """Evaluate profile clauses only from named tests on the current source."""
     contract = _load_json(ROOT / "contracts" / "dual-language-capabilities-v1.json")
     relevant_capabilities = (
         REQUIRED_PHASE3_CAPABILITY_GROUPS
@@ -550,6 +551,13 @@ def evaluate_capability_clause_tests(
         if len(cells) >= 4
     }
     errors: list[str] = []
+    reports = (phase3, phase4, phase5)
+    candidate_matches = not any(
+        report.get("candidate_source_sha256") != current_source_sha256
+        for report in reports
+    )
+    if not candidate_matches:
+        errors.append("capability test evidence does not match current candidate source")
     if row_keys != expected or len(rows) != len(expected):
         errors.append("capability worklist clauses do not exactly match the normative profiles")
 
@@ -594,11 +602,22 @@ def evaluate_capability_clause_tests(
         checks: list[dict[str, str]] = []
         for source, name in references:
             outcomes = (python_results if source == "pytest" else rust_results).get(name, [])
-            status = "missing" if not outcomes else (
-                "passed" if all(item.get("status") == "passed" for item in outcomes) else "failed"
-            )
+            if not candidate_matches:
+                status = "stale"
+            elif not outcomes:
+                status = "missing"
+            else:
+                status = (
+                    "passed"
+                    if all(item.get("status") == "passed" for item in outcomes)
+                    else "failed"
+                )
             checks.append({"source": source, "function": name, "status": status})
-        passed = bool(checks) and all(check["status"] == "passed" for check in checks)
+        passed = (
+            candidate_matches
+            and bool(checks)
+            and all(check["status"] == "passed" for check in checks)
+        )
         clause_results.append(
             {
                 "capability": capability,
@@ -609,7 +628,7 @@ def evaluate_capability_clause_tests(
         )
         if not checks:
             errors.append(f"{capability}/{clause} has no executable test references")
-        elif not passed:
+        elif not passed and candidate_matches:
             missing = [
                 f"{check['source']}::{check['function']}={check['status']}"
                 for check in checks
@@ -867,6 +886,7 @@ def evaluate_release_gate(
         phase3=phase3_capability_evidence,
         phase4=phase4_runtime_evidence,
         phase5=phase5_server_evidence,
+        current_source_sha256=current_source_sha256,
     )
     for detail in clause_errors:
         blockers.append({"gate": "capability-clauses", "detail": detail})
