@@ -10,7 +10,7 @@
   },
   "interpretation": {
     "python_coverage": "The legacy Python implementation is the current authoritative writer in rust-port-v1; this does not claim every consumer combination is verified.",
-    "rust_coverage": "Derived only from rust-port-v1 rust_cutover_ready. A false value means partial or not cutover-ready, not necessarily no implementation.",
+    "rust_coverage": "ADR-015 release readiness is derived from named test oracles, current-source phase evidence, and same-candidate Docker UAT. rust-port-v1 rust_cutover_ready remains an explicit implementation-selection control; it is not test evidence.",
     "mixed_coverage": "Not inferred from the availability of a facade, extension, or worker. Only explicitly evidenced seams are listed.",
     "native_paths": "All full request-path claims remain unverified until ingress-to-persistence conformance and resource-matched benchmarks pass."
   },

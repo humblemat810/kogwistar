@@ -665,6 +665,60 @@ def evaluate_capability_clause_tests(
     return clause_results, errors
 
 
+def derive_capability_test_readiness(
+    *,
+    clause_results: list[dict[str, Any]],
+    phase_statuses: dict[str, str],
+    library_uat_passed: bool,
+    deferred_capabilities: set[str],
+) -> list[dict[str, Any]]:
+    """Derive capability readiness from required test clauses and closeout gates.
+
+    The manifest's `rust_cutover_ready` field controls explicit implementation
+    selection elsewhere; it is not evidence that a capability passed tests.
+    """
+    oracle_contract = _load_json(ROOT / "contracts" / "adr015-capability-test-oracles-v1.json")
+    capabilities = oracle_contract.get("capabilities", {})
+    statuses_by_capability: dict[str, dict[str, str]] = {}
+    for row in clause_results:
+        capability = row.get("capability")
+        clause = row.get("clause")
+        status = row.get("status")
+        if isinstance(capability, str) and isinstance(clause, str) and isinstance(status, str):
+            statuses_by_capability.setdefault(capability, {})[clause] = status
+
+    readiness: list[dict[str, Any]] = []
+    phase_by_capability = {
+        **{name: "phase3" for name in REQUIRED_PHASE3_CAPABILITY_GROUPS},
+        "workflow-runtime": "phase4",
+        "server-rest-sse-mcp-cli": "phase5",
+    }
+    for capability, clauses in capabilities.items():
+        failed = [
+            clause
+            for clause in clauses
+            if statuses_by_capability.get(capability, {}).get(clause) != "passed"
+        ]
+        blockers = [f"test clause blocked: {clause}" for clause in failed]
+        phase = phase_by_capability.get(capability)
+        if phase is None or phase_statuses.get(phase) != "passed":
+            blockers.append(f"{phase or 'capability'} evidence blocked")
+        if not library_uat_passed:
+            blockers.append("same-candidate Docker library UAT not passed")
+        if capability in deferred_capabilities:
+            blockers.append("required operations remain intentionally deferred")
+        readiness.append(
+            {
+                "capability": capability,
+                "status": "passed" if not blockers else "blocked",
+                "passed_clauses": len(clauses) - len(failed),
+                "required_clauses": len(clauses),
+                "blockers": blockers,
+            }
+        )
+    return readiness
+
+
 def validate_phase3_capability_evidence(
     evidence: dict[str, Any], *, current_source_sha256: str
 ) -> list[str]:
@@ -893,19 +947,22 @@ def evaluate_release_gate(
             }
         )
 
-    for detail in validate_phase3_capability_evidence(
+    phase3_errors = validate_phase3_capability_evidence(
         phase3_capability_evidence, current_source_sha256=current_source_sha256
-    ):
+    )
+    for detail in phase3_errors:
         blockers.append({"gate": "store-local", "detail": detail})
 
-    for detail in validate_phase4_runtime_evidence(
+    phase4_errors = validate_phase4_runtime_evidence(
         phase4_runtime_evidence, current_source_sha256=current_source_sha256
-    ):
+    )
+    for detail in phase4_errors:
         blockers.append({"gate": "runtime-local", "detail": detail})
 
-    for detail in validate_phase5_server_evidence(
+    phase5_errors = validate_phase5_server_evidence(
         phase5_server_evidence, current_source_sha256=current_source_sha256
-    ):
+    )
+    for detail in phase5_errors:
         blockers.append({"gate": "server-local", "detail": detail})
 
     capability_clause_results, clause_errors = evaluate_capability_clause_tests(
@@ -938,7 +995,8 @@ def evaluate_release_gate(
         for detail in _validate_persistent_performance(persistent_report):
             blockers.append({"gate": "performance", "detail": detail})
 
-    for detail in validate_server_operation_deferrals(manifest):
+    server_deferral_errors = validate_server_operation_deferrals(manifest)
+    for detail in server_deferral_errors:
         blockers.append({"gate": "server-deferral", "detail": detail})
 
     ownership = manifest.get("capability_ownership", [])
@@ -955,15 +1013,11 @@ def evaluate_release_gate(
         support_errors = ["dual-language support matrix is missing or invalid"]
     for detail in support_errors:
         blockers.append({"gate": "dual-language-support", "detail": detail})
-    active_rust = {
+    manifest_rust_selection = {
         item.get("capability")
         for item in ownership
         if isinstance(item, dict) and item.get("rust_cutover_ready") is True
     }
-    for capability in sorted(REQUIRED_RUST_OWNERS - active_rust):
-        blockers.append(
-            {"gate": "authority", "detail": f"{capability} is not Rust-cutover-ready"}
-        )
 
     expected_identity = next(iter(identities)) if len(identities) == 1 else None
     uat_candidates = []
@@ -1014,6 +1068,42 @@ def evaluate_release_gate(
         ),
         "reports": len(uat_candidates),
     }
+    deferred_capabilities: set[str] = set()
+    deferrals = manifest.get("server_operation_deferrals", {})
+    if isinstance(deferrals, dict):
+        deferred_groups = [*deferrals.get("route_groups", [])]
+        syscall_group = deferrals.get("syscall_group")
+        if isinstance(syscall_group, dict):
+            deferred_groups.append(syscall_group)
+        for group in deferred_groups:
+            if not isinstance(group, dict) or not group.get("operations"):
+                continue
+            authority = group.get("required_authority", [])
+            if isinstance(authority, list):
+                deferred_capabilities.update(
+                    item for item in authority if isinstance(item, str)
+                )
+            if group is syscall_group:
+                deferred_capabilities.add("server-rest-sse-mcp-cli")
+
+    capability_test_readiness = derive_capability_test_readiness(
+        clause_results=capability_clause_results,
+        phase_statuses={
+            "phase3": "passed" if not phase3_errors else "blocked",
+            "phase4": "passed" if not phase4_errors else "blocked",
+            "phase5": "passed" if not phase5_errors else "blocked",
+        },
+        library_uat_passed=library_uat["status"] == "passed",
+        deferred_capabilities=deferred_capabilities,
+    )
+    for item in capability_test_readiness:
+        if item["status"] == "blocked":
+            blockers.append(
+                {
+                    "gate": "capability-test-readiness",
+                    "detail": f"{item['capability']} blocked: {'; '.join(item['blockers'])}",
+                }
+            )
 
     return {
         "status": "passed" if not blockers else "blocked",
@@ -1067,7 +1157,10 @@ def evaluate_release_gate(
             "results": capability_clause_results,
         },
         "library_uat": library_uat,
-        "rust_cutover_ready_capabilities": sorted(value for value in active_rust if isinstance(value, str)),
+        "capability_test_readiness": capability_test_readiness,
+        "manifest_rust_cutover_selection": sorted(
+            value for value in manifest_rust_selection if isinstance(value, str)
+        ),
         "blockers": blockers,
     }
 
