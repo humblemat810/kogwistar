@@ -327,35 +327,18 @@ def test_release_gate_rejects_empty_selection_outside_supported_profile() -> Non
 
 
 def _clause_test_references() -> list[dict[str, str]]:
-    worklist = (ROOT / "kogwistar/docs/ADR-015-capability-completion-worklist.md").read_text(
-        encoding="utf-8"
-    )
-    section = worklist.partition("## Capability Gate Closure")[2].partition("## Tasklets")[0]
-    rows = [line.strip().strip("|").split("|") for line in section.splitlines() if line.startswith("| `")]
-    python_names = {
-        name
-        for path in (ROOT / "tests").rglob("*.py")
-        for name in re.findall(
-            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
-            path.read_text(encoding="utf-8"),
+    oracle_map = json.loads(
+        (ROOT / "contracts/adr015-capability-test-oracles-v1.json").read_text(
+            encoding="utf-8"
         )
-    }
+    )["capabilities"]
     references: set[tuple[str, str]] = set()
-    for row in rows:
-        evidence = row[3]
-        references.update(
-            ("pytest", name)
-            for name in set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence))
-            if name in python_names
-        )
-        references.update(
-            ("rust", name)
-            for name in re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)", evidence)
-        )
-        references.update(
-            ("rust", name)
-            for _, name in re.findall(r"`(rust/[^`]+?\.rs)::([A-Za-z_][A-Za-z0-9_]*)`", evidence)
-        )
+    for clauses in oracle_map.values():
+        for selectors in clauses.values():
+            for selector in selectors:
+                source, test_path = selector.split(":", 1)
+                _, name = test_path.rsplit("::", 1)
+                references.add((source, name))
     return [
         {"source": source, "function": name, "status": "passed"}
         for source, name in sorted(references)
@@ -471,6 +454,44 @@ def test_capability_clause_results_follow_named_test_outcomes() -> None:
     )
     assert any(row["status"] == "blocked" for row in results)
     assert errors
+
+
+def test_capability_test_oracle_map_covers_normative_clauses_and_existing_tests() -> None:
+    gate = _gate()
+    contract = json.loads(
+        (ROOT / "contracts/dual-language-capabilities-v1.json").read_text(encoding="utf-8")
+    )
+    oracles = json.loads(
+        (ROOT / "contracts/adr015-capability-test-oracles-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    relevant = gate.REQUIRED_PHASE3_CAPABILITY_GROUPS | {
+        "workflow-runtime",
+        "server-rest-sse-mcp-cli",
+    }
+    expected = {
+        (capability, clause)
+        for capability, clauses in contract["conformance_profiles"].items()
+        if capability in relevant
+        for clause in clauses
+    }
+    actual = {
+        (capability, clause)
+        for capability, clauses in oracles["capabilities"].items()
+        for clause in clauses
+    }
+
+    assert actual == expected
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=_phase3_capability_evidence(),
+        phase4=_phase4_runtime_evidence(),
+        phase5=_phase5_evidence(),
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+    assert len(results) == len(expected) == 22
+    assert all(row["tests"] for row in results)
+    assert errors == []
 
 
 def test_capability_clause_results_reject_stale_candidate_test_evidence() -> None:

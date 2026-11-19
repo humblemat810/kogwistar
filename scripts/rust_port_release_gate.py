@@ -538,6 +538,16 @@ def evaluate_capability_clause_tests(
         if capability in relevant_capabilities
         for clause in clauses
     }
+    oracle_contract = _load_json(ROOT / "contracts" / "adr015-capability-test-oracles-v1.json")
+    oracle_capabilities = oracle_contract.get("capabilities", {})
+    if not isinstance(oracle_capabilities, dict):
+        oracle_capabilities = {}
+    oracle_keys = {
+        (capability, clause)
+        for capability, clauses in oracle_capabilities.items()
+        if isinstance(clauses, dict)
+        for clause in clauses
+    }
     worklist = CAPABILITY_WORKLIST_PATH.read_text(encoding="utf-8")
     table = worklist.partition("## Capability Gate Closure")[2].partition("## Tasklets")[0]
     rows = [
@@ -551,6 +561,8 @@ def evaluate_capability_clause_tests(
         if len(cells) >= 4
     }
     errors: list[str] = []
+    if oracle_contract.get("schema_version") != 1 or oracle_keys != expected:
+        errors.append("capability test-oracle selectors do not exactly match normative profiles")
     reports = (phase3, phase4, phase5)
     candidate_matches = not any(
         report.get("candidate_source_sha256") != current_source_sha256
@@ -561,14 +573,25 @@ def evaluate_capability_clause_tests(
     if row_keys != expected or len(rows) != len(expected):
         errors.append("capability worklist clauses do not exactly match the normative profiles")
 
-    python_tests = {
-        name
-        for path in (ROOT / "tests").rglob("*.py")
-        for name in re.findall(
-            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
-            path.read_text(encoding="utf-8"),
-        )
-    }
+    def selector_exists(selector: str) -> bool:
+        try:
+            source, test_path = selector.split(":", 1)
+            relative_path, function = test_path.rsplit("::", 1)
+            path = (ROOT / relative_path).resolve()
+            path.relative_to(ROOT.resolve())
+            if source == "pytest":
+                expected_root = (ROOT / "tests").resolve()
+                path.relative_to(expected_root)
+                pattern = rf"(?m)^\s*(?:async\s+)?def\s+{re.escape(function)}\s*\("
+            elif source == "rust":
+                path.relative_to((ROOT / "rust").resolve())
+                pattern = rf"\bfn\s+{re.escape(function)}\s*\("
+            else:
+                return False
+            return path.is_file() and re.search(pattern, path.read_text(encoding="utf-8")) is not None
+        except (OSError, ValueError):
+            return False
+
     python_results: dict[str, list[dict[str, Any]]] = {}
     rust_results: dict[str, list[dict[str, Any]]] = {}
     for report in (phase3, phase4, phase5):
@@ -585,22 +608,25 @@ def evaluate_capability_clause_tests(
     for cells in rows:
         if len(cells) < 4:
             continue
-        capability, clause, _documented_status, evidence = (
+        capability, clause, _documented_status, _description = (
             cell.strip().strip("`") for cell in cells[:4]
         )
-        python_names = sorted(set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence)) & python_tests)
-        rust_names = set(re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)", evidence))
-        rust_names.update(
-            name
-            for _, name in re.findall(
-                r"`(rust/[^`]+?\.rs)::([A-Za-z_][A-Za-z0-9_]*)`", evidence
-            )
+        capability_oracles = oracle_capabilities.get(capability, {})
+        selectors = (
+            capability_oracles.get(clause, [])
+            if isinstance(capability_oracles, dict)
+            else []
         )
-        references = [("pytest", name) for name in python_names] + [
-            ("rust", name) for name in sorted(rust_names)
-        ]
+        if not isinstance(selectors, list) or not selectors or len(selectors) != len(set(selectors)):
+            errors.append(f"{capability}/{clause} has missing or duplicate test-oracle selectors")
+            selectors = []
         checks: list[dict[str, str]] = []
-        for source, name in references:
+        for selector in selectors:
+            if not isinstance(selector, str) or not selector_exists(selector):
+                checks.append({"selector": str(selector), "status": "missing"})
+                continue
+            source, test_path = selector.split(":", 1)
+            _, name = test_path.rsplit("::", 1)
             outcomes = (python_results if source == "pytest" else rust_results).get(name, [])
             if not candidate_matches:
                 status = "stale"
@@ -612,7 +638,7 @@ def evaluate_capability_clause_tests(
                     if all(item.get("status") == "passed" for item in outcomes)
                     else "failed"
                 )
-            checks.append({"source": source, "function": name, "status": status})
+            checks.append({"selector": selector, "status": status})
         passed = (
             candidate_matches
             and bool(checks)
@@ -630,7 +656,7 @@ def evaluate_capability_clause_tests(
             errors.append(f"{capability}/{clause} has no executable test references")
         elif not passed and candidate_matches:
             missing = [
-                f"{check['source']}::{check['function']}={check['status']}"
+                f"{check['selector']}={check['status']}"
                 for check in checks
                 if check["status"] != "passed"
             ]
