@@ -332,17 +332,24 @@ def _clause_test_references() -> list[dict[str, str]]:
             encoding="utf-8"
         )
     )["capabilities"]
-    references: set[tuple[str, str]] = set()
+    references: set[str] = set()
     for clauses in oracle_map.values():
         for selectors in clauses.values():
             for selector in selectors:
-                source, test_path = selector.split(":", 1)
-                _, name = test_path.rsplit("::", 1)
-                references.add((source, name))
-    return [
-        {"source": source, "function": name, "status": "passed"}
-        for source, name in sorted(references)
-    ]
+                references.add(selector)
+    results = []
+    for selector in sorted(references):
+        source, test_path = selector.split(":", 1)
+        relative_path, function = test_path.rsplit("::", 1)
+        result = {"source": source, "function": function, "status": "passed"}
+        if source == "pytest":
+            result["classname"] = relative_path.removesuffix(".py").replace("/", ".")
+            result["name"] = function
+        else:
+            module_path = relative_path.split("/src/", 1)[-1].removesuffix(".rs")
+            result["name"] = "::".join((*module_path.split("/"), function))
+        results.append(result)
+    return results
 
 
 def _phase5_evidence(source_sha256: str | None = None) -> dict:
@@ -356,20 +363,27 @@ def _phase5_evidence(source_sha256: str | None = None) -> dict:
             "live_async_sse_required": name == "async-sse",
             "counts": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
             "test_results": [
-                {"source": "pytest", "function": "fixture_test", "status": "passed"}
+                {
+                    "source": "pytest",
+                    "classname": "tests.fixture",
+                    "name": "fixture_test",
+                    "function": "fixture_test",
+                    "status": "passed",
+                }
             ],
         }
         if name == "rust-api":
             references = _clause_test_references()
             group["excluded_test_filters"] = sorted(_gate().RUST_API_EXCLUDED_TESTS)
             group["required_services"] = ["PostgreSQL", "Chroma"]
+            group["test_profile"] = "debug-ci"
             group["counts"].update(
                 {"tests": len(references), "passed": len(references), "filtered_out": 1}
             )
             group["test_results"] = references
         groups.append(group)
     return {
-        "schema": "adr015-phase5-server-gate/v3",
+        "schema": "adr015-phase5-server-gate/v4",
         "candidate_source_sha256": source_sha256,
         "server_authority": "python-baseline-before-rust-cutover",
         "production_rolling_upgrade": "not-proven-local",
@@ -390,7 +404,13 @@ def _phase3_capability_evidence(source_sha256: str | None = None) -> dict:
                 "live_postgres_required": True,
                 "counts": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
                 "test_results": [
-                    {"source": "pytest", "function": "fixture_test", "status": "passed"}
+                    {
+                        "source": "pytest",
+                        "classname": "tests.fixture",
+                        "name": "fixture_test",
+                        "function": "fixture_test",
+                        "status": "passed",
+                    }
                 ],
             }
         )
@@ -415,7 +435,13 @@ def _phase4_runtime_evidence(source_sha256: str | None = None) -> dict:
                 "live_postgres_required": name == "postgres",
                 "counts": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
                 "test_results": [
-                    {"source": "pytest", "function": "fixture_test", "status": "passed"}
+                    {
+                        "source": "pytest",
+                        "classname": "tests.fixture",
+                        "name": "fixture_test",
+                        "function": "fixture_test",
+                        "status": "passed",
+                    }
                 ],
             }
         )
@@ -452,6 +478,32 @@ def test_capability_clause_results_follow_named_test_outcomes() -> None:
         phase5=phase5,
         current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
     )
+    assert any(row["status"] == "blocked" for row in results)
+    assert errors
+
+
+@pytest.mark.parametrize("source", ["pytest", "rust"])
+def test_capability_oracle_requires_exact_test_module_and_function(source: str) -> None:
+    gate = _gate()
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    rust_group = next(group for group in phase5["groups"] if group["name"] == "rust-api")
+    target = next(
+        result for result in rust_group["test_results"] if result["source"] == source
+    )
+    if source == "pytest":
+        target["classname"] = "wrong.module"
+    else:
+        target["function"] = "wrong_function"
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+
     assert any(row["status"] == "blocked" for row in results)
     assert errors
 
@@ -760,6 +812,7 @@ def test_gate_rejects_rust_api_server_evidence_with_ignored_or_missing_tests() -
     rust_api = next(group for group in evidence["groups"] if group["name"] == "rust-api")
     rust_api["counts"]["skipped"] = 1
     rust_api["required_services"] = ["PostgreSQL"]
+    rust_api["test_profile"] = "release"
 
     result = _gate().evaluate_release_gate(
         manifest=manifest,
@@ -772,6 +825,7 @@ def test_gate_rejects_rust_api_server_evidence_with_ignored_or_missing_tests() -
 
     details = {row["detail"] for row in result["blockers"]}
     assert "Phase-5 Rust API group rust-api has failures or errors" in details
+    assert "Phase-5 Rust API tests must use the CI debug profile" in details
     assert "Phase-5 Rust API evidence must require PostgreSQL and Chroma" in details
     assert (
         "Phase-5 Rust API evidence must pass all non-excluded tests with no ignored tests"

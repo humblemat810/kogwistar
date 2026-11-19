@@ -31,7 +31,7 @@ def test_phase5_gate_is_persisted_and_keeps_production_upgrade_separate() -> Non
     assert 'counts["skipped"] == 0' in source
     assert "RUST_API_GROUP = \"rust-api\"" in source
     assert "--include-ignored" in source
-    assert "adr015-phase5-server-gate/v3" in source
+    assert "adr015-phase5-server-gate/v4" in source
 
 
 def test_rust_api_gate_requires_live_services_and_records_cargo_test_counts(
@@ -44,6 +44,7 @@ def test_rust_api_gate_requires_live_services_and_records_cargo_test_counts(
 
     def fake_run(command, **kwargs):
         assert "--include-ignored" in command
+        assert "--release" not in command
         assert kwargs["env"]["KOGWISTAR_TEST_PG_DSN"] == "postgresql://test/db"
         kwargs["stdout"].write("running 455 tests\n")
         for index in range(455):
@@ -69,6 +70,7 @@ def test_rust_api_gate_requires_live_services_and_records_cargo_test_counts(
     }
     assert len(result["test_results"]) == 455
     assert result["required_services"] == ["PostgreSQL", "Chroma"]
+    assert result["test_profile"] == "debug-ci"
 
 
 def test_rust_api_gate_fails_closed_without_live_services(

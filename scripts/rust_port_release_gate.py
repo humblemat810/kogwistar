@@ -424,7 +424,7 @@ def validate_phase5_server_evidence(
 ) -> list[str]:
     """Require current-source server UAT evidence without implying deployment."""
     errors: list[str] = []
-    if evidence.get("schema") != "adr015-phase5-server-gate/v3":
+    if evidence.get("schema") != "adr015-phase5-server-gate/v4":
         errors.append("Phase-5 server evidence has an unsupported schema")
     if evidence.get("candidate_source_sha256") != current_source_sha256:
         errors.append("Phase-5 server evidence does not match current candidate source")
@@ -468,6 +468,8 @@ def validate_phase5_server_evidence(
         ):
             errors.append("Phase-5 async-sse evidence must be live and unskipped")
         if name == "rust-api":
+            if group.get("test_profile") != "debug-ci":
+                errors.append("Phase-5 Rust API tests must use the CI debug profile")
             if (
                 not isinstance(counts, dict)
                 or counts.get("failures") != 0
@@ -588,21 +590,36 @@ def evaluate_capability_clause_tests(
                 pattern = rf"\bfn\s+{re.escape(function)}\s*\("
             else:
                 return False
-            return path.is_file() and re.search(pattern, path.read_text(encoding="utf-8")) is not None
+            if not path.is_file() or re.search(pattern, path.read_text(encoding="utf-8")) is None:
+                return False
+            if source == "rust":
+                api_source = (ROOT / "rust/crates/kogwistar-api/src/lib.rs").read_text(
+                    encoding="utf-8"
+                )
+                include_path = path.relative_to(
+                    ROOT / "rust/crates/kogwistar-api/src"
+                ).as_posix()
+                return f'include!("{include_path}")' in api_source
+            return True
         except (OSError, ValueError):
             return False
 
-    python_results: dict[str, list[dict[str, Any]]] = {}
+    python_results: dict[tuple[str, str], list[dict[str, Any]]] = {}
     rust_results: dict[str, list[dict[str, Any]]] = {}
     for report in (phase3, phase4, phase5):
         for group in report.get("groups", []):
             for result in group.get("test_results", []):
                 if not isinstance(result, dict):
                     continue
-                index = python_results if result.get("source") == "pytest" else rust_results
                 function = result.get("function")
-                if isinstance(function, str):
-                    index.setdefault(function, []).append(result)
+                if not isinstance(function, str):
+                    continue
+                if result.get("source") == "pytest":
+                    classname = result.get("classname")
+                    if isinstance(classname, str):
+                        python_results.setdefault((classname, function), []).append(result)
+                elif result.get("source") == "rust":
+                    rust_results.setdefault(function, []).append(result)
 
     clause_results: list[dict[str, Any]] = []
     for cells in rows:
@@ -626,8 +643,17 @@ def evaluate_capability_clause_tests(
                 checks.append({"selector": str(selector), "status": "missing"})
                 continue
             source, test_path = selector.split(":", 1)
-            _, name = test_path.rsplit("::", 1)
-            outcomes = (python_results if source == "pytest" else rust_results).get(name, [])
+            relative_path, name = test_path.rsplit("::", 1)
+            if source == "pytest":
+                module = relative_path.removesuffix(".py").replace("/", ".")
+                outcomes = python_results.get((module, name), [])
+            else:
+                # Rust test source files are included into one `tests` module;
+                # Cargo's test name therefore does not preserve the source file.
+                # Require the selector file to be included and the test name to
+                # be unique in the complete recorded run, otherwise fail closed.
+                rust_matches = rust_results.get(name, [])
+                outcomes = rust_matches if len(rust_matches) == 1 else []
             if not candidate_matches:
                 status = "stale"
             elif not outcomes:

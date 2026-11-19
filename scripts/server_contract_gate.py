@@ -203,7 +203,6 @@ def _run_rust_api_group(*, output_root: Path) -> dict[str, Any]:
         "test",
         "--manifest-path",
         "rust/Cargo.toml",
-        "--release",
         "--locked",
         "-p",
         "kogwistar-api",
@@ -232,6 +231,7 @@ def _run_rust_api_group(*, output_root: Path) -> dict[str, Any]:
             "counts": None,
             "excluded_test_filters": sorted(RUST_API_EXCLUDED_TESTS),
             "required_services": ["PostgreSQL", "Chroma"],
+            "test_profile": "debug-ci",
             "status": "failed",
         }
 
@@ -334,6 +334,7 @@ def _run_rust_api_group(*, output_root: Path) -> dict[str, Any]:
         "test_results": test_results,
         "excluded_test_filters": sorted(RUST_API_EXCLUDED_TESTS),
         "required_services": ["PostgreSQL", "Chroma"],
+        "test_profile": "debug-ci",
         "status": "passed" if passed else "failed",
     }
 
@@ -358,7 +359,7 @@ def run_gate(
                 )
             )
     return {
-        "schema": "adr015-phase5-server-gate/v3",
+        "schema": "adr015-phase5-server-gate/v4",
         "candidate_source_sha256": source_sha256,
         "candidate_source_file_count": source_file_count,
         "server_authority": "python-baseline-before-rust-cutover",
