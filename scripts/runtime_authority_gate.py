@@ -124,36 +124,34 @@ def _run_group(
         NON_SLOW_MARKERS,
         "-p",
         "no:cacheprovider",
+        "-o",
+        "faulthandler_timeout=30",
         f"--junitxml={junit}",
         *tests,
     ]
+    stdout_path = output_root / f"{name}.out.txt"
+    stderr_path = output_root / f"{name}.err.txt"
     timed_out = False
-    try:
-        completed = subprocess.run(
-            command,
-            cwd=ROOT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            capture_output=True,
-            check=False,
-            timeout=GROUP_TIMEOUT_SECONDS,
-        )
-        returncode = completed.returncode
-        stdout = completed.stdout
-        stderr = completed.stderr
-    except subprocess.TimeoutExpired as error:
-        timed_out = True
-        returncode = 124
-        stdout = error.stdout or ""
-        stderr = error.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
-        stderr += f"\nPhase-4 group exceeded {GROUP_TIMEOUT_SECONDS}-second timeout\n"
-    (output_root / f"{name}.out.txt").write_text(stdout, encoding="utf-8")
-    (output_root / f"{name}.err.txt").write_text(stderr, encoding="utf-8")
+    with (
+        stdout_path.open("w", encoding="utf-8") as stdout_file,
+        stderr_path.open("w", encoding="utf-8") as stderr_file,
+    ):
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                check=False,
+                timeout=GROUP_TIMEOUT_SECONDS,
+            )
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = 124
+            stderr_file.write(
+                f"\nPhase-4 group exceeded {GROUP_TIMEOUT_SECONDS}-second timeout\n"
+            )
     counts = _junit_counts(junit) if junit.is_file() else None
     test_results = read_junit_test_results(junit)
     passed = (

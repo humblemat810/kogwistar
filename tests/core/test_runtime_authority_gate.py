@@ -104,8 +104,13 @@ def test_phase4_group_timeout_is_recorded_as_failure(
 
     def fake_run(command, **kwargs):
         assert "no:cacheprovider" in command
+        assert "faulthandler_timeout=30" in command
         assert kwargs["timeout"] == gate.GROUP_TIMEOUT_SECONDS
-        raise gate.subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"partial")
+        assert kwargs["stdout"].writable()
+        assert kwargs["stderr"].writable()
+        kwargs["stdout"].write("partial stdout")
+        kwargs["stderr"].write("partial stderr")
+        raise gate.subprocess.TimeoutExpired(command, kwargs["timeout"])
 
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
     result = gate._run_group(
@@ -120,7 +125,9 @@ def test_phase4_group_timeout_is_recorded_as_failure(
     assert result["returncode"] == 124
     assert result["timed_out"] is True
     assert result["timeout_seconds"] == 600
-    assert "partial" in (tmp_path / "durable-worker.out.txt").read_text(encoding="utf-8")
-    assert "exceeded 600-second timeout" in (
-        tmp_path / "durable-worker.err.txt"
-    ).read_text(encoding="utf-8")
+    assert "partial stdout" in (tmp_path / "durable-worker.out.txt").read_text(
+        encoding="utf-8"
+    )
+    stderr = (tmp_path / "durable-worker.err.txt").read_text(encoding="utf-8")
+    assert "partial stderr" in stderr
+    assert "exceeded 600-second timeout" in stderr
