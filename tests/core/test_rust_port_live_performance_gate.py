@@ -20,7 +20,8 @@ def test_live_persistent_python_rust_performance_gate(tmp_path: Path) -> None:
         output_root,
         items=100,
         read_cycles=20,
-        samples=5,
+        # More fresh databases stabilize tail-latency estimates on hosted runners.
+        samples=10,
         selected_modes=("python", "rust"),
     )
     report_path = Path(
