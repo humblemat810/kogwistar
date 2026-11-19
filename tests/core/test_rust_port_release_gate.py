@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -573,6 +572,38 @@ def test_capability_readiness_is_derived_from_test_evidence_not_manifest_flags()
         deferred_capabilities=set(),
     )
     assert blocked[0]["status"] == "blocked"
+
+
+def test_capability_readiness_fails_closed_on_duplicate_or_missing_clause_results() -> None:
+    gate = _gate()
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=_phase3_capability_evidence(),
+        phase4=_phase4_runtime_evidence(),
+        phase5=_phase5_evidence(),
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+    assert errors == []
+
+    duplicate = dict(results[0])
+    results[0]["status"] = "blocked"
+    results.append(duplicate)
+    readiness = gate.derive_capability_test_readiness(
+        clause_results=results,
+        phase_statuses={"phase3": "passed", "phase4": "passed", "phase5": "passed"},
+        library_uat_passed=True,
+        deferred_capabilities=set(),
+    )
+
+    assert readiness[0]["status"] == "blocked"
+    assert results[0]["clause"] in readiness[0]["blockers"][0]
+
+    missing = gate.derive_capability_test_readiness(
+        clause_results=[],
+        phase_statuses={"phase3": "passed", "phase4": "passed", "phase5": "passed"},
+        library_uat_passed=True,
+        deferred_capabilities=set(),
+    )
+    assert all(item["status"] == "blocked" for item in missing)
 
 
 def test_capability_clause_results_reject_stale_candidate_test_evidence() -> None:

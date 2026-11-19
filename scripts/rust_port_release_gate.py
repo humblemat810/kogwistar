@@ -705,13 +705,13 @@ def derive_capability_test_readiness(
     """
     oracle_contract = _load_json(ROOT / "contracts" / "adr015-capability-test-oracles-v1.json")
     capabilities = oracle_contract.get("capabilities", {})
-    statuses_by_capability: dict[str, dict[str, str]] = {}
+    statuses_by_capability: dict[str, dict[str, list[str]]] = {}
     for row in clause_results:
         capability = row.get("capability")
         clause = row.get("clause")
         status = row.get("status")
         if isinstance(capability, str) and isinstance(clause, str) and isinstance(status, str):
-            statuses_by_capability.setdefault(capability, {})[clause] = status
+            statuses_by_capability.setdefault(capability, {}).setdefault(clause, []).append(status)
 
     readiness: list[dict[str, Any]] = []
     phase_by_capability = {
@@ -723,7 +723,7 @@ def derive_capability_test_readiness(
         failed = [
             clause
             for clause in clauses
-            if statuses_by_capability.get(capability, {}).get(clause) != "passed"
+            if statuses_by_capability.get(capability, {}).get(clause) != ["passed"]
         ]
         blockers = [f"test clause blocked: {clause}" for clause in failed]
         phase = phase_by_capability.get(capability)
