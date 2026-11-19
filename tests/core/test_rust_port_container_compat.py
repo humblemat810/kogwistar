@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 from pathlib import Path
@@ -39,8 +40,8 @@ def test_container_harness_uses_dual_venv_and_cleans_native_bridge() -> None:
     assert harness._DOCKERFILE.is_file()
     assert "python -m venv /opt/core" in dockerfile
     assert "python -m venv /opt/consumer" in dockerfile
-    assert "${WHEEL_NAME}[full,test]" in dockerfile
-    assert "${WHEEL_NAME}[test,chroma]" in dockerfile
+    assert "${WHEEL_NAME}[full,test,benchmark]" in dockerfile
+    assert "${WHEEL_NAME}[test,chroma,benchmark,pgvector]" in dockerfile
     assert "candidate.whl" not in dockerfile
     assert "pytest-xdist>=3.8,<4" in dockerfile
     assert "ghcr.io/astral-sh/uv:0.10.10" in dockerfile
@@ -74,12 +75,34 @@ def test_container_stage_includes_pypy_contract_and_vision_fixture_inputs() -> N
     assert '"requirements-pypy-3.11-experimental.txt"' in source
     assert '"constraints-pypy-3.12.txt"' in source
     assert '"examples/vision_rag"' in source
+    assert '"doc/pypy_3_12_support_action_plan.md"' in source
+    assert '"doc/testing_guide.md"' in source
+    assert '"frontend/src/App.tsx"' in source
 
 
 def test_compat_profiles_exclude_direct_cargo_benchmarks() -> None:
     source = (ROOT / "scripts" / "rust_port_compat.py").read_text(encoding="utf-8")
 
     assert "and not requires_cargo" in source
+
+
+def test_mixed_mcp_tests_that_build_native_server_require_cargo() -> None:
+    source = (ROOT / "tests" / "core" / "test_mixed_mcp_benchmark.py").read_text(
+        encoding="utf-8"
+    )
+    module = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    for name in (
+        "test_rust_native_http_transport_attribution_is_complete",
+        "test_concurrent_mcp_transports_preserve_exact_visibility",
+    ):
+        decorators = {ast.unparse(decorator) for decorator in functions[name].decorator_list}
+        assert "pytest.mark.requires_cargo" in decorators
 
 
 def test_container_harness_default_image_is_patch_pinned() -> None:
@@ -126,12 +149,19 @@ def test_wheel_build_report_must_match_candidate_digest(tmp_path: Path) -> None:
         harness._wheel_build_report(wheel, tmp_path)
 
 
-def test_container_runner_binds_verified_wheel_digest_into_candidate_identity() -> None:
+def test_container_runner_binds_verified_wheel_digest_into_candidate_identity(
+    tmp_path: Path,
+) -> None:
+    harness = _harness()
     source = (ROOT / "scripts" / "rust_port_container_compat.py").read_text(
         encoding="utf-8"
     )
+    wheel = tmp_path / "wheel.whl"
+    wheel.write_bytes(b"verified wheel")
 
-    assert '"--wheel-sha256",\n        str(metadata["wheel_sha256"]),' in source
+    assert harness._wheel_identity_args(wheel) == ["--wheel-sha256", harness._sha256(wheel)]
+    assert "common_args.extend(_wheel_identity_args(wheel))" in source
+    assert 'str(metadata["wheel_sha256"])' not in source
 
 
 def test_container_harness_defaults_xdist_off_after_controlled_slowdown(
@@ -251,11 +281,11 @@ def test_source_stage_includes_parser_owned_core_test_helper(
     assert (
         application / "kogwistar",
         stage / "application" / "kogwistar",
-        ("tests/_helpers",),
+        ("tests/_helpers", "constraints-pypy-3.12.txt", "pyproject.toml"),
     ) in calls
 
 
-def test_source_stage_includes_root_mcp_entrypoint(
+def test_source_stage_includes_root_mcp_and_docker_uat_assets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     harness = _harness()
@@ -275,7 +305,23 @@ def test_source_stage_includes_root_mcp_entrypoint(
 
     harness._source_stage(root, application, stage)
 
-    assert any(source == root and "server_mcp.py" in paths for source, _target, paths in calls)
+    root_paths = next(paths for source, _target, paths in calls if source == root)
+    application_paths = next(paths for source, _target, paths in calls if source == application)
+    assert "server_mcp.py" in root_paths
+    assert {
+        ".github",
+        "data/seed_bundles/rl_llm_agent_tool_use_v1.json",
+        "docker",
+        "Dockerfile*",
+        "compose*.yml",
+        "doc/pypy_3_12_support_action_plan.md",
+        "doc/testing_guide.md",
+        "frontend/public/compose.html",
+        "frontend/src/App.tsx",
+        "integrations/hermes-agent",
+        "requirements",
+        "skills",
+    } <= set(application_paths)
 
 
 def _write_shard(
@@ -342,6 +388,58 @@ def test_merge_shards_requires_same_identity_and_exact_group_coverage(
     _write_shard(second, shard_index=1, selected=[0])
     with pytest.raises(ValueError, match="missing or duplicated"):
         harness._merge_shard_reports([first, second], output)
+
+
+def test_merge_shards_accepts_milestone_groups_with_no_selected_tests(
+    tmp_path: Path,
+) -> None:
+    harness = _harness()
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    output = tmp_path / "merged.json"
+    _write_shard(first, shard_index=0, selected=[0])
+    _write_shard(second, shard_index=1, selected=[1])
+
+    for path in (first, second):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        layer = payload["layers"][0]
+        layer["test_profile"] = "milestone"
+        for run in layer["runs"]:
+            run["returncode"] = 5
+            run["stdout"] = "================ 2 deselected in 0.01s ================"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+
+    merged = harness._merge_shard_reports([first, second], output)
+
+    assert merged["status"] == "passed"
+    assert [run["returncode"] for run in merged["layers"][0]["runs"]] == [5, 5]
+
+
+def test_merge_shards_rejects_empty_selection_outside_supported_profile(
+    tmp_path: Path,
+) -> None:
+    harness = _harness()
+    first = tmp_path / "first.json"
+    second = tmp_path / "second.json"
+    output = tmp_path / "merged.json"
+    _write_shard(first, shard_index=0, selected=[0])
+    _write_shard(second, shard_index=1, selected=[1])
+    payload = json.loads(first.read_text(encoding="utf-8"))
+    payload["layers"][0]["runs"][0]["returncode"] = 5
+    first.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="unverified group run"):
+        harness._merge_shard_reports([first, second], output)
+
+
+def test_external_postgres_dsn_is_shard_scoped_and_requires_one_token() -> None:
+    harness = _harness()
+
+    assert harness._postgres_dsn_for_shard(
+        "postgresql+psycopg://user:secret@host/db_{shard}", 2
+    ) == "postgresql+psycopg://user:secret@host/db_2"
+    with pytest.raises(ValueError, match=r"exactly one \{shard\} token"):
+        harness._postgres_dsn_for_shard("postgresql://host/db", 0)
 
 
 def test_merge_shards_rejects_run_set_that_differs_from_selected_groups(

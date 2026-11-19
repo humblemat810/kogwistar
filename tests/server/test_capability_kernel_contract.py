@@ -961,6 +961,16 @@ def test_submit_turn_for_answer_keeps_authorized_actor_distinct_from_owner(
 def test_submit_turn_for_answer_replays_idempotency_key_and_rejects_payload_change(
     monkeypatch, engine_triplet
 ):
+    workflow_contract_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "answer-workflow-runtime-contract-v1.json"
+    )
+    workflow_contract = json.loads(workflow_contract_path.read_text(encoding="utf-8"))
+    workflow_id = "agentic_answering.v2"
+    assert workflow_id in workflow_contract["workflows"]
+
     engine, conversation_engine, workflow_engine = engine_triplet
     service, registry = _configure_server(
         monkeypatch,
@@ -1008,7 +1018,7 @@ def test_submit_turn_for_answer_replays_idempotency_key_and_rejects_payload_chan
                 "conversation.send_message.fingerprint",
                 "conversation-owner",
                 created["conversation_id"],
-                "agentic_answering.v2",
+                workflow_id,
                 request["text"],
             )
         )

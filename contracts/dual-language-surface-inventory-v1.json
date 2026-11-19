@@ -1017,21 +1017,23 @@
       "dispatches": [
         "create_conversation",
         "invoke_tool",
-        "receive_message"
+        "mount_memory",
+        "receive_message",
+        "send_message"
       ],
       "unavailable": [
         "checkpoint",
-        "mount_memory",
         "project_view",
         "request_approval",
         "resume",
-        "send_message",
         "spawn_process",
         "terminate_process"
       ],
       "cutover_deferred": [
         "invoke_tool",
-        "receive_message"
+        "mount_memory",
+        "receive_message",
+        "send_message"
       ],
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     }

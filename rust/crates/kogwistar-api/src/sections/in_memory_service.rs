@@ -242,205 +242,203 @@ impl InMemoryGraphApplicationService {
         let claim_message_id = lane.message_id.clone();
         let claim_owner = claimed_by.clone();
         let operation = async move {
-        let message_id = lane.message_id.clone();
-        let run_id = lane.run_id.clone().unwrap_or_default();
-        let cancel_requested =
-            kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .is_some_and(|run| run.cancel_requested);
-        if cancel_requested {
-            kogwistar_store::LaneMessageWriteStore::update_projected_lane_message_status(
-                &self.store,
-                &message_id,
-                "cancelled",
-                None,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-            return Ok(true);
-        }
-        let payload: Value = match lane
-            .payload_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-        {
-            Ok(Some(payload)) => payload,
-            Ok(None) => json!({}),
-            Err(error) => {
-                self.dead_letter_native_lane(
-                    &message_id,
-                    &claimed_by,
-                    "invalid native step payload",
-                )
-                .await?;
-                return Err(format!("invalid native step payload: {error}"));
-            }
-        };
-        let operation = payload["op"]
-            .as_str()
-            .map(str::to_owned)
-            .and_then(|operation| {
-                kogwistar_runtime::native_operation_for_target(
-                    &operation,
-                    payload["executor_target"].as_str(),
-                )
-                .map(str::to_owned)
-            });
-        let expected_event_seq = payload["expected_event_seq"].as_i64().unwrap_or_default();
-        let work = runtime_claimed_work(lane, &claimed_by, run_id, payload, expected_event_seq);
-        let (handoff, mut native_request) = match native_request_for_claimed_work(&work) {
-            Ok(value) => value,
-            Err(error) => {
-                self.dead_letter_native_lane(
-                    &message_id,
-                    &claimed_by,
-                    "native step request validation failed",
-                )
-                .await?;
-                return Err(error);
-            }
-        };
-        if !self
-            .native_operations
-            .supports(&native_request.operation, &native_request.op_version)
-        {
-            self.dead_letter_native_lane(
-                &message_id,
-                &claimed_by,
-                "native operation is not registered",
-            )
-            .await?;
-            return Ok(true);
-        }
-        let result = match if operation.as_deref() == Some("agent.event.request") {
-            self.execute_in_memory_native_provider_event_request(handoff.clone(), native_request)
-                .await
-        } else {
-            if operation.as_deref() == Some("agent.event.receive") {
-                match self
-                    .claim_in_memory_native_provider_event(&native_request)
+            let message_id = lane.message_id.clone();
+            let run_id = lane.run_id.clone().unwrap_or_default();
+            let cancel_requested =
+                kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id)
                     .await
-                {
-                    Ok(Some(context)) => {
-                        native_request.ephemeral_context.insert(
-                            "authorized_provider_event".to_owned(),
-                            context["event"].clone(),
-                        );
-                        native_request.ephemeral_context.insert(
-                            "authorized_provider_event_claim".to_owned(),
-                            context["claim"].clone(),
-                        );
-                    }
-                    Ok(None) => {
-                        kogwistar_store::LaneMessageWriteStore::requeue_projected_lane_message(
-                            &self.store,
-                            &message_id,
-                            &claimed_by,
-                            None,
-                            1,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                        return Ok(true);
-                    }
-                    Err(error) => return Err(error),
-                }
+                    .map_err(|error| error.to_string())?
+                    .is_some_and(|run| run.cancel_requested);
+            if cancel_requested {
+                kogwistar_store::LaneMessageWriteStore::update_projected_lane_message_status(
+                    &self.store,
+                    &message_id,
+                    "cancelled",
+                    None,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+                return Ok(true);
             }
-            native_result_from_request(
-                handoff.clone(),
-                native_request,
-                &self.native_operations,
-            )
-        } {
-            Ok(result) => result,
-            Err(error) => {
+            let payload: Value = match lane
+                .payload_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
+            {
+                Ok(Some(payload)) => payload,
+                Ok(None) => json!({}),
+                Err(error) => {
+                    self.dead_letter_native_lane(
+                        &message_id,
+                        &claimed_by,
+                        "invalid native step payload",
+                    )
+                    .await?;
+                    return Err(format!("invalid native step payload: {error}"));
+                }
+            };
+            let operation = payload["op"]
+                .as_str()
+                .map(str::to_owned)
+                .and_then(|operation| {
+                    kogwistar_runtime::native_operation_for_target(
+                        &operation,
+                        payload["executor_target"].as_str(),
+                    )
+                    .map(str::to_owned)
+                });
+            let expected_event_seq = payload["expected_event_seq"].as_i64().unwrap_or_default();
+            let work = runtime_claimed_work(lane, &claimed_by, run_id, payload, expected_event_seq);
+            let (handoff, mut native_request) = match native_request_for_claimed_work(&work) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.dead_letter_native_lane(
+                        &message_id,
+                        &claimed_by,
+                        "native step request validation failed",
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
+            if !self
+                .native_operations
+                .supports(&native_request.operation, &native_request.op_version)
+            {
                 self.dead_letter_native_lane(
                     &message_id,
                     &claimed_by,
-                    "native noop execution failed",
+                    "native operation is not registered",
                 )
                 .await?;
-                return Err(error);
+                return Ok(true);
             }
-        };
-        let Some(effect) = result.effect else {
-            self.dead_letter_native_lane(
-                &message_id,
-                &claimed_by,
-                "native noop did not produce a worker effect",
-            )
-            .await?;
-            return Err("native noop did not produce a worker effect".to_owned());
-        };
-        let commit = if effect.graph_mutation_batch.is_some()
-            || effect.graph_mutation_batch_v2.is_some()
-        {
-            if !effect.provider_event_acknowledgements.is_empty() {
+            let result = match if operation.as_deref() == Some("agent.event.request") {
+                self.execute_in_memory_native_provider_event_request(
+                    handoff.clone(),
+                    native_request,
+                )
+                .await
+            } else {
+                if operation.as_deref() == Some("agent.event.receive") {
+                    match self
+                        .claim_in_memory_native_provider_event(&native_request)
+                        .await
+                    {
+                        Ok(Some(context)) => {
+                            native_request.ephemeral_context.insert(
+                                "authorized_provider_event".to_owned(),
+                                context["event"].clone(),
+                            );
+                            native_request.ephemeral_context.insert(
+                                "authorized_provider_event_claim".to_owned(),
+                                context["claim"].clone(),
+                            );
+                        }
+                        Ok(None) => {
+                            kogwistar_store::LaneMessageWriteStore::requeue_projected_lane_message(
+                                &self.store,
+                                &message_id,
+                                &claimed_by,
+                                None,
+                                1,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                            return Ok(true);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                native_result_from_request(handoff.clone(), native_request, &self.native_operations)
+            } {
+                Ok(result) => result,
+                Err(error) => {
+                    self.dead_letter_native_lane(
+                        &message_id,
+                        &claimed_by,
+                        "native noop execution failed",
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
+            let Some(effect) = result.effect else {
                 self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "native noop did not produce a worker effect",
+                )
+                .await?;
+                return Err("native noop did not produce a worker effect".to_owned());
+            };
+            let commit = if effect.graph_mutation_batch.is_some()
+                || effect.graph_mutation_batch_v2.is_some()
+            {
+                if !effect.provider_event_acknowledgements.is_empty() {
+                    self.dead_letter_native_lane(
                     &message_id,
                     &claimed_by,
                     "combined graph effects and provider-event acknowledgements are unsupported",
                 )
                 .await?;
-                return Err("combined graph effects and provider-event acknowledgements are unsupported".to_owned());
-            }
-            match self
-                .in_memory_native_graph_effect_batch(&handoff, &effect)
-                .await
-            {
-                Ok((batch, acl_snapshot)) => self
-                    .store
-                    .apply_claimed_recorded_worker_effect_with_graph_effects(
-                        handoff,
-                        effect,
-                        batch,
-                        acl_snapshot,
-                    ),
-                Err(error) => {
-                    self.dead_letter_native_lane(
-                        &message_id,
-                        &claimed_by,
-                        "native graph effect preparation failed",
-                    )
-                    .await?;
-                    return Err(error);
+                    return Err("combined graph effects and provider-event acknowledgements are unsupported".to_owned());
                 }
-            }
-        } else if effect.provider_event_acknowledgements.is_empty() {
-            self.store.apply_claimed_recorded_worker_effect(handoff, effect)
-        } else {
-            match self
-                .in_memory_provider_event_ack_graph_batch(&handoff, &effect)
-                .await
-            {
-                Ok(batch) => self.store.apply_claimed_recorded_worker_effect_with_graph(
-                    handoff,
-                    effect,
-                    batch,
-                ),
-                Err(error) => {
-                    self.dead_letter_native_lane(
-                        &message_id,
-                        &claimed_by,
-                        "provider event acknowledgement graph preparation failed",
-                    )
-                    .await?;
-                    return Err(error);
+                match self
+                    .in_memory_native_graph_effect_batch(&handoff, &effect)
+                    .await
+                {
+                    Ok((batch, acl_snapshot)) => self
+                        .store
+                        .apply_claimed_recorded_worker_effect_with_graph_effects(
+                            handoff,
+                            effect,
+                            batch,
+                            acl_snapshot,
+                        ),
+                    Err(error) => {
+                        self.dead_letter_native_lane(
+                            &message_id,
+                            &claimed_by,
+                            "native graph effect preparation failed",
+                        )
+                        .await?;
+                        return Err(error);
+                    }
                 }
+            } else if effect.provider_event_acknowledgements.is_empty() {
+                self.store
+                    .apply_claimed_recorded_worker_effect(handoff, effect)
+            } else {
+                match self
+                    .in_memory_provider_event_ack_graph_batch(&handoff, &effect)
+                    .await
+                {
+                    Ok(batch) => self
+                        .store
+                        .apply_claimed_recorded_worker_effect_with_graph(handoff, effect, batch),
+                    Err(error) => {
+                        self.dead_letter_native_lane(
+                            &message_id,
+                            &claimed_by,
+                            "provider event acknowledgement graph preparation failed",
+                        )
+                        .await?;
+                        return Err(error);
+                    }
+                }
+            };
+            if let Err(error) = commit {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "in-memory worker effect could not be committed",
+                )
+                .await?;
+                return Err(error.to_string());
             }
-        };
-        if let Err(error) = commit {
-            self.dead_letter_native_lane(
-                &message_id,
-                &claimed_by,
-                "in-memory worker effect could not be committed",
-            )
-            .await?;
-            return Err(error.to_string());
-        }
-        Ok::<bool, String>(true)
+            Ok::<bool, String>(true)
         };
         match kogwistar_engine::with_lane_claim_renewal(
             &self.store,
@@ -452,9 +450,9 @@ impl InMemoryGraphApplicationService {
         .await
         {
             Ok(Some(result)) => result,
-            Ok(None) => Err(
-                "native runtime lane lease was lost; result was not committed".to_owned(),
-            ),
+            Ok(None) => {
+                Err("native runtime lane lease was lost; result was not committed".to_owned())
+            }
             Err(error) => Err(format!("native runtime lane lease renewal failed: {error}")),
         }
     }
@@ -463,7 +461,13 @@ impl InMemoryGraphApplicationService {
         &self,
         handoff: &RecordedWorkerHandoff,
         effect: &RecordedWorkerSuccessEffect,
-    ) -> Result<(GraphMutationBatch, Option<kogwistar_store_memory::GraphAclSnapshot>), String> {
+    ) -> Result<
+        (
+            GraphMutationBatch,
+            Option<kogwistar_store_memory::GraphAclSnapshot>,
+        ),
+        String,
+    > {
         let (mutations, index_jobs, truth_graph) = match (
             effect.graph_mutation_batch.as_ref(),
             effect.graph_mutation_batch_v2.as_ref(),
@@ -482,7 +486,11 @@ impl InMemoryGraphApplicationService {
             (None, Some(batch)) => {
                 let (mutations, index_jobs) = graph_mutation_batch_v2_value(batch.clone())?;
                 validate_runtime_graph_mutations(&mutations)?;
-                (mutations, index_jobs, Some(batch.default_acl.truth_graph.clone()))
+                (
+                    mutations,
+                    index_jobs,
+                    Some(batch.default_acl.truth_graph.clone()),
+                )
             }
             (None, None) => return Err("worker graph effect is missing".to_owned()),
         };
@@ -536,7 +544,9 @@ impl InMemoryGraphApplicationService {
             let mut existing_acl = Vec::new();
             for target_id in &target_ids {
                 let mut filter = MetadataFilter::default();
-                filter.equals.insert("entity_type".to_owned(), json!("acl_record"));
+                filter
+                    .equals
+                    .insert("entity_type".to_owned(), json!("acl_record"));
                 filter
                     .equals
                     .insert("acl_truth_graph".to_owned(), json!(truth_graph));
@@ -608,7 +618,9 @@ impl InMemoryGraphApplicationService {
         let principal = self
             .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
             .await
-            .map_err(|_| "provider-event acknowledgement owner authorization failed closed".to_owned())?;
+            .map_err(|_| {
+                "provider-event acknowledgement owner authorization failed closed".to_owned()
+            })?;
         let run = kogwistar_store::ServerRunReadStore::server_run(&self.store, &handoff.run_id)
             .await
             .map_err(|_| "provider-event run lookup failed".to_owned())?
@@ -806,7 +818,9 @@ impl InMemoryGraphApplicationService {
                 .iter()
                 .any(|capability| capability == "write_graph")
         {
-            return Err("provider-event owner capability or scope changed before commit".to_owned());
+            return Err(
+                "provider-event owner capability or scope changed before commit".to_owned(),
+            );
         }
         Ok(GraphMutationBatch {
             mutations,
@@ -1005,11 +1019,7 @@ impl InMemoryGraphApplicationService {
         request
             .ephemeral_context
             .insert("provider_model".to_owned(), json!(model));
-        native_result_from_request(
-            handoff,
-            request,
-            &self.native_operations,
-        )
+        native_result_from_request(handoff, request, &self.native_operations)
     }
 
     async fn persist_in_memory_native_stream_semantic_event(
@@ -1633,12 +1643,8 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
-            &all_nodes,
-            &all_edges,
-            truth_graph,
-            &principal,
-        );
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&all_nodes, &all_edges, truth_graph, &principal);
         let visible_node_ids = visible_nodes
             .iter()
             .map(|record| record.id.as_str())
@@ -1797,9 +1803,10 @@ impl InMemoryGraphApplicationService {
         if let Some(where_filter) = input.where_filter.as_ref()
             && let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
                 &json!({"metadata": {}, "where": where_filter}).to_string(),
-            ) {
-                return invalid_graph_request(error.to_string());
-            }
+            )
+        {
+            return invalid_graph_request(error.to_string());
+        }
         let (all_nodes, all_edges) = match self.graph_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
@@ -2279,16 +2286,16 @@ fn graph_vector_proposal_pairs(
             continue;
         };
         let seed_doc = proposal_doc_id(seed);
-        for (candidates, candidate_kind) in [
-            (all_nodes, "node"),
-            (all_edges, "edge"),
-        ] {
+        for (candidates, candidate_kind) in [(all_nodes, "node"), (all_edges, "edge")] {
             if candidate_kind == "edge" && !input.include_edges {
                 continue;
             }
             let mut ranked = Vec::new();
             for candidate in candidates {
-                if candidate.metadata.get("entity_type").and_then(Value::as_str)
+                if candidate
+                    .metadata
+                    .get("entity_type")
+                    .and_then(Value::as_str)
                     == Some("acl_record")
                 {
                     continue;
@@ -2454,6 +2461,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 Some("/api/syscall/v1/send_message")
                     | Some("/api/syscall/v1/receive_message")
                     | Some("/api/syscall/v1/create_conversation")
+                    | Some("/api/syscall/v1/mount_memory")
                     | Some("/api/syscall/v1/invoke_tool")
             )
         {
@@ -2463,12 +2471,11 @@ impl ApplicationService for InMemoryGraphApplicationService {
             return true;
         }
         if method == "GET"
-            && runtime_run_route(path)
-                .is_some_and(|(_, tail)| {
-                    tail.is_empty()
-                        || tail.as_slice() == ["events"]
-                        || tail.as_slice() == ["events", "poll"]
-                })
+            && runtime_run_route(path).is_some_and(|(_, tail)| {
+                tail.is_empty()
+                    || tail.as_slice() == ["events"]
+                    || tail.as_slice() == ["events", "poll"]
+            })
         {
             return true;
         }
@@ -2483,10 +2490,8 @@ impl ApplicationService for InMemoryGraphApplicationService {
         method == "POST"
             && (!matches!(
                 route,
-                Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
-                    | Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE)
-            )
-                || self.embedding_provider.is_some())
+                Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE) | Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE)
+            ) || self.embedding_provider.is_some())
             && matches!(
                 route,
                 Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
@@ -2513,12 +2518,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
             if request.method == "DELETE"
                 && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
             {
-                return admin_document_delete_effect(
-                    &request,
-                    &self.store,
-                    document_id,
-                )
-                .await;
+                return admin_document_delete_effect(&request, &self.store, document_id).await;
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
@@ -2550,7 +2550,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     Ok(input) => input,
                     Err(response) => return response,
                 };
-                let response = self.in_memory_receive_message_effect(&request, &input).await;
+                let response = self
+                    .in_memory_receive_message_effect(&request, &input)
+                    .await;
                 syscall_audit(
                     &self.capabilities,
                     &input.version,
@@ -2580,13 +2582,31 @@ impl ApplicationService for InMemoryGraphApplicationService {
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next()
-                    == Some("/api/syscall/v1/invoke_tool")
+                    == Some("/api/syscall/v1/mount_memory")
+            {
+                let input = match syscall_input(&request, "mount_memory") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let response = self.in_memory_mount_memory_effect(&request, &input).await;
+                syscall_audit(
+                    &self.capabilities,
+                    &input.version,
+                    "mount_memory",
+                    syscall_audit_status(&response),
+                );
+                return response;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next() == Some("/api/syscall/v1/invoke_tool")
             {
                 let input = match syscall_input(&request, "invoke_tool") {
                     Ok(input) => input,
                     Err(response) => return response,
                 };
-                let response = self.in_memory_invoke_builtin_tool_effect(&request, &input).await;
+                let response = self
+                    .in_memory_invoke_builtin_tool_effect(&request, &input)
+                    .await;
                 syscall_audit(
                     &self.capabilities,
                     &input.version,
@@ -2658,6 +2678,91 @@ impl ApplicationService for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_mount_memory_effect; python=kogwistar/server/syscall_api.py#mount_memory; fixture=contracts/golden/mount-memory-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_mount_memory_matches_shared_contract_and_authority; python_test=tests/server/test_mount_memory_wire_contract.py#test_python_mount_memory_result_matches_shared_wire_fixture
+    async fn in_memory_mount_memory_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "mount_memory",
+            false,
+            &["project_view"],
+            "conversation",
+        ) {
+            return syscall_forbidden("mount_memory");
+        }
+        let Some(conversation_id) = input
+            .args
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "conversation_id is required",
+            );
+        };
+        let run_id = match context_snapshot_syscall_field(&input.args, "run_id") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let stage = match context_snapshot_syscall_field(&input.args, "stage") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let (scope, acl_principal) =
+            conversation_graph_scope_and_acl_principal(&request.principal);
+        let (nodes, edges) = match self.graph_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&nodes, &edges, "conversation", &acl_principal);
+        let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+            &visible_nodes,
+            conversation_id,
+            run_id.as_deref(),
+            stage.as_deref(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        syscall_result(
+            &input.version,
+            "mount_memory",
+            json_effect(StatusCode::OK, public_context_snapshot_value(snapshot)),
+        )
+    }
+
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_create_conversation_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/conversation-create-syscall-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_create_conversation_is_atomic_and_matches_shared_contract; python_test=tests/server/test_syscall_api.py#test_syscall_create_conversation_uses_authenticated_owner
     async fn in_memory_create_conversation_effect(
         &self,
@@ -2897,27 +3002,28 @@ impl InMemoryGraphApplicationService {
             .as_str()
             .filter(|value| !value.trim().is_empty())
             .map(str::to_ascii_lowercase);
-        let (mut acl_mutations, mut index_jobs) = match derive_default_acl_graph_effects_from_records(
-            &scope,
-            std::slice::from_ref(&mutation),
-            targets,
-            existing_acl,
-            AclDefaultsContext {
-                truth_graph: "conversation",
-                owner_id: &owner_acl_id,
-                security_scope: acl_scope.as_deref(),
-                effect_id: &event_id,
-            },
-        ) {
-            Ok(effects) => effects,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_ACL_EFFECT_FAILED",
-                    error,
-                );
-            }
-        };
+        let (mut acl_mutations, mut index_jobs) =
+            match derive_default_acl_graph_effects_from_records(
+                &scope,
+                std::slice::from_ref(&mutation),
+                targets,
+                existing_acl,
+                AclDefaultsContext {
+                    truth_graph: "conversation",
+                    owner_id: &owner_acl_id,
+                    security_scope: acl_scope.as_deref(),
+                    effect_id: &event_id,
+                },
+            ) {
+                Ok(effects) => effects,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_ACL_EFFECT_FAILED",
+                        error,
+                    );
+                }
+            };
         index_jobs.push(NewIndexJob {
             job_id: kogwistar_contracts::stable_id(
                 "conversation.create.index_job",
@@ -2979,8 +3085,8 @@ impl InMemoryGraphApplicationService {
                 if backend == "memory-graph-write" && message.starts_with("unique graph") =>
             {
                 effect_error(
-                StatusCode::CONFLICT,
-                "KOGWISTAR_CONVERSATION_CREATE_CONFLICT",
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_CONVERSATION_CREATE_CONFLICT",
                     message,
                 )
             }
@@ -3715,7 +3821,9 @@ impl InMemoryGraphApplicationService {
         ) {
             return syscall_forbidden("receive_message");
         }
-        let Some(conversation_id) = input.args.get("conversation_id")
+        let Some(conversation_id) = input
+            .args
+            .get("conversation_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -4062,10 +4170,7 @@ impl InMemoryGraphApplicationService {
             .user_id
             .as_deref()
             .is_some_and(|requested| requested.trim() != owner_id)
-            || !expected_run_owner_matches(
-                input.expected_run_owner_id.as_deref(),
-                Some(owner_id),
-            )
+            || !expected_run_owner_matches(input.expected_run_owner_id.as_deref(), Some(owner_id))
         {
             return effect_error(
                 StatusCode::FORBIDDEN,
@@ -4209,18 +4314,24 @@ impl InMemoryGraphApplicationService {
             || !effective_node_worker_identities.is_empty()
             || effective_node_ops.iter().any(|(node_id, operation)| {
                 !matches!(
-                    effective_node_executor_targets.get(node_id).map(String::as_str),
+                    effective_node_executor_targets
+                        .get(node_id)
+                        .map(String::as_str),
                     Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
                 ) || !kogwistar_runtime::native_operation_for_target(
-                        operation,
-                        effective_node_executor_targets.get(node_id).map(String::as_str),
-                    )
-                    .is_some_and(|name| {
-                        registered_native_operations.iter().any(|(registered, version)| {
+                    operation,
+                    effective_node_executor_targets
+                        .get(node_id)
+                        .map(String::as_str),
+                )
+                .is_some_and(|name| {
+                    registered_native_operations
+                        .iter()
+                        .any(|(registered, version)| {
                             registered == name
                                 && effective_node_versions.get(node_id) == Some(version)
                         })
-                    })
+                })
             })
             || effective_node_executor_targets
                 .keys()
@@ -4280,10 +4391,9 @@ impl InMemoryGraphApplicationService {
         ] {
             initial_state.remove(reserved);
         }
-        if let Err(message) = install_runtime_trace_context(
-            &mut initial_state,
-            input.trace_context.as_ref(),
-        ) {
+        if let Err(message) =
+            install_runtime_trace_context(&mut initial_state, input.trace_context.as_ref())
+        {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "KOGWISTAR_INVALID_TRACE_CONTEXT",
@@ -4295,7 +4405,10 @@ impl InMemoryGraphApplicationService {
             security_scope_value(&request.principal),
         );
         initial_state.insert("_rt_run_owner_id".to_owned(), json!(owner_id));
-        install_authoritative_node_executor_targets(&mut initial_state, &effective_node_executor_targets);
+        install_authoritative_node_executor_targets(
+            &mut initial_state,
+            &effective_node_executor_targets,
+        );
         inject_authoritative_capability_state(
             &mut initial_state,
             &request.principal,
@@ -4311,7 +4424,10 @@ impl InMemoryGraphApplicationService {
             "_rt_node_ops".to_owned(),
             serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
         );
-        if effective_node_versions.values().any(|version| version != "v1") {
+        if effective_node_versions
+            .values()
+            .any(|version| version != "v1")
+        {
             initial_state.insert(
                 "_rt_node_versions".to_owned(),
                 serde_json::to_value(&effective_node_versions)
@@ -4508,7 +4624,9 @@ impl InMemoryGraphApplicationService {
         )
         .await
         {
-            Ok(events) if tail.as_slice() == ["events"] || tail.as_slice() == ["events", "poll"] => {
+            Ok(events)
+                if tail.as_slice() == ["events"] || tail.as_slice() == ["events", "poll"] =>
+            {
                 let events = events
                     .into_iter()
                     .map(server_run_event_value)

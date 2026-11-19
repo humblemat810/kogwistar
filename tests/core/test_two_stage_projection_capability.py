@@ -226,6 +226,28 @@ def test_chroma_safe_kwargs_drops_null_metadata_and_preserves_supported_values()
     assert metadata["wf_predicate"] is None
 
 
+def test_chroma_safe_kwargs_preserves_flat_filter_and_normalizes_compound_and() -> None:
+    where = {"artifact_kind": "lane_message", "idempotency_key": "message-1"}
+    kwargs: dict[str, object] = {"where": where}
+
+    safe = _chroma_safe_kwargs(kwargs)
+
+    assert safe == {
+        "where": {
+            "$and": [
+                {"artifact_kind": "lane_message"},
+                {"idempotency_key": "message-1"},
+            ]
+        }
+    }
+    assert kwargs["where"] == where
+
+    logical_kwargs: dict[str, object] = {
+        "where": {"$or": [{"status": "pending"}, {"status": "running"}]}
+    }
+    assert _chroma_safe_kwargs(logical_kwargs) is logical_kwargs
+
+
 def test_chroma_backend_add_sanitizes_null_metadata_at_collection_boundary() -> None:
     class _Collection:
         received: dict[str, object] | None = None

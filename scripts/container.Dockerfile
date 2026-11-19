@@ -21,8 +21,8 @@ COPY kg-doc-parser /build/kg-doc-parser
 COPY kogwistar-obsidian-sink /build/kogwistar-obsidian-sink
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python /opt/core/bin/python "/wheel/${WHEEL_NAME}[full,test]" "pytest-xdist>=3.8,<4" \
-    && uv pip install --python /opt/consumer/bin/python "/wheel/${WHEEL_NAME}[test,chroma]" \
+    uv pip install --python /opt/core/bin/python "/wheel/${WHEEL_NAME}[full,test,benchmark]" "pytest-xdist>=3.8,<4" \
+    && uv pip install --python /opt/consumer/bin/python "/wheel/${WHEEL_NAME}[test,chroma,benchmark,pgvector]" \
         "pytest-xdist>=3.8,<4" fastapi langchain-openai \
     && case ",${REQUESTED_LAYERS}," in \
         *,parser,*|*,application,*) \

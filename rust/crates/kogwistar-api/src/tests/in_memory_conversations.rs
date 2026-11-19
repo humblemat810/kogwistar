@@ -227,12 +227,131 @@ async fn in_memory_create_conversation_is_atomic_and_matches_shared_contract() {
 }
 
 #[tokio::test]
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_send_message_admits_turn_and_run_atomically; python_test=tests/server/test_capability_kernel_contract.py#test_submit_turn_for_answer_replays_idempotency_key_and_rejects_payload_change
+async fn in_memory_mount_memory_matches_shared_contract_and_authority() {
+    let service = InMemoryGraphApplicationService::default();
+    let path = "/api/syscall/v1/mount_memory";
+    assert!(service.supports_http_operation("POST", path));
+    let memory_fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/mount-memory-result-v1.json"
+    ))
+    .unwrap();
+    let scope = GraphScope {
+        namespace: "conversation".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let metadata = json!({
+        "entity_type":"context_snapshot",
+        "conversation_id":memory_fixture["conversation_id"],
+        "snapshot_seq":memory_fixture["properties"]["snapshot_seq"]
+    });
+    let acl_metadata = json!({
+        "entity_type":"acl_record",
+        "acl_truth_graph":"conversation",
+        "acl_target_grain":"node",
+        "acl_target_entity_id":memory_fixture["snapshot_node_id"],
+        "acl_version":1,
+        "acl_mode":"public"
+    });
+    let snapshot_id = memory_fixture["snapshot_node_id"].as_str().unwrap();
+    GraphMutationStore::apply_graph_mutations_atomic(
+        &service.store,
+        vec![
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "event-memory-snapshot".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":snapshot_id,"metadata":metadata}),
+                record: GraphRecord {
+                    id: snapshot_id.to_owned(),
+                    document: Some(memory_fixture.to_string()),
+                    metadata: serde_json::from_value(metadata).unwrap(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+            GraphMutation {
+                scope,
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "event-memory-snapshot-acl".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id":"acl-memory-snapshot","metadata":acl_metadata}),
+                record: GraphRecord {
+                    id: "acl-memory-snapshot".to_owned(),
+                    document: Some(acl_metadata.to_string()),
+                    metadata: serde_json::from_value(acl_metadata).unwrap(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            },
+        ],
+    )
+    .await
+    .unwrap();
+
+    let request = |capabilities: &[&str], namespace: &str, args: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: path.to_owned(),
+        body: json!({"version":"v1","args":args}).to_string().into_bytes(),
+        principal: json!({
+            "sub":"alice",
+            "role":"ro",
+            "storage_ns":"conversation",
+            "workspace_id":"workspace-a",
+            "graph_space":"conversation",
+            "ns":[namespace],
+            "capabilities":capabilities
+        }),
+    };
+    let denied = service
+        .execute(request(
+            &[],
+            "conversation",
+            json!({"conversation_id":memory_fixture["conversation_id"]}),
+        ))
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    let denied_namespace = service
+        .execute(request(
+            &["project_view"],
+            "docs",
+            json!({"conversation_id":memory_fixture["conversation_id"]}),
+        ))
+        .await;
+    assert_eq!(denied_namespace.status, StatusCode::FORBIDDEN.as_u16());
+
+    let mounted = service
+        .execute(request(
+            &["project_view"],
+            "conversation",
+            json!({"conversation_id":memory_fixture["conversation_id"]}),
+        ))
+        .await;
+    assert_eq!(mounted.status, StatusCode::OK.as_u16());
+    let mounted: Value = serde_json::from_slice(&mounted.body).unwrap();
+    assert_eq!(mounted["version"], "v1");
+    assert_eq!(mounted["op"], "mount_memory");
+    assert_eq!(mounted["status"], "ok");
+    assert_eq!(mounted["result"], memory_fixture);
+}
+
+#[tokio::test]
 async fn in_memory_send_message_admits_turn_and_run_atomically() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use tower::ServiceExt;
+
+    let workflow_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+    ))
+    .unwrap();
+    let workflow_id = "agentic_answering.v2";
+    assert!(workflow_contract["workflows"].get(workflow_id).is_some());
 
     let auth_path = std::env::temp_dir().join(format!(
         "kogwistar-memory-send-auth-{}.sqlite",
@@ -359,7 +478,7 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
         body: serde_json::to_vec(&json!({
             "version":"v1", "op":"send_message", "args":{
                 "conversation_id":conversation_id,
-                "workflow_id":"memory-test-workflow",
+                "workflow_id":workflow_id,
                 "text":text,
                 "idempotency_key":key
             }
@@ -605,7 +724,6 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
 }
 
 #[tokio::test]
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_receive_message_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_transcript; fixture=contracts/golden/receive-message-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_receive_message_matches_shared_python_contract; python_test=tests/server/test_receive_message_wire_contract.py#test_python_receive_message_result_matches_shared_wire_fixture
 async fn in_memory_receive_message_matches_shared_python_contract() {
     let service = InMemoryGraphApplicationService::default();
     let path = "/api/syscall/v1/receive_message";

@@ -1,3 +1,4 @@
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text; fixture=contracts/golden/semantic-seed-expand-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
 #[tokio::test]
 async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp() {
     use axum::body::{Body, to_bytes};

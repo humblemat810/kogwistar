@@ -126,6 +126,13 @@ def create_syscall_router(
     router = APIRouter(prefix="/api/syscall", tags=["syscall"])
     audit_log: list[dict[str, Any]] = []
 
+    def mount_memory(service: ChatRunService, args: dict[str, Any]) -> dict[str, Any]:
+        return service.latest_snapshot(
+            str(args["conversation_id"]),
+            run_id=args.get("run_id"),
+            stage=args.get("stage"),
+        )
+
     @router.get("/v1")
     def list_syscalls() -> dict[str, Any]:
         return {
@@ -251,11 +258,7 @@ def create_syscall_router(
             if op == "mount_memory":
                 require_role("ro")
                 require_namespace(conversation_namespace)
-                payload = service.latest_snapshot(
-                    str(inp.args["conversation_id"]),
-                    run_id=inp.args.get("run_id"),
-                    stage=inp.args.get("stage"),
-                )
+                payload = mount_memory(service, inp.args)
                 resp = _ok(version, op, payload)
                 audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
                 return resp

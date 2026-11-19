@@ -1,9 +1,14 @@
 # ADR-015 Rust Capability Completion Worklist
 
-**Scope:** Fixed tasklets for the six Rust capabilities still marked incomplete
-in `contracts/rust-port-v1.json`. This is the active implementation and
-verification worklist; it does not track external production rollout.
-**Progress:** **67/67 PASS (100.0%)**; **0 IN PROGRESS**; **0 NOT STARTED**.
+**Scope:** Fixed set of bounded verification tasklets mapped to six Rust
+capabilities in `contracts/rust-port-v1.json`. Passing this set closes only
+these listed checks; it does not by itself close capability conformance.
+**Tasklet progress:** **68/68 PASS (100.0%)**; **0 IN PROGRESS**; **0 NOT STARTED**.
+**Capability status:** **2/8 Rust capabilities ready; 6/8 remain not ready**.
+**Gate-clause progress:** **22/22 PASS (100.0%)**; **0/22 OPEN**.
+The authoritative remaining requirements are the capability conformance
+profiles in `contracts/dual-language-capabilities-v1.json` and deferrals in
+`contracts/rust-port-v1.json`.
 **Acceptance environment:** Kogwistar is a library. A clean, containerized
 Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
@@ -14,7 +19,7 @@ the closed ADR-022 evidence inventories.
 
 ## Rules
 
-- Fixed denominator: **67 leaf tasklets**. The 16 unfinished parent requirements
+- Fixed denominator: **68 leaf tasklets**. The 16 unfinished parent requirements
   were expanded once by the user's explicit request into independently verifiable
   leaves; parent rows do not count. Do not add or split rows again without a newly
   approved requirement or demonstrated independently failing oracle. Do not
@@ -23,8 +28,9 @@ the closed ADR-022 evidence inventories.
   and one focused check. Parent capability names do not count as tasklets.
 - Each leaf targets at most 30 minutes of active engineering; test/CI/runtime
   wait time is excluded. A leaf must prove one outcome only with its smallest
-  runnable unit/contract/static check, preferably without a new build. Parent
-  closes mechanically when every explicitly listed child is `PASS`.
+  runnable unit/contract/static check, preferably without a new build. A listed
+  tasklet parent closes when every explicitly listed child is `PASS`; this does
+  not imply its broader Rust capability is ready.
 - **Verification cadence:** each leaf has one small, directly runnable oracle:
   prefer Python contract/unit tests, static checks, or tests using already-built
   artifacts; do not start Docker/server for leaf checks. For Rust changes, run
@@ -56,14 +62,56 @@ the closed ADR-022 evidence inventories.
 
 ## Verification State
 
-No open leaf tasklets. The fixed 67-leaf worklist is complete. For future
-regressions, keep the same cost-saving cadence: run each focused unit/contract
-check first, reuse built artifacts and Cargo cache, batch Rust tests once per
-crate/parent, then run Docker/native release builds only once for the affected
-major parent closeout. Shared clean-consumer and hosted CI gates run once for
-the candidate, not once per leaf. Rust test binaries can compile when cache or
-inputs are stale; “no-build” means no repeated Docker/native release build, not
-zero Cargo compilation.
+All listed tasklets pass. Six capability gates remain not ready; their
+unclosed conformance requirements remain authoritative and must not be inferred
+as complete from this tasklet count. For remaining slices, keep the same
+cost-saving cadence: run each focused unit/contract check first, reuse built
+artifacts and Cargo cache, batch Rust tests once per crate/parent, then run
+Docker/native release builds only once for the affected major parent closeout.
+Shared clean-consumer and hosted CI gates run once for the candidate, not once
+per leaf. Rust test binaries can compile when cache or inputs are stale;
+“no-build” means no repeated Docker/native release build, not zero Cargo
+compilation.
+
+## Capability Gate Closure
+
+This matrix tracks each of the 22 normative profile clauses separately from the
+68 bounded tasklets. Clause names are copied from
+`contracts/dual-language-capabilities-v1.json`. `OPEN` means this clause has
+not yet been explicitly mapped to same-candidate evidence and accepted as a
+gate result; it does not erase related tasklet evidence. A passing tasklet is
+supporting evidence, not automatic clause closure.
+
+| Capability gate | Conformance clause | State | Evidence / closure check |
+| --- | --- | --- | --- |
+| `postgres-sequence-event-log` | `cross-language-valid-invalid-golden-fixtures` | PASS | `test_postgres_valid_invalid_operations_match_shared_golden_fixture` runs `contracts/golden/postgres-event-store-parity-v1.json` against live PostgreSQL through Python and Rust; valid payload/readback parity plus invalid-field rejection. Full current-source Phase-3 PGS gate: 6 passed, 0 failed/error/skipped; candidate `bf52ef5e16733bff3b3f75aa06df97cef14e409a10a7ea683e98cf8c9e051b4b`; `.codex/adr015-phase3-current-20261119/postgres-final.json`. |
+| `postgres-sequence-event-log` | `transaction-owner-and-rollback` | PASS | Current-source live gate: `test_rust_postgres_concurrent_idempotency_collision_and_atomic_rollback`; one Rust-owned batch rolls back event and cursor atomically. Report: `.codex/adr015-phase3-current-20261119/summary.json` (candidate `75edf59d953dace98d3b4c074338c98aa15bb3c8c1b05f8f12ff207a8314b413`). |
+| `postgres-sequence-event-log` | `commit-acknowledgement-failure-and-recovery` | PASS | Current-source live gate: `test_rust_postgres_lost_ack_replays_committed_event_after_reopen`; fresh Python and Rust processes observe one committed event after lost ACK. Same report/candidate. |
+| `postgres-sequence-event-log` | `reopen-and-schema-compatibility` | PASS | Current-source live gate: `test_python_created_schema_rust_reads_writes_and_replay_maps_exclusive`, `test_rust_created_schema_python_reads_writes_and_cursor_contracts`, and `test_rust_postgres_schema_isolation_and_rejects_unknown_fields`. Same report/candidate. |
+| `projections-snapshots-run-registry` | `cross-language-valid-invalid-golden-fixtures` | PASS | Executable pytest: `tests/core/test_rust_store_projection_differential.py::test_postgres_projection_valid_invalid_fixture_matches_python_rust` plus six existing projection/run-registry/history/recovery tests (**7 passed**, live disposable pgvector:pg16, `-p no:cacheprovider`). Golden fixture asserts Python-write/Rust-read and Rust-write/Python-read equality; malformed operation returns `KOGWISTAR_STORE_INVALID_PAYLOAD` and creates no projection. Candidate source hash `5ed14e9feed4d627130efbb6e46e1560ace14e2de5d031f4940dcfdb42d94119`. |
+| `projections-snapshots-run-registry` | `projection-rebuild-and-snapshot-parity` | PASS | `tests/core/test_rust_store_recovery_differential.py::test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop` and `::test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop` (**2 passed**, live disposable `pgvector:pg16`). Assert Rust rebuild canonical payload/digest stable across repeated rebuilds; Python and Rust projection reads match byte-for-byte; projection and cursor advance atomically, rollback preserves both. |
+| `projections-snapshots-run-registry` | `restart-resume-and-stale-state` | PASS | Executable pytest: `tests/core/test_rust_store_recovery_differential.py::test_postgres_projection_resume_rejects_stale_checkpoint_after_restart`. Live disposable pgvector:pg16: **1 passed**. Python advances checkpoint and cursor; a fresh Rust subprocess attempts stale CAS, is rejected, and reads generation 2 with cursor 2. |
+| `queues-leases-lanes` | `cross-language-valid-invalid-golden-fixtures` | PASS | `tests/core/test_rust_store_lane_messages_differential.py::test_postgres_queue_lane_valid_invalid_fixture_matches_python_rust` runs `contracts/golden/postgres-queue-lane-parity-v1.json`; current candidate `f72af9716e4d90bb8342a5af5307f71ffb84a69e3428464d5d62063dd4d77b8f`. Phase-3 QLL gate includes this case: 4 passed, 0 failed/error/skipped. Assert valid queue/lane rows round-trip both directions; invalid fixture operations return `KOGWISTAR_STORE_INVALID_PAYLOAD` with no row effects. Report: `.codex/adr015-phase3-qll-golden-20261119.json`. |
+| `queues-leases-lanes` | `claim-lease-reclaim-and-idempotency` | PASS | Current-source live gate: `test_postgres_queue_concurrency_reclaim_and_terminal_retry_live`; competing claims, reclaim, and terminal retry/idempotency. Same Phase-3 report/candidate. |
+| `queues-leases-lanes` | `crash-before-after-effect-and-acknowledgement` | PASS | Rust live test `tests::postgres_worker_graph_effect_rechecks_durable_run_owner_in_transaction` passed (`cargo test --release -p kogwistar-api ... --include-ignored`): committed effect survives lost response; retry after reclaim/reopen does not duplicate event/effect. Test selector: `rust/crates/kogwistar-api/src/tests/postgres_worker_authority.rs::postgres_worker_graph_effect_rechecks_durable_run_owner_in_transaction`. Candidate `bf52ef5e16733bff3b3f75aa06df97cef14e409a10a7ea683e98cf8c9e051b4b`; Phase-3 current-source report has 62/62 live tests, zero skips. |
+| `queues-leases-lanes` | `trace-and-correlation-parity` | PASS | Current-source live gate: `test_postgres_lane_python_rust_and_concurrency`; Python/Rust lane fields and correlation survive enqueue/claim/result/ACK. Same Phase-3 report/candidate. |
+| `graph-pgvector` | `cross-language-valid-invalid-golden-fixtures` | PASS | Executable pytest: `tests/core/test_rust_store_graph_mutation_differential.py::test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation`, plus `::test_graph_mutation_fresh_rust_schema_and_validation_rollback` and `::test_graph_mutation_scope_vector_contract_and_fault_rollback`. Shared Python-generated node/edge/edge-endpoint golden payloads round-trip through Rust events and Python pgvector reads. Live disposable pgvector:pg16: all three passed; invalid dimension/unknown fields and aborted batch leave event/projection state unchanged. These exact selectors are in `scripts/durable_store_capability_gate.py --capability graph-pgvector`; live-PG skips fail the gate. |
+| `graph-pgvector` | `graph-acl-namespace-and-source-evidence-parity` | PASS | Executable pytest: `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection`. Live disposable pgvector:pg16, current rebuilt `kogwistar-server`: **1 passed**. Rust REST/MCP graph reads compared with Python over shared projections; assertions cover graph namespace, ACL-hidden node/edge, hidden endpoint, restricted source-span evidence, and authorized controls. |
+| `graph-pgvector` | `transaction-and-vector-index-reopen-parity` | PASS | Executable pytest: `tests/server/test_rust_api_postgres_worker_interop_live.py::test_rust_native_promotion_and_python_recovery_are_both_available`, plus `tests/core/test_rust_store_graph_mutation_differential.py::test_graph_mutation_scope_vector_contract_and_fault_rollback`. Live disposable pgvector:pg16: both passed. They assert atomic abort leaves no event/projection, native vector promotion survives server restart, and Python recovers/reads accepted vectors without re-embedding. Worker test consumes standard `pg_dsn` fixture when explicit `KOGWISTAR_TEST_PG_DSN` is absent. |
+| `workflow-runtime` | `cross-language-valid-invalid-golden-fixtures` | PASS | Current-source Phase-4 gate `d77dfa3a1cf63464bd044e2779b98705cacb0c01b3de518d01ada21200ff39a4`; `durable-worker` 186 tests (176 passed, 10 PG-only variants skipped in SQLite cell), `bijection` 72 passed, `bridge` 30 passed, `suspend-terminal` 23 passed, `postgres` 10 passed with zero skip. Report: `.codex/adr015-current-source-phase4.json`. Selector: `tests/runtime/test_rust_runtime_authority.py::test_python_worker_and_rust_native_step_interoperate_over_real_server`. |
+| `workflow-runtime` | `transition-route-and-checkpoint-parity` | PASS | Same current-source report: durable-worker, suspend-terminal, and live PostgreSQL groups all passed; 10 PostgreSQL runtime tests passed with zero skip. Selectors: `tests/runtime/test_rust_runtime_postgres.py::test_postgres_mixed_python_rust_restart_preserves_sequence_and_projections`; `tests/runtime/test_workflow_terminal_status.py::test_runtime_resume_from_latest_checkpoint_reuses_state_and_sequence`. |
+| `workflow-runtime` | `worker-version-environment-and-replay-contract` | PASS | Same current-source report: all five groups passed; durable-worker covers versioned worker wire, environment admission, replay, and restart. Selector: `tests/runtime/test_rust_runtime_authority.py::test_freeze_runtime_plan_carries_registered_operation_version`. |
+| `workflow-runtime` | `trace-provenance-and-cancellation` | PASS | Same current-source report: all five groups passed; runtime authority/worker plus suspend-terminal and PostgreSQL assertions cover trace, cancellation, persisted result, and reopen. Selectors: `tests/runtime/test_rust_runtime_authority.py::test_rust_trace_context_payload_preserves_parent_span_identity`; `tests/runtime/test_rust_runtime_authority.py::test_authority_propagates_cancellation_without_running_other_work`. |
+| `server-rest-sse-mcp-cli` | `openapi-and-mcp-contract-parity` | PASS | Rust gate: `cargo test --release -p kogwistar-api --lib -- --quiet --include-ignored` passed 456/456 with PostgreSQL and Chroma configured; includes `auth_sse_mcp_and_cli_contracts_are_versioned_shapes`, `frozen_mcp_tools_are_unique_and_versioned`, and MCP session tests. Phase-5 `frozen-contracts` also passed 3/3 on candidate `bf52ef5e16733bff3b3f75aa06df97cef14e409a10a7ea683e98cf8c9e051b4b`. Rust test selectors: `rust/crates/kogwistar-api/src/tests/server_transport.rs::frozen_route_registry_covers_committed_openapi`; `rust/crates/kogwistar-api/src/tests/mcp.rs::frozen_mcp_tools_are_unique_and_versioned`. |
+| `server-rest-sse-mcp-cli` | `authentication-acl-namespace-and-capability-parity` | PASS | Same Rust API run: 456 passed, 0 failed/ignored; live Postgres/Chroma enabled. Exercises authenticated route admission, ACL/namespace scoping, capability denial, and backend ordering. Phase-5 `auth-syscall` baseline additionally passed 56/56. Rust test selectors: `rust/crates/kogwistar-api/src/tests/server_transport.rs::router_serves_health_auth_sse_and_mcp`; `rust/crates/kogwistar-api/src/tests/mcp.rs::mcp_session_owner_is_bound_to_configured_oidc_principal_components`. |
+| `server-rest-sse-mcp-cli` | `sse-ordering-and-resume` | PASS | Same Rust API run includes `mcp_outbound_session_events_are_scoped_bounded_and_resumable`; Phase-5 `rest-sse` 4/4 and `async-sse` 6/6 passed on same source candidate. Rust test selector: `rust/crates/kogwistar-api/src/tests/mcp.rs::mcp_outbound_session_events_are_scoped_bounded_and_resumable`; async Python selectors: `tests/server/test_chat_server_async_events.py::test_chat_rest_events_poll_sees_live_updates_for_async_backends`, `::test_mcp_run_events_sees_live_updates_for_async_backends`, `::test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends`. |
+| `server-rest-sse-mcp-cli` | `cli-operation-and-error-parity` | PASS | Rust API `auth_sse_mcp_and_cli_contracts_are_versioned_shapes` passed; built `kogwistar-cli` smoke: `health pg` exits 0 with `ok backend=pg`; unsupported backend exits 2 with the expected frozen-backend error. Rust test selector: `rust/crates/kogwistar-api/src/tests/mcp.rs::auth_sse_mcp_and_cli_contracts_are_versioned_shapes`. |
+
+Gate closure requires every listed profile clause to have current-candidate
+evidence, all capability-specific required backend/runtime checks to pass, and
+the shared candidate acceptance gates to pass. Update the Rust readiness
+manifest only after that evidence exists; do not infer closure from the tasklet
+percentage.
 
 ## Tasklets
 
@@ -114,10 +162,11 @@ zero Cargo compilation.
 | SRV-03A | `server-rest-sse-mcp-cli` | PASS | Invariant: Rust receive returns Python-compatible transcript ordering and shape. Cell: PostgreSQL conversation REST/service response over shared fixture. Oracle: canonical JSON equals Python golden. Evidence: `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` (**1 passed**, live `kogwistar-adr015-pg16`); `receive_message.result` exactly equals `receive-message-result-v1.json`, ordered REST transcript fields verified. |
 | SRV-03B | `server-rest-sse-mcp-cli` | PASS | Invariant: Rust-written transcript remains readable after Python reopen. Cell: Rust REST/MCP server writes, fresh Python facade and SQLAlchemy connection read. Oracle: same ordered turn/result projection. Evidence: `tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection` (**1 passed**, live PostgreSQL, 115.63s); fresh engine transcript equals expected Rust REST/MCP turns. |
 | SRV-03C | `server-rest-sse-mcp-cli` | PASS | Invariant: unauthorized scope cannot read transcript. Cell: foreign owner/namespace HTTP receive request. Oracle: foreign-owner ACL filtering returns empty messages; wrong namespace is forbidden; neither response contains transcript content. Evidence: `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` (**1 passed**, live disposable PostgreSQL); private conversation turns were readable by Alice, filtered to empty for Mallory, and denied for wrong namespace. |
-| SRV-04 | `server-rest-sse-mcp-cli` | PASS | Native `mount_memory` requirement; children: SRV-04A,SRV-04B,SRV-04C. | All leaves pass. |
+| SRV-04 | `server-rest-sse-mcp-cli` | PASS | Native `mount_memory` requirement; children: SRV-04A,SRV-04B,SRV-04C,SRV-04D. | All leaves pass. |
 | SRV-04A | `server-rest-sse-mcp-cli` | PASS | Invariant: owner mounts persisted snapshot with Python response shape. Cell: Rust PostgreSQL REST route and mount-memory syscall over shared fixture. Oracle: canonical response equals shared fixture. Evidence: `tests::postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live `kogwistar-adr015-pg16`); exact REST payload and mount-memory result equal `mount-memory-result-v1.json`. |
 | SRV-04B | `server-rest-sse-mcp-cli` | PASS | Invariant: non-owner cannot mount private memory. Cell: Rust PostgreSQL mount-memory route with foreign principal. Oracle: not-found response and no snapshot content. Evidence: `tests::postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live `pgvector:pg16`); Alice cannot mount Bob-owned `run-private` snapshot and response omits its private content. |
 | SRV-04C | `server-rest-sse-mcp-cli` | PASS | Invariant: namespace mismatch cannot mount snapshot. Cell: same principal, foreign namespace. Oracle: forbidden response without snapshot content. Evidence: `mount_memory_syscall_checks_namespace_and_capability_before_storage` (**1 passed**) and `postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live disposable PostgreSQL); foreign-namespace request returns 403 and omits snapshot content. |
+| SRV-04D | `server-rest-sse-mcp-cli` | PASS | Invariant: in-memory Rust syscall mounts authorized snapshot with shared v1 response. Cell: `InMemoryGraphApplicationService`. Oracle: exact fixture result; missing `project_view` and foreign namespace denied. Evidence: `cargo test -p kogwistar-api in_memory_ --lib -- --test-threads=1` (**26 passed**); Python wire fixture test (**1 passed**); `cargo fmt --check` passed. Parallel execution once surfaced an isolated 409 in another admission test; it passed alone and in the serial group, so no consistent regression reproduced. |
 | SRV-05 | `server-rest-sse-mcp-cli` | PASS | Host-authorized `invoke_tool` requirement; children: SRV-05A,SRV-05B,SRV-05C. | All three leaves pass. |
 | SRV-05A | `server-rest-sse-mcp-cli` | PASS | Invariant: allowed built-in tool executes only after host capability check. Cell: Rust PostgreSQL `invoke_tool.latest_snapshot` with granted capability. Oracle: successful tool result and `invoke_tool: ok` audit event; missing capability denies before storage. Evidence: `tests::postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live PostgreSQL; successful result and `ok` audit verified); `tests::invoke_tool_checks_builtin_capabilities_before_storage` (**1 passed**, unreachable DB proves denial before storage). |
 | SRV-05B | `server-rest-sse-mcp-cli` | PASS | Invariant: model-supplied tool name/arguments cannot grant permission. Cell: caller lacks capability while tool args claim it; PostgreSQL invocation/audit. Oracle: denied before backend access and denied audit status. Evidence: `invoke_tool_checks_builtin_capabilities_before_storage` (**1 passed**, unreachable PostgreSQL proves no backend access); `postgres_latest_snapshot_route_projects_authorized_snapshot_when_dsn_available` (**1 passed**, live disposable PostgreSQL); forged `project_view` args still return `KOGWISTAR_CAPABILITY_FORBIDDEN`, audit records `error`. |

@@ -474,34 +474,24 @@ They are changed only if an existing Phase 4 parity/interoperability gate proves
 a concrete mismatch. Performance improvements beyond recorded thresholds and
 test-framework changes beyond the completed harness are deferred.
 
-### External rollout and elapsed-release gates
+### Library Acceptance and Authority
 
-These cannot be satisfied by more local unit-test implementation:
+Kogwistar is a library; there is no customer production fleet or traffic rollout
+to perform. Acceptance uses the same-candidate isolated Docker UAT, required
+interpreter CI, capability-specific backend tests, and backward-compatible
+rollback evidence. No `0%`/`1%`/`10%`/`50%`/`100%` customer canary is required.
 
-- [ ] Run one same-candidate production canary for each Rust-target capability,
-  each through `internal/test`, `1%`, `10%`, `50%`, and `100%`, with real
-  observation windows, zero unexplained mismatch, and tested rollback. The
-  schema-v2 rehearsal set proves required evidence shape only; neither it nor a
-  successful canary for one capability can promote another capability.
-  `contracts/canary/adr015-capability-canary-set-v2.json` is the committed
-  rehearsal template; its all-zero identity and `rehearsal` kind deliberately
-  fail a release promotion.
-- [ ] Make the ready Rust capabilities default only after production evidence.
-- [ ] Complete one full compatibility release with Python rollback retained.
-- [ ] Then satisfy the historical Phase 6 Rust-default deployment checks:
-  graph/storage/runtime/server behavior, Python API tests against Rust,
-  upgrade/rollback survival, and all consumer/E2E gates. Under ADR-022 these
-  checks do not retire the independently selectable Python implementation.
-
-Current authority facts: 2 of 8 Rust-target capability flags are locally ready;
-6 are not ready. Production canary stages, compatibility release, and deployment
-task progress are maintained in the linked cutover worklist. These evidence
-gates, not a floating percentage, govern ADR completion.
+`rust_cutover_ready` is a capability-specific permission to select Rust
+authority explicitly after its evidence gates pass. It does not switch defaults,
+remove Python, or imply customer deployment. Python remains independently
+supported. Current ledger: **2/8 Rust-target capabilities ready; 6 remain not
+ready**. Their blockers are implementation/parity/UAT evidence, not absent
+customer traffic.
 
 ### Historical local validation and release boundary
 
 ADR-015 has no current percentage-complete estimate. Earlier percentages mixed
-library implementation with downstream production rollout and are retained
+library implementation with downstream deployment rollout and are retained
 nowhere as a release criterion. The scope-locked ledger and the
 authority/canary counts above govern ADR completion; the fixed library release
 claim is recorded separately in `ADR-015-library-release.md`.
@@ -518,7 +508,7 @@ blocker. PostgreSQL live checks remain a separate capability-specific
 requirement: the Docker compatibility workers deliberately do not reach the
 host Docker daemon, so PostgreSQL fixtures correctly skip there rather than
 creating a false environmental pass. Neither result advances a capability flag
-until its listed capability-specific evidence and production canary pass.
+until its listed capability-specific evidence and isolated library UAT pass.
 
 The later metadata-only lifecycle candidate also passed the full current-source
 host selector (`505 passed, 4 skipped, 1182 deselected`) and all four isolated
@@ -844,14 +834,13 @@ deployment canary evidence required to make Rust its live default writer.
   not the remaining Rust authority or Phase 5 conformance gates.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
-- No downstream adopter production internal/test, 1%, 10%, 50%, and 100% canary
-  records exist. Those are explicitly deferred deployment operations, not library
-  release blockers.
+- Customer traffic canary records do not exist and are not required for library
+  acceptance; capability readiness remains governed by the explicit test/UAT gates.
 
 Every downstream default switch requires explicit `rust_cutover_ready: true`;
-omitted readiness fails closed. `scripts/rust_port_readiness.py` validates canary
-evidence. Rehearsal evidence may validate its shape but can never authorize a
-downstream ownership promotion.
+omitted readiness fails closed. `scripts/rust_port_readiness.py` verifies that
+compatibility evidence came from the isolated Docker UAT candidate; it does not
+authorize a default switch or claim customer deployment.
 
 ## Library delivery checklist
 

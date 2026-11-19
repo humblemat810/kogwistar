@@ -6,6 +6,7 @@ import subprocess
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -93,6 +94,55 @@ def test_python_created_schema_rust_reads_writes_and_replay_maps_exclusive(
         schema,
         {"kind": "exclusive_raw_replay", "namespace": "alpha", "after_seq": 1, "limit": 10},
     )[0]["seq"] == 2
+
+
+def test_postgres_valid_invalid_operations_match_shared_golden_fixture(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "postgres-event-store-parity-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    valid = fixture["valid_event"]
+    namespace = f"{valid['namespace']}-{uuid.uuid4().hex}"
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    python.append_entity_event(
+        namespace=namespace,
+        event_id="python-golden",
+        entity_kind=valid["entity_kind"],
+        entity_id=valid["entity_id"],
+        op=valid["op"],
+        payload_json=valid["payload_json"],
+    )
+    replay = _rust(
+        dsn,
+        schema,
+        {"kind": "exclusive_raw_replay", "namespace": namespace, "after_seq": 0, "limit": 10},
+    )
+    assert replay[0]["payload_json"] == valid["payload_json"]
+    assert replay[0]["entity_id"] == valid["entity_id"]
+
+    rust_event = {
+        **valid,
+        "kind": "raw_append",
+        "namespace": namespace,
+        "event_id": "rust-golden",
+    }
+    assert _rust(dsn, schema, rust_event)["seq"] == 2
+    assert list(python.iter_entity_events(namespace=namespace, from_seq=1)) == [
+        (1, "node", "node-雪", "UPSERT", valid["payload_json"]),
+        (2, "node", "node-雪", "UPSERT", valid["payload_json"]),
+    ]
+
+    invalid = {**fixture["invalid_operation"], "namespace": namespace}
+    with pytest.raises(RustParityError) as rejected:
+        _rust(dsn, schema, invalid)
+    assert rejected.value.code == fixture["expected_invalid_error"]
 
 
 def test_rust_created_schema_python_reads_writes_and_cursor_contracts(

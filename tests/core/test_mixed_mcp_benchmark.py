@@ -504,6 +504,7 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
 
 
 @pytest.mark.ci_full
+@pytest.mark.requires_cargo
 def test_rust_native_http_transport_attribution_is_complete(tmp_path) -> None:
     trace = build_read_after_write_trace(2)
     result = asyncio.run(
@@ -715,6 +716,7 @@ def test_native_seam_metrics_reject_false_or_incomplete_attestation(
 
 
 @pytest.mark.ci_full
+@pytest.mark.requires_cargo
 def test_concurrent_mcp_transports_preserve_exact_visibility(tmp_path) -> None:
     report = _run_concurrent_mcp_profiles(tmp_path, items=2, samples=2)
 
