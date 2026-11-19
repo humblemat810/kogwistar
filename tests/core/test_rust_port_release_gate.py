@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -325,21 +326,67 @@ def test_release_gate_rejects_empty_selection_outside_supported_profile() -> Non
     }
 
 
+def _clause_test_references() -> list[dict[str, str]]:
+    worklist = (ROOT / "kogwistar/docs/ADR-015-capability-completion-worklist.md").read_text(
+        encoding="utf-8"
+    )
+    section = worklist.partition("## Capability Gate Closure")[2].partition("## Tasklets")[0]
+    rows = [line.strip().strip("|").split("|") for line in section.splitlines() if line.startswith("| `")]
+    python_names = {
+        name
+        for path in (ROOT / "tests").rglob("*.py")
+        for name in re.findall(
+            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+    references: set[tuple[str, str]] = set()
+    for row in rows:
+        evidence = row[3]
+        references.update(
+            ("pytest", name)
+            for name in set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence))
+            if name in python_names
+        )
+        references.update(
+            ("rust", name)
+            for name in re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)", evidence)
+        )
+        references.update(
+            ("rust", name)
+            for _, name in re.findall(r"`(rust/[^`]+?\.rs)::([A-Za-z_][A-Za-z0-9_]*)`", evidence)
+        )
+    return [
+        {"source": source, "function": name, "status": "passed"}
+        for source, name in sorted(references)
+    ]
+
+
 def _phase5_evidence(source_sha256: str | None = None) -> dict:
     source_sha256 = source_sha256 or _gate().candidate_source_fingerprint(ROOT)[0]
     groups = []
     for name in sorted(_gate().REQUIRED_PHASE5_GROUPS):
-        groups.append(
-            {
-                "name": name,
-                "status": "passed",
-                "returncode": 0,
-                "live_async_sse_required": name == "async-sse",
-                "counts": {"tests": 1, "failures": 0, "errors": 0, "skipped": 0},
-            }
-        )
+        group = {
+            "name": name,
+            "status": "passed",
+            "returncode": 0,
+            "live_async_sse_required": name == "async-sse",
+            "counts": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+            "test_results": [
+                {"source": "pytest", "function": "fixture_test", "status": "passed"}
+            ],
+        }
+        if name == "rust-api":
+            references = _clause_test_references()
+            group["excluded_test_filters"] = sorted(_gate().RUST_API_EXCLUDED_TESTS)
+            group["required_services"] = ["PostgreSQL", "Chroma"]
+            group["counts"].update(
+                {"tests": len(references), "passed": len(references), "filtered_out": 1}
+            )
+            group["test_results"] = references
+        groups.append(group)
     return {
-        "schema": "adr015-phase5-server-gate/v1",
+        "schema": "adr015-phase5-server-gate/v3",
         "candidate_source_sha256": source_sha256,
         "server_authority": "python-baseline-before-rust-cutover",
         "production_rolling_upgrade": "not-proven-local",
@@ -358,11 +405,14 @@ def _phase3_capability_evidence(source_sha256: str | None = None) -> dict:
                 "status": "passed",
                 "returncode": 0,
                 "live_postgres_required": True,
-                "counts": {"tests": 1, "failures": 0, "errors": 0, "skipped": 0},
+                "counts": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+                "test_results": [
+                    {"source": "pytest", "function": "fixture_test", "status": "passed"}
+                ],
             }
         )
     return {
-        "schema": "adr015-phase3-capability-gate/v1",
+        "schema": "adr015-phase3-capability-gate/v2",
         "candidate_source_sha256": source_sha256,
         "production_authority": "not-promoted-local-evidence-only",
         "groups": groups,
@@ -380,16 +430,41 @@ def _phase4_runtime_evidence(source_sha256: str | None = None) -> dict:
                 "status": "passed",
                 "returncode": 0,
                 "live_postgres_required": name == "postgres",
-                "counts": {"tests": 1, "failures": 0, "errors": 0, "skipped": 0},
+                "counts": {"tests": 1, "passed": 1, "failures": 0, "errors": 0, "skipped": 0},
+                "test_results": [
+                    {"source": "pytest", "function": "fixture_test", "status": "passed"}
+                ],
             }
         )
     return {
-        "schema": "adr015-phase4-runtime-gate/v1",
+        "schema": "adr015-phase4-runtime-gate/v2",
         "candidate_source_sha256": source_sha256,
         "async_rust_authority": "async-v2-worker-protocol",
         "groups": groups,
         "status": "passed",
     }
+
+
+def test_capability_clause_results_follow_named_test_outcomes() -> None:
+    gate = _gate()
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3, phase4=phase4, phase5=phase5
+    )
+    assert len(results) == 22
+    assert all(row["status"] == "passed" for row in results)
+    assert errors == []
+
+    rust_group = next(group for group in phase5["groups"] if group["name"] == "rust-api")
+    rust_group["test_results"][0]["status"] = "failed"
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3, phase4=phase4, phase5=phase5
+    )
+    assert any(row["status"] == "blocked" for row in results)
+    assert errors
 
 
 def test_current_release_gate_reports_real_blockers() -> None:
@@ -591,6 +666,31 @@ def test_gate_rejects_stale_or_skipped_phase5_async_sse_evidence() -> None:
     details = {row["detail"] for row in result["blockers"]}
     assert "Phase-5 server evidence does not match current candidate source" in details
     assert "Phase-5 async-sse evidence must be live and unskipped" in details
+
+
+def test_gate_rejects_rust_api_server_evidence_with_ignored_or_missing_tests() -> None:
+    manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
+    evidence = _phase5_evidence()
+    rust_api = next(group for group in evidence["groups"] if group["name"] == "rust-api")
+    rust_api["counts"]["skipped"] = 1
+    rust_api["required_services"] = ["PostgreSQL"]
+
+    result = _gate().evaluate_release_gate(
+        manifest=manifest,
+        compatibility_reports=_compatibility("a" * 64),
+        runtime_performance=_runtime_performance(),
+        phase3_capability_evidence=_phase3_capability_evidence(),
+        phase4_runtime_evidence=_phase4_runtime_evidence(),
+        phase5_server_evidence=evidence,
+    )
+
+    details = {row["detail"] for row in result["blockers"]}
+    assert "Phase-5 Rust API group rust-api has failures or errors" in details
+    assert "Phase-5 Rust API evidence must require PostgreSQL and Chroma" in details
+    assert (
+        "Phase-5 Rust API evidence must pass all non-excluded tests with no ignored tests"
+        in details
+    )
 
 
 def test_gate_rejects_stale_or_skipped_phase3_capability_evidence() -> None:

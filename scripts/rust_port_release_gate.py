@@ -5,6 +5,7 @@ import argparse
 import importlib.util
 import json
 import math
+import re
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,13 @@ REQUIRED_PHASE5_GROUPS = {
     "mcp",
     "frozen-contracts",
     "async-sse",
+    "rust-api",
+}
+CAPABILITY_WORKLIST_PATH = ROOT / "kogwistar" / "docs" / "ADR-015-capability-completion-worklist.md"
+RUST_API_EXCLUDED_TESTS = {
+    "runtime_serving_lookup_scale_probe",
+    "postgres_queue_projects_to_chroma_without_cross_store_transaction",
+    "python_mcp_sdk_receives_rust_server_initiated_notification",
 }
 REQUIRED_PHASE3_CAPABILITY_GROUPS = {
     "postgres-sequence-event-log",
@@ -416,7 +424,7 @@ def validate_phase5_server_evidence(
 ) -> list[str]:
     """Require current-source server UAT evidence without implying deployment."""
     errors: list[str] = []
-    if evidence.get("schema") != "adr015-phase5-server-gate/v1":
+    if evidence.get("schema") != "adr015-phase5-server-gate/v3":
         errors.append("Phase-5 server evidence has an unsupported schema")
     if evidence.get("candidate_source_sha256") != current_source_sha256:
         errors.append("Phase-5 server evidence does not match current candidate source")
@@ -447,13 +455,169 @@ def validate_phase5_server_evidence(
             errors.append(f"Phase-5 group {name} lacks test evidence")
         elif counts.get("failures") != 0 or counts.get("errors") != 0:
             errors.append(f"Phase-5 group {name} has failures or errors")
+        if isinstance(counts, dict):
+            errors.extend(
+                _named_test_result_errors(
+                    group, prefix=f"Phase-5 group {name}", counts=counts
+                )
+            )
         if name == "async-sse" and (
             group.get("live_async_sse_required") is not True
             or not isinstance(counts, dict)
             or counts.get("skipped") != 0
         ):
             errors.append("Phase-5 async-sse evidence must be live and unskipped")
+        if name == "rust-api":
+            if (
+                not isinstance(counts, dict)
+                or counts.get("failures") != 0
+                or counts.get("errors") != 0
+                or counts.get("skipped") != 0
+            ):
+                errors.append(
+                    "Phase-5 Rust API group rust-api has failures or errors"
+                )
+            if group.get("excluded_test_filters") != sorted(RUST_API_EXCLUDED_TESTS):
+                errors.append("Phase-5 Rust API evidence has unexpected excluded tests")
+            if group.get("required_services") != ["PostgreSQL", "Chroma"]:
+                errors.append("Phase-5 Rust API evidence must require PostgreSQL and Chroma")
+            if (
+                not isinstance(counts, dict)
+                or counts.get("passed", 0) <= 0
+                or counts.get("skipped") != 0
+                or counts.get("filtered_out") != 1
+            ):
+                errors.append(
+                    "Phase-5 Rust API evidence must pass all non-excluded tests with no ignored tests"
+                )
     return errors
+
+
+def _named_test_result_errors(
+    group: dict[str, Any], *, prefix: str, counts: dict[str, Any]
+) -> list[str]:
+    results = group.get("test_results")
+    if not isinstance(results, list) or len(results) != counts.get("tests"):
+        return [f"{prefix} named test results do not match test count"]
+    if any(
+        not isinstance(result, dict)
+        or result.get("status") not in {"passed", "failed", "skipped"}
+        or not isinstance(result.get("function"), str)
+        or not result["function"]
+        for result in results
+    ):
+        return [f"{prefix} has malformed named test results"]
+    passed = sum(result["status"] == "passed" for result in results)
+    failed = sum(result["status"] == "failed" for result in results)
+    skipped = sum(result["status"] == "skipped" for result in results)
+    if (passed, failed, skipped) != (
+        counts.get("passed"),
+        counts.get("failures", 0) + counts.get("errors", 0),
+        counts.get("skipped"),
+    ):
+        return [f"{prefix} named test outcomes disagree with aggregate counts"]
+    return []
+
+
+def evaluate_capability_clause_tests(
+    *,
+    phase3: dict[str, Any],
+    phase4: dict[str, Any],
+    phase5: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Evaluate every pending profile clause against named test outcomes."""
+    contract = _load_json(ROOT / "contracts" / "dual-language-capabilities-v1.json")
+    relevant_capabilities = (
+        REQUIRED_PHASE3_CAPABILITY_GROUPS
+        | {"workflow-runtime", "server-rest-sse-mcp-cli"}
+    )
+    expected = {
+        (capability, clause)
+        for capability, clauses in contract.get("conformance_profiles", {}).items()
+        if capability in relevant_capabilities
+        for clause in clauses
+    }
+    worklist = CAPABILITY_WORKLIST_PATH.read_text(encoding="utf-8")
+    table = worklist.partition("## Capability Gate Closure")[2].partition("## Tasklets")[0]
+    rows = [
+        line.strip().strip("|").split("|")
+        for line in table.splitlines()
+        if line.startswith("| `")
+    ]
+    row_keys = {
+        (cells[0].strip().strip("`"), cells[1].strip().strip("`"))
+        for cells in rows
+        if len(cells) >= 4
+    }
+    errors: list[str] = []
+    if row_keys != expected or len(rows) != len(expected):
+        errors.append("capability worklist clauses do not exactly match the normative profiles")
+
+    python_tests = {
+        name
+        for path in (ROOT / "tests").rglob("*.py")
+        for name in re.findall(
+            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+    python_results: dict[str, list[dict[str, Any]]] = {}
+    rust_results: dict[str, list[dict[str, Any]]] = {}
+    for report in (phase3, phase4, phase5):
+        for group in report.get("groups", []):
+            for result in group.get("test_results", []):
+                if not isinstance(result, dict):
+                    continue
+                index = python_results if result.get("source") == "pytest" else rust_results
+                function = result.get("function")
+                if isinstance(function, str):
+                    index.setdefault(function, []).append(result)
+
+    clause_results: list[dict[str, Any]] = []
+    for cells in rows:
+        if len(cells) < 4:
+            continue
+        capability, clause, _documented_status, evidence = (
+            cell.strip().strip("`") for cell in cells[:4]
+        )
+        python_names = sorted(set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence)) & python_tests)
+        rust_names = set(re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)", evidence))
+        rust_names.update(
+            name
+            for _, name in re.findall(
+                r"`(rust/[^`]+?\.rs)::([A-Za-z_][A-Za-z0-9_]*)`", evidence
+            )
+        )
+        references = [("pytest", name) for name in python_names] + [
+            ("rust", name) for name in sorted(rust_names)
+        ]
+        checks: list[dict[str, str]] = []
+        for source, name in references:
+            outcomes = (python_results if source == "pytest" else rust_results).get(name, [])
+            status = "missing" if not outcomes else (
+                "passed" if all(item.get("status") == "passed" for item in outcomes) else "failed"
+            )
+            checks.append({"source": source, "function": name, "status": status})
+        passed = bool(checks) and all(check["status"] == "passed" for check in checks)
+        clause_results.append(
+            {
+                "capability": capability,
+                "clause": clause,
+                "status": "passed" if passed else "blocked",
+                "tests": checks,
+            }
+        )
+        if not checks:
+            errors.append(f"{capability}/{clause} has no executable test references")
+        elif not passed:
+            missing = [
+                f"{check['source']}::{check['function']}={check['status']}"
+                for check in checks
+                if check["status"] != "passed"
+            ]
+            errors.append(f"{capability}/{clause} test evidence incomplete: {', '.join(missing)}")
+
+    return clause_results, errors
 
 
 def validate_phase3_capability_evidence(
@@ -461,7 +625,7 @@ def validate_phase3_capability_evidence(
 ) -> list[str]:
     """Require separate live-PostgreSQL UAT proof per pending store capability."""
     errors: list[str] = []
-    if evidence.get("schema") != "adr015-phase3-capability-gate/v1":
+    if evidence.get("schema") != "adr015-phase3-capability-gate/v2":
         errors.append("Phase-3 capability evidence has an unsupported schema")
     if evidence.get("candidate_source_sha256") != current_source_sha256:
         errors.append("Phase-3 capability evidence does not match current candidate source")
@@ -498,6 +662,12 @@ def validate_phase3_capability_evidence(
             errors.append(
                 f"Phase-3 capability group {name} has failures, errors, or skips"
             )
+        if isinstance(counts, dict):
+            errors.extend(
+                _named_test_result_errors(
+                    group, prefix=f"Phase-3 capability group {name}", counts=counts
+                )
+            )
     return errors
 
 
@@ -511,7 +681,7 @@ def validate_phase4_runtime_evidence(
     PostgreSQL evidence captured by the Phase-4 gate.
     """
     errors: list[str] = []
-    if evidence.get("schema") != "adr015-phase4-runtime-gate/v1":
+    if evidence.get("schema") != "adr015-phase4-runtime-gate/v2":
         errors.append("Phase-4 runtime evidence has an unsupported schema")
     if evidence.get("candidate_source_sha256") != current_source_sha256:
         errors.append("Phase-4 runtime evidence does not match current candidate source")
@@ -544,6 +714,12 @@ def validate_phase4_runtime_evidence(
             or counts.get("skipped") != 0
         ):
             errors.append(f"Phase-4 runtime group {name} has failures, errors, or skips")
+        if isinstance(counts, dict):
+            errors.extend(
+                _named_test_result_errors(
+                    group, prefix=f"Phase-4 runtime group {name}", counts=counts
+                )
+            )
         if name == "postgres" and group.get("live_postgres_required") is not True:
             errors.append("Phase-4 runtime postgres group must require live PostgreSQL")
     return errors
@@ -687,6 +863,14 @@ def evaluate_release_gate(
     ):
         blockers.append({"gate": "server-local", "detail": detail})
 
+    capability_clause_results, clause_errors = evaluate_capability_clause_tests(
+        phase3=phase3_capability_evidence,
+        phase4=phase4_runtime_evidence,
+        phase5=phase5_server_evidence,
+    )
+    for detail in clause_errors:
+        blockers.append({"gate": "capability-clauses", "detail": detail})
+
     runtime_performance_errors = _validate_runtime_performance(runtime_performance)
     for detail in runtime_performance_errors:
         blockers.append({"gate": "performance", "detail": detail})
@@ -829,6 +1013,12 @@ def evaluate_release_gate(
                 )
                 else "blocked"
             )
+        },
+        "capability_clause_tests": {
+            "total": len(capability_clause_results),
+            "passed": sum(row["status"] == "passed" for row in capability_clause_results),
+            "blocked": sum(row["status"] != "passed" for row in capability_clause_results),
+            "results": capability_clause_results,
         },
         "library_uat": library_uat,
         "rust_cutover_ready_capabilities": sorted(value for value in active_rust if isinstance(value, str)),

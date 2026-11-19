@@ -29,6 +29,67 @@ def test_phase5_gate_is_persisted_and_keeps_production_upgrade_separate() -> Non
     assert "not-proven-local" in source
     assert "live_async_sse_required" in source
     assert 'counts["skipped"] == 0' in source
+    assert "RUST_API_GROUP = \"rust-api\"" in source
+    assert "--include-ignored" in source
+    assert "adr015-phase5-server-gate/v3" in source
+
+
+def test_rust_api_gate_requires_live_services_and_records_cargo_test_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = _gate()
+    monkeypatch.setattr(gate.shutil, "which", lambda _name: "cargo.exe")
+    monkeypatch.setenv("KOGWISTAR_TEST_PG_DSN", "postgresql://test/db")
+    monkeypatch.setenv("KOGWISTAR_TEST_CHROMA_URL", "http://127.0.0.1:18000")
+
+    def fake_run(command, **kwargs):
+        assert "--include-ignored" in command
+        assert kwargs["env"]["KOGWISTAR_TEST_PG_DSN"] == "postgresql://test/db"
+        kwargs["stdout"].write("running 455 tests\n")
+        for index in range(455):
+            kwargs["stdout"].write(f"test tests::fixture_{index} ... ok\n")
+        kwargs["stdout"].write(
+            "test result: ok. 455 passed; 0 failed; 0 ignored; "
+            "0 measured; 1 filtered out; finished in 42.02s\n"
+        )
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    result = gate._run_rust_api_group(output_root=tmp_path)
+
+    assert result["status"] == "passed"
+    assert result["counts"] == {
+        "tests": 455,
+        "passed": 455,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "filtered_out": 1,
+        "named_test_results": 455,
+    }
+    assert len(result["test_results"]) == 455
+    assert result["required_services"] == ["PostgreSQL", "Chroma"]
+
+
+def test_rust_api_gate_fails_closed_without_live_services(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = _gate()
+    monkeypatch.setattr(gate.shutil, "which", lambda _name: "cargo.exe")
+    monkeypatch.delenv("KOGWISTAR_TEST_PG_DSN", raising=False)
+    monkeypatch.delenv("GKE_PG_DSN", raising=False)
+    monkeypatch.delenv("PG_DSN", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("KOGWISTAR_TEST_CHROMA_URL", raising=False)
+    monkeypatch.delenv("KOGWISTAR_TEST_CHROMA_ENDPOINT", raising=False)
+
+    result = gate._run_rust_api_group(output_root=tmp_path)
+
+    assert result["status"] == "failed"
+    assert result["returncode"] is None
+    assert "PostgreSQL DSN, Chroma URL" in (
+        tmp_path / "rust-api.err.txt"
+    ).read_text(encoding="utf-8")
 
 
 def test_phase5_junit_counts_handles_direct_testcases(tmp_path: Path) -> None:
@@ -42,6 +103,7 @@ def test_phase5_junit_counts_handles_direct_testcases(tmp_path: Path) -> None:
 
     assert gate._junit_counts(junit) == {
         "tests": 4,
+        "passed": 1,
         "failures": 1,
         "errors": 1,
         "skipped": 1,
@@ -54,13 +116,16 @@ def test_phase5_async_sse_group_rejects_skip_but_baseline_group_allows_it(
     gate = _gate()
 
     def fake_run(command, **_kwargs):
+        assert "capture_output" not in _kwargs
+        _kwargs["stdout"].write("pytest stdout")
+        _kwargs["stderr"].write("pytest stderr")
         junit_arg = next(value for value in command if str(value).startswith("--junitxml="))
         junit = Path(str(junit_arg).split("=", 1)[1])
         junit.write_text(
             '<testsuite tests="1" failures="0" errors="0" skipped="1"/>',
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=0)
 
     monkeypatch.setattr(gate.subprocess, "run", fake_run)
     python = ROOT / ".venv" / "Scripts" / "python.exe"
@@ -81,3 +146,30 @@ def test_phase5_async_sse_group_rejects_skip_but_baseline_group_allows_it(
 
     assert async_sse["status"] == "failed"
     assert baseline["status"] == "passed"
+    assert (tmp_path / "rest-sse.out.txt").read_text(encoding="utf-8") == "pytest stdout"
+    assert (tmp_path / "rest-sse.err.txt").read_text(encoding="utf-8") == "pytest stderr"
+
+
+def test_phase5_group_timeout_is_reported_as_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = _gate()
+
+    def timed_out(command, **_kwargs):
+        raise gate.subprocess.TimeoutExpired(command, timeout=gate.GROUP_TIMEOUT_SECONDS)
+
+    monkeypatch.setattr(gate.subprocess, "run", timed_out)
+    result = gate._run_group(
+        python=ROOT / ".venv" / "Scripts" / "python.exe",
+        name="rest-sse",
+        tests=gate.GROUPS["rest-sse"][0],
+        output_root=tmp_path,
+        live_async_sse=False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["timed_out"] is True
+    assert result["returncode"] == 124
+    assert str(gate.GROUP_TIMEOUT_SECONDS) in (tmp_path / "rest-sse.err.txt").read_text(
+        encoding="utf-8"
+    )

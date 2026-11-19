@@ -1,10 +1,10 @@
 """Prove each pending ADR-015 durable-store capability separately.
 
-This gate is intentionally narrower than the Phase-3 aggregate gate.  A green
-event-log test cannot authorize projections, queues, or graph/pgvector.  Every
-group requires a live PostgreSQL/pgvector result with no skips.  It is local
-evidence only; production canary evidence remains required before ownership is
-promoted.
+This gate is intentionally narrower than the Phase-3 aggregate gate. A green
+event-log test cannot authorize projections, queues, or graph/pgvector. Every
+group requires a live PostgreSQL/pgvector result with no skips. This is one
+capability-specific input to isolated library UAT acceptance; it does not
+automatically change language authority or the default implementation.
 """
 
 from __future__ import annotations
@@ -36,21 +36,30 @@ CAPABILITY_GROUPS: dict[str, tuple[str, ...]] = {
         "tests/core/test_rust_store_postgres_differential.py",
     ),
     "projections-snapshots-run-registry": (
+        "tests/core/test_rust_store_projection_differential.py::test_postgres_projection_valid_invalid_fixture_matches_python_rust",
         "tests/core/test_rust_store_projection_differential.py::test_postgres_named_projections_python_and_rust_interoperate",
         "tests/core/test_rust_store_projection_differential.py::test_postgres_rust_created_projection_schema_python_reads_and_atomic_batch",
         "tests/core/test_rust_store_run_registry_differential.py::test_postgres_run_registry_bidirectional_isolated_and_atomic",
         "tests/core/test_rust_store_workflow_history_differential.py::test_postgres_workflow_history_python_created_schema_and_atomic_batch",
         "tests/core/test_rust_store_workflow_history_differential.py::test_postgres_rust_created_schema_python_reads_history",
+        "tests/core/test_rust_store_recovery_differential.py::test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop",
         "tests/core/test_rust_store_recovery_differential.py::test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop",
+        "tests/core/test_rust_store_recovery_differential.py::test_postgres_projection_resume_rejects_stale_checkpoint_after_restart",
     ),
     "queues-leases-lanes": (
+        "tests/core/test_rust_store_lane_messages_differential.py::test_postgres_queue_lane_valid_invalid_fixture_matches_python_rust",
         "tests/core/test_rust_store_index_jobs_differential.py::test_postgres_python_rust_queue_differential_live",
         "tests/core/test_rust_store_index_jobs_differential.py::test_postgres_queue_concurrency_reclaim_and_terminal_retry_live",
         "tests/core/test_rust_store_lane_messages_differential.py::test_postgres_lane_python_rust_and_concurrency",
     ),
     "graph-pgvector": (
-        "tests/core/test_rust_store_graph_mutation_differential.py",
+        "tests/core/test_rust_store_graph_mutation_differential.py::test_graph_mutation_event_history_pgvector_and_python_mutual_readability",
+        "tests/core/test_rust_store_graph_mutation_differential.py::test_python_node_and_edge_payloads_round_trip_through_rust_graph_mutation",
+        "tests/core/test_rust_store_graph_mutation_differential.py::test_graph_mutation_scope_vector_contract_and_fault_rollback",
+        "tests/core/test_rust_store_graph_mutation_differential.py::test_graph_mutation_fresh_rust_schema_and_validation_rollback",
         "tests/core/test_rust_postgres_transaction_session.py",
+        "tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection",
+        "tests/server/test_rust_api_postgres_worker_interop_live.py::test_rust_native_promotion_and_python_recovery_are_both_available",
     ),
 }
 
@@ -85,7 +94,7 @@ def run_gate(
         for capability in capabilities
     ]
     return {
-        "schema": "adr015-phase3-capability-gate/v1",
+        "schema": "adr015-phase3-capability-gate/v2",
         "candidate_source_sha256": source_sha256,
         "candidate_source_file_count": source_file_count,
         "native_extension": native["extension"],

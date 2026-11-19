@@ -991,7 +991,9 @@ def test_dual_language_surface_inventory_is_current() -> None:
     assert backend_syscalls["in-memory"]["dispatches"] == [
         "create_conversation",
         "invoke_tool",
+        "mount_memory",
         "receive_message",
+        "send_message",
     ]
 
     result = subprocess.run(
@@ -1340,14 +1342,105 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     }
 
     assert len(parents) == 16
-    assert len(rows) == 67
+    assert len(rows) == 68
     pass_count = statuses.count("PASS")
     in_progress_count = statuses.count("IN PROGRESS")
     not_started_count = statuses.count("NOT STARTED")
-    assert pass_count + in_progress_count + not_started_count == 67
+    assert pass_count + in_progress_count + not_started_count == 68
     assert capability_ids == incomplete_capabilities
+    dual_language_contract = json.loads(
+        (ROOT / "contracts" / "dual-language-capabilities-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    closure_section = worklist.partition("## Capability Gate Closure")[2].partition(
+        "## Tasklets"
+    )[0]
+    closure_rows = [
+        line.strip().strip("|").split("|")
+        for line in closure_section.splitlines()
+        if line.startswith("| `")
+    ]
+    expected_clauses = {
+        (capability_id, clause)
+        for capability_id in incomplete_capabilities
+        for clause in dual_language_contract["conformance_profiles"][capability_id]
+    }
+    actual_clauses = {
+        (parts[0].strip().strip("`"), parts[1].strip().strip("`"))
+        for parts in closure_rows
+    }
+    assert actual_clauses == expected_clauses
+    assert len(closure_rows) == 22
+    assert all(parts[2].strip() in {"OPEN", "PASS"} for parts in closure_rows)
+    open_rows = [parts for parts in closure_rows if parts[2].strip() == "OPEN"]
+    for parts in open_rows:
+        evidence = parts[3].strip()
+        assert any(label in evidence for label in ("Required pytest:", "Executable pytest:")), parts
+        assert re.search(r"`tests/.+::test_[a-z0-9_]+`", evidence), parts
+        assert "Assert" in evidence, parts
+        assert "Map current-candidate" not in evidence, parts
+        if "Executable pytest:" in evidence:
+            node_match = re.search(r"`(tests/.+\.py)::(test_[a-z0-9_]+)`", evidence)
+            assert node_match is not None, parts
+            test_source = (ROOT / node_match.group(1)).read_text(encoding="utf-8")
+            assert f"def {node_match.group(2)}(" in test_source, parts
+    closed_clauses = sum(parts[2].strip() == "PASS" for parts in closure_rows)
+    open_clauses = len(closure_rows) - closed_clauses
+    assert (
+        f"**Gate-clause progress:** **{closed_clauses}/22 PASS "
+        f"({100 * closed_clauses / 22:.1f}%)**; **{open_clauses}/22 OPEN**."
+    ) in worklist
+    closure_status = {
+        (parts[0].strip().strip("`"), parts[1].strip().strip("`")): parts[2].strip()
+        for parts in closure_rows
+    }
+    assert closure_status[
+        ("postgres-sequence-event-log", "cross-language-valid-invalid-golden-fixtures")
+    ] == "PASS"
+    assert closure_status[
+        ("postgres-sequence-event-log", "transaction-owner-and-rollback")
+    ] == "PASS"
+    assert closure_status[
+        ("postgres-sequence-event-log", "commit-acknowledgement-failure-and-recovery")
+    ] == "PASS"
+    assert closure_status[
+        ("postgres-sequence-event-log", "reopen-and-schema-compatibility")
+    ] == "PASS"
+    assert closure_status[("queues-leases-lanes", "claim-lease-reclaim-and-idempotency")] == "PASS"
+    assert closure_status[
+        ("queues-leases-lanes", "crash-before-after-effect-and-acknowledgement")
+    ] == "PASS"
+    assert closure_status[("queues-leases-lanes", "trace-and-correlation-parity")] == "PASS"
+    assert closure_status[
+        ("projections-snapshots-run-registry", "projection-rebuild-and-snapshot-parity")
+    ] == "PASS"
+    assert closure_status[
+        ("projections-snapshots-run-registry", "restart-resume-and-stale-state")
+    ] == "PASS"
+    assert closure_status[
+        ("queues-leases-lanes", "cross-language-valid-invalid-golden-fixtures")
+    ] == "PASS"
+    assert all(
+        closure_status[("workflow-runtime", clause)] == "PASS"
+        for clause in (
+            "cross-language-valid-invalid-golden-fixtures",
+            "transition-route-and-checkpoint-parity",
+            "worker-version-environment-and-replay-contract",
+            "trace-provenance-and-cancellation",
+        )
+    )
+    assert all(
+        closure_status[("server-rest-sse-mcp-cli", clause)] == "PASS"
+        for clause in (
+            "openapi-and-mcp-contract-parity",
+            "authentication-acl-namespace-and-capability-parity",
+            "sse-ordering-and-resume",
+            "cli-operation-and-error-parity",
+        )
+    )
     expected_progress = (
-        f"**Progress:** **{pass_count}/67 PASS ({100 * pass_count / 67:.1f}%)**; "
+        f"**Tasklet progress:** **{pass_count}/68 PASS ({100 * pass_count / 68:.1f}%)**; "
         f"**{in_progress_count} IN PROGRESS**; **{not_started_count} NOT STARTED**."
     )
     assert expected_progress in worklist
@@ -1365,6 +1458,7 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     assert "| SRV-04B | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-04 | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-04C | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-04D | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-05B | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-05 | `server-rest-sse-mcp-cli` | PASS |" in worklist
     assert "| SRV-05C | `server-rest-sse-mcp-cli` | PASS |" in worklist
@@ -1385,6 +1479,138 @@ def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:
 
     for capability_id in ("chroma-adapter", "server-rest-sse-mcp-cli"):
         assert entries[capability_id]["python"]["status"] != "enabled"
+
+
+def test_each_capability_gate_clause_names_an_executable_test() -> None:
+    worklist_path = ROOT / "kogwistar" / "docs" / "ADR-015-capability-completion-worklist.md"
+    worklist = worklist_path.read_text(encoding="utf-8")
+    closure_section = worklist.partition("## Capability Gate Closure")[2].partition(
+        "## Tasklets"
+    )[0]
+    rows = [
+        line.strip().strip("|").split("|")
+        for line in closure_section.splitlines()
+        if line.startswith("| `")
+    ]
+    python_tests = {
+        name
+        for path in (ROOT / "tests").rglob("*.py")
+        for name in re.findall(
+            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+    python_tests_by_path = {
+        path.relative_to(ROOT).as_posix(): set(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+        for path in (ROOT / "tests").rglob("*.py")
+    }
+    python_gate_paths = (
+        "scripts/durable_store_capability_gate.py",
+        "scripts/runtime_authority_gate.py",
+        "scripts/server_contract_gate.py",
+    )
+    python_gate_selectors = {
+        value
+        for path in python_gate_paths
+        for value in (
+            node.value
+            for node in ast.walk(
+                ast.parse((ROOT / path).read_text(encoding="utf-8"))
+            )
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+        if value.startswith("tests/")
+    }
+    rust_ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    rust_ci_skips = set(re.findall(r"--skip\s+([A-Za-z_][A-Za-z0-9_]*)", rust_ci))
+    ci_runs_fast_tests = bool(
+        re.search(r'-m\s+"ci\s+and\s+not\s+ci_full', rust_ci)
+    )
+    ci_runs_full_tests = bool(re.search(r'-m\s+"ci_full\b', rust_ci))
+    rust_test_files = [
+        path
+        for path in (ROOT / "rust" / "crates").rglob("*.rs")
+        if "tests" in path.parts
+    ]
+    rust_tests_by_path = {
+        path.relative_to(ROOT).as_posix(): set(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+        for path in rust_test_files
+    }
+
+    assert len(rows) == 22
+    for row in rows:
+        capability, clause, status, evidence = (cell.strip() for cell in row[:4])
+        evidence = evidence.strip()
+        python_refs = re.findall(
+            r"`(tests/[^`]+?\.py)::(test_[A-Za-z0-9_]+)`", evidence
+        )
+        rust_refs = re.findall(
+            r"`(rust/[^`]+?\.rs)::([A-Za-z_][A-Za-z0-9_]*)`", evidence
+        )
+        for path, name in python_refs:
+            source_path = ROOT / path
+            assert source_path.is_file(), f"{capability}/{clause}: missing {path}"
+            source = source_path.read_text(encoding="utf-8")
+            assert re.search(
+                rf"(?m)^\s*(?:async\s+)?def\s+{re.escape(name)}\s*\(", source
+            ), f"{capability}/{clause}: missing pytest test {path}::{name}"
+        for path, name in rust_refs:
+            assert name in rust_tests_by_path.get(path, set()), (
+                f"{capability}/{clause}: missing Rust test {path}::{name}"
+            )
+
+        mentioned_python_tests = set(
+            re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence)
+        ) & python_tests
+        mentioned_rust_tests = set(
+            re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)", evidence)
+        )
+        mentioned_rust_tests.update(name for _, name in rust_refs)
+        declared_rust_tests = {
+            name for names in rust_tests_by_path.values() for name in names
+        }
+        assert mentioned_python_tests or mentioned_rust_tests & declared_rust_tests, (
+            f"{capability}/{clause} {status}: evidence lacks a declared test selector"
+        )
+        def selected_by_gate_or_ci(path: str, name: str, names: set[str]) -> bool:
+            if name not in names:
+                return False
+            if path in python_gate_selectors or f"{path}::{name}" in python_gate_selectors:
+                return True
+            source = (ROOT / path).read_text(encoding="utf-8")
+            module_scope = source.partition("\ndef ")[0]
+            markers = set(
+                re.findall(r"pytest\.mark\.(ci_full|ci)\b", module_scope)
+            )
+            return ("ci" in markers and ci_runs_fast_tests) or (
+                "ci_full" in markers and ci_runs_full_tests
+            )
+
+        selected_python_tests = all(
+            any(
+                selected_by_gate_or_ci(path, name, names)
+                for path, names in python_tests_by_path.items()
+            )
+            for name in mentioned_python_tests
+        )
+        selected_rust_tests = (
+            bool(rust_refs)
+            and "cargo test --workspace" in rust_ci
+            and not any(name in rust_ci_skips for _, name in rust_refs)
+        )
+        assert selected_python_tests or selected_rust_tests, (
+            f"{capability}/{clause}: cited tests are not selected by a capability gate or CI"
+        )
 
 
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:

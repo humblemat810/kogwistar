@@ -31,7 +31,12 @@ def test_capability_gate_is_persisted_and_covers_every_pending_store_owner() -> 
         for test in gate.CAPABILITY_GROUPS["postgres-sequence-event-log"]
     )
     assert any(
-        "test_rust_store_projection_differential.py" in test
+        "test_postgres_projection_valid_invalid_fixture_matches_python_rust" in test
+        for test in gate.CAPABILITY_GROUPS["projections-snapshots-run-registry"]
+    )
+    assert any(
+        "test_postgres_projection_resume_rejects_stale_checkpoint_after_restart"
+        in test
         for test in gate.CAPABILITY_GROUPS["projections-snapshots-run-registry"]
     )
     assert any(
@@ -42,11 +47,20 @@ def test_capability_gate_is_persisted_and_covers_every_pending_store_owner() -> 
         "test_rust_store_graph_mutation_differential.py" in test
         for test in gate.CAPABILITY_GROUPS["graph-pgvector"]
     )
+    graph_tests = gate.CAPABILITY_GROUPS["graph-pgvector"]
+    assert any("test_python_node_and_edge_payloads_round_trip" in test for test in graph_tests)
+    assert any("test_graph_mutation_scope_vector_contract_and_fault_rollback" in test for test in graph_tests)
+    assert any("test_graph_mutation_fresh_rust_schema_and_validation_rollback" in test for test in graph_tests)
+    assert any("test_rust_postgres_graph_read_tools_match_python_over_shared_projection" in test for test in graph_tests)
+    assert any("test_rust_native_promotion_and_python_recovery_are_both_available" in test for test in graph_tests)
 
 
 def test_capability_gate_reuses_live_postgres_skip_rejection() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
+    store_gate = (ROOT / "scripts" / "durable_store_gate.py").read_text(encoding="utf-8")
 
     assert "live_postgres=True" in source
     assert "not-promoted-local-evidence-only" in source
     assert "store_gate._run_group" in source
+    assert 'command.extend(("-k", "postgres"))' not in store_gate
+    assert 'counts["skipped"] == 0' in store_gate
