@@ -1678,6 +1678,30 @@ def test_hyperedge_keeps_the_edge_wire_identity_with_multiple_incidences() -> No
     assert envelope["payload"]["id"] == edge.id
     assert envelope["payload"]["source_ids"] == ["node-a", "node-b"]
     assert envelope["payload"]["source_edge_ids"] == ["edge-parent"]
+    assert envelope["payload"]["target_edge_ids"] is None
+
+
+def test_python_hyperedge_round_trips_shared_backend_fixture() -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "python-graph-model-payloads-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    case = next(
+        case
+        for case in fixture["cases"]
+        if case["kind"] == "edge_with_edge_endpoints"
+    )
+
+    edge = Edge.model_validate(case["payload"])
+    payload = edge.model_dump(field_mode="backend", dump_format="json")
+
+    assert payload == case["payload"]
+    assert payload["source_ids"] == ["parity-node"]
+    assert payload["source_edge_ids"] == ["parity-edge"]
+    assert payload["target_edge_ids"] == ["parity-edge-target"]
 
 
 def test_supported_edge_families_retain_node_lifecycle_capabilities() -> None:

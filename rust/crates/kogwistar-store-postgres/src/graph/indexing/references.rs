@@ -60,7 +60,7 @@ where
         )
         .await
         .map_err(backend)?;
-    if mutation.op == "TOMBSTONE" {
+    if super::mutation_is_tombstoned(mutation) {
         return Ok(());
     }
 
@@ -226,7 +226,7 @@ where
         )
         .await
         .map_err(backend)?;
-    if mutation.op == "TOMBSTONE" {
+    if super::mutation_is_tombstoned(mutation) {
         return Ok(());
     }
     let Some(document_json) = mutation.record.document.as_deref() else {

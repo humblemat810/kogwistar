@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import json
 import os
+import queue
 import socket
 import subprocess
 import sys
@@ -23,6 +24,7 @@ from fastapi.testclient import TestClient
 from kogwistar.runtime.models import RunFailure, RunSuccess, RunSuspended
 from kogwistar.runtime.resolvers import AsyncMappingStepResolver, MappingStepResolver
 from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
+from kogwistar.runtime.telemetry import TraceContext
 from kogwistar.runtime.rust_worker import (
     AsyncRustRuntimeWorker,
     RustRuntimeWorker,
@@ -39,6 +41,7 @@ from kogwistar.runtime.rust_runtime_authority import (
     _runtime_plan_requires_python_worker,
     _validate_resume_plan,
     _json_state,
+    _runtime_trace_context_payload,
     freeze_runtime_plan,
 )
 from kogwistar.implementation_selection import capture_implementation_selection
@@ -136,6 +139,75 @@ def _test_hs256_token(secret: str, claims: dict[str, object]) -> str:
     return f"{signing_input}.{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
 
 
+def _configure_rust_runtime_test_auth(
+    env: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch | None = None,
+    *,
+    auth_db_path: Path | None = None,
+    workflow_ids: tuple[str, ...] = (),
+) -> dict[str, str]:
+    """Give live Rust runtime tests an explicit least-privilege run principal."""
+    secret = env.setdefault("JWT_SECRET", f"runtime-test-{os.urandom(24).hex()}")
+    env["JWT_ALG"] = "HS256"
+    env["AUTH_MODE"] = "jwt"
+    token = _test_hs256_token(
+        secret,
+        {
+            "sub": "rust-runtime-test",
+            "user_id": "rust-runtime-test",
+            "role": "rw",
+            "roles": ["reader", "rw"],
+            "ns": ["workflow", "conversation", "docs", "wisdom"],
+            "capabilities": [
+                "spawn_process",
+                "workflow.run.read",
+                "workflow.run.write",
+                "read_graph",
+                "write_graph",
+            ],
+            "exp": int(time.time()) + 3600,
+        },
+    )
+    if auth_db_path is not None:
+        import sqlite3
+
+        env["AUTH_DB_URL"] = f"sqlite:///{auth_db_path.as_posix()}"
+        auth_db_path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(auth_db_path) as auth_db:
+            auth_db.executescript(
+                """CREATE TABLE users (
+                    user_id VARCHAR(64) NOT NULL PRIMARY KEY,
+                    email VARCHAR(255) NOT NULL UNIQUE,
+                    display_name VARCHAR(255),
+                    is_active BOOLEAN NOT NULL,
+                    global_role VARCHAR(32),
+                    global_ns VARCHAR(255),
+                    created_at DATETIME NOT NULL,
+                    last_login_at DATETIME
+                );
+                CREATE TABLE workflow_acl (
+                    workflow_id VARCHAR(255) NOT NULL,
+                    user_id VARCHAR(64) NOT NULL,
+                    role VARCHAR(32) NOT NULL,
+                    PRIMARY KEY (workflow_id, user_id),
+                    FOREIGN KEY(user_id) REFERENCES users (user_id)
+                );"""
+            )
+            auth_db.execute(
+                "INSERT INTO users (user_id, email, is_active, created_at) "
+                "VALUES (?, ?, 1, CURRENT_TIMESTAMP)",
+                ("rust-runtime-test", "rust-runtime-test@example.test"),
+            )
+            auth_db.executemany(
+                "INSERT INTO workflow_acl (workflow_id, user_id, role) "
+                "VALUES (?, ?, 'rw')",
+                [(workflow_id, "rust-runtime-test") for workflow_id in workflow_ids],
+            )
+    if monkeypatch is not None:
+        monkeypatch.setenv("KOGWISTAR_RUST_RUNTIME_TOKEN", token)
+    return {"authorization": f"Bearer {token}"}
+
+
 def _mcp_response_payload(response: httpx.Response) -> dict[str, Any]:
     content_type = response.headers.get("content-type", "")
     if content_type.startswith("application/json"):
@@ -151,6 +223,70 @@ def _mcp_response_payload(response: httpx.Response) -> dict[str, Any]:
         payload = json.loads(data_lines[0])
     assert isinstance(payload, dict)
     return payload
+
+
+def _accepted_python_worker_handoffs(
+    run_events: list[dict[str, Any]],
+) -> list[tuple[str, str, str]]:
+    """Count accepted submissions, not each prepared/submitted trace pair."""
+    handoffs: list[tuple[str, str, str]] = []
+    for event in run_events:
+        if event.get("event_type") != "workflow.trace.v1":
+            continue
+        trace = event.get("payload", {}).get("trace")
+        if not isinstance(trace, dict):
+            continue
+        if trace.get("event") != "runtime.python_worker.result_submitted":
+            continue
+        assert trace.get("executor_target") == "python-worker"
+        handoff = (
+            str(trace.get("run_id") or ""),
+            str(trace.get("message_id") or ""),
+            str(trace.get("lease_claim_id") or ""),
+        )
+        assert all(handoff), "accepted handoff requires durable identity fields"
+        handoffs.append(handoff)
+    assert len(set(handoffs)) == len(handoffs), "duplicate accepted handoff trace"
+    return handoffs
+
+
+def test_accepted_python_worker_handoffs_count_submissions_once() -> None:
+    def trace_row(event: str, lease_claim_id: str = "worker#lease-1") -> dict[str, Any]:
+        return {
+            "event_type": "workflow.trace.v1",
+            "payload": {
+                "trace": {
+                    "event": event,
+                    "executor_target": "python-worker",
+                    "run_id": "run-1",
+                    "message_id": "message-1",
+                    "lease_claim_id": lease_claim_id,
+                }
+            },
+        }
+
+    assert _accepted_python_worker_handoffs(
+        [
+            trace_row("runtime.python_worker.result_prepared"),
+            trace_row("runtime.python_worker.result_submitted"),
+        ]
+    ) == [("run-1", "message-1", "worker#lease-1")]
+    assert len(
+        _accepted_python_worker_handoffs(
+            [trace_row("runtime.python_worker.result_submitted", "worker#lease-2")]
+        )
+    ) == 1
+    with pytest.raises(AssertionError, match="duplicate accepted handoff"):
+        _accepted_python_worker_handoffs(
+            [
+                trace_row("runtime.python_worker.result_submitted"),
+                trace_row("runtime.python_worker.result_submitted"),
+            ]
+        )
+    forged = trace_row("runtime.python_worker.result_submitted")
+    forged["payload"]["trace"]["executor_target"] = "rust-native"
+    with pytest.raises(AssertionError, match="python-worker"):
+        _accepted_python_worker_handoffs([forged])
 
 
 def _start_fake_chroma_collections() -> tuple[
@@ -441,6 +577,8 @@ def test_public_sync_runtime_dispatches_to_configured_rust_authority(
             },
             "run_id": "run-1",
             "cache_dir": "cache",
+            "trace_context": None,
+            "run_owner_id": None,
         }
     ]
 
@@ -673,6 +811,149 @@ def test_public_sync_runtime_rust_mode_without_authority_url_fails_closed(
             initial_state={},
             run_id="run-1",
         )
+
+
+@pytest.mark.parametrize(
+    ("context_field", "context_value"),
+    [
+        ("_run_metadata", {"parent_run_id": "parent-run"}),
+        ("_parent_lease_renew", lambda: None),
+    ],
+)
+def test_public_sync_rust_runtime_rejects_unforwarded_python_context(
+    monkeypatch, context_field: str, context_value: Any
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime.step_resolver = SimpleNamespace(_state_schema={})
+    runtime.workflow_engine = SimpleNamespace(metadata=None)
+    runtime.conversation_engine = SimpleNamespace(
+        metadata=None,
+        read=SimpleNamespace(get_nodes=lambda **_kwargs: []),
+    )
+
+    with pytest.raises(
+        RustRuntimeAuthorityError, match="cannot preserve Python run context"
+    ):
+        runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id="run-1",
+            **{context_field: context_value},
+        )
+
+
+def test_rust_trace_context_payload_preserves_parent_span_identity() -> None:
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+
+    assert _runtime_trace_context_payload(context) == {
+        "trace_id": "trace-abc",
+        "span_id": "span-child",
+        "parent_span_id": "span-parent",
+    }
+
+
+def test_sync_rust_authority_submit_serializes_trace_context(monkeypatch) -> None:
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+    captured: dict[str, Any] = {}
+    authority = RustRuntimeAuthority.__new__(RustRuntimeAuthority)
+    authority.runtime = SimpleNamespace(step_resolver=SimpleNamespace(_state_schema={}))
+    authority.server_managed_native_worker = False
+    authority._register_dependencies = lambda *_args: None
+    authority._submit_run = lambda payload: captured.update(payload) or {
+        "run_id": "child-run",
+        "admission": "accepted",
+    }
+    authority._run_dependencies = lambda _run_id: {}
+    expected = RunResult(
+        final_state={},
+        run_id="child-run",
+        mq=queue.Queue(),
+        status="succeeded",
+    )
+    authority._pump_existing_run = lambda **_kwargs: expected
+    authority._release_if_terminal = lambda _run_id, result: result
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.freeze_runtime_plan",
+        lambda *_args: {},
+    )
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority._python_worker_required_for_plan",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = authority.run(
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        initial_state={},
+        run_id="child-run",
+        trace_context=context,
+        run_owner_id="owner-42",
+    )
+
+    assert result is expected
+    assert captured["trace_context"] == {
+        "trace_id": "trace-abc",
+        "span_id": "span-child",
+        "parent_span_id": "span-parent",
+    }
+    assert captured["expected_run_owner_id"] == "owner-42"
+
+
+def test_public_sync_rust_runtime_forwards_trace_context(monkeypatch) -> None:
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+    captured: dict[str, Any] = {}
+    sentinel = object()
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.run_with_rust_authority",
+        lambda _runtime, **kwargs: captured.update(kwargs) or sentinel,
+    )
+    runtime: Any = WorkflowRuntime.__new__(WorkflowRuntime)
+    runtime.step_resolver = SimpleNamespace(_state_schema={})
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
+
+    result = runtime.run(
+        workflow_id="wf-1",
+        conversation_id="conv-1",
+        turn_node_id="turn-1",
+        initial_state={},
+        run_id="child-run",
+        _trace_context=context,
+        _run_owner_id="owner-42",
+    )
+
+    assert result is sentinel
+    assert captured["trace_context"] is context
+    assert captured["run_owner_id"] == "owner-42"
 
 
 def test_authority_pumps_only_target_run_and_restores_process_local_deps(
@@ -948,6 +1229,12 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        env,
+        monkeypatch,
+        auth_db_path=tmp_path / "runtime-auth.sqlite3",
+        workflow_ids=("wf-sync-resume-live",),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -992,6 +1279,7 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         assert result.status == "suspended", result.errors
         checkpoint = httpx.get(
             f"{base_url}/api/workflow/runs/run-sync-resume-live/checkpoints",
+            headers=rust_headers,
             timeout=10,
         )
         checkpoint.raise_for_status()
@@ -1092,12 +1380,16 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         assert "_deps" not in resumed["final_state"]
         assert visited == ["start", "gate", "end"]
         status = httpx.get(
-            f"{base_url}/api/workflow/runs/run-sync-resume-live", timeout=10
+            f"{base_url}/api/workflow/runs/run-sync-resume-live",
+            headers=rust_headers,
+            timeout=10,
         )
         assert status.status_code == 200
         assert status.json()["status"] == "succeeded", status.text
         steps_response = httpx.get(
-            f"{base_url}/api/workflow/runs/run-sync-resume-live/steps", timeout=10
+            f"{base_url}/api/workflow/runs/run-sync-resume-live/steps",
+            headers=rust_headers,
+            timeout=10,
         )
         assert steps_response.status_code == 200, steps_response.text
         step_records = steps_response.json()["steps"]
@@ -1154,7 +1446,10 @@ def test_sync_runtime_client_resume_uses_real_rust_authority(
         if pg_schema is not None and pg_dsn is not None:
             import sqlalchemy as sa
 
-            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            cleanup_dsn = sa.engine.make_url(pg_dsn).set(
+                drivername="postgresql+psycopg"
+            )
+            cleanup_engine = sa.create_engine(cleanup_dsn, future=True)
             try:
                 with cleanup_engine.begin() as connection:
                     connection.execute(
@@ -1248,6 +1543,12 @@ def test_python_facade_leaves_all_native_work_to_inline_rust_server(
             "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        server_env,
+        monkeypatch,
+        auth_db_path=tmp_path / "facade-native-auth.sqlite3",
+        workflow_ids=("rust-native-facade-workflow",),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         server_env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -1281,7 +1582,7 @@ def test_python_facade_leaves_all_native_work_to_inline_rust_server(
         requests: list[tuple[str, str]] = []
         client = httpx.Client(
             base_url=base_url,
-            headers={"x-kogwistar-roles": "reader"},
+            headers=rust_headers,
             event_hooks={
                 "request": [lambda request: requests.append((request.method, request.url.path))]
             },
@@ -1417,6 +1718,12 @@ def test_async_python_facade_uses_server_inline_native_worker(
             "KOGWISTAR_RUNTIME_NATIVE_INLINE": "true",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        server_env,
+        monkeypatch,
+        auth_db_path=tmp_path / "async-facade-native-auth.sqlite3",
+        workflow_ids=("async-rust-native-facade-workflow",),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         server_env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -1455,6 +1762,7 @@ def test_async_python_facade_uses_server_inline_native_worker(
         async def invoke() -> RunResult:
             client = httpx.AsyncClient(
                 base_url=base_url,
+                headers=rust_headers,
                 event_hooks={"request": [record_request]},
                 timeout=10,
             )
@@ -1543,7 +1851,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
 
         from kogwistar.engine_core.postgres_backend import PgVectorBackend
 
-        graph_sqlalchemy_engine = sa.create_engine(pg_dsn, future=True)
+        graph_sqlalchemy_url = sa.engine.make_url(pg_dsn).set(
+            drivername="postgresql+psycopg"
+        )
+        graph_sqlalchemy_engine = sa.create_engine(graph_sqlalchemy_url, future=True)
         PgVectorBackend(
             engine=graph_sqlalchemy_engine,
             embedding_dim=3,
@@ -1904,6 +2215,34 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         )
         assert recovered.returncode == 0, recovered.stderr
         assert callback_marker.read_text(encoding="utf-8").splitlines() == ["callback"]
+        persisted_events = httpx.get(
+            f"{base_url}/api/workflow/runs/mixed-live-run/events?after_seq=0",
+            headers=headers,
+            timeout=10,
+        )
+        assert persisted_events.status_code == 200, persisted_events.text
+        callback_traces: list[dict[str, Any]] = []
+        for frame in persisted_events.text.split("\n\n"):
+            data_line = next(
+                (line[6:] for line in frame.splitlines() if line.startswith("data: ")),
+                None,
+            )
+            if data_line is None:
+                continue
+            event_payload = json.loads(data_line)
+            trace = event_payload.get("trace")
+            if (
+                event_payload.get("event_type") == "workflow.trace.v1"
+                and isinstance(trace, dict)
+                and trace.get("type") == "resolver.progress"
+            ):
+                callback_traces.append(trace)
+        assert len(callback_traces) == 1
+        assert callback_traces[0]["run_id"] == "mixed-live-run"
+        assert callback_traces[0]["node_id"] == "python-before"
+        assert json.loads(callback_traces[0]["payload_json"]) == {
+            "phase": "callback-complete"
+        }
         if graph_enabled:
             assert graph_namespace is not None and graph_entity_id is not None
             if backend == "pg":
@@ -2570,7 +2909,10 @@ def test_python_worker_and_rust_native_step_interoperate_over_real_server(
         if pg_schema is not None and pg_dsn is not None:
             import sqlalchemy as sa
 
-            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            cleanup_url = sa.engine.make_url(pg_dsn).set(
+                drivername="postgresql+psycopg"
+            )
+            cleanup_engine = sa.create_engine(cleanup_url, future=True)
             try:
                 with cleanup_engine.begin() as connection:
                     connection.execute(
@@ -2647,7 +2989,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             PgVectorBackend(
                 engine=graph_engine,
                 embedding_dim=3,
-                schema=pg_schema,
+                schema=f"{pg_schema}_conversation",
             ).ensure_schema()
         finally:
             graph_engine.dispose()
@@ -2721,6 +3063,19 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                 graph_namespace,
             ),
         )
+        auth_db.execute(
+            """CREATE TABLE workflow_acl (
+                workflow_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
+                role VARCHAR(32) NOT NULL,
+                PRIMARY KEY (workflow_id, user_id),
+                FOREIGN KEY(user_id) REFERENCES users (user_id)
+            )"""
+        )
+        auth_db.execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?, ?, 'rw')",
+            ("python-answer-workflow", "python-answer-owner"),
+        )
     token = _test_hs256_token(
         jwt_secret,
         {
@@ -2729,7 +3084,13 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             "roles": ["reader", "rw"],
             "ns": ["workflow", "conversation", graph_namespace],
             "storage_ns": graph_namespace,
-            "capabilities": ["read_graph", "write_graph"],
+            "capabilities": [
+                "spawn_process",
+                "workflow.run.read",
+                "workflow.run.write",
+                "read_graph",
+                "write_graph",
+            ],
             "exp": int(time.time()) + 3600,
         },
     )
@@ -3030,6 +3391,9 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
         assert run_events_response.status_code == 200, run_events_response.text
         run_events_result = _mcp_response_payload(run_events_response)["result"]
         run_events = run_events_result["structuredContent"]["events"]
+        accepted_handoffs = _accepted_python_worker_handoffs(run_events)
+        expected_handoff_count = 2 if persistence_target == "python-worker" else 1
+        assert len(accepted_handoffs) == expected_handoff_count
         python_worker_traces = [
             event["payload"]["trace"]
             for event in run_events
@@ -3112,7 +3476,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             with sa.create_engine(pg_dsn, future=True).connect() as connection:
                 vector_row = connection.execute(
                     sa.text(
-                        f'SELECT embedding::text, metadata FROM "{pg_schema}".gke_nodes '
+                        f'SELECT embedding::text, metadata FROM "{pg_schema}_conversation".gke_nodes '
                         "WHERE id = :entity_id"
                     ),
                     {"entity_id": assistant_id},
@@ -3164,14 +3528,14 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
             with sa.create_engine(pg_dsn, future=True).connect() as connection:
                 rows = connection.execute(
                     sa.text(
-                        f'SELECT entity_kind, entity_id, payload_json FROM "{pg_schema}".entity_events '
+                        f'SELECT entity_kind, entity_id, payload_json FROM "{pg_schema}_conversation".entity_events '
                         "WHERE namespace = :namespace"
                     ),
                     {"namespace": graph_namespace},
                 ).all()
                 jobs = connection.execute(
                     sa.text(
-                        f'SELECT entity_id, index_kind, status FROM "{pg_schema}".index_jobs '
+                        f'SELECT entity_id, index_kind, status FROM "{pg_schema}_conversation".index_jobs '
                         "WHERE namespace = :namespace"
                     ),
                     {"namespace": graph_namespace},
@@ -3238,7 +3602,7 @@ def test_python_agentic_answer_workflow_commits_graph_effects_through_rust_stora
                 python_backend = PgVectorBackend(
                     engine=python_storage_engine,
                     embedding_dim=3,
-                    schema=pg_schema,
+                    schema=f"{pg_schema}_conversation",
                 )
                 python_graph = GraphKnowledgeEngine(
                     backend=python_backend,
@@ -3378,6 +3742,7 @@ def test_async_authority_runs_async_v2_through_real_rust_sqlite_server(
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(env, monkeypatch)
     process = subprocess.Popen(
         [str(RUST_SERVER)],
         cwd=ROOT,
@@ -3422,6 +3787,7 @@ def test_async_authority_runs_async_v2_through_real_rust_sqlite_server(
         assert result.final_state["async_answer"] == 42
         claimed = httpx.post(
             f"{base_url}/internal/runtime/claim",
+            headers=rust_headers,
             json={"claimed_by": "inspection", "limit": 1, "lease_seconds": 1},
             timeout=10,
         )
@@ -3554,6 +3920,12 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "",
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        env,
+        monkeypatch,
+        auth_db_path=tmp_path / "async-resume-auth.sqlite3",
+        workflow_ids=(workflow_id,),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
@@ -3607,6 +3979,7 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
             )
             checkpoint = httpx.get(
                 f"{base_url}/api/workflow/runs/run-async-resume-live/checkpoints",
+                headers=rust_headers,
                 timeout=10,
             )
             checkpoint.raise_for_status()
@@ -3638,12 +4011,16 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
         assert resumed.final_state["_deps"] is dependencies
         assert visited == ["start", "gate", "end"]
         status = httpx.get(
-            f"{base_url}/api/workflow/runs/run-async-resume-live", timeout=10
+            f"{base_url}/api/workflow/runs/run-async-resume-live",
+            headers=rust_headers,
+            timeout=10,
         )
         assert status.status_code == 200, status.text
         assert status.json()["status"] == ("failed" if end_failure else "succeeded")
         steps_response = httpx.get(
-            f"{base_url}/api/workflow/runs/run-async-resume-live/steps", timeout=10
+            f"{base_url}/api/workflow/runs/run-async-resume-live/steps",
+            headers=rust_headers,
+            timeout=10,
         )
         assert steps_response.status_code == 200, steps_response.text
         end_step_record = next(
@@ -3690,7 +4067,10 @@ def test_async_runtime_client_resume_uses_real_rust_authority(
         if pg_schema is not None and pg_dsn is not None:
             import sqlalchemy as sa
 
-            cleanup_engine = sa.create_engine(pg_dsn, future=True)
+            cleanup_dsn = sa.engine.make_url(pg_dsn).set(
+                drivername="postgresql+psycopg"
+            )
+            cleanup_engine = sa.create_engine(cleanup_dsn, future=True)
             try:
                 with cleanup_engine.begin() as connection:
                     connection.execute(
@@ -4222,6 +4602,8 @@ def test_async_runtime_dispatches_to_async_rust_authority_when_selected(
             "initial_state": {"seed": 1},
             "run_id": "run-1",
             "cache_dir": "cache",
+                "trace_context": None,
+                "run_owner_id": None,
         }
     ]
 
@@ -4247,6 +4629,81 @@ def test_async_runtime_rust_mode_without_authority_url_fails_closed(
 
     with pytest.raises(RustRuntimeAuthorityError, match="URL is not configured"):
         asyncio.run(invoke())
+
+
+@pytest.mark.parametrize(
+    ("context_field", "context_value"),
+    [
+        ("_run_metadata", {"parent_run_id": "parent-run"}),
+    ],
+)
+def test_async_rust_runtime_rejects_unforwarded_python_context(
+    monkeypatch, context_field: str, context_value: Any
+) -> None:
+    from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
+
+    async def invoke() -> None:
+        await runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+            **{context_field: context_value},
+        )
+
+    with pytest.raises(
+        RustRuntimeAuthorityError, match="cannot preserve Python run context"
+    ):
+        asyncio.run(invoke())
+
+
+def test_public_async_rust_runtime_forwards_trace_context(monkeypatch) -> None:
+    from kogwistar.runtime.async_runtime import AsyncWorkflowRuntime
+
+    context = TraceContext(
+        run_id="child-run",
+        token_id="child-run",
+        step_seq=0,
+        node_id="start",
+        trace_id="trace-abc",
+        span_id="span-child",
+        parent_span_id="span-parent",
+    )
+    captured: dict[str, Any] = {}
+    sentinel = object()
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+
+    async def fake_authority(_runtime, **kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(
+        "kogwistar.runtime.rust_runtime_authority.run_with_rust_authority_async",
+        fake_authority,
+    )
+    runtime = AsyncWorkflowRuntime.__new__(AsyncWorkflowRuntime)
+    runtime.workflow_engine = None
+    runtime.conversation_engine = None
+
+    async def invoke() -> Any:
+        return await runtime.run(
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+            initial_state={},
+            run_id="child-run",
+            _trace_context=context,
+            _run_owner_id="owner-42",
+        )
+
+    assert asyncio.run(invoke()) is sentinel
+    assert captured["trace_context"] is context
+    assert captured["run_owner_id"] == "owner-42"
 
 
 def test_public_resume_dispatches_to_rust_authority(monkeypatch) -> None:
@@ -4298,6 +4755,33 @@ def test_public_resume_dispatches_to_rust_authority(monkeypatch) -> None:
         "turn_node_id": "turn-1",
     }
     assert calls[1] == {"closed": True}
+
+
+def test_sync_resume_rust_mode_without_authority_url_fails_closed(monkeypatch) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
+    monkeypatch.delenv("KOGWISTAR_RUST_RUNTIME_URL", raising=False)
+    runtime = WorkflowRuntime.__new__(WorkflowRuntime)
+    monkeypatch.setattr(
+        WorkflowRuntime,
+        "_latest_checkpoint_for_run",
+        lambda *_args, **_kwargs: pytest.fail(
+            "Rust-selected resume must not fall back to Python checkpoint lookup"
+        ),
+        raising=False,
+    )
+
+    with pytest.raises(
+        RustRuntimeAuthorityError, match="without a configured URL"
+    ):
+        runtime.resume_run(
+            run_id="run-1",
+            suspended_node_id="gate",
+            suspended_token_id="token-1",
+            client_result=RunSuccess(conversation_node_id=None, state_update=[]),
+            workflow_id="wf-1",
+            conversation_id="conv-1",
+            turn_node_id="turn-1",
+        )
 
 
 def test_resume_effect_uses_existing_update_and_route_semantics(
@@ -4513,8 +4997,18 @@ def test_resume_rejects_current_graph_drift_before_state_change(
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("backend", ["sqlite", "sqlite-chroma", "pg"])
-@pytest.mark.parametrize("execution_mode", ["external-worker", "inline-server"])
+@pytest.mark.parametrize(
+    ("backend", "execution_mode"),
+    [
+        ("in-memory", "inline-server"),
+        ("sqlite", "external-worker"),
+        ("sqlite-chroma", "external-worker"),
+        ("pg", "external-worker"),
+        ("sqlite", "inline-server"),
+        ("sqlite-chroma", "inline-server"),
+        ("pg", "inline-server"),
+    ],
+)
 def test_rust_native_workflow_runs_through_real_server_without_python_worker(
     tmp_path: Path,
     backend: str,
@@ -4544,6 +5038,14 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             / "runtime-native-increment-workflow-v1.json"
         ).read_text(encoding="utf-8")
     )
+    if backend == "in-memory":
+        first_node = workflow_contract["nodes"][0]
+        workflow_contract["nodes"] = [first_node]
+        workflow_contract["routes"] = []
+        workflow_contract["expected_completed_steps"] = [first_node["id"]]
+        workflow_contract["expected_step_sequences"] = [0]
+        workflow_contract["trace_contract"]["expected_attempts"] = [1]
+        workflow_contract["expected_final_state"]["counter"] = 1
     run_id = f"native-http-{suffix}"
     pg_schema = f"kw_native_http_{suffix}" if backend == "pg" else None
     chroma_server = None
@@ -4562,24 +5064,33 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         env.pop(name, None)
     env.update(
         {
-            "KOGWISTAR_BACKEND": "pg" if backend == "pg" else "sqlite",
+            "KOGWISTAR_BACKEND": "in_memory" if backend == "in-memory" else (
+                "pg" if backend == "pg" else "sqlite"
+            ),
             "KOGWISTAR_SERVER_HOST": "127.0.0.1",
             "KOGWISTAR_SERVER_PORT": str(port),
             "KOGWISTAR_SERVER_REQUIRED_ROLES": "reader",
             "KOGWISTAR_RUNTIME_NATIVE_INLINE": str(execution_mode == "inline-server").lower(),
         }
     )
+    rust_headers = _configure_rust_runtime_test_auth(
+        env,
+        auth_db_path=tmp_path / "native-http-auth.sqlite3",
+        workflow_ids=(workflow_contract["workflow_id"],),
+    )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
         env["KOGWISTAR_PG_DSN"] = pg_dsn
         env["KOGWISTAR_PG_SCHEMA_BASE"] = pg_schema
-    else:
+    elif backend in {"sqlite", "sqlite-chroma"}:
         env["KOGWISTAR_META_SQLITE_PATH"] = str(tmp_path / "native-http.sqlite3")
         if backend == "sqlite-chroma":
             assert chroma_endpoint is not None
             env["KOGWISTAR_CHROMA_ENDPOINT"] = chroma_endpoint
             env["KOGWISTAR_CHROMA_NODE_COLLECTION"] = "native-runtime-nodes"
             env["KOGWISTAR_CHROMA_EDGE_COLLECTION"] = "native-runtime-edges"
+    else:
+        env["KOGWISTAR_PERSIST_DIRECTORY"] = str(tmp_path / "native-http-persist")
 
     process = subprocess.Popen(
         [str(RUST_SERVER)],
@@ -4590,7 +5101,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         text=True,
     )
     base_url = f"http://127.0.0.1:{port}"
-    headers = {"x-kogwistar-roles": "reader"}
+    headers = rust_headers
     try:
         for _ in range(100):
             if process.poll() is not None:
@@ -4688,41 +5199,42 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             else:
                 raise AssertionError("inline Rust server did not finish the native run")
             execution_completed_at = time.perf_counter()
-            python_run_id = f"python-http-{suffix}"
-            python_submitted = httpx.post(
-                f"{base_url}/api/workflow/runs",
-                headers=headers,
-                json={
-                    "run_id": python_run_id,
-                    "workflow_id": "python-worker-compatibility",
-                    "conversation_id": "python-worker-compatibility",
-                    "initial_state": {},
-                    "runtime_kind": "sync",
-                    "start_node_id": "python-step",
-                    "node_ops": {"python-step": "custom-operation"},
-                    "node_executor_targets": {"python-step": "python-worker"},
-                    "runtime_routes": [],
-                },
-                timeout=10,
-            )
-            assert python_submitted.status_code == 202, python_submitted.text
-            python_claim = httpx.post(
-                f"{base_url}/internal/runtime/claim",
-                headers=headers,
-                json={
-                    "claimed_by": "python-worker-test",
-                    "limit": 1,
-                    "lease_seconds": 60,
-                    "recipient_ids": ["python-worker"],
-                    "run_id": python_run_id,
-                },
-                timeout=10,
-            )
-            assert python_claim.status_code == 200, python_claim.text
-            python_work = python_claim.json()["work"]
-            assert len(python_work) == 1
-            assert python_work[0]["step_id"] == "python-step"
-            assert python_work[0]["payload"]["executor_target"] == "python-worker"
+            if backend != "in-memory":
+                python_run_id = f"python-http-{suffix}"
+                python_submitted = httpx.post(
+                    f"{base_url}/api/workflow/runs",
+                    headers=headers,
+                    json={
+                        "run_id": python_run_id,
+                        "workflow_id": "python-worker-compatibility",
+                        "conversation_id": "python-worker-compatibility",
+                        "initial_state": {},
+                        "runtime_kind": "sync",
+                        "start_node_id": "python-step",
+                        "node_ops": {"python-step": "custom-operation"},
+                        "node_executor_targets": {"python-step": "python-worker"},
+                        "runtime_routes": [],
+                    },
+                    timeout=10,
+                )
+                assert python_submitted.status_code == 202, python_submitted.text
+                python_claim = httpx.post(
+                    f"{base_url}/internal/runtime/claim",
+                    headers=headers,
+                    json={
+                        "claimed_by": "python-worker-test",
+                        "limit": 1,
+                        "lease_seconds": 60,
+                        "recipient_ids": ["python-worker"],
+                        "run_id": python_run_id,
+                    },
+                    timeout=10,
+                )
+                assert python_claim.status_code == 200, python_claim.text
+                python_work = python_claim.json()["work"]
+                assert len(python_work) == 1
+                assert python_work[0]["step_id"] == "python-step"
+                assert python_work[0]["payload"]["executor_target"] == "python-worker"
         record_property("execution_mode", f"{execution_mode}:{backend}")
         record_property(
             "submit_to_native_completion_ms",
@@ -4733,26 +5245,27 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         )
         assert status.status_code == 200, status.text
         assert status.json()["status"] == "succeeded"
-        checkpoints = httpx.get(
-            f"{base_url}/api/workflow/runs/{run_id}/checkpoints",
-            headers=headers,
-            timeout=10,
-        )
-        assert checkpoints.status_code == 200, checkpoints.text
-        assert (
-            checkpoints.json()["checkpoints"][-1]["state"]["counter"]
-            == workflow_contract["expected_final_state"]["counter"]
-        )
-        steps_response = httpx.get(
-            f"{base_url}/api/workflow/runs/{run_id}/steps",
-            headers=headers,
-            timeout=10,
-        )
-        assert steps_response.status_code == 200, steps_response.text
-        steps = steps_response.json()["steps"]
-        assert [step["workflow_node_id"] for step in steps] == [
-            node["id"] for node in workflow_contract["nodes"]
-        ]
+        if backend != "in-memory":
+            checkpoints = httpx.get(
+                f"{base_url}/api/workflow/runs/{run_id}/checkpoints",
+                headers=headers,
+                timeout=10,
+            )
+            assert checkpoints.status_code == 200, checkpoints.text
+            assert (
+                checkpoints.json()["checkpoints"][-1]["state"]["counter"]
+                == workflow_contract["expected_final_state"]["counter"]
+            )
+            steps_response = httpx.get(
+                f"{base_url}/api/workflow/runs/{run_id}/steps",
+                headers=headers,
+                timeout=10,
+            )
+            assert steps_response.status_code == 200, steps_response.text
+            steps = steps_response.json()["steps"]
+            assert [step["workflow_node_id"] for step in steps] == [
+                node["id"] for node in workflow_contract["nodes"]
+            ]
         mcp_events = httpx.post(
             f"{base_url}/mcp/workflow",
             headers={
@@ -4772,15 +5285,28 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
         )
         assert mcp_events.status_code == 200, mcp_events.text
         mcp_result = _mcp_response_payload(mcp_events)["result"]
+        assert "structuredContent" in mcp_result, mcp_result
         event_list = mcp_result["structuredContent"]["events"]
         assert any(event["event_type"] == "run.created" for event in event_list)
-        native_traces = [
+        run_traces = [
             event["payload"]["trace"]
             for event in event_list
             if event["event_type"] == "workflow.trace.v1"
-            and "runtime.native.step.completed" in json.dumps(event["payload"])
+            and isinstance(event.get("payload", {}).get("trace"), dict)
         ]
-        assert len(native_traces) == 2
+        assert _accepted_python_worker_handoffs(event_list) == []
+        assert not [
+            trace
+            for trace in run_traces
+            if str(trace.get("event", "")).startswith("runtime.python_worker.")
+            or trace.get("executor_target") == "python-worker"
+        ], "Rust-native run must have no Python-worker handoff trace"
+        native_traces = [
+            trace
+            for trace in run_traces
+            if "runtime.native.step.completed" in json.dumps(trace)
+        ]
+        assert len(native_traces) == len(workflow_contract["expected_completed_steps"])
         expected_completed_steps = workflow_contract["expected_completed_steps"]
         assert [trace["node_id"] for trace in native_traces] == expected_completed_steps
         assert [trace["step_seq"] for trace in native_traces] == workflow_contract[
@@ -4790,16 +5316,17 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
             assert trace["implementation_authority"] == "rust-native"
             assert trace["seam_crossings"] == []
             assert trace["run_id"] == run_id
-        assert len(steps) == len(native_traces)
-        for step, trace in zip(steps, native_traces, strict=True):
-            assert step["step_seq"] == trace["step_seq"]
-            assert step["workflow_node_id"] == trace["node_id"]
-            assert step["trace_context"] == {
-                "trace_id": trace["trace_id"],
-                "span_id": trace["span_id"],
-                "parent_span_id": trace["parent_span_id"],
-                "attempt": trace["attempt"],
-            }
+        if backend != "in-memory":
+            assert len(steps) == len(native_traces)
+            for step, trace in zip(steps, native_traces, strict=True):
+                assert step["step_seq"] == trace["step_seq"]
+                assert step["workflow_node_id"] == trace["node_id"]
+                assert step["trace_context"] == {
+                    "trace_id": trace["trace_id"],
+                    "span_id": trace["span_id"],
+                    "parent_span_id": trace["parent_span_id"],
+                    "attempt": trace["attempt"],
+                }
         trace_contract = workflow_contract["trace_contract"]
         assert [trace["attempt"] for trace in native_traces] == trace_contract[
             "expected_attempts"

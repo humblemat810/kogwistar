@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import uuid
 from collections.abc import Callable
 from pathlib import Path
@@ -183,6 +185,7 @@ def _run_recovery_contract(
     append_rust: Any,
     call: Any,
     projection: Any,
+    read_python_projection: Any,
     cursor: Any,
     event_count: Any,
 ) -> None:
@@ -246,6 +249,9 @@ def _run_recovery_contract(
     baseline = projection("entity_projection", "main")
     assert baseline is not None
     _assert_projection_shape(baseline["payload"])
+    python_projection = read_python_projection("entity_projection", "main")
+    assert python_projection == baseline
+    assert python_projection["payload"] == json.loads(third["canonical_payload"])
 
     # Replaying a caught-up consumer is idempotent, including canonical bytes.
     idempotent = call(_recover())
@@ -267,6 +273,9 @@ def _run_recovery_contract(
     assert rebuilt["canonical_payload"] == rebuilt_again["canonical_payload"]
     assert rebuilt["digest"] == rebuilt_again["digest"]
     assert rebuilt_again["new_cursor"] == 5
+    rebuilt_projection = projection("entity_projection", "main")
+    assert rebuilt_projection == read_python_projection("entity_projection", "main")
+    assert rebuilt_projection["payload"] == json.loads(rebuilt["canonical_payload"])
     assert event_count() == 5
 
     # Invalid authoritative payload must roll back the named projection and cursor.
@@ -348,6 +357,7 @@ def test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop(tmp_path
         append_rust=append_rust,
         call=call,
         projection=projection,
+        read_python_projection=python.get_named_projection,
         cursor=cursor,
         event_count=event_count,
     )
@@ -1073,6 +1083,7 @@ def test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop(
         append_rust=append_rust,
         call=call,
         projection=projection,
+        read_python_projection=python.get_named_projection,
         cursor=cursor,
         event_count=event_count,
     )
@@ -1080,3 +1091,91 @@ def test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop(
         "alien_kind",
         "node",
     ]
+
+
+def test_postgres_projection_resume_rejects_stale_checkpoint_after_restart(
+    sa_engine: Any, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    if pg_dsn is None or pg_schema is None:
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
+    from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+    schema = f"gke_projection_resume_{uuid.uuid4().hex}"
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    namespace = "projection"
+    key = "main"
+    consumer = "projection-worker"
+    try:
+        python.ensure_initialized()
+        python.replace_named_projection(
+            namespace,
+            key,
+            {"generation": 1, "value": "checkpoint-one"},
+            last_authoritative_seq=1,
+            last_materialized_seq=1,
+            projection_schema_version=1,
+            materialization_status="ready",
+        )
+        python.cursor_set(namespace="events", consumer=consumer, last_seq=1)
+
+        # Advance the durable checkpoint after the simulated worker has paused.
+        assert python.compare_and_swap_named_projection(
+            namespace,
+            key,
+            {"generation": 2, "value": "checkpoint-two"},
+            expected_last_authoritative_seq=1,
+            expected_last_materialized_seq=1,
+            last_authoritative_seq=2,
+            last_materialized_seq=2,
+            projection_schema_version=1,
+            materialization_status="ready",
+        )
+        python.cursor_set(namespace="events", consumer=consumer, last_seq=2)
+
+        stale_writer = r"""
+import json
+import sys
+from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+
+dsn, schema = sys.argv[1:]
+store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+try:
+    store.ensure_initialized()
+    accepted = store.compare_and_swap_named_projection(
+        "projection",
+        "main",
+        {"generation": 1, "value": "stale-checkpoint"},
+        expected_last_authoritative_seq=1,
+        expected_last_materialized_seq=1,
+        last_authoritative_seq=1,
+        last_materialized_seq=1,
+        projection_schema_version=1,
+        materialization_status="ready",
+    )
+    print(json.dumps({
+        "accepted": accepted,
+        "cursor": store.cursor_get(namespace="events", consumer="projection-worker"),
+        "projection": store.get_named_projection("projection", "main"),
+    }))
+finally:
+    store.close()
+"""
+        completed = subprocess.run(
+            [sys.executable, "-c", stale_writer, pg_dsn, schema],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+        observed = json.loads(completed.stdout)
+        assert observed["accepted"] is False
+        assert observed["cursor"] == 2
+        assert observed["projection"]["payload"] == {
+            "generation": 2,
+            "value": "checkpoint-two",
+        }
+        assert observed["projection"]["last_authoritative_seq"] == 2
+        assert observed["projection"]["last_materialized_seq"] == 2
+    finally:
+        with sa_engine.begin() as conn:
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

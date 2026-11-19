@@ -146,6 +146,7 @@
         assert_eq!(payload["conversation_id"], "conversation-1");
         assert_eq!(payload["metadata"]["source"], "integration");
         assert_eq!(payload["properties"]["summary"], "latest snapshot");
+        assert_eq!(payload, expected, "REST snapshot projection must match Python golden");
         assert_eq!(
             payload
                 .as_object()
@@ -228,6 +229,37 @@
         );
         assert!(!private_payload.to_string().contains("private snapshot"));
 
+        let foreign_namespace_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "run-1",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "workflow",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            foreign_namespace_response.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert!(!String::from_utf8_lossy(&foreign_namespace_response.body)
+            .contains("latest snapshot"));
+
         let invoke_snapshot_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -267,6 +299,93 @@
                 "snapshot": expected
             })
         );
+        let denied_model_tool = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {
+                        "tool_name": "resource_snapshot",
+                        "capabilities": ["project_view", "read_security_scope"]
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": []
+                }),
+            })
+            .await;
+        assert_eq!(
+            denied_model_tool.status,
+            StatusCode::FORBIDDEN.as_u16()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&denied_model_tool.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+        let unsupported_tool = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {"tool_name": "not_registered"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            unsupported_tool.status,
+            StatusCode::NOT_FOUND.as_u16(),
+            "unknown built-in tools must fail explicitly, not silently fall back"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&unsupported_tool.body).unwrap()["code"],
+            "KOGWISTAR_TOOL_NOT_FOUND"
+        );
+        let invoke_audit_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/syscall/v1/audit?limit=20".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(invoke_audit_response.status, StatusCode::OK.as_u16());
+        let invoke_audit: Value = serde_json::from_slice(&invoke_audit_response.body).unwrap();
+        let invoke_events = invoke_audit["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["op"] == "invoke_tool")
+            .collect::<Vec<_>>();
+        assert_eq!(invoke_events.len(), 3, "all invoke_tool outcomes must be audited");
+        assert_eq!(invoke_events[0]["status"], "ok");
+        assert_eq!(invoke_events[1]["status"], "error");
+        assert_eq!(invoke_events[2]["status"], "error");
         let initial_invoke_digest = format!(
             "{:x}",
             sha2::Sha256::digest(
@@ -422,7 +541,15 @@
                 ("acl_target_entity_id", json!(id)),
                 ("acl_target_grain", json!("node")),
                 ("acl_version", json!(1)),
-                ("acl_mode", json!("public")),
+                ("acl_mode", json!("private")),
+                (
+                    "owner_id",
+                    json!(if conversation_id == "conversation-1" {
+                        "alice"
+                    } else {
+                        "bob"
+                    }),
+                ),
             ] {
                 acl_metadata.insert(key.to_owned(), value);
             }
@@ -892,6 +1019,34 @@
             &EncodingKey::from_secret(b"tool-audit-mcp-secret"),
         )
         .unwrap();
+        let foreign_owner_token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "mallory",
+                "role": "ro",
+                "ns": ["conversation"],
+                "storage_ns": "conversation",
+                "capabilities": ["read_graph"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(b"tool-audit-mcp-secret"),
+        )
+        .unwrap();
+        let wrong_namespace_token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "ro",
+                "ns": ["workflow"],
+                "storage_ns": "conversation",
+                "capabilities": ["read_graph"],
+                "iss": "local",
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(b"tool-audit-mcp-secret"),
+        )
+        .unwrap();
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -918,6 +1073,42 @@
             serde_json::from_slice(&to_bytes(http_audit.into_body(), 65_536).await.unwrap())
                 .unwrap();
         assert_eq!(http_audit, audit);
+
+        for (bearer, expected_status, expect_empty) in [
+            (&foreign_owner_token, StatusCode::OK, true),
+            (&wrong_namespace_token, StatusCode::FORBIDDEN, false),
+        ] {
+            let denied = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/syscall/v1/receive_message")
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .body(Body::from(
+                            json!({
+                                "version":"v1",
+                                "op":"receive_message",
+                                "args":{"conversation_id":"conversation-1","limit":10}
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(denied.status(), expected_status);
+            let body = to_bytes(denied.into_body(), 8192).await.unwrap();
+            let body = String::from_utf8_lossy(&body);
+            assert!(!body.contains("first"), "denied response leaked user turn: {body}");
+            assert!(!body.contains("second"), "denied response leaked assistant turn: {body}");
+            if expect_empty {
+                let payload: Value = serde_json::from_str(&body).unwrap();
+                assert_eq!(payload["status"], "ok");
+                assert_eq!(payload["result"]["messages"], json!([]));
+            }
+        }
 
         let mcp_audit = app
             .oneshot(

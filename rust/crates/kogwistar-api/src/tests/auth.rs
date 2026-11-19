@@ -440,7 +440,7 @@
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tower::ServiceExt;
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = bind_reachable_loopback_listener().await;
         let address = listener.local_addr().unwrap();
         let discovery_task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
@@ -499,8 +499,8 @@
             )
             .await
             .unwrap();
-        discovery_task.await.unwrap();
         assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        discovery_task.await.unwrap();
         let location = response.headers()[header::LOCATION].to_str().unwrap();
         let authorization_url = url::Url::parse(location).unwrap();
         assert_eq!(authorization_url.path(), "/authorize");

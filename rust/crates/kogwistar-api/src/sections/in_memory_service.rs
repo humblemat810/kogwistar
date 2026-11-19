@@ -3,6 +3,7 @@
 struct InMemoryGraphApplicationService {
     store: InMemoryStore,
     capabilities: SharedCapabilityState,
+    native_operations: kogwistar_runtime::NativeOperationRegistry,
     embedding_provider: Option<Arc<dyn EmbeddingProvider>>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
     transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
@@ -10,11 +11,22 @@ struct InMemoryGraphApplicationService {
     owner_auth_store: Option<AuthStore>,
 }
 
+#[derive(Clone)]
+struct InMemoryConversationAdmission {
+    graph_batch: GraphMutationBatch,
+    expected_projections: Vec<kogwistar_store_memory::GraphProjectionExpectation>,
+    request_fingerprint: Option<String>,
+    actor_user_id: String,
+}
+
 impl Default for InMemoryGraphApplicationService {
     fn default() -> Self {
         Self {
             store: InMemoryStore::default(),
             capabilities: Arc::new(Mutex::new(CapabilityState::default())),
+            // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#default; python=kogwistar/conversation/agentic_answering.py#AgenticAnsweringAgent; rust_test=rust/crates/kogwistar-api/src/tests/answer_workflow_admission.rs#answer_workflow_admission_supports_per_node_python_and_registered_rust_executors; python_test=tests/workflow/test_agentic_answering_workflow_design_spec.py#test_answer_designs_match_shared_runtime_admission_contract
+            native_operations: crate::native_answer_persist::registry()
+                .expect("built-in Rust-native answer operation registry must be valid"),
             embedding_provider: None,
             chat_completion_provider: None,
             transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
@@ -25,6 +37,17 @@ impl Default for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
+    /// Compose trusted Rust-native application operations for the in-memory
+    /// backend, matching the persistent runtime service extension point.
+    #[cfg(test)]
+    fn with_native_operations(
+        mut self,
+        native_operations: kogwistar_runtime::NativeOperationRegistry,
+    ) -> Self {
+        self.native_operations = native_operations;
+        self
+    }
+
     async fn resolve_inline_native_owner_principal(
         &self,
         run_id: &str,
@@ -216,178 +239,370 @@ impl InMemoryGraphApplicationService {
         let Some(lane) = claimed.pop() else {
             return Ok(false);
         };
-        let message_id = lane.message_id.clone();
-        let run_id = lane.run_id.clone().unwrap_or_default();
-        let cancel_requested =
-            kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id)
-                .await
-                .map_err(|error| error.to_string())?
-                .is_some_and(|run| run.cancel_requested);
-        if cancel_requested {
-            kogwistar_store::LaneMessageWriteStore::update_projected_lane_message_status(
-                &self.store,
-                &message_id,
-                "cancelled",
-                None,
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-            return Ok(true);
-        }
-        let payload: Value = match lane
-            .payload_json
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-        {
-            Ok(Some(payload)) => payload,
-            Ok(None) => json!({}),
-            Err(error) => {
-                self.dead_letter_native_lane(
-                    &message_id,
-                    &claimed_by,
-                    "invalid native step payload",
-                )
-                .await?;
-                return Err(format!("invalid native step payload: {error}"));
-            }
-        };
-        let operation = payload["op"]
-            .as_str()
-            .map(str::to_owned)
-            .and_then(|operation| {
-                kogwistar_runtime::native_operation_for_target(
-                    &operation,
-                    payload["executor_target"].as_str(),
-                )
-                .map(str::to_owned)
-            });
-        if !matches!(
-            operation.as_deref(),
-            Some(
-                "noop"
-                    | "increment-counter"
-                    | "emit-result"
-                    | "agent.event.request"
-                    | "agent.event.receive"
-                    | "agent.event.ack"
-            )
-        ) {
-            self.dead_letter_native_lane(
-                &message_id,
-                &claimed_by,
-                "in-memory inline runtime does not support this native operation",
-            )
-            .await?;
-            return Ok(true);
-        }
-        let expected_event_seq = payload["expected_event_seq"].as_i64().unwrap_or_default();
-        let work = runtime_claimed_work(lane, &claimed_by, run_id, payload, expected_event_seq);
-        let (handoff, mut native_request) = match native_request_for_claimed_work(&work) {
-            Ok(value) => value,
-            Err(error) => {
-                self.dead_letter_native_lane(
-                    &message_id,
-                    &claimed_by,
-                    "native step request validation failed",
-                )
-                .await?;
-                return Err(error);
-            }
-        };
-        let result = match if operation.as_deref() == Some("agent.event.request") {
-            self.execute_in_memory_native_provider_event_request(handoff.clone(), native_request)
-                .await
-        } else {
-            if operation.as_deref() == Some("agent.event.receive") {
-                match self
-                    .claim_in_memory_native_provider_event(&native_request)
+        let claim_message_id = lane.message_id.clone();
+        let claim_owner = claimed_by.clone();
+        let operation = async move {
+            let message_id = lane.message_id.clone();
+            let run_id = lane.run_id.clone().unwrap_or_default();
+            let cancel_requested =
+                kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id)
                     .await
-                {
-                    Ok(Some(context)) => {
-                        native_request.ephemeral_context.insert(
-                            "authorized_provider_event".to_owned(),
-                            context["event"].clone(),
-                        );
-                        native_request.ephemeral_context.insert(
-                            "authorized_provider_event_claim".to_owned(),
-                            context["claim"].clone(),
-                        );
-                    }
-                    Ok(None) => {
-                        kogwistar_store::LaneMessageWriteStore::requeue_projected_lane_message(
-                            &self.store,
-                            &message_id,
-                            &claimed_by,
-                            None,
-                            1,
-                        )
-                        .await
-                        .map_err(|error| error.to_string())?;
-                        return Ok(true);
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            native_result_from_request(
-                handoff.clone(),
-                native_request,
-                &kogwistar_runtime::NativeOperationRegistry::default(),
-            )
-        } {
-            Ok(result) => result,
-            Err(error) => {
-                self.dead_letter_native_lane(
+                    .map_err(|error| error.to_string())?
+                    .is_some_and(|run| run.cancel_requested);
+            if cancel_requested {
+                kogwistar_store::LaneMessageWriteStore::update_projected_lane_message_status(
+                    &self.store,
                     &message_id,
-                    &claimed_by,
-                    "native noop execution failed",
+                    "cancelled",
+                    None,
                 )
-                .await?;
-                return Err(error);
-            }
-        };
-        let Some(effect) = result.effect else {
-            self.dead_letter_native_lane(
-                &message_id,
-                &claimed_by,
-                "native noop did not produce a worker effect",
-            )
-            .await?;
-            return Err("native noop did not produce a worker effect".to_owned());
-        };
-        let commit = if effect.provider_event_acknowledgements.is_empty() {
-            self.store.apply_claimed_recorded_worker_effect(handoff, effect)
-        } else {
-            match self
-                .in_memory_provider_event_ack_graph_batch(&handoff, &effect)
                 .await
+                .map_err(|error| error.to_string())?;
+                return Ok(true);
+            }
+            let payload: Value = match lane
+                .payload_json
+                .as_deref()
+                .map(serde_json::from_str)
+                .transpose()
             {
-                Ok(batch) => self.store.apply_claimed_recorded_worker_effect_with_graph(
-                    handoff,
-                    effect,
-                    batch,
-                ),
+                Ok(Some(payload)) => payload,
+                Ok(None) => json!({}),
                 Err(error) => {
                     self.dead_letter_native_lane(
                         &message_id,
                         &claimed_by,
-                        "provider event acknowledgement graph preparation failed",
+                        "invalid native step payload",
+                    )
+                    .await?;
+                    return Err(format!("invalid native step payload: {error}"));
+                }
+            };
+            let operation = payload["op"]
+                .as_str()
+                .map(str::to_owned)
+                .and_then(|operation| {
+                    kogwistar_runtime::native_operation_for_target(
+                        &operation,
+                        payload["executor_target"].as_str(),
+                    )
+                    .map(str::to_owned)
+                });
+            let expected_event_seq = payload["expected_event_seq"].as_i64().unwrap_or_default();
+            let work = runtime_claimed_work(lane, &claimed_by, run_id, payload, expected_event_seq);
+            let (handoff, mut native_request) = match native_request_for_claimed_work(&work) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.dead_letter_native_lane(
+                        &message_id,
+                        &claimed_by,
+                        "native step request validation failed",
                     )
                     .await?;
                     return Err(error);
                 }
+            };
+            if !self
+                .native_operations
+                .supports(&native_request.operation, &native_request.op_version)
+            {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "native operation is not registered",
+                )
+                .await?;
+                return Ok(true);
             }
+            let result = match if operation.as_deref() == Some("agent.event.request") {
+                self.execute_in_memory_native_provider_event_request(
+                    handoff.clone(),
+                    native_request,
+                )
+                .await
+            } else {
+                if operation.as_deref() == Some("agent.event.receive") {
+                    match self
+                        .claim_in_memory_native_provider_event(&native_request)
+                        .await
+                    {
+                        Ok(Some(context)) => {
+                            native_request.ephemeral_context.insert(
+                                "authorized_provider_event".to_owned(),
+                                context["event"].clone(),
+                            );
+                            native_request.ephemeral_context.insert(
+                                "authorized_provider_event_claim".to_owned(),
+                                context["claim"].clone(),
+                            );
+                        }
+                        Ok(None) => {
+                            kogwistar_store::LaneMessageWriteStore::requeue_projected_lane_message(
+                                &self.store,
+                                &message_id,
+                                &claimed_by,
+                                None,
+                                1,
+                            )
+                            .await
+                            .map_err(|error| error.to_string())?;
+                            return Ok(true);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                native_result_from_request(handoff.clone(), native_request, &self.native_operations)
+            } {
+                Ok(result) => result,
+                Err(error) => {
+                    self.dead_letter_native_lane(
+                        &message_id,
+                        &claimed_by,
+                        "native noop execution failed",
+                    )
+                    .await?;
+                    return Err(error);
+                }
+            };
+            let Some(effect) = result.effect else {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "native noop did not produce a worker effect",
+                )
+                .await?;
+                return Err("native noop did not produce a worker effect".to_owned());
+            };
+            let commit = if effect.graph_mutation_batch.is_some()
+                || effect.graph_mutation_batch_v2.is_some()
+            {
+                if !effect.provider_event_acknowledgements.is_empty() {
+                    self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "combined graph effects and provider-event acknowledgements are unsupported",
+                )
+                .await?;
+                    return Err("combined graph effects and provider-event acknowledgements are unsupported".to_owned());
+                }
+                match self
+                    .in_memory_native_graph_effect_batch(&handoff, &effect)
+                    .await
+                {
+                    Ok((batch, acl_snapshot)) => self
+                        .store
+                        .apply_claimed_recorded_worker_effect_with_graph_effects(
+                            handoff,
+                            effect,
+                            batch,
+                            acl_snapshot,
+                        ),
+                    Err(error) => {
+                        self.dead_letter_native_lane(
+                            &message_id,
+                            &claimed_by,
+                            "native graph effect preparation failed",
+                        )
+                        .await?;
+                        return Err(error);
+                    }
+                }
+            } else if effect.provider_event_acknowledgements.is_empty() {
+                self.store
+                    .apply_claimed_recorded_worker_effect(handoff, effect)
+            } else {
+                match self
+                    .in_memory_provider_event_ack_graph_batch(&handoff, &effect)
+                    .await
+                {
+                    Ok(batch) => self
+                        .store
+                        .apply_claimed_recorded_worker_effect_with_graph(handoff, effect, batch),
+                    Err(error) => {
+                        self.dead_letter_native_lane(
+                            &message_id,
+                            &claimed_by,
+                            "provider event acknowledgement graph preparation failed",
+                        )
+                        .await?;
+                        return Err(error);
+                    }
+                }
+            };
+            if let Err(error) = commit {
+                self.dead_letter_native_lane(
+                    &message_id,
+                    &claimed_by,
+                    "in-memory worker effect could not be committed",
+                )
+                .await?;
+                return Err(error.to_string());
+            }
+            Ok::<bool, String>(true)
         };
-        if let Err(error) = commit {
-            self.dead_letter_native_lane(
-                &message_id,
-                &claimed_by,
-                "in-memory worker effect could not be committed",
-            )
-            .await?;
-            return Err(error.to_string());
+        match kogwistar_engine::with_lane_claim_renewal(
+            &self.store,
+            &claim_message_id,
+            &claim_owner,
+            60,
+            operation,
+        )
+        .await
+        {
+            Ok(Some(result)) => result,
+            Ok(None) => {
+                Err("native runtime lane lease was lost; result was not committed".to_owned())
+            }
+            Err(error) => Err(format!("native runtime lane lease renewal failed: {error}")),
         }
-        Ok(true)
+    }
+
+    async fn in_memory_native_graph_effect_batch(
+        &self,
+        handoff: &RecordedWorkerHandoff,
+        effect: &RecordedWorkerSuccessEffect,
+    ) -> Result<
+        (
+            GraphMutationBatch,
+            Option<kogwistar_store_memory::GraphAclSnapshot>,
+        ),
+        String,
+    > {
+        let (mutations, index_jobs, truth_graph) = match (
+            effect.graph_mutation_batch.as_ref(),
+            effect.graph_mutation_batch_v2.as_ref(),
+        ) {
+            (Some(_), Some(_)) => {
+                return Err("worker effect cannot carry both graph batch versions".to_owned());
+            }
+            (Some(batch), None) => {
+                let input: GraphMutationBatchInput = batch.clone();
+                let mutations = graph_mutation_batch_value(input.clone())?;
+                validate_graph_mutation_envelopes(&input, &mutations)?;
+                validate_runtime_graph_mutations(&mutations)?;
+                let index_jobs = graph_index_jobs_value(&input, &mutations)?;
+                (mutations, index_jobs, None)
+            }
+            (None, Some(batch)) => {
+                let (mutations, index_jobs) = graph_mutation_batch_v2_value(batch.clone())?;
+                validate_runtime_graph_mutations(&mutations)?;
+                (
+                    mutations,
+                    index_jobs,
+                    Some(batch.default_acl.truth_graph.clone()),
+                )
+            }
+            (None, None) => return Err("worker graph effect is missing".to_owned()),
+        };
+        if effect.status != kogwistar_runtime::RuntimeWorkerEffectStatus::Success {
+            return Err("graph effects require a successful worker result".to_owned());
+        }
+
+        let principal = self
+            .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+            .await
+            .map_err(|_| "native graph effect owner authorization failed closed".to_owned())?;
+        if !capability_allowed_for_principal(
+            &principal,
+            &self.capabilities,
+            "write_graph",
+            &["write_graph"],
+        ) || !principal_strings(&principal, "capabilities")
+            .iter()
+            .any(|capability| capability == "write_graph")
+        {
+            return Err("native graph effect requires current write_graph authority".to_owned());
+        }
+        let run = kogwistar_store::ServerRunReadStore::server_run(&self.store, &handoff.run_id)
+            .await
+            .map_err(|_| "native graph effect run lookup failed".to_owned())?
+            .ok_or_else(|| "native graph effect run is missing".to_owned())?;
+        let owner_id = authenticated_run_owner_id(&principal)
+            .filter(|owner| Some(*owner) == run.user_id.as_deref())
+            .ok_or_else(|| "native graph effect owner differs from durable run owner".to_owned())?
+            .to_ascii_lowercase();
+        let security_scope = security_scope_value(&principal);
+        if mutations
+            .iter()
+            .any(|mutation| !graph_mutation_scope_allowed(&mutation.scope, &security_scope))
+        {
+            return Err("native graph effect scope exceeds run-owner scope".to_owned());
+        }
+
+        let mut graph_batch = GraphMutationBatch {
+            mutations,
+            index_jobs,
+        };
+        let acl_snapshot = if let Some(truth_graph) = truth_graph {
+            let scope = graph_batch
+                .mutations
+                .first()
+                .map(|mutation| mutation.scope.clone())
+                .ok_or_else(|| "ACL-aware graph batch must not be empty".to_owned())?;
+            let targets = acl_targets_for_graph_mutations(&graph_batch.mutations).0;
+            let target_ids = acl_target_entity_ids(&targets);
+            let mut existing_acl = Vec::new();
+            for target_id in &target_ids {
+                let mut filter = MetadataFilter::default();
+                filter
+                    .equals
+                    .insert("entity_type".to_owned(), json!("acl_record"));
+                filter
+                    .equals
+                    .insert("acl_truth_graph".to_owned(), json!(truth_graph));
+                filter
+                    .equals
+                    .insert("acl_target_entity_id".to_owned(), json!(target_id));
+                existing_acl.extend(
+                    self.store
+                        .graph_projection_records(GraphProjectionRead {
+                            scope: scope.clone(),
+                            table: "gke_nodes".to_owned(),
+                            ids: None,
+                            metadata: filter,
+                            limit: 10000,
+                        })
+                        .await
+                        .map_err(|_| "native graph ACL lookup failed closed".to_owned())?,
+                );
+            }
+            let (acl_mutations, acl_jobs) = derive_default_acl_graph_effects_from_records(
+                &scope,
+                &graph_batch.mutations,
+                targets,
+                existing_acl.clone(),
+                AclDefaultsContext {
+                    truth_graph: &truth_graph,
+                    owner_id: &graph_acl_principal_id(&principal),
+                    security_scope: security_scope["security_scope"].as_str(),
+                    effect_id: &effect.effect_id,
+                },
+            )?;
+            graph_batch.mutations.extend(acl_mutations);
+            graph_batch.index_jobs.extend(acl_jobs);
+            Some(kogwistar_store_memory::GraphAclSnapshot {
+                scope,
+                truth_graph,
+                target_entity_ids: target_ids,
+                records: existing_acl,
+            })
+        } else {
+            None
+        };
+
+        let current = self
+            .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
+            .await
+            .map_err(|_| "native graph owner authorization changed before commit".to_owned())?;
+        if authenticated_run_owner_id(&current) != Some(owner_id.as_str())
+            || security_scope_value(&current) != security_scope
+            || !principal_strings(&current, "capabilities")
+                .iter()
+                .any(|capability| capability == "write_graph")
+        {
+            return Err("native graph owner capability or scope changed before commit".to_owned());
+        }
+        Ok((graph_batch, acl_snapshot))
     }
 
     async fn in_memory_provider_event_ack_graph_batch(
@@ -403,7 +618,9 @@ impl InMemoryGraphApplicationService {
         let principal = self
             .resolve_inline_native_owner_principal(&handoff.run_id, "write_graph")
             .await
-            .map_err(|_| "provider-event acknowledgement owner authorization failed closed".to_owned())?;
+            .map_err(|_| {
+                "provider-event acknowledgement owner authorization failed closed".to_owned()
+            })?;
         let run = kogwistar_store::ServerRunReadStore::server_run(&self.store, &handoff.run_id)
             .await
             .map_err(|_| "provider-event run lookup failed".to_owned())?
@@ -601,7 +818,9 @@ impl InMemoryGraphApplicationService {
                 .iter()
                 .any(|capability| capability == "write_graph")
         {
-            return Err("provider-event owner capability or scope changed before commit".to_owned());
+            return Err(
+                "provider-event owner capability or scope changed before commit".to_owned(),
+            );
         }
         Ok(GraphMutationBatch {
             mutations,
@@ -800,11 +1019,7 @@ impl InMemoryGraphApplicationService {
         request
             .ephemeral_context
             .insert("provider_model".to_owned(), json!(model));
-        native_result_from_request(
-            handoff,
-            request,
-            &kogwistar_runtime::NativeOperationRegistry::default(),
-        )
+        native_result_from_request(handoff, request, &self.native_operations)
     }
 
     async fn persist_in_memory_native_stream_semantic_event(
@@ -1428,12 +1643,8 @@ impl InMemoryGraphApplicationService {
             &request.principal,
             scope_value["security_scope"].as_str(),
         );
-        let (visible_nodes, visible_edges) = graph_records_visible_by_acl(
-            &all_nodes,
-            &all_edges,
-            truth_graph,
-            &principal,
-        );
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&all_nodes, &all_edges, truth_graph, &principal);
         let visible_node_ids = visible_nodes
             .iter()
             .map(|record| record.id.as_str())
@@ -1592,9 +1803,10 @@ impl InMemoryGraphApplicationService {
         if let Some(where_filter) = input.where_filter.as_ref()
             && let Err(error) = kogwistar_contracts::metadata_filter_matches_from_str(
                 &json!({"metadata": {}, "where": where_filter}).to_string(),
-            ) {
-                return invalid_graph_request(error.to_string());
-            }
+            )
+        {
+            return invalid_graph_request(error.to_string());
+        }
         let (all_nodes, all_edges) = match self.graph_snapshot(scope).await {
             Ok(records) => records,
             Err(error) => {
@@ -2074,16 +2286,16 @@ fn graph_vector_proposal_pairs(
             continue;
         };
         let seed_doc = proposal_doc_id(seed);
-        for (candidates, candidate_kind) in [
-            (all_nodes, "node"),
-            (all_edges, "edge"),
-        ] {
+        for (candidates, candidate_kind) in [(all_nodes, "node"), (all_edges, "edge")] {
             if candidate_kind == "edge" && !input.include_edges {
                 continue;
             }
             let mut ranked = Vec::new();
             for candidate in candidates {
-                if candidate.metadata.get("entity_type").and_then(Value::as_str)
+                if candidate
+                    .metadata
+                    .get("entity_type")
+                    .and_then(Value::as_str)
                     == Some("acl_record")
                 {
                     continue;
@@ -2174,6 +2386,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+        if surface == "workflow" && name == "workflow.run_events" {
+            return true;
+        }
         surface == "root"
             && Self::supports_graph_tool(name)
             && (!matches!(
@@ -2188,6 +2403,23 @@ impl ApplicationService for InMemoryGraphApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        // PYTHON_PARITY_NOTE_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read; rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores
+        if name == "workflow.run_events" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && effective_capabilities(
+                    principal,
+                    &self
+                        .capabilities
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner()),
+                )
+                .contains("workflow.run.read")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "wisdom.semantic_seed_then_expand" {
             return self.supports_mcp_tool(surface, name)
                 && matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -2219,12 +2451,18 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "DELETE" && admin_document_delete_id(path).is_some() {
+            return self.store.supports_document_rollback();
+        }
         let route = path.split('?').next();
         if method == "POST"
             && matches!(
                 route,
-                Some("/api/syscall/v1/receive_message")
+                Some("/api/syscall/v1/send_message")
+                    | Some("/api/syscall/v1/receive_message")
                     | Some("/api/syscall/v1/create_conversation")
+                    | Some("/api/syscall/v1/mount_memory")
+                    | Some("/api/syscall/v1/invoke_tool")
             )
         {
             return true;
@@ -2233,8 +2471,11 @@ impl ApplicationService for InMemoryGraphApplicationService {
             return true;
         }
         if method == "GET"
-            && runtime_run_route(path)
-                .is_some_and(|(_, tail)| tail.is_empty() || tail.as_slice() == ["events"])
+            && runtime_run_route(path).is_some_and(|(_, tail)| {
+                tail.is_empty()
+                    || tail.as_slice() == ["events"]
+                    || tail.as_slice() == ["events", "poll"]
+            })
         {
             return true;
         }
@@ -2249,10 +2490,8 @@ impl ApplicationService for InMemoryGraphApplicationService {
         method == "POST"
             && (!matches!(
                 route,
-                Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE)
-                    | Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE)
-            )
-                || self.embedding_provider.is_some())
+                Some(GRAPH_SEMANTIC_SEED_EXPAND_ROUTE) | Some(WISDOM_SEMANTIC_SEED_EXPAND_ROUTE)
+            ) || self.embedding_provider.is_some())
             && matches!(
                 route,
                 Some(INTERNAL_GRAPH_MUTATIONS_ROUTE)
@@ -2276,10 +2515,32 @@ impl ApplicationService for InMemoryGraphApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "DELETE"
+                && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
+            {
+                return admin_document_delete_effect(&request, &self.store, document_id).await;
+            }
             if request.method == "POST"
                 && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
             {
-                return self.submit_run_effect(&request).await;
+                return self.submit_run_effect(&request, None).await;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/syscall/v1/send_message")
+            {
+                let input = match syscall_input(&request, "send_message") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let response = self.in_memory_send_message_effect(&request, &input).await;
+                syscall_audit(
+                    &self.capabilities,
+                    &input.version,
+                    "send_message",
+                    syscall_audit_status(&response),
+                );
+                return response;
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next()
@@ -2289,7 +2550,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     Ok(input) => input,
                     Err(response) => return response,
                 };
-                let response = self.in_memory_receive_message_effect(&request, &input).await;
+                let response = self
+                    .in_memory_receive_message_effect(&request, &input)
+                    .await;
                 syscall_audit(
                     &self.capabilities,
                     &input.version,
@@ -2313,6 +2576,41 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     &self.capabilities,
                     &input.version,
                     "create_conversation",
+                    syscall_audit_status(&response),
+                );
+                return response;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/syscall/v1/mount_memory")
+            {
+                let input = match syscall_input(&request, "mount_memory") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let response = self.in_memory_mount_memory_effect(&request, &input).await;
+                syscall_audit(
+                    &self.capabilities,
+                    &input.version,
+                    "mount_memory",
+                    syscall_audit_status(&response),
+                );
+                return response;
+            }
+            if request.method == "POST"
+                && request.path_and_query.split('?').next() == Some("/api/syscall/v1/invoke_tool")
+            {
+                let input = match syscall_input(&request, "invoke_tool") {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let response = self
+                    .in_memory_invoke_builtin_tool_effect(&request, &input)
+                    .await;
+                syscall_audit(
+                    &self.capabilities,
+                    &input.version,
+                    "invoke_tool",
                     syscall_audit_status(&response),
                 );
                 return response;
@@ -2380,6 +2678,91 @@ impl ApplicationService for InMemoryGraphApplicationService {
 }
 
 impl InMemoryGraphApplicationService {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_mount_memory_effect; python=kogwistar/server/syscall_api.py#mount_memory; fixture=contracts/golden/mount-memory-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_mount_memory_matches_shared_contract_and_authority; python_test=tests/server/test_mount_memory_wire_contract.py#test_python_mount_memory_result_matches_shared_wire_fixture
+    async fn in_memory_mount_memory_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "mount_memory",
+            false,
+            &["project_view"],
+            "conversation",
+        ) {
+            return syscall_forbidden("mount_memory");
+        }
+        let Some(conversation_id) = input
+            .args
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "conversation_id is required",
+            );
+        };
+        let run_id = match context_snapshot_syscall_field(&input.args, "run_id") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let stage = match context_snapshot_syscall_field(&input.args, "stage") {
+            Ok(value) => value,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let (scope, acl_principal) =
+            conversation_graph_scope_and_acl_principal(&request.principal);
+        let (nodes, edges) = match self.graph_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&nodes, &edges, "conversation", &acl_principal);
+        let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+            &visible_nodes,
+            conversation_id,
+            run_id.as_deref(),
+            stage.as_deref(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                    error.to_string(),
+                );
+            }
+        };
+        syscall_result(
+            &input.version,
+            "mount_memory",
+            json_effect(StatusCode::OK, public_context_snapshot_value(snapshot)),
+        )
+    }
+
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_create_conversation_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/conversation-create-syscall-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_create_conversation_is_atomic_and_matches_shared_contract; python_test=tests/server/test_syscall_api.py#test_syscall_create_conversation_uses_authenticated_owner
     async fn in_memory_create_conversation_effect(
         &self,
@@ -2619,27 +3002,28 @@ impl InMemoryGraphApplicationService {
             .as_str()
             .filter(|value| !value.trim().is_empty())
             .map(str::to_ascii_lowercase);
-        let (mut acl_mutations, mut index_jobs) = match derive_default_acl_graph_effects_from_records(
-            &scope,
-            std::slice::from_ref(&mutation),
-            targets,
-            existing_acl,
-            AclDefaultsContext {
-                truth_graph: "conversation",
-                owner_id: &owner_acl_id,
-                security_scope: acl_scope.as_deref(),
-                effect_id: &event_id,
-            },
-        ) {
-            Ok(effects) => effects,
-            Err(error) => {
-                return effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_ACL_EFFECT_FAILED",
-                    error,
-                );
-            }
-        };
+        let (mut acl_mutations, mut index_jobs) =
+            match derive_default_acl_graph_effects_from_records(
+                &scope,
+                std::slice::from_ref(&mutation),
+                targets,
+                existing_acl,
+                AclDefaultsContext {
+                    truth_graph: "conversation",
+                    owner_id: &owner_acl_id,
+                    security_scope: acl_scope.as_deref(),
+                    effect_id: &event_id,
+                },
+            ) {
+                Ok(effects) => effects,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_ACL_EFFECT_FAILED",
+                        error,
+                    );
+                }
+            };
         index_jobs.push(NewIndexJob {
             job_id: kogwistar_contracts::stable_id(
                 "conversation.create.index_job",
@@ -2701,8 +3085,8 @@ impl InMemoryGraphApplicationService {
                 if backend == "memory-graph-write" && message.starts_with("unique graph") =>
             {
                 effect_error(
-                StatusCode::CONFLICT,
-                "KOGWISTAR_CONVERSATION_CREATE_CONFLICT",
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_CONVERSATION_CREATE_CONFLICT",
                     message,
                 )
             }
@@ -2712,6 +3096,713 @@ impl InMemoryGraphApplicationService {
                 error.to_string(),
             ),
         }
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_send_message_effect; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; fixture=contracts/golden/answer-workflow-runtime-contract-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_send_message_admits_turn_and_run_atomically; python_test=tests/server/test_capability_kernel_contract.py#test_submit_turn_for_answer_replays_idempotency_key_and_rejects_payload_change
+    async fn in_memory_send_message_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "send_message",
+            true,
+            &["send_message"],
+            "conversation",
+        ) {
+            return syscall_forbidden("send_message");
+        }
+        let Some(conversation_id) = input
+            .args
+            .get("conversation_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "conversation_id is required",
+            );
+        };
+        let Some(text) = input
+            .args
+            .get("text")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "text must be non-empty",
+            );
+        };
+        let workflow_id = input
+            .args
+            .get("workflow_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("agentic_answering.v2");
+        let idempotency_key = match conversation_idempotency_key(&input.args) {
+            Ok(key) => key,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::BAD_REQUEST,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
+        let requested_user_id = match input.args.get("user_id") {
+            None | Some(Value::Null) => None,
+            Some(Value::String(value)) if value.trim().is_empty() => None,
+            Some(Value::String(value)) => Some(value.trim()),
+            Some(_) => {
+                return effect_error(
+                    StatusCode::BAD_REQUEST,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    "user_id must be a string when provided",
+                );
+            }
+        };
+        let actor_id = authenticated_run_owner_id(&request.principal);
+        let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
+        if scope.namespace != "conversation" {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "conversation message admission requires conversation storage scope",
+            );
+        }
+
+        let mut conversation_filter = MetadataFilter::default();
+        conversation_filter
+            .equals
+            .insert("conversation_id".to_owned(), json!(conversation_id));
+        let conversation_read = GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: conversation_filter,
+            limit: usize::MAX,
+        };
+        let conversation_nodes = match self
+            .store
+            .graph_projection_records(conversation_read.clone())
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let mut acl_filter = MetadataFilter::default();
+        acl_filter
+            .equals
+            .insert("entity_type".to_owned(), json!("acl_record"));
+        acl_filter
+            .equals
+            .insert("acl_truth_graph".to_owned(), json!("conversation"));
+        let acl_read = GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: acl_filter,
+            limit: usize::MAX,
+        };
+        let acl_records = match self.store.graph_projection_records(acl_read.clone()).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let conversation_snapshot = conversation_nodes.clone();
+        let acl_snapshot = acl_records.clone();
+        let mut acl_input = conversation_nodes.clone();
+        acl_input.extend(acl_records.clone());
+        let (visible_nodes, _) =
+            graph_records_visible_by_acl(&acl_input, &[], "conversation", &acl_principal);
+        let conversation_nodes = visible_nodes
+            .into_iter()
+            .filter(|record| {
+                conversation_record_string(record, "conversation_id").as_deref()
+                    == Some(conversation_id)
+                    && !matches!(
+                        conversation_record_string(record, "lifecycle_status").as_deref(),
+                        Some("tombstoned" | "deleted")
+                    )
+            })
+            .collect::<Vec<_>>();
+        let starts = conversation_nodes
+            .iter()
+            .filter(|record| {
+                conversation_record_string(record, "entity_type").as_deref()
+                    == Some("conversation_start")
+            })
+            .collect::<Vec<_>>();
+        let Some(start) = starts.first() else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                format!("Unknown conversation_id: {conversation_id}"),
+            );
+        };
+        if starts.len() != 1 {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_CONVERSATION_INVALID",
+                "conversation must have exactly one visible conversation_start node",
+            );
+        }
+        let Some(owner_id) =
+            conversation_record_string(start, "user_id").filter(|value| !value.trim().is_empty())
+        else {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_CONVERSATION_INVALID",
+                "conversation owner is missing",
+            );
+        };
+        if requested_user_id.or(actor_id) != Some(owner_id.as_str()) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "user_id must match the owner of the target conversation",
+            );
+        }
+
+        let request_fingerprint = idempotency_key.as_deref().map(|_| {
+            conversation_send_message_fingerprint(&owner_id, conversation_id, workflow_id, text)
+        });
+        let turn_id = idempotency_key
+            .as_deref()
+            .map(|key| {
+                conversation_send_message_id(
+                    "conversation.send_message.turn",
+                    &owner_id,
+                    conversation_id,
+                    key,
+                )
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let run_id = idempotency_key
+            .as_deref()
+            .map(|key| {
+                conversation_send_message_id(
+                    "conversation.send_message.run",
+                    &owner_id,
+                    conversation_id,
+                    key,
+                )
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if let Some(fingerprint) = request_fingerprint.as_deref() {
+            match kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id).await {
+                Ok(Some(existing)) => {
+                    let events = match kogwistar_store::ServerRunReadStore::server_run_events(
+                        &self.store,
+                        &run_id,
+                        0,
+                        100,
+                    )
+                    .await
+                    {
+                        Ok(events) => events,
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "KOGWISTAR_STORAGE_UNAVAILABLE",
+                                error.to_string(),
+                            );
+                        }
+                    };
+                    return match conversation_idempotency_replay_result(
+                        &existing,
+                        &events,
+                        ConversationIdempotencyExpectation {
+                            run_id: &run_id,
+                            conversation_id,
+                            owner_id: &owner_id,
+                            workflow_id,
+                            turn_id: &turn_id,
+                            request_fingerprint: fingerprint,
+                        },
+                    ) {
+                        Ok(result) => syscall_result(
+                            &input.version,
+                            "send_message",
+                            json_effect(StatusCode::OK, result),
+                        ),
+                        Err(error) => effect_error(
+                            StatusCode::CONFLICT,
+                            "KOGWISTAR_IDEMPOTENCY_CONFLICT",
+                            error,
+                        ),
+                    };
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_STORAGE_UNAVAILABLE",
+                        error.to_string(),
+                    );
+                }
+            }
+        }
+
+        let Some(auth_store) = self.owner_auth_store.as_ref() else {
+            return effect_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KOGWISTAR_OWNER_REVALIDATION_UNAVAILABLE",
+                "conversation owner revalidation is not configured",
+            );
+        };
+        let owner_user = match auth_store.auth_user(&owner_id).await {
+            Ok(Some(user)) if user.is_active => user,
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    "conversation owner is missing or inactive",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "KOGWISTAR_OWNER_REVALIDATION_UNAVAILABLE",
+                    error,
+                );
+            }
+        };
+        let mut owner_principal = runtime_principal_from_auth_user(&owner_user);
+        if !principal_strings(&owner_principal, "ns")
+            .iter()
+            .any(|namespace| namespace == &scope.namespace || namespace == "*")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "conversation owner is not authorized for the conversation namespace",
+            );
+        }
+        owner_principal["ns"] = json!([scope.namespace]);
+        owner_principal["storage_ns"] = json!(scope.namespace);
+        if let Some(workspace_id) = &scope.workspace_id {
+            owner_principal["workspace"] = json!(workspace_id);
+        }
+        if let Some(graph_space) = &scope.graph_space {
+            owner_principal["graph_space"] = json!(graph_space);
+        }
+        if let Some(security_scope) = &acl_principal.security_scope {
+            owner_principal["security_scope"] = json!(security_scope);
+        }
+        let Some(owner_binding) = runtime_owner_binding_v1(&owner_principal, &self.capabilities)
+        else {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                "conversation owner has no authenticated run identity",
+            );
+        };
+        owner_principal = match revalidated_runtime_owner_principal(
+            &owner_binding,
+            &owner_user,
+            &self.capabilities,
+            "write_graph",
+        ) {
+            Ok(principal) => principal,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::FORBIDDEN,
+                    "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+                    error,
+                );
+            }
+        };
+        let Some(provider) = self.embedding_provider.as_ref() else {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                "conversation message admission requires a configured embedding provider",
+            );
+        };
+        let profile = provider.profile();
+        if let Err(error) = profile.validate() {
+            return effect_error(
+                StatusCode::BAD_GATEWAY,
+                "KOGWISTAR_EMBEDDING_FAILED",
+                error.to_string(),
+            );
+        }
+
+        let mut tail = conversation_nodes
+            .iter()
+            .filter(|record| {
+                matches!(
+                    conversation_record_string(record, "entity_type").as_deref(),
+                    Some(
+                        "conversation_start"
+                            | "conversation_turn"
+                            | "conversation_summary"
+                            | "assistant_turn"
+                    )
+                ) && conversation_record_value(record, "in_conversation_chain")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        tail.sort_by_key(|record| {
+            (
+                conversation_record_i64(record, "turn_index").unwrap_or(-1),
+                record.id.clone(),
+            )
+        });
+        let Some(previous) = tail.last() else {
+            return effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_CONVERSATION_INVALID",
+                "conversation has no visible tail node",
+            );
+        };
+        let turn_index = conversation_record_i64(previous, "turn_index")
+            .map(|index| index + 1)
+            .unwrap_or(0);
+        let step_seq = conversation_record_i64(previous, "run_step_seq").unwrap_or(0) + 1;
+        let node_metadata = json!({
+            "entity_type": "conversation_turn",
+            "turn_index": turn_index,
+            "level_from_root": 0,
+            "in_conversation_chain": true,
+            "in_ui_chain": true,
+            "run_id": conversation_id,
+            "run_step_seq": step_seq,
+            "attempt_seq": 0,
+            "lifecycle_status": "active",
+            "redirect_to_id": null,
+            "role": "user",
+            "conversation_id": conversation_id,
+            "user_id": owner_id,
+        });
+        let mentions = json!([{
+            "spans": [conversation_span(conversation_id, &turn_id, text)],
+            "multimodal_spans": []
+        }]);
+        let node_payload = json!({
+            "id": turn_id,
+            "label": format!("Turn {turn_index} (user)"),
+            "type": "entity",
+            "summary": text,
+            "domain_id": null,
+            "canonical_entity_id": null,
+            "properties": {},
+            "mentions": mentions,
+            "doc_id": turn_id,
+            "metadata": node_metadata,
+            "level_from_root": 0,
+            "role": "user",
+            "turn_index": turn_index,
+            "conversation_id": conversation_id,
+            "user_id": owner_id,
+        });
+        let node_envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::ConversationNode,
+            node_payload.clone(),
+        );
+        if let Err(error) = node_envelope.validate_family_v1() {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_CONVERSATION_MODEL_INVALID",
+                error.to_string(),
+            );
+        }
+        let mut node_document_payload = node_payload.clone();
+        node_document_payload
+            .as_object_mut()
+            .expect("conversation turn payload is an object")
+            .remove("metadata");
+        let node_document = serde_json::to_string(&node_document_payload)
+            .expect("conversation turn document serializes");
+        let mut node_projection = node_metadata.as_object().unwrap().clone();
+        node_projection.extend([
+            ("doc_id".to_owned(), json!(turn_id)),
+            ("label".to_owned(), json!(format!("Turn {turn_index} (user)"))),
+            ("type".to_owned(), json!("entity")),
+            ("summary".to_owned(), json!(text)),
+            ("properties".to_owned(), json!("{}")),
+            ("mentions".to_owned(), json!(mentions.to_string())),
+        ]);
+        if let Some(graph_space) = &scope.graph_space {
+            node_projection.insert("graph_space".to_owned(), json!(graph_space));
+        }
+        if let Some(workspace_id) = &scope.workspace_id {
+            node_projection.insert("workspace_id".to_owned(), json!(workspace_id));
+        }
+        let node_event_id = conversation_send_message_id(
+            "conversation.send_message.node_event",
+            &owner_id,
+            conversation_id,
+            &turn_id,
+        );
+        let mut mutations = vec![(
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: node_event_id,
+                op: "ADD".to_owned(),
+                payload: node_payload,
+                record: GraphRecord {
+                    id: turn_id.clone(),
+                    document: Some(node_document),
+                    metadata: node_projection,
+                    embedding: None,
+                },
+                embedding_dim: profile.dimension,
+            },
+            node_envelope,
+        )];
+        let mut index_jobs = conversation_index_job_kinds("node")
+            .expect("conversation node index contract exists")
+            .iter()
+            .map(|kind| conversation_index_job(&scope.namespace, "node", &turn_id, kind))
+            .collect::<Vec<_>>();
+        let previous_id = previous.id.clone();
+        let (char_distance, turn_distance, tail_turn_index) =
+            conversation_next_turn_distances(previous, text, turn_index);
+        let edge_id = kogwistar_contracts::stable_id(
+            "conversation.edge",
+            &[
+                owner_id.clone(),
+                conversation_id.to_owned(),
+                "next_turn".to_owned(),
+                (turn_index + 1).to_string(),
+                format!("['{previous_id}']"),
+                format!("['{turn_id}']"),
+                "[]".to_owned(),
+                "[]".to_owned(),
+                "conversation_edge".to_owned(),
+            ],
+        )
+        .to_string();
+        let edge_payload = json!({
+            "id": edge_id,
+            "source_ids": [previous_id],
+            "target_ids": [turn_id],
+            "source_edge_ids": [],
+            "target_edge_ids": [],
+            "relation": "next_turn",
+            "label": "next_turn",
+            "type": "relationship",
+            "summary": "Sequential flow",
+            "doc_id": format!("conv:{conversation_id}"),
+            "mentions": mentions,
+            "domain_id": null,
+            "canonical_entity_id": null,
+            "properties": {"entity_type": "conversation_edge"},
+            "metadata": {
+                "relation": "next_turn",
+                "target_id": turn_id,
+                "char_distance_from_last_summary": char_distance,
+                "turn_distance_from_last_summary": turn_distance,
+                "tail_turn_index": tail_turn_index,
+                "causal_type": "chain",
+                "run_id": conversation_id,
+                "run_step_seq": step_seq,
+                "attempt_seq": 0,
+                "lifecycle_status": "active",
+                "redirect_to_id": null,
+            },
+        });
+        let edge_envelope = kogwistar_contracts::GraphModelEnvelope::new(
+            kogwistar_contracts::GraphModelClass::ConversationEdge,
+            edge_payload.clone(),
+        );
+        if let Err(error) = edge_envelope.validate_family_v1() {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_CONVERSATION_MODEL_INVALID",
+                error.to_string(),
+            );
+        }
+        let edge_document = serde_json::to_string(&edge_payload)
+            .expect("conversation edge document serializes");
+        let embedding_texts = vec![format!("user: {text}"), edge_document.clone()];
+        let embeddings = match provider.embed(&embedding_texts).await {
+            Ok(vectors)
+                if vectors.len() == embedding_texts.len()
+                    && vectors.iter().all(|vector| {
+                        vector.len() == profile.dimension && vector.iter().all(|v| v.is_finite())
+                    }) =>
+            {
+                vectors
+            }
+            Ok(_) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "embedding provider returned an invalid conversation vector",
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    error.to_string(),
+                );
+            }
+        };
+        mutations[0].0.record.embedding = Some(embeddings[0].iter().map(|v| *v as f32).collect());
+        let mut edge_metadata = edge_payload["metadata"]
+            .as_object()
+            .unwrap()
+            .clone();
+        edge_metadata.extend([
+            ("doc_id".to_owned(), edge_payload["doc_id"].clone()),
+            ("relation".to_owned(), json!("next_turn")),
+            ("source_ids".to_owned(), json!(edge_payload["source_ids"].to_string())),
+            ("target_ids".to_owned(), json!(edge_payload["target_ids"].to_string())),
+            ("source_edge_ids".to_owned(), json!("[]")),
+            ("target_edge_ids".to_owned(), json!("[]")),
+            ("type".to_owned(), json!("relationship")),
+            ("summary".to_owned(), json!("Sequential flow")),
+            ("properties".to_owned(), json!(edge_payload["properties"].to_string())),
+            ("mentions".to_owned(), json!(mentions.to_string())),
+            ("node_endpoint_count".to_owned(), json!(2)),
+            ("edge_endpoint_count".to_owned(), json!(0)),
+            ("total_endpoint_count".to_owned(), json!(2)),
+        ]);
+        if let Some(graph_space) = &scope.graph_space {
+            edge_metadata.insert("graph_space".to_owned(), json!(graph_space));
+        }
+        if let Some(workspace_id) = &scope.workspace_id {
+            edge_metadata.insert("workspace_id".to_owned(), json!(workspace_id));
+        }
+        let edge_event_id = conversation_send_message_id(
+            "conversation.send_message.edge_event",
+            &owner_id,
+            conversation_id,
+            &turn_id,
+        );
+        mutations.push((
+            GraphMutation {
+                scope: scope.clone(),
+                table: "gke_edges".to_owned(),
+                entity_kind: "edge".to_owned(),
+                event_id: edge_event_id,
+                op: "ADD".to_owned(),
+                payload: edge_payload,
+                record: GraphRecord {
+                    id: edge_id.clone(),
+                    document: Some(edge_document),
+                    metadata: edge_metadata,
+                    embedding: Some(embeddings[1].iter().map(|v| *v as f32).collect()),
+                },
+                embedding_dim: profile.dimension,
+            },
+            edge_envelope,
+        ));
+        for kind in conversation_index_job_kinds("edge")
+            .expect("conversation edge index contract exists")
+        {
+            index_jobs.push(conversation_index_job(&scope.namespace, "edge", &edge_id, kind));
+        }
+        let graph_mutations = mutations
+            .iter()
+            .map(|(mutation, _)| mutation.clone())
+            .collect::<Vec<_>>();
+        let acl_targets = acl_targets_for_graph_mutations(&graph_mutations).0;
+        let (acl_mutations, acl_jobs) = match derive_default_acl_graph_effects_from_records(
+            &scope,
+            &graph_mutations,
+            acl_targets,
+            acl_records,
+            AclDefaultsContext {
+                truth_graph: "conversation",
+                owner_id: &owner_id.to_ascii_lowercase(),
+                security_scope: acl_principal.security_scope.as_deref(),
+                effect_id: &run_id,
+            },
+        ) {
+            Ok(effects) => effects,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_ACL_EFFECT_FAILED",
+                    error,
+                );
+            }
+        };
+        for (mutation, envelope) in &mutations {
+            if let Err(error) = validate_typed_graph_mutation(mutation, envelope) {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_GRAPH_MODEL",
+                    error.to_string(),
+                );
+            }
+        }
+        let mut all_mutations = graph_mutations;
+        all_mutations.extend(acl_mutations);
+        index_jobs.extend(acl_jobs);
+        let graph_batch = GraphMutationBatch {
+            mutations: all_mutations,
+            index_jobs,
+        };
+        let expected_projections = vec![
+            kogwistar_store_memory::GraphProjectionExpectation {
+                read: conversation_read,
+                records: conversation_snapshot,
+            },
+            kogwistar_store_memory::GraphProjectionExpectation {
+                read: acl_read,
+                records: acl_snapshot,
+            },
+        ];
+        let admission = InMemoryConversationAdmission {
+            graph_batch,
+            expected_projections,
+            request_fingerprint,
+            actor_user_id: actor_id.unwrap_or(&owner_id).to_owned(),
+        };
+        let initial_state = serde_json::Map::from_iter([
+            ("conversation_id".to_owned(), json!(conversation_id)),
+            ("user_text".to_owned(), json!(text)),
+            ("turn_node_id".to_owned(), json!(turn_id)),
+            ("turn_index".to_owned(), json!(turn_index)),
+            ("user_id".to_owned(), json!(owner_id)),
+            ("max_retrieval_level".to_owned(), json!(4)),
+        ]);
+        let nested = ApiEffectRequest {
+            contract_version: request.contract_version,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": run_id,
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "turn_node_id": turn_id,
+                "user_id": owner_id,
+                "initial_state": initial_state,
+            }))
+            .expect("conversation message workflow request serializes"),
+            principal: owner_principal,
+        };
+        let response = self.submit_run_effect(&nested, Some(admission)).await;
+        syscall_result(&input.version, "send_message", response)
     }
 
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_receive_message_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_transcript; fixture=contracts/golden/receive-message-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_receive_message_matches_shared_python_contract; python_test=tests/server/test_receive_message_wire_contract.py#test_python_receive_message_result_matches_shared_wire_fixture
@@ -2730,7 +3821,9 @@ impl InMemoryGraphApplicationService {
         ) {
             return syscall_forbidden("receive_message");
         }
-        let Some(conversation_id) = input.args.get("conversation_id")
+        let Some(conversation_id) = input
+            .args
+            .get("conversation_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -2796,9 +3889,234 @@ impl InMemoryGraphApplicationService {
         )
     }
 
-    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_run_admission_is_authenticated_and_atomic, rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_admission_uses_authoritative_design_and_rejects_conflicts; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission validates an exact ready workflow-design snapshot when present, accepts only one unjoined Rust-native v1 step, and atomically admits run/event/transition/lane without language fallback.
-    async fn submit_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        if !principal_strings(&request.principal, "ns")
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_invoke_builtin_tool_effect; python=kogwistar/server/syscall_api.py#_invoke_builtin_tool; fixture=contracts/golden/invoke-tool-results-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_invoke_builtin_tools_match_shared_contract_and_authority; python_test=tests/server/test_syscall_api.py#test_invoke_builtin_tool_results_match_shared_contract_fixture
+    async fn in_memory_invoke_builtin_tool_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        if !syscall_allowed_in_namespace(
+            request,
+            &self.capabilities,
+            "invoke_tool",
+            true,
+            &[],
+            "conversation",
+        ) {
+            return syscall_forbidden("invoke_tool");
+        }
+        let Some(tool_name) = input
+            .args
+            .get("tool_name")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_ascii_lowercase)
+        else {
+            return effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "tool_name is required",
+            );
+        };
+
+        let result = match tool_name.as_str() {
+            "list_transcript" => {
+                let response = self.in_memory_receive_message_effect(request, input).await;
+                if !(200..300).contains(&response.status) {
+                    return response;
+                }
+                let payload: Value = match serde_json::from_slice(&response.body) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_INVALID_INTERNAL_RESPONSE",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let Some(mut result) = payload.get("result").cloned() else {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_INVALID_INTERNAL_RESPONSE",
+                        "built-in graph tool returned no result",
+                    );
+                };
+                result["tool_name"] = Value::String(tool_name.clone());
+                result
+            }
+            "latest_snapshot" => {
+                if !capability_allowed(
+                    request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "built-in tool \"latest_snapshot\" requires project_view",
+                    );
+                }
+                let Some(conversation_id) = input
+                    .args
+                    .get("conversation_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                else {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "conversation_id is required for latest_snapshot",
+                    );
+                };
+                let (scope, acl_principal) =
+                    conversation_graph_scope_and_acl_principal(&request.principal);
+                let (nodes, edges) = match self.graph_snapshot(scope).await {
+                    Ok(records) => records,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error,
+                        );
+                    }
+                };
+                let (visible_nodes, _) =
+                    graph_records_visible_by_acl(&nodes, &edges, "conversation", &acl_principal);
+                let run_id = input.args.get("run_id").and_then(Value::as_str);
+                let stage = input.args.get("stage").and_then(Value::as_str);
+                let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+                    &visible_nodes,
+                    conversation_id,
+                    run_id,
+                    stage,
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(_) => {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_NOT_FOUND",
+                            "no authorized context snapshot found",
+                        );
+                    }
+                };
+                json!({
+                    "tool_name": tool_name,
+                    "conversation_id": conversation_id,
+                    "snapshot": public_context_snapshot_value(snapshot),
+                })
+            }
+            "capability_snapshot" => {
+                if !capability_allowed(
+                    request,
+                    &self.capabilities,
+                    "project_view",
+                    &["project_view", "read_security_scope"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "built-in tool \"capability_snapshot\" requires project_view and read_security_scope",
+                    );
+                }
+                let state = self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                json!({
+                    "tool_name": tool_name,
+                    "snapshot": capability_snapshot(&request.principal, &state),
+                })
+            }
+            "resource_snapshot" => {
+                if !capability_allowed(
+                    request,
+                    &self.capabilities,
+                    "read_security_scope",
+                    &["read_security_scope", "project_view"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "built-in tool \"resource_snapshot\" requires read_security_scope and project_view",
+                    );
+                }
+                let runs = match self.store.server_runs(None, None, None, 10_000).await {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let lanes = match kogwistar_store::LaneMessageReadStore::projected_lane_messages(
+                    &self.store,
+                    LaneMessageFilter {
+                        namespace: Some("workflow".to_owned()),
+                        limit: 10_000,
+                        ..LaneMessageFilter::default()
+                    },
+                )
+                .await
+                {
+                    Ok(rows) => rows,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                let mut events = Vec::new();
+                for run in &runs {
+                    match self.store.server_run_events(&run.run_id, 0, 200).await {
+                        Ok(mut rows) => events.append(&mut rows),
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            );
+                        }
+                    }
+                }
+                let usage = usage_history(&events, 10_000);
+                let mut snapshot = resource_value(&runs, &lanes, &usage, &events, 0);
+                snapshot
+                    .as_object_mut()
+                    .expect("resource snapshot is an object")
+                    .remove("migration");
+                json!({"tool_name": tool_name, "snapshot": snapshot})
+            }
+            _ => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_TOOL_NOT_FOUND",
+                    format!("unknown built-in tool: {tool_name}"),
+                );
+            }
+        };
+        syscall_result(
+            &input.version,
+            "invoke_tool",
+            json_effect(StatusCode::OK, result),
+        )
+    }
+
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#submit_run_effect; python=kogwistar/engine_core/in_memory_meta.py#create_server_run+append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/runtime-native-noop-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_run_admission_is_authenticated_and_atomic+in_memory_native_admission_uses_authoritative_design_and_schedules_successors; python_test=tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract; note=In-memory public admission validates an exact ready workflow-design snapshot when present; all steps are supported v1 Rust-native operations, and successor lanes commit atomically with worker effects without language fallback.
+    async fn submit_run_effect(
+        &self,
+        request: &ApiEffectRequest,
+        conversation_admission: Option<InMemoryConversationAdmission>,
+    ) -> ApiEffectResponse {
+        if conversation_admission.is_none()
+            && !principal_strings(&request.principal, "ns")
             .iter()
             .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
         {
@@ -2852,6 +4170,7 @@ impl InMemoryGraphApplicationService {
             .user_id
             .as_deref()
             .is_some_and(|requested| requested.trim() != owner_id)
+            || !expected_run_owner_matches(input.expected_run_owner_id.as_deref(), Some(owner_id))
         {
             return effect_error(
                 StatusCode::FORBIDDEN,
@@ -2904,37 +4223,6 @@ impl InMemoryGraphApplicationService {
             );
         }
         if let Some(plan) = graph_plan.as_ref() {
-            let node_id = plan.start_node_id.as_str();
-            let operation = plan.node_ops.get(node_id).map(String::as_str);
-            let version = plan.node_versions.get(node_id).map(String::as_str);
-            let executor_target = plan.node_executor_targets.get(node_id).map(String::as_str);
-            if plan.node_ops.len() != 1
-                || plan.node_versions.len() != 1
-                || !plan.join_node_ids.is_empty()
-                || plan.start_join_mask != 0
-                || !plan.routes.is_empty()
-                || !plan.node_environment_ids.is_empty()
-                || !plan.node_worker_identities.is_empty()
-                || operation.is_none_or(|operation| {
-                    !matches!(
-                        operation,
-                        "noop"
-                            | "increment-counter"
-                            | "emit-result"
-                            | "agent.event.request"
-                            | "agent.event.receive"
-                            | "agent.event.ack"
-                    )
-                })
-                || version != Some("v1")
-                || executor_target != Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
-            {
-                return effect_error(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
-                    "in-memory native admission supports one unjoined v1 Rust-native start step only",
-                );
-            }
             if input.start_node_id.is_none() {
                 input.start_node_id = Some(plan.start_node_id.clone());
             }
@@ -2952,21 +4240,110 @@ impl InMemoryGraphApplicationService {
                 );
             }
         }
-        if !input.join_node_ids.is_empty()
-            || input.start_join_mask != 0
-            || !input.runtime_routes.is_empty()
-            || input.node_ops.len() > 1
-            || input
-                .node_ops
+        let effective_routes = graph_plan
+            .as_ref()
+            .map(|plan| plan.routes.clone())
+            .unwrap_or_else(|| input.runtime_routes.clone());
+        let effective_join_node_ids = graph_plan
+            .as_ref()
+            .map(|plan| plan.join_node_ids.clone())
+            .unwrap_or_else(|| input.join_node_ids.clone());
+        let effective_start_join_mask = graph_plan
+            .as_ref()
+            .map(|plan| plan.start_join_mask)
+            .unwrap_or(input.start_join_mask);
+        let effective_start_node_id = graph_plan
+            .as_ref()
+            .map(|plan| plan.start_node_id.clone())
+            .or_else(|| {
+                input
+                    .start_node_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|node_id| !node_id.is_empty())
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "start".to_owned());
+        let effective_node_ops = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_ops.clone())
+            .unwrap_or_else(|| {
+                if input.node_ops.is_empty() {
+                    BTreeMap::from([(effective_start_node_id.clone(), "noop".to_owned())])
+                } else {
+                    input.node_ops.clone()
+                }
+            });
+        let effective_node_versions = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_versions.clone())
+            .unwrap_or_else(|| {
+                if input.node_versions.is_empty() {
+                    effective_node_ops
+                        .keys()
+                        .map(|node_id| (node_id.clone(), "v1".to_owned()))
+                        .collect()
+                } else {
+                    input.node_versions.clone()
+                }
+            });
+        let effective_node_environment_ids = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_environment_ids.clone())
+            .unwrap_or_else(|| input.node_environment_ids.clone());
+        let effective_node_worker_identities = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_worker_identities.clone())
+            .unwrap_or_else(|| input.node_worker_identities.clone());
+        let mut effective_node_executor_targets = graph_plan
+            .as_ref()
+            .map(|plan| plan.node_executor_targets.clone())
+            .unwrap_or_else(|| input.node_executor_targets.clone());
+        if graph_plan.is_none() && effective_node_executor_targets.is_empty() {
+            effective_node_executor_targets.extend(effective_node_ops.keys().map(|node_id| {
+                (
+                    node_id.clone(),
+                    kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+                )
+            }));
+        }
+        let registered_native_operations = self.native_operations.registered_operations();
+        if effective_node_ops.is_empty()
+            || !effective_node_ops.contains_key(&effective_start_node_id)
+            || !effective_node_environment_ids.is_empty()
+            || !effective_node_worker_identities.is_empty()
+            || effective_node_ops.iter().any(|(node_id, operation)| {
+                !matches!(
+                    effective_node_executor_targets
+                        .get(node_id)
+                        .map(String::as_str),
+                    Some(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET)
+                ) || !kogwistar_runtime::native_operation_for_target(
+                    operation,
+                    effective_node_executor_targets
+                        .get(node_id)
+                        .map(String::as_str),
+                )
+                .is_some_and(|name| {
+                    registered_native_operations
+                        .iter()
+                        .any(|(registered, version)| {
+                            registered == name
+                                && effective_node_versions.get(node_id) == Some(version)
+                        })
+                })
+            })
+            || effective_node_executor_targets
                 .keys()
-                .any(|node_id| node_id != input.start_node_id.as_deref().unwrap_or("start"))
-            || !input.node_environment_ids.is_empty()
-            || !input.node_worker_identities.is_empty()
+                .any(|node_id| !effective_node_ops.contains_key(node_id))
+            || effective_node_versions
+                .keys()
+                .any(|node_id| !effective_node_ops.contains_key(node_id))
         {
             return effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
-                "in-memory native admission currently accepts one unjoined native start step only",
+                "in-memory execution requires a valid graph whose every node uses a supported v1 Rust-native operation",
             );
         }
         let run_id = input
@@ -2983,55 +4360,19 @@ impl InMemoryGraphApplicationService {
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .unwrap_or_else(|| format!("wf_turn|{run_id}"));
-        let start_node_id = input
-            .start_node_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .unwrap_or("start");
-        let operation = input
-            .node_ops
+        let start_node_id = effective_start_node_id.as_str();
+        let operation = effective_node_ops
             .get(start_node_id)
             .map(String::as_str)
             .unwrap_or("noop");
-        let executor_target = input
-            .node_executor_targets
+        let op_version = effective_node_versions
+            .get(start_node_id)
+            .map(String::as_str)
+            .unwrap_or("v1");
+        let executor_target = effective_node_executor_targets
             .get(start_node_id)
             .map(String::as_str)
             .unwrap_or(kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET);
-        let native_operation =
-            kogwistar_runtime::native_operation_for_target(operation, Some(executor_target));
-        if executor_target != kogwistar_runtime::RUST_NATIVE_EXECUTOR_TARGET
-            || !matches!(
-                native_operation,
-                Some(
-                    "noop"
-                        | "increment-counter"
-                        | "emit-result"
-                        | "agent.event.request"
-                        | "agent.event.receive"
-                        | "agent.event.ack"
-                )
-            )
-            || input
-                .node_executor_targets
-                .keys()
-                .any(|node_id| node_id != start_node_id)
-            || input
-                .node_versions
-                .get(start_node_id)
-                .is_some_and(|version| version != "v1")
-            || input
-                .node_versions
-                .keys()
-                .any(|node_id| node_id != start_node_id)
-        {
-            return effect_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "KOGWISTAR_RUNTIME_PLAN_UNSUPPORTED",
-                "in-memory admission requires a supported v1 Rust-native operation",
-            );
-        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|duration| duration.as_secs() as i64)
@@ -3050,6 +4391,15 @@ impl InMemoryGraphApplicationService {
         ] {
             initial_state.remove(reserved);
         }
+        if let Err(message) =
+            install_runtime_trace_context(&mut initial_state, input.trace_context.as_ref())
+        {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_TRACE_CONTEXT",
+                message,
+            );
+        }
         initial_state.insert(
             "_rt_graph_scope".to_owned(),
             security_scope_value(&request.principal),
@@ -3057,13 +4407,33 @@ impl InMemoryGraphApplicationService {
         initial_state.insert("_rt_run_owner_id".to_owned(), json!(owner_id));
         install_authoritative_node_executor_targets(
             &mut initial_state,
-            &BTreeMap::from([(start_node_id.to_owned(), executor_target.to_owned())]),
+            &effective_node_executor_targets,
         );
         inject_authoritative_capability_state(
             &mut initial_state,
             &request.principal,
             &self.capabilities,
         );
+        if !effective_routes.is_empty() {
+            initial_state.insert(
+                "_rt_routes".to_owned(),
+                serde_json::to_value(&effective_routes).expect("runtime routes serialize"),
+            );
+        }
+        initial_state.insert(
+            "_rt_node_ops".to_owned(),
+            serde_json::to_value(&effective_node_ops).expect("runtime node ops serialize"),
+        );
+        if effective_node_versions
+            .values()
+            .any(|version| version != "v1")
+        {
+            initial_state.insert(
+                "_rt_node_versions".to_owned(),
+                serde_json::to_value(&effective_node_versions)
+                    .expect("runtime node versions serialize"),
+            );
+        }
         let runtime_kind = if input.runtime_kind.trim().is_empty() {
             default_runtime_kind()
         } else {
@@ -3079,20 +4449,21 @@ impl InMemoryGraphApplicationService {
             "worker_protocol": worker_protocol_for_runtime_kind(&runtime_kind),
             "node_id": start_node_id,
             "op": operation,
-            "op_version": "v1",
+            "op_version": op_version,
             "executor_target": executor_target,
-            "join_mask": 0,
+            "join_mask": effective_start_join_mask,
             "token_id": run_id,
             "step_seq": 0,
             "expected_event_seq": 2,
+            "runtime_routes": effective_routes,
             "state": initial_state,
         });
         add_executor_target(&mut worker_payload, operation, Some(executor_target));
         let mut transition_payload = worker_payload.clone();
         transition_payload["initial_state"] = worker_payload["state"].clone();
         transition_payload["start_node_id"] = json!(start_node_id);
-        transition_payload["join_node_ids"] = json!([]);
-        transition_payload["start_join_mask"] = json!(0);
+        transition_payload["join_node_ids"] = json!(effective_join_node_ids);
+        transition_payload["start_join_mask"] = json!(effective_start_join_mask);
         let mut transition = runtime_start_transition(&transition_payload, &run_id);
         transition.expected_event_seq = 1;
         transition.user_id = Some(owner_id.to_owned());
@@ -3109,6 +4480,15 @@ impl InMemoryGraphApplicationService {
         });
         if let Some(binding) = runtime_owner_binding_v1(&request.principal, &self.capabilities) {
             admission_payload["runtime_owner_binding"] = json!(binding);
+        }
+        if let Some(admission) = conversation_admission.as_ref() {
+            admission_payload["admission_actor"] = json!({
+                "user_id": admission.actor_user_id,
+                "operation": "send_message",
+            });
+            if let Some(fingerprint) = &admission.request_fingerprint {
+                admission_payload["request_fingerprint"] = json!(fingerprint);
+            }
         }
         let run = ServerRunCreate {
             run_id: run_id.clone(),
@@ -3137,10 +4517,22 @@ impl InMemoryGraphApplicationService {
             payload_json: Some(worker_payload.to_string()),
             error_json: None,
         };
-        match self
-            .store
-            .admit_server_run_with_start(run, admission_payload, transition, lane)
-        {
+        let admission_result = match conversation_admission {
+            Some(admission) => self
+                .store
+                .admit_server_run_with_graph_and_start_if_unchanged(
+                    admission.graph_batch,
+                    &admission.expected_projections,
+                    run,
+                    admission_payload,
+                    transition,
+                    lane,
+                ),
+            None => self
+                .store
+                .admit_server_run_with_start(run, admission_payload, transition, lane),
+        };
+        match admission_result {
             Ok(_) => json_effect(
                 StatusCode::ACCEPTED,
                 json!({
@@ -3232,7 +4624,9 @@ impl InMemoryGraphApplicationService {
         )
         .await
         {
-            Ok(events) if tail.as_slice() == ["events"] => {
+            Ok(events)
+                if tail.as_slice() == ["events"] || tail.as_slice() == ["events", "poll"] =>
+            {
                 let events = events
                     .into_iter()
                     .map(server_run_event_value)

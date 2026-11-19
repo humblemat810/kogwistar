@@ -7,6 +7,7 @@ pub struct PostgresUnitOfWork<'transaction> {
     pub(super) graph_tables_by_schema: std::collections::HashMap<String, Tables>,
 }
 
+mod document_rollback;
 mod events_recovery;
 mod graph;
 mod index_jobs;

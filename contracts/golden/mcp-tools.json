@@ -10,6 +10,17 @@
             "conversation_id": {
               "type": "string"
             },
+            "idempotency_key": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
             "text": {
               "type": "string"
             },

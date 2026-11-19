@@ -5,7 +5,9 @@ import base64
 import copy
 import hashlib
 import json
+import logging
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ from kogwistar.runtime.rust_worker import (
     RustStepResolverAdapter,
     RustWorkerError,
     WorkerResultJournal,
+    _claimed_work_trace_context,
 )
 from kogwistar.runtime.worker_identity import WorkerIdentityAttestationV1
 from kogwistar.implementation_selection import (
@@ -33,6 +36,19 @@ from kogwistar.implementation_selection import (
     transaction_authority_scope,
 )
 from kogwistar._rust_bridge import runtime_implementation_mode
+
+RUNTIME_WORKER_FAILURE_CONTRACT = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/runtime-worker-failure-v1.json"
+    ).read_text(encoding="utf-8")
+)
+RUNTIME_WORKER_SUCCESS_CONTRACT = json.loads(
+    (
+        Path(__file__).resolve().parents[2]
+        / "contracts/golden/runtime-worker-success-v1.json"
+    ).read_text(encoding="utf-8")
+)
 
 pytestmark = [pytest.mark.ci, pytest.mark.runtime]
 
@@ -55,6 +71,39 @@ def _work(*, owner: str = "worker-1") -> dict[str, Any]:
             "state": {"seed": 1},
         },
     }
+
+
+def test_claimed_python_worker_trace_inherits_rust_run_trace_seed() -> None:
+    root = Path(__file__).resolve().parents[2]
+    fixture = json.loads(
+        (root / "contracts" / "golden" / "runtime-trace-context-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    seed = fixture["nested_run_seed"]
+    step = seed["step"]
+    payload = {
+        "run_id": step["run_id"],
+        "token_id": step["token_id"],
+        "step_seq": step["step_seq"],
+        "conversation_id": "conversation-1",
+        "turn_node_id": "turn-1",
+        "state": {
+            "_rt_trace_context": seed["trace_context"]
+        },
+    }
+
+    context = _claimed_work_trace_context(
+        {"run_id": step["run_id"]}, payload, step["node_id"]
+    )
+
+    assert context.trace_id == seed["expected"]["trace_id"]
+    assert context.span_id == seed["trace_context"]["span_id"]
+    assert context.parent_span_id == seed["trace_context"]["parent_span_id"]
+    assert (
+        context.child_span(node_id=step["node_id"]).parent_span_id
+        == seed["trace_context"]["span_id"]
+    )
 
 
 def _effect() -> dict[str, Any]:
@@ -131,6 +180,109 @@ def test_python_worker_increment_counter_matches_shared_native_effect_golden() -
         "route_next": effect["route_next"],
         "result": effect["result"],
     } == fixture
+
+
+def test_sync_worker_buffers_context_events_into_durable_effect() -> None:
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        ctx.events.emit(
+            type="resolver.progress",
+            ctx=ctx.trace_ctx,
+            payload={"phase": "prepared"},
+        )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    effect = RustStepResolverAdapter(resolver)(_adapter_work())
+    emitted = [
+        event
+        for event in effect["trace_events"]
+        if event.get("type") == "resolver.progress"
+    ]
+
+    assert len(emitted) == 1
+    assert emitted[0]["run_id"] == "run-1"
+    assert emitted[0]["node_id"] == "start"
+    assert json.loads(emitted[0]["payload_json"]) == {"phase": "prepared"}
+
+
+def test_async_worker_buffers_context_events_into_durable_effect() -> None:
+    from kogwistar.runtime.resolvers import AsyncMappingStepResolver
+
+    resolver = AsyncMappingStepResolver()
+
+    @resolver.register("start")
+    async def execute(ctx):
+        ctx.events.emit(
+            type="resolver.progress",
+            ctx=ctx.trace_ctx,
+            payload={"phase": "prepared"},
+        )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    work = _adapter_work()
+    work["payload"]["worker_protocol"] = "async-v2"
+    effect = asyncio.run(AsyncRustStepResolverAdapter(resolver).execute(work))
+    emitted = [
+        event
+        for event in effect["trace_events"]
+        if event.get("type") == "resolver.progress"
+    ]
+
+    assert len(emitted) == 1
+    assert emitted[0]["run_id"] == "run-1"
+    assert emitted[0]["node_id"] == "start"
+    assert json.loads(emitted[0]["payload_json"]) == {"phase": "prepared"}
+
+
+@pytest.mark.parametrize("overflow", ["count", "bytes"])
+def test_worker_rejects_callback_telemetry_over_budget(overflow, caplog) -> None:
+    caplog.set_level(logging.CRITICAL, logger="workflow.telemetry")
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(ctx):
+        if overflow == "count":
+            for index in range(257):
+                ctx.events.emit(
+                    type="resolver.progress",
+                    ctx=ctx.trace_ctx,
+                    payload={"index": index},
+                )
+        else:
+            ctx.events.emit(
+                type="resolver.progress",
+                ctx=ctx.trace_ctx,
+                payload={"text": "x" * (1024 * 1024)},
+            )
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    with pytest.raises(RustWorkerError, match="telemetry exceeds worker effect limits"):
+        RustStepResolverAdapter(resolver)(_adapter_work())
+
+
+def test_callback_telemetry_buffer_limits_hold_under_concurrent_emits() -> None:
+    from kogwistar.runtime.rust_worker import _BufferedEventSink
+
+    sink = _BufferedEventSink()
+
+    def emit(index: int) -> None:
+        sink.emit(
+            {
+                "event_id": f"event-{index}",
+                "type": "resolver.progress",
+                "payload_json": "{}",
+            }
+        )
+
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        list(executor.map(emit, range(1024)))
+
+    assert sink.overflowed
+    assert len(sink.events) == 256
+    assert len({event["event_id"] for event in sink.events}) == 256
+    assert 0 < sink.serialized_bytes <= 1024 * 1024
 
 
 def test_python_worker_application_operation_matches_shared_native_effect_golden() -> None:
@@ -423,6 +575,33 @@ def test_step_resolver_adapter_maps_context_mutation_update_and_explicit_route()
         "workflow_status": "succeeded",
         "final_state": {"seed": 1, "items": ["result"], "direct": "kept"},
     }
+
+
+def test_step_resolver_adapter_matches_shared_success_effect_contract() -> None:
+    contract = RUNTIME_WORKER_SUCCESS_CONTRACT
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def execute(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[(mode, payload) for mode, payload in contract["state_update"]],
+            _route_next=contract["route_next"],
+        )
+
+    effect = RustStepResolverAdapter(resolver)(
+        _adapter_work(
+            state={"answer": "seed"},
+            routes=[_route("done", aliases=contract["route_next"])],
+        )
+    )
+
+    assert effect["status"] == "success"
+    assert effect["state_update"] == contract["state_update"]
+    assert effect["route_next"] == contract["route_next"]
+    assert effect["successors"] == contract["successors"]
+    assert effect["result"]["workflow_status"] == "succeeded"
+    assert effect["result"]["final_state"] == contract["expected_state"]
 
 
 def test_sync_rust_worker_binds_runtime_selection_through_callback_and_reduction(
@@ -1125,28 +1304,37 @@ def test_step_resolver_adapter_maps_suspend() -> None:
 
 @pytest.mark.parametrize("handled", [False, True], ids=["unhandled", "handled"])
 def test_step_resolver_adapter_maps_failure_routing(handled: bool) -> None:
+    contract_case = RUNTIME_WORKER_FAILURE_CONTRACT["cases"][
+        "handled" if handled else "unhandled"
+    ]
     resolver = MappingStepResolver()
 
     @resolver.register("start")
     def execute(_ctx):
         return RunFailure(
             conversation_node_id=None,
-            state_update=[("u", {"attempted": True})],
-            errors=["boom"],
+            state_update=[(mode, payload) for mode, payload in contract_case["state_update"]],
+            errors=contract_case["errors"],
         )
 
-    route = _route("recover", predicate="on_failure", join_mask=4)
+    join_mask = (
+        contract_case["successors"][0]["join_mask"]
+        if contract_case["successors"]
+        else 4
+    )
+    route = _route("recover", predicate="on_failure", join_mask=join_mask)
     adapter = RustStepResolverAdapter(
         resolver,
         predicate_registry={"on_failure": lambda _edge, _state, _result: handled},
     )
     effect = adapter(_adapter_work(routes=[route]))
     assert effect["status"] == "failed"
-    assert effect["errors"] == ["boom"]
+    assert effect["state_update"] == contract_case["state_update"]
+    assert effect["errors"] == contract_case["errors"]
     assert effect["result"]["workflow_status"] == "failed"
-    assert effect["successors"] == (
-        [{"node_id": "recover", "join_mask": 4}] if handled else []
-    )
+    assert effect["result"]["final_state"]["attempted"] is True
+    assert effect["route_next"] == contract_case["route_next"]
+    assert effect["successors"] == contract_case["successors"]
 
 
 @pytest.mark.parametrize(

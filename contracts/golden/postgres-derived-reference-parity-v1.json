@@ -1,0 +1,29 @@
+{
+  "contract": "postgres-derived-reference-parity-v1",
+  "namespace": "reference-parity-target",
+  "doc_id": "reference-parity-document",
+  "insertion_method": "parser",
+  "source_text": "0123456789abcdef",
+  "context_window_chars": 2,
+  "expected_context": "23456789",
+  "nodes": [
+    {"id": "node-z", "namespace": "reference-parity-target", "insertion_method": "parser"},
+    {"id": "node-a", "namespace": "reference-parity-target", "insertion_method": "parser"},
+    {"id": "node-other-namespace", "namespace": "reference-parity-other", "insertion_method": "parser"},
+    {"id": "node-other-method", "namespace": "reference-parity-target", "insertion_method": "manual"}
+  ],
+  "edges": [
+    {"id": "edge-z", "namespace": "reference-parity-target", "insertion_method": "parser"},
+    {"id": "edge-a", "namespace": "reference-parity-target", "insertion_method": "parser"},
+    {"id": "edge-other-namespace", "namespace": "reference-parity-other", "insertion_method": "parser"},
+    {"id": "edge-other-method", "namespace": "reference-parity-target", "insertion_method": "manual"}
+  ],
+  "expected_ids": {
+    "node": ["node-a", "node-z"],
+    "edge": ["edge-a", "edge-z"]
+  },
+  "expected_document_ids": {
+    "node": ["node-a", "node-other-method", "node-z"],
+    "edge": ["edge-a", "edge-other-method", "edge-z"]
+  }
+}

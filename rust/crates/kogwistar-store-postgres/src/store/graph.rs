@@ -1,6 +1,30 @@
 use super::super::*;
 
 impl PostgresStore {
+    /// Roll back graph contributions from a document in one SQL transaction.
+    pub async fn rollback_document(
+        &self,
+        scope: GraphScope,
+        document_id: String,
+        operation_id: String,
+        deleted_at: String,
+        page_size: usize,
+    ) -> PostgresStoreResult<AppliedDocumentRollback> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.apply_document_rollback(
+                    &scope,
+                    &document_id,
+                    &operation_id,
+                    &deleted_at,
+                    page_size,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     /// Read edges that reference one typed endpoint from canonical edge rows.
     pub async fn graph_incident_edges(
         &self,
@@ -131,6 +155,46 @@ impl PostgresStore {
                     &scope,
                     &entity_kind,
                     &entity_id,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    /// Remove one source-document projection in a scoped PostgreSQL transaction.
+    pub async fn delete_document_projection(
+        &self,
+        scope: GraphScope,
+        document_id: String,
+    ) -> PostgresStoreResult<bool> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                delete_source_document_projection(
+                    &uow.transaction,
+                    &uow.tables,
+                    &scope,
+                    &document_id,
+                )
+                .await
+            })
+        })
+        .await
+    }
+
+    /// Remove every document chunk associated with a source ID in one scoped transaction.
+    pub async fn delete_document_projections_by_source_id(
+        &self,
+        scope: GraphScope,
+        source_document_id: String,
+    ) -> PostgresStoreResult<Vec<String>> {
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                delete_source_document_projections_by_source_id(
+                    &uow.transaction,
+                    &uow.tables,
+                    &scope,
+                    &source_document_id,
                 )
                 .await
             })

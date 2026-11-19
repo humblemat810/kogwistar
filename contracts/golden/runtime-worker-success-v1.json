@@ -1,0 +1,10 @@
+{
+  "contract_version": 1,
+  "state_update": [["u", {"answer": "worker"}]],
+  "route_next": ["done"],
+  "successors": [{"node_id": "done", "join_mask": 0}],
+  "expected_run_status": "running",
+  "expected_frontier_pending_node_ids": ["done"],
+  "expected_event_count": 2,
+  "expected_state": {"answer": "worker"}
+}

@@ -1,7 +1,7 @@
 use serde::Serialize;
 use std::collections::BTreeSet;
 
-use super::{FROZEN_OPENAPI_ROUTES, PENDING_SERVER_CUTOVER_ROUTES};
+use super::{FROZEN_OPENAPI_ROUTES, PENDING_SERVER_CUTOVER_ROUTES, PENDING_SYSCALL_CUTOVER_OPS};
 
 const NATIVE_RUNTIME_BUILTIN_OPERATIONS: [(&str, &str); 6] = [
     ("agent.event.ack", "v1"),
@@ -40,6 +40,7 @@ impl ImplementationSnapshot {
         effective_server_cutover_ready_for(
             self.server_cutover_ready,
             PENDING_SERVER_CUTOVER_ROUTES,
+            PENDING_SYSCALL_CUTOVER_OPS,
             FROZEN_OPENAPI_ROUTES,
             self.implemented_route_operations,
             frozen_application_route_operations(),
@@ -74,12 +75,14 @@ fn pending_server_routes_are_valid_for(
 fn effective_server_cutover_ready_for(
     declared_ready: bool,
     pending_routes: &[(&str, &str)],
+    pending_syscalls: &[&str],
     frozen_routes: &[(&str, &str)],
     implemented_routes: usize,
     expected_implemented_routes: usize,
 ) -> bool {
     declared_ready
         && pending_routes.is_empty()
+        && pending_syscalls.is_empty()
         && pending_server_routes_are_valid_for(pending_routes, frozen_routes)
         && implemented_routes == expected_implemented_routes
 }
@@ -188,7 +191,7 @@ mod tests {
             "POST",
             "/api/conversations/c-1/turns:answer?mode=sync"
         ));
-        assert!(is_pending_server_cutover_route(
+        assert!(!is_pending_server_cutover_route(
             "DELETE",
             "/admin/doc/doc-1"
         ));
@@ -230,10 +233,16 @@ mod tests {
         let pending = [("GET", "/api/items")];
 
         assert!(!effective_server_cutover_ready_for(
-            true, &pending, &frozen, 1, 1
+            true,
+            &pending,
+            &[],
+            &frozen,
+            1,
+            1
         ));
         assert!(!effective_server_cutover_ready_for(
             true,
+            &[],
             &[],
             &frozen,
             0,
@@ -242,11 +251,27 @@ mod tests {
         assert!(!effective_server_cutover_ready_for(
             false,
             &[],
+            &[],
             &frozen,
             1,
             1
         ));
-        assert!(effective_server_cutover_ready_for(true, &[], &frozen, 1, 1));
+        assert!(!effective_server_cutover_ready_for(
+            true,
+            &[],
+            &["send_message"],
+            &frozen,
+            1,
+            1
+        ));
+        assert!(effective_server_cutover_ready_for(
+            true,
+            &[],
+            &[],
+            &frozen,
+            1,
+            1
+        ));
     }
 
     #[test]

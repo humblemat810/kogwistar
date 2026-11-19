@@ -312,11 +312,13 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
 
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
     coarse_snapshot = re.search(
-        r"\*\*Coarse checklist:\*\* \*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*\.",
+        r"\*\*Coarse evidence inventory:\*\* "
+        r"\*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*\.",
         worklist,
     )
     fine_snapshot = re.search(
-        r"\*\*Fine worklist:\*\* \*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*; "
+        r"\*\*Fine evidence inventory:\*\* "
+        r"\*\*(\d+)/(\d+) PASS \(([\d.]+)%\)\*\*; "
         r"\*\*(\d+) IN PROGRESS\*\*, \*\*(\d+) NOT STARTED\*\*, "
         r"\*\*(\d+) FAIL\*\*, \*\*(\d+) BLOCKED\*\*\.",
         worklist,
@@ -485,6 +487,11 @@ def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     ) in workflow
     assert "tests/server/test_rust_api_postgres_worker_interop_live.py::" in workflow
     assert "test_rust_native_promotion_and_python_recovery_are_both_available" in workflow
+    assert "Set up Python for Rust/Python PostgreSQL interop" in workflow
+    assert 'open("../pyproject.toml", "rb")' in workflow
+    assert 'project["dependencies"]' in workflow
+    assert 'project["optional-dependencies"]["pgvector"]' in workflow
+    assert '"-m", "pip", "install", *dependencies' in workflow
     assert "if tests != 3 or skipped:" in workflow
 
 
@@ -553,7 +560,7 @@ def test_rust_port_manifest_has_required_authority_and_suite_gates() -> None:
     )
 
 
-def test_passing_performance_and_public_routing_unlock_sqlite_meta_store() -> None:
+def test_legacy_hybrid_benchmark_is_diagnostic_while_public_routing_remains_enabled() -> None:
     manifest = _manifest()
     persistent = manifest["current_persistent_evidence"]
     runtime = manifest["runtime_serving_evidence"]
@@ -561,7 +568,8 @@ def test_passing_performance_and_public_routing_unlock_sqlite_meta_store() -> No
     persistent_report = json.loads(
         (ROOT / persistent["benchmark_report"]).read_text(encoding="utf-8")
     )
-    assert persistent["gate_status"] == "passed"
+    assert persistent["gate_status"] == "diagnostic_only"
+    assert "not a CI performance guarantee" in persistent["scope"]
     assert persistent["cutover_use"] == "sqlite-meta-authority-verified"
     assert persistent_report["gate"]["status"] == "passed"
     sqlite_owner = next(
@@ -620,8 +628,8 @@ def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> No
         encoding="utf-8"
     )
 
-    assert pending_count == 1
-    assert f"the {pending_count} currently frozen" in status
+    assert pending_count == 0
+    assert "zero currently frozen HTTP operations" in status
 
 
 def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() -> None:
@@ -630,6 +638,10 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     assert deferrals["contract_version"] == 1
     assert deferrals["status"] == "versioned-intentionally-deferred"
     assert deferrals["owner"] == "python-rollback-deployment"
+    assert "blocks capability-readiness claims, not handler execution" in deferrals[
+        "execution_policy"
+    ]
+    assert "does not disable an implemented Rust handler" in deferrals["rule"]
 
     build_script = RUST_API_BUILD_SCRIPT_PATH.read_text(encoding="utf-8")
     manifest_routes = {
@@ -809,6 +821,9 @@ def test_dual_language_surface_inventory_is_current() -> None:
         )
     )
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    implementation_tasklets = (
+        ROOT / "kogwistar" / "docs" / "ADR-015-implementation-tasklets.md"
+    ).read_text(encoding="utf-8")
     mappings = route_map["operations"]
     mapping_keys = [(item["method"], item["path"]) for item in mappings]
     assert route_map["schema_version"] == 1
@@ -817,13 +832,15 @@ def test_dual_language_surface_inventory_is_current() -> None:
     tasklet_ids = [item["tasklet_id"] for item in mappings]
     assert len(tasklet_ids) == len(set(tasklet_ids))
     for tasklet_id in tasklet_ids:
-        assert len(re.findall(rf"^\| {re.escape(tasklet_id)} \|", worklist, re.M)) == 1
+        source = implementation_tasklets if tasklet_id == "SRV-01" else worklist
+        assert len(re.findall(rf"^\| {re.escape(tasklet_id)} \|", source, re.M)) == 1
 
     unsupported = [item for item in mappings if item.get("classification") == "unsupported"]
-    assert len(unsupported) == 1
-    assert unsupported[0]["tasklet_id"] == "FW-03-03B"
+    assert unsupported == []
     supported_tasklet_ids = {
-        item["tasklet_id"] for item in mappings if item not in unsupported
+        item["tasklet_id"]
+        for item in mappings
+        if item["tasklet_id"].startswith("FW-03-03A-HTTP-")
     }
     declared_route_tasklet_ids = set(
         re.findall(r"^\| (FW-03-03A-HTTP-(?:GET|POST|DELETE)-[0-9a-f]{8}) \|", worklist, re.M)
@@ -834,8 +851,10 @@ def test_dual_language_surface_inventory_is_current() -> None:
     }
     for item in mappings:
         key = (item["method"], item["path"])
-        if item.get("classification") == "unsupported":
-            assert rust_by_key[key] == "pending"
+        if item["tasklet_id"] == "SRV-01":
+            assert key == ("DELETE", "/admin/doc/{doc_id}")
+            assert item["classification"] == "application-route-in-cutover-inventory"
+            assert rust_by_key[key] != "pending"
         else:
             assert item["tasklet_id"].startswith("FW-03-03A-HTTP-")
             assert rust_by_key[key] != "pending"
@@ -875,11 +894,13 @@ def test_dual_language_surface_inventory_is_current() -> None:
         re.findall(r'\("([A-Z]+)",\s*"([^"]+)"\)', transport_block.group(1))
     )
     statuses = {operation["rust"] for operation in http_operations}
-    assert statuses == {
+    expected_statuses = {
         "application-route-in-cutover-inventory",
         "transport-owned",
-        "pending",
     }
+    if deferred_routes:
+        expected_statuses.add("pending")
+    assert statuses == expected_statuses
     assert {
         (operation["method"], operation["path"])
         for operation in http_operations
@@ -970,7 +991,10 @@ def test_dual_language_surface_inventory_is_current() -> None:
     ]
     assert backend_syscalls["in-memory"]["dispatches"] == [
         "create_conversation",
+        "invoke_tool",
+        "mount_memory",
         "receive_message",
+        "send_message",
     ]
 
     result = subprocess.run(
@@ -1164,7 +1188,7 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(current) == len(row_pattern.findall(checklist))
 
     inventory = re.search(
-        r"Current inventory: \*\*(\d+) items\*\* "
+        r"Current (?:(?:fine-grained )?evidence )?inventory: \*\*(\d+) items\*\* "
         r"\(\*\*(\d+) PASS, (\d+) IN PROGRESS, (\d+) NOT STARTED, "
         r"(\d+) FAIL, (\d+) BLOCKED; ([\d.]+)% PASS\*\*\)",
         scope,
@@ -1203,12 +1227,391 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert len(baseline_rows) == 130
     assert set(baseline_rows) <= set(current)
     assert all(current[item_id] == "PASS" for item_id, status in baseline_rows.items() if status == "PASS")
+
+
+def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() -> None:
+    checklist = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
+    ).read_text(encoding="utf-8")
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    manifest = json.loads(
+        (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    rust_targets = [
+        item
+        for item in manifest["capability_ownership"]
+        if item["target_authoritative_writer"] == "rust"
+    ]
+    ready = [
+        item["capability"] for item in rust_targets if item["rust_cutover_ready"]
+    ]
+    not_ready = [
+        item["capability"] for item in rust_targets if not item["rust_cutover_ready"]
+    ]
+
+    assert len(ready) == 2
+    assert set(ready) == {"deterministic-contracts", "sqlite-meta"}
+    assert len(not_ready) == 6
+    assert set(not_ready) == {
+        "postgres-sequence-event-log",
+        "projections-snapshots-run-registry",
+        "queues-leases-lanes",
+        "graph-pgvector",
+        "workflow-runtime",
+        "server-rest-sse-mcp-cli",
+    }
+    assert "not overall migration completion" in checklist
+    assert "overall dual-language migration remains **NOT COMPLETE**" in checklist
+    assert "not unfinished implementation or overall migration progress" in worklist
+    assert "**Overall Rust cutover:** **NOT COMPLETE**" in worklist
+
+
+def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
+    worklist_path = (
+        ROOT
+        / "kogwistar"
+        / "docs"
+        / "ADR-015-capability-completion-worklist.md"
+    )
+    worklist = worklist_path.read_text(encoding="utf-8")
+    tasklet_section = worklist.partition("## Tasklets")[2].partition("## Closure")[0]
+    all_rows = [
+        line
+        for line in tasklet_section.splitlines()
+        if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV|REL)-[A-Z0-9-]+ \|", line)
+    ]
+    parents = [line for line in all_rows if "children:" in line]
+    row_by_id = {
+        re.match(r"\| ([A-Z0-9-]+) \|", line).group(1): line
+        for line in all_rows
+    }
+    parent_ids = {re.match(r"\| ([A-Z0-9-]+) \|", line).group(1) for line in parents}
+    rows = [
+        line
+        for line in all_rows
+        if re.match(r"\| ([A-Z0-9-]+) \|", line).group(1) not in parent_ids
+    ]
+    referenced_children: set[str] = set()
+    for parent in parents:
+        parent_id = re.match(r"\| ([A-Z0-9-]+) \|", parent).group(1)
+        child_match = re.search(r"children: ([A-Z0-9,-]+)", parent)
+        assert child_match is not None, parent
+        child_ids = child_match.group(1).split(",")
+        assert len(child_ids) >= 2
+        assert all(child_id in row_by_id for child_id in child_ids), parent
+        assert not referenced_children.intersection(child_ids), parent
+        referenced_children.update(child_ids)
+        expected_children = {
+            row_id
+            for row_id in row_by_id
+            if row_id.startswith(f"{parent_id}") and row_id != parent_id
+        }
+        assert set(child_ids) == expected_children, parent
+        child_statuses = {
+            re.search(
+                r"\| (PASS|IN PROGRESS|NOT STARTED) \|", row_by_id[child_id]
+            ).group(1)
+            for child_id in child_ids
+        }
+        parent_status = re.search(r"\| (PASS|PARENT) \|", parent).group(1)
+        if child_statuses == {"PASS"}:
+            assert parent_status == "PASS", parent
+        else:
+            assert parent_status == "PARENT", parent
+    detailed_children = {
+        row_id for row_id in row_by_id if re.search(r"-\d+[A-Z]$", row_id)
+    }
+    assert referenced_children == detailed_children
+    statuses = []
+    for line in rows:
+        match = re.search(r"\| (PASS|IN PROGRESS|NOT STARTED) \|", line)
+        assert match is not None, line
+        statuses.append(match.group(1))
+    capability_ids = {
+        re.search(r"\| ([A-Z]{3})-\d+ \| `([^`]+)` \|", line).group(2)
+        for line in rows
+        if re.match(r"\| (?:PGS|PRJ|QLL|GRF|WFR|SRV)-\d+ \|", line)
+    }
+    manifest = json.loads(
+        (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    incomplete_capabilities = {
+        item["capability"]
+        for item in manifest["capability_ownership"]
+        if item["target_authoritative_writer"] == "rust"
+        and not item["rust_cutover_ready"]
+    }
+
+    assert len(parents) == 16
+    assert len(rows) == 68
+    pass_count = statuses.count("PASS")
+    in_progress_count = statuses.count("IN PROGRESS")
+    not_started_count = statuses.count("NOT STARTED")
+    assert pass_count + in_progress_count + not_started_count == 68
+    assert capability_ids == incomplete_capabilities
+    dual_language_contract = json.loads(
+        (ROOT / "contracts" / "dual-language-capabilities-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    closure_section = worklist.partition("## Capability Gate Closure")[2].partition(
+        "## Tasklets"
+    )[0]
+    closure_rows = [
+        line.strip().strip("|").split("|")
+        for line in closure_section.splitlines()
+        if line.startswith("| `")
+    ]
+    expected_clauses = {
+        (capability_id, clause)
+        for capability_id in incomplete_capabilities
+        for clause in dual_language_contract["conformance_profiles"][capability_id]
+    }
+    actual_clauses = {
+        (parts[0].strip().strip("`"), parts[1].strip().strip("`"))
+        for parts in closure_rows
+    }
+    assert actual_clauses == expected_clauses
+    assert len(closure_rows) == 22
+    assert all(parts[2].strip() in {"OPEN", "PASS"} for parts in closure_rows)
+    open_rows = [parts for parts in closure_rows if parts[2].strip() == "OPEN"]
+    for parts in open_rows:
+        evidence = parts[3].strip()
+        assert any(label in evidence for label in ("Required pytest:", "Executable pytest:")), parts
+        assert re.search(r"`tests/.+::test_[a-z0-9_]+`", evidence), parts
+        assert "Assert" in evidence, parts
+        assert "Map current-candidate" not in evidence, parts
+        if "Executable pytest:" in evidence:
+            node_match = re.search(r"`(tests/.+\.py)::(test_[a-z0-9_]+)`", evidence)
+            assert node_match is not None, parts
+            test_source = (ROOT / node_match.group(1)).read_text(encoding="utf-8")
+            assert f"def {node_match.group(2)}(" in test_source, parts
+    closed_clauses = sum(parts[2].strip() == "PASS" for parts in closure_rows)
+    open_clauses = len(closure_rows) - closed_clauses
+    assert (
+        f"**Gate-clause progress:** **{closed_clauses}/22 PASS "
+        f"({100 * closed_clauses / 22:.1f}%)**; **{open_clauses}/22 OPEN**."
+    ) in worklist
+    closure_status = {
+        (parts[0].strip().strip("`"), parts[1].strip().strip("`")): parts[2].strip()
+        for parts in closure_rows
+    }
+    assert closure_status[
+        ("postgres-sequence-event-log", "cross-language-valid-invalid-golden-fixtures")
+    ] == "PASS"
+    assert closure_status[
+        ("postgres-sequence-event-log", "transaction-owner-and-rollback")
+    ] == "PASS"
+    assert closure_status[
+        ("postgres-sequence-event-log", "commit-acknowledgement-failure-and-recovery")
+    ] == "PASS"
+    assert closure_status[
+        ("postgres-sequence-event-log", "reopen-and-schema-compatibility")
+    ] == "PASS"
+    assert closure_status[("queues-leases-lanes", "claim-lease-reclaim-and-idempotency")] == "PASS"
+    assert closure_status[
+        ("queues-leases-lanes", "crash-before-after-effect-and-acknowledgement")
+    ] == "PASS"
+    assert closure_status[("queues-leases-lanes", "trace-and-correlation-parity")] == "PASS"
+    assert closure_status[
+        ("projections-snapshots-run-registry", "projection-rebuild-and-snapshot-parity")
+    ] == "PASS"
+    assert closure_status[
+        ("projections-snapshots-run-registry", "restart-resume-and-stale-state")
+    ] == "PASS"
+    assert closure_status[
+        ("queues-leases-lanes", "cross-language-valid-invalid-golden-fixtures")
+    ] == "PASS"
+    assert all(
+        closure_status[("workflow-runtime", clause)] == "PASS"
+        for clause in (
+            "cross-language-valid-invalid-golden-fixtures",
+            "transition-route-and-checkpoint-parity",
+            "worker-version-environment-and-replay-contract",
+            "trace-provenance-and-cancellation",
+        )
+    )
+    assert all(
+        closure_status[("server-rest-sse-mcp-cli", clause)] == "PASS"
+        for clause in (
+            "openapi-and-mcp-contract-parity",
+            "authentication-acl-namespace-and-capability-parity",
+            "sse-ordering-and-resume",
+            "cli-operation-and-error-parity",
+        )
+    )
+    expected_progress = (
+        f"**Tasklet progress:** **{pass_count}/68 PASS ({100 * pass_count / 68:.1f}%)**; "
+        f"**{in_progress_count} IN PROGRESS**; **{not_started_count} NOT STARTED**."
+    )
+    assert expected_progress in worklist
+    assert "| QLL-03 | `queues-leases-lanes` | PASS |" in worklist
+    assert "| QLL-03A | `queues-leases-lanes` | PASS |" in worklist
+    assert "| QLL-03B | `queues-leases-lanes` | PASS |" in worklist
+    assert "| QLL-04 | `queues-leases-lanes` | PASS |" in worklist
+    assert "| QLL-04A | `queues-leases-lanes` | PASS |" in worklist
+    assert "| QLL-04B | `queues-leases-lanes` | PASS |" in worklist
+    assert "| SRV-02B | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-02 | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-02C | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-03 | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-03C | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-04B | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-04 | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-04C | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-04D | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-05B | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-05 | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-05C | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-06A | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-06 | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-06B | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| SRV-06C | `server-rest-sse-mcp-cli` | PASS |" in worklist
+    assert "| REL-04B | All six | PASS |" in worklist
+    assert (
+        "No separate customer traffic fleet or percentage canary is required"
+        in worklist
+    )
+
+
 def test_unverified_runtime_matrix_lanes_are_not_enabled() -> None:
     matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     entries = {item["id"]: item for item in matrix["capabilities"]}
 
     for capability_id in ("chroma-adapter", "server-rest-sse-mcp-cli"):
         assert entries[capability_id]["python"]["status"] != "enabled"
+
+
+def test_each_capability_gate_clause_names_an_executable_test() -> None:
+    worklist_path = ROOT / "kogwistar" / "docs" / "ADR-015-capability-completion-worklist.md"
+    worklist = worklist_path.read_text(encoding="utf-8")
+    closure_section = worklist.partition("## Capability Gate Closure")[2].partition(
+        "## Tasklets"
+    )[0]
+    rows = [
+        line.strip().strip("|").split("|")
+        for line in closure_section.splitlines()
+        if line.startswith("| `")
+    ]
+    python_tests = {
+        name
+        for path in (ROOT / "tests").rglob("*.py")
+        for name in re.findall(
+            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+    python_tests_by_path = {
+        path.relative_to(ROOT).as_posix(): set(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+        for path in (ROOT / "tests").rglob("*.py")
+    }
+    python_gate_paths = (
+        "scripts/durable_store_capability_gate.py",
+        "scripts/runtime_authority_gate.py",
+        "scripts/server_contract_gate.py",
+    )
+    python_gate_selectors = {
+        value
+        for path in python_gate_paths
+        for value in (
+            node.value
+            for node in ast.walk(
+                ast.parse((ROOT / path).read_text(encoding="utf-8"))
+            )
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        )
+        if value.startswith("tests/")
+    }
+    rust_ci = (ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+    rust_ci_skips = set(re.findall(r"--skip\s+([A-Za-z_][A-Za-z0-9_]*)", rust_ci))
+    ci_runs_fast_tests = bool(
+        re.search(r'-m\s+"ci\s+and\s+not\s+ci_full', rust_ci)
+    )
+    ci_runs_full_tests = bool(re.search(r'-m\s+"ci_full\b', rust_ci))
+    rust_test_files = [
+        path
+        for path in (ROOT / "rust" / "crates").rglob("*.rs")
+        if "tests" in path.parts
+    ]
+    rust_tests_by_path = {
+        path.relative_to(ROOT).as_posix(): set(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+        for path in rust_test_files
+    }
+
+    assert len(rows) == 22
+    for row in rows:
+        capability, clause, status, evidence = (cell.strip() for cell in row[:4])
+        evidence = evidence.strip()
+        python_refs = re.findall(
+            r"`(tests/[^`]+?\.py)::(test_[A-Za-z0-9_]+)`", evidence
+        )
+        rust_refs = re.findall(
+            r"`(rust/[^`]+?\.rs)::([A-Za-z_][A-Za-z0-9_]*)`", evidence
+        )
+        for path, name in python_refs:
+            source_path = ROOT / path
+            assert source_path.is_file(), f"{capability}/{clause}: missing {path}"
+            source = source_path.read_text(encoding="utf-8")
+            assert re.search(
+                rf"(?m)^\s*(?:async\s+)?def\s+{re.escape(name)}\s*\(", source
+            ), f"{capability}/{clause}: missing pytest test {path}::{name}"
+        for path, name in rust_refs:
+            assert name in rust_tests_by_path.get(path, set()), (
+                f"{capability}/{clause}: missing Rust test {path}::{name}"
+            )
+
+        mentioned_python_tests = set(
+            re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence)
+        ) & python_tests
+        mentioned_rust_tests = set(
+            re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)", evidence)
+        )
+        mentioned_rust_tests.update(name for _, name in rust_refs)
+        declared_rust_tests = {
+            name for names in rust_tests_by_path.values() for name in names
+        }
+        assert mentioned_python_tests or mentioned_rust_tests & declared_rust_tests, (
+            f"{capability}/{clause} {status}: evidence lacks a declared test selector"
+        )
+        def selected_by_gate_or_ci(path: str, name: str, names: set[str]) -> bool:
+            if name not in names:
+                return False
+            if path in python_gate_selectors or f"{path}::{name}" in python_gate_selectors:
+                return True
+            source = (ROOT / path).read_text(encoding="utf-8")
+            module_scope = source.partition("\ndef ")[0]
+            markers = set(
+                re.findall(r"pytest\.mark\.(ci_full|ci)\b", module_scope)
+            )
+            return ("ci" in markers and ci_runs_fast_tests) or (
+                "ci_full" in markers and ci_runs_full_tests
+            )
+
+        selected_python_tests = all(
+            any(
+                selected_by_gate_or_ci(path, name, names)
+                for path, names in python_tests_by_path.items()
+            )
+            for name in mentioned_python_tests
+        )
+        selected_rust_tests = (
+            bool(rust_refs)
+            and "cargo test --workspace" in rust_ci
+            and not any(name in rust_ci_skips for _, name in rust_refs)
+        )
+        assert selected_python_tests or selected_rust_tests, (
+            f"{capability}/{clause}: cited tests are not selected by a capability gate or CI"
+        )
 
 
 def test_each_authoritative_capability_has_owner_and_rollback() -> None:
@@ -1235,7 +1638,7 @@ def test_each_authoritative_capability_has_owner_and_rollback() -> None:
         assert item["rollback"]
 
 
-def test_projection_snapshot_registry_capability_remains_explicitly_unsupported() -> None:
+def test_projection_snapshot_registry_is_evidenced_but_not_cutover_ready() -> None:
     capability_id = "projections-snapshots-run-registry"
     ownership = next(
         item
@@ -1259,7 +1662,11 @@ def test_projection_snapshot_registry_capability_remains_explicitly_unsupported(
     assert support["rust"]["status"] == "disabled"
     assert support["mixed"]["status"] == "disabled"
     assert coverage["rust_coverage"] == "not-cutover-ready"
-    assert coverage["mixed_coverage"] == "not-inventoried"
+    assert coverage["mixed_coverage"].startswith("partial;")
+    assert "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092" in coverage[
+        "mixed_coverage"
+    ]
+    assert ".tmp/adr015-phase3-refresh-capabilities.json" in coverage["mixed_coverage"]
     assert {
         "projection-rebuild-and-snapshot-parity",
         "restart-resume-and-stale-state",
@@ -1297,7 +1704,34 @@ def test_queue_capability_is_opt_in_until_all_conformance_gates_pass() -> None:
     assert support["rust"]["status"] == "opt-in"
     assert support["mixed"]["status"] == "opt-in"
     assert coverage["rust_coverage"] == "not-cutover-ready"
-    assert "full parity open" in coverage["mixed_coverage"]
+    assert "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092" in coverage[
+        "mixed_coverage"
+    ]
+    assert ".tmp/adr015-phase3-refresh-capabilities.json" in coverage["mixed_coverage"]
+    assert "full parity" in coverage["mixed_coverage"]
+
+
+def test_phase3_local_refresh_evidence_covers_all_four_without_promoting_cutover() -> None:
+    expected_counts = {
+        "postgres-sequence-event-log": "passed 4 ",
+        "projections-snapshots-run-registry": "passed 6 ",
+        "queues-leases-lanes": "passed 3 ",
+        "graph-pgvector": "passed 47 ",
+    }
+    source_sha = "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092"
+    report_path = ".tmp/adr015-phase3-refresh-capabilities.json"
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    support = {item["id"]: item for item in support_matrix["capabilities"]}
+    coverage = {item["id"]: item for item in conformance["capabilities"]}
+
+    for capability_id, count_fragment in expected_counts.items():
+        assert coverage[capability_id]["rust_coverage"] == "not-cutover-ready"
+        assert source_sha in coverage[capability_id]["mixed_coverage"]
+        assert report_path in coverage[capability_id]["mixed_coverage"]
+        assert count_fragment in coverage[capability_id]["mixed_coverage"]
+        assert support[capability_id]["rust"]["status"] != "enabled"
+        assert support[capability_id]["mixed"]["status"] != "enabled"
 
 
 def test_graph_pgvector_capability_is_opt_in_until_graph_conformance_passes() -> None:
@@ -1438,7 +1872,7 @@ def test_rest_capability_keeps_deferred_route_explicit_and_cutover_gated() -> No
     assert set(selector["accepted_modes"]) == {"python", "rust"}
     assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
     assert server_gaps["status"] == "intentionally-deferred"
-    assert ["DELETE", "/admin/doc/{doc_id}"] in server_gaps["pending_routes"]
+    assert ["DELETE", "/admin/doc/{doc_id}"] not in server_gaps["pending_routes"]
 
 
 def test_sse_support_remains_opt_in_until_ordering_and_resume_parity() -> None:
@@ -1522,6 +1956,44 @@ def test_python_cli_remains_http_client_for_rust_selected_server(
         "url": "http://rust-server/api/conversations/conv-1/turns",
     }
     assert json.loads(capsys.readouterr().out) == {"conversation_id": "conv-1", "turns": []}
+
+
+def test_python_cli_http_client_sends_optional_bearer_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import httpx
+
+    from kogwistar.cli import _request_json
+
+    monkeypatch.setenv("KOGWISTAR_API_TOKEN", "secret-test-token")
+    seen: dict[str, str | None] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        seen["authorization"] = request.headers.get("authorization")
+        return httpx.Response(200, json={"ok": True})
+
+    original_client = httpx.Client
+    monkeypatch.setattr(
+        "kogwistar.cli.httpx.Client",
+        lambda *, timeout: original_client(
+            timeout=timeout, transport=httpx.MockTransport(respond)
+        ),
+    )
+
+    assert _request_json(method="GET", url="http://rust-server/health") == {"ok": True}
+    assert seen["authorization"] == "Bearer secret-test-token"
+
+
+def test_python_cli_invalid_api_arguments_exit_with_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from kogwistar.cli import main
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["api", "conversation", "conversation.get_transcript"])
+
+    assert exit_info.value.code == 2
+    assert "--conversation-id" in capsys.readouterr().err
 
 
 def test_cli_parity_remains_a_server_release_gate() -> None:

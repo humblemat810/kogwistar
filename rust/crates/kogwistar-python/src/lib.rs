@@ -659,6 +659,29 @@ mod tests {
     }
 
     #[test]
+    fn postgres_bridge_accepts_scoped_source_document_group_delete() {
+        let operation = json!({
+            "kind": "delete_document_projections_by_source_id",
+            "namespace": "docs",
+            "workspace_id": "workspace-a",
+            "graph_space": "knowledge",
+            "source_document_id": "source-doc"
+        });
+        validate_postgres_operation(&operation).expect("source delete is allowlisted");
+        serde_json::from_value::<PostgresStoreOperation>(operation.clone())
+            .expect("source delete matches the typed Rust contract");
+
+        let mut invalid = operation;
+        invalid["unexpected"] = json!(true);
+        assert_eq!(
+            validate_postgres_operation(&invalid)
+                .expect_err("unknown source-delete fields must be rejected")
+                .0,
+            STORE_INVALID_PAYLOAD
+        );
+    }
+
+    #[test]
     fn postgres_bridge_rejects_coercive_graph_numbers_before_dispatch() {
         let operations = [
             json!({

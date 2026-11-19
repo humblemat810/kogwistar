@@ -223,6 +223,33 @@
             );
             assert!(sqlite_service.store.get_server_run(&run_id).unwrap().is_none());
         }
+        let expected_owner_mismatch = sqlite_service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/workflow/runs".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "run_id": "sqlite-wrong-expected-owner",
+                    "workflow_id": "workflow-denied",
+                    "conversation_id": "conversation-denied",
+                    "expected_run_owner_id": "attacker"
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "sqlite-auth-owner",
+                    "user_id": "sqlite-auth-owner",
+                    "role": "rw",
+                    "ns": ["workflow"],
+                    "capabilities": ["spawn_process", "workflow.run.write"]
+                }),
+            })
+            .await;
+        assert_eq!(expected_owner_mismatch.status, StatusCode::FORBIDDEN.as_u16());
+        assert!(sqlite_service
+            .store
+            .get_server_run("sqlite-wrong-expected-owner")
+            .unwrap()
+            .is_none());
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -1890,6 +1917,16 @@
             .filter(|event| event.event_type == "workflow.trace.v1")
             .map(|event| serde_json::from_str::<Value>(&event.payload_json).unwrap())
             .collect::<Vec<_>>();
+        assert_eq!(
+            persisted_worker_traces
+                .iter()
+                .filter(|event| {
+                    event["trace"]["event"] == "runtime.python_worker.result_submitted"
+                })
+                .count(),
+            1,
+            "duplicate result delivery must not count the accepted language handoff twice"
+        );
         let persisted_worker_trace = persisted_worker_traces
             .iter()
             .find(|event| event["trace"]["event"] == "runtime.python_worker.result_prepared")

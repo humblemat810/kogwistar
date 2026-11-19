@@ -115,7 +115,7 @@ def test_overlapping_python_and_rust_database_ownership_is_rejected(tmp_path: Pa
         python_lease.release()
 
 
-def test_sqlite_authority_lock_rejects_another_process(tmp_path: Path) -> None:
+def test_sqlite_authority_lock_allows_same_implementation_processes(tmp_path: Path) -> None:
     path = tmp_path / "cross-process.sqlite"
     child_code = (
         "from pathlib import Path\n"
@@ -135,9 +135,8 @@ def test_sqlite_authority_lock_rejects_another_process(tmp_path: Path) -> None:
     try:
         assert child.stdout is not None
         assert child.stdout.readline().strip() == "ready"
-        with pytest.raises(SQLiteContextError) as conflict:
-            acquire_sqlite_database(path, "python")
-        _assert_code(conflict.value, "KOGWISTAR_SQLITE_PROCESS_AUTHORITY_CONFLICT")
+        peer_lease = acquire_sqlite_database(path, "python")
+        peer_lease.release()
     finally:
         if child.stdin is not None:
             child.stdin.close()
@@ -275,7 +274,7 @@ def test_python_authority_rejects_standalone_rust_process(
         str(manifest),
         "-p",
         "kogwistar-store-sqlite",
-        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "tests::authority::standalone_rust_process_shares_same_implementation_authority",
         "--",
         "--exact",
         "--nocapture",
@@ -360,7 +359,7 @@ def test_python_authority_rejects_rust_process_through_hardlink_alias(
         str(manifest),
         "-p",
         "kogwistar-store-sqlite",
-        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "tests::authority::standalone_rust_process_shares_same_implementation_authority",
         "--",
         "--exact",
         "--nocapture",
@@ -407,7 +406,7 @@ def test_python_process_rejects_rust_authority_through_hardlink_alias(
         str(manifest),
         "-p",
         "kogwistar-store-sqlite",
-        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "tests::authority::standalone_rust_process_shares_same_implementation_authority",
         "--",
         "--exact",
         "--nocapture",
@@ -472,7 +471,7 @@ def test_rust_authority_rejects_python_process(tmp_path: Path) -> None:
         str(manifest),
         "-p",
         "kogwistar-store-sqlite",
-        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "tests::authority::standalone_rust_process_shares_same_implementation_authority",
         "--",
         "--exact",
         "--nocapture",
@@ -543,7 +542,7 @@ def test_python_authority_rejects_rust_process_after_database_path_replacement(
         str(manifest),
         "-p",
         "kogwistar-store-sqlite",
-        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "tests::authority::standalone_rust_process_shares_same_implementation_authority",
         "--",
         "--exact",
         "--nocapture",
@@ -600,7 +599,7 @@ def test_rust_authority_rejects_python_after_database_path_replacement(
         str(manifest),
         "-p",
         "kogwistar-store-sqlite",
-        "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+        "tests::authority::standalone_rust_process_shares_same_implementation_authority",
         "--",
         "--exact",
         "--nocapture",
@@ -878,6 +877,118 @@ status.write_text(json.dumps(result), encoding="utf-8")
         "authority" in conflict["message"].lower()
         or "another implementation" in conflict["message"].lower()
     ), conflict
+
+
+@pytest.mark.parametrize(
+    "implementation",
+    [
+        "python",
+        pytest.param("rust", marks=pytest.mark.requires_rust),
+    ],
+)
+def test_same_implementation_processes_share_sqlite_authority(
+    tmp_path: Path, implementation: str
+) -> None:
+    database = tmp_path / "same-implementation" / "engine.db"
+    if implementation == "python":
+        with independent_sqlite_execution_context("python"):
+            engine = EngineSQLite(database.parent)
+            engine.ensure_initialized()
+    else:
+        engine = RustEngineSQLite(database.parent)
+        with independent_sqlite_execution_context("rust"):
+            engine.ensure_initialized()
+        engine.close()
+
+    start_path = tmp_path / "same-implementation-start"
+    release_path = tmp_path / "same-implementation-release"
+    child_code = r"""
+import sys
+import time
+from contextlib import nullcontext
+from pathlib import Path
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import RustEngineSQLite
+from kogwistar.engine_core.sqlite_context import independent_sqlite_execution_context
+implementation, database_arg, ready_arg, start_arg, release_arg, status_arg = sys.argv[1:]
+database = Path(database_arg)
+ready = Path(ready_arg)
+start = Path(start_arg)
+release = Path(release_arg)
+status = Path(status_arg)
+ready.touch()
+while not start.exists():
+    time.sleep(0.005)
+connection = None
+engine = None
+try:
+    with independent_sqlite_execution_context(implementation):
+        if implementation == "python":
+            engine = EngineSQLite(database.parent)
+            connection = engine.connect()
+        else:
+            engine = RustEngineSQLite(database.parent)
+            ownership = engine.session()
+            ownership.__enter__()
+            engine.ensure_initialized()
+        status.write_text("acquired", encoding="utf-8")
+        while not release.exists():
+            time.sleep(0.005)
+        if connection is not None:
+            connection.close()
+        if implementation == "rust":
+            ownership.__exit__(None, None, None)
+            engine.close()
+except Exception as error:
+    status.write_text(f"{type(error).__name__}: {error}", encoding="utf-8")
+"""
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                child_code,
+                implementation,
+                str(database),
+                str(tmp_path / f"same-{index}.ready"),
+                str(start_path),
+                str(release_path),
+                str(tmp_path / f"same-{index}.status"),
+            ],
+            cwd=Path(__file__).resolve().parents[2],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for index in range(2)
+    ]
+    status_paths = [tmp_path / f"same-{index}.status" for index in range(2)]
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if all((tmp_path / f"same-{index}.ready").exists() for index in range(2)):
+                break
+            time.sleep(0.01)
+        else:
+            pytest.fail("same-implementation processes did not reach the start barrier")
+
+        start_path.touch()
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if all(path.exists() for path in status_paths):
+                break
+            if any(process.poll() is not None for process in processes):
+                break
+            time.sleep(0.01)
+        results = [path.read_text(encoding="utf-8") if path.exists() else "missing" for path in status_paths]
+        assert results == ["acquired", "acquired"]
+    finally:
+        start_path.touch()
+        release_path.touch()
+        for process in processes:
+            stdout, stderr = process.communicate(timeout=15)
+            assert process.returncode == 0, f"stdout={stdout!r}, stderr={stderr!r}"
 
 
 def test_same_implementation_can_concurrently_acquire_same_database(tmp_path: Path) -> None:

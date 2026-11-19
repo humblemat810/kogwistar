@@ -69,12 +69,14 @@ def build_conversation_mcp(
         text: str,
         user_id: str | None = None,
         workflow_id: str = "agentic_answering.v2",
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         return get_service().submit_turn_for_answer(
             conversation_id=conversation_id,
             user_id=user_id,
             text=text,
             workflow_id=workflow_id,
+            idempotency_key=idempotency_key,
         )
 
     @tool_roles({role_ro, role_rw})

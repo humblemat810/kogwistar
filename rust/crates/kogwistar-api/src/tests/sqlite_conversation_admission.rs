@@ -975,7 +975,8 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
                             "arguments":{
                                 "conversation_id":"conversation-create-contract",
                                 "text":"Does MCP use the same durable turn path?",
-                                "workflow_id":workflow_id
+                            "workflow_id":workflow_id,
+                            "idempotency_key":"sqlite-conversation-ask-key"
                             }
                         }
                     }))
@@ -988,10 +989,91 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     assert_eq!(mcp_ask.status(), StatusCode::OK);
     let mcp_response: Value =
         serde_json::from_slice(&to_bytes(mcp_ask.into_body(), 65_536).await.unwrap()).unwrap();
-    assert_eq!(mcp_response["result"]["status"], "queued");
+    assert_eq!(mcp_response["result"]["status"], "queued", "{mcp_response:#}");
     let mcp_run_id = mcp_response["result"]["run_id"]
         .as_str()
         .expect("MCP ask returns its queued run id");
+    let mcp_retry = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/conversation")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"sqlite-chroma-conversation-ask-retry",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"conversation.ask",
+                            "arguments":{
+                                "conversation_id":"conversation-create-contract",
+                                "text":"Does MCP use the same durable turn path?",
+                                "workflow_id":workflow_id,
+                                "idempotency_key":"sqlite-conversation-ask-key"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let retry_body = to_bytes(mcp_retry.into_body(), 65_536).await.unwrap();
+    let retry_response: Value = serde_json::from_slice(&retry_body).unwrap();
+    assert_eq!(retry_response["result"]["run_id"], mcp_run_id, "{retry_response:#}");
+    assert_eq!(
+        retry_response["result"]["user_turn_node_id"],
+        mcp_response["result"]["user_turn_node_id"]
+    );
+    let changed_payload = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/conversation")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"sqlite-chroma-conversation-ask-conflict",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"conversation.ask",
+                            "arguments":{
+                                "conversation_id":"conversation-create-contract",
+                                "text":"Changed message under the same idempotency key",
+                                "workflow_id":workflow_id,
+                                "idempotency_key":"sqlite-conversation-ask-key"
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let changed_payload_body = to_bytes(changed_payload.into_body(), 65_536).await.unwrap();
+    let changed_payload_response: Value = serde_json::from_slice(&changed_payload_body).unwrap();
+    assert_eq!(
+        changed_payload_response["error"]["data"]["code"],
+        "KOGWISTAR_IDEMPOTENCY_CONFLICT",
+        "{changed_payload_response:#}"
+    );
+    let created_event = service
+        .store
+        .list_server_run_events(mcp_run_id, 0, 20)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "run.created")
+        .expect("send_message persists its creation fingerprint");
+    let created_payload: Value = serde_json::from_str(&created_event.payload_json).unwrap();
+    assert!(created_payload["request_fingerprint"].is_string());
     for _ in 0..32 {
         let status = service
             .store

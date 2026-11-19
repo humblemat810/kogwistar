@@ -291,6 +291,17 @@ async fn postgres_store_operation_json(
                 records.into_iter().map(graph_record_json).collect(),
             ))
         }
+        PostgresStoreOperation::DeleteDocumentProjectionsBySourceId {
+            namespace,
+            workspace_id,
+            graph_space,
+            source_document_id,
+        } => Ok(json!(store
+            .delete_document_projections_by_source_id(
+                graph_scope(namespace, workspace_id, graph_space),
+                source_document_id,
+            )
+            .await?)),
         PostgresStoreOperation::GraphIncidentEdges {
             namespace,
             workspace_id,
@@ -1350,6 +1361,17 @@ async fn postgres_uow_operation_json(
                 records.into_iter().map(graph_record_json).collect(),
             ))
         }
+        PostgresStoreOperation::DeleteDocumentProjectionsBySourceId {
+            namespace,
+            workspace_id,
+            graph_space,
+            source_document_id,
+        } => Ok(json!(uow
+            .delete_document_projections_by_source_id(
+                graph_scope(namespace, workspace_id, graph_space),
+                source_document_id,
+            )
+            .await?)),
         PostgresStoreOperation::GraphIncidentEdges {
             namespace,
             workspace_id,

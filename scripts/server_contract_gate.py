@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -17,14 +20,23 @@ from typing import Any
 from xml.etree import ElementTree
 
 try:
+    from gate_test_results import read_junit_test_results
     from source_fingerprint import candidate_source_fingerprint
 except ModuleNotFoundError:  # imported as a repository module in tests
+    from scripts.gate_test_results import read_junit_test_results
     from scripts.source_fingerprint import candidate_source_fingerprint
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_REPORT = ROOT / ".codex" / "adr015-phase5-server-gate.json"
 NON_MODEL_MARKERS = "not slow and not manual and not llm_real and not requires_ollama"
+GROUP_TIMEOUT_SECONDS = 600
+RUST_API_GROUP = "rust-api"
+RUST_API_EXCLUDED_TESTS = (
+    "runtime_serving_lookup_scale_probe",
+    "postgres_queue_projects_to_chroma_without_cross_store_transaction",
+    "python_mcp_sdk_receives_rust_server_initiated_notification",
+)
 
 GROUPS: dict[str, tuple[tuple[str, ...], bool]] = {
     "rest-sse": (
@@ -75,7 +87,9 @@ def _args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--python", type=Path, default=Path(sys.executable))
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
-    parser.add_argument("--group", action="append", choices=tuple(GROUPS))
+    parser.add_argument(
+        "--group", action="append", choices=(*GROUPS, RUST_API_GROUP)
+    )
     return parser.parse_args()
 
 
@@ -92,6 +106,7 @@ def _junit_counts(path: Path) -> dict[str, int]:
             totals["failures"] += case.find("failure") is not None
             totals["errors"] += case.find("error") is not None
             totals["skipped"] += case.find("skipped") is not None
+    totals["passed"] = totals["tests"] - totals["failures"] - totals["errors"] - totals["skipped"]
     return totals
 
 
@@ -104,6 +119,8 @@ def _run_group(
     live_async_sse: bool,
 ) -> dict[str, Any]:
     junit = output_root / f"{name}.junit.xml"
+    stdout_path = output_root / f"{name}.out.txt"
+    stderr_path = output_root / f"{name}.err.txt"
     command = [
         str(python),
         "-m",
@@ -114,20 +131,33 @@ def _run_group(
         f"--junitxml={junit}",
         *tests,
     ]
-    completed = subprocess.run(
-        command,
-        cwd=ROOT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    (output_root / f"{name}.out.txt").write_text(completed.stdout, encoding="utf-8")
-    (output_root / f"{name}.err.txt").write_text(completed.stderr, encoding="utf-8")
+    timed_out = False
+    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
+        "w", encoding="utf-8"
+    ) as stderr:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=stdout,
+                stderr=stderr,
+                timeout=GROUP_TIMEOUT_SECONDS,
+                check=False,
+            )
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = 124
+            stderr.write(
+                f"pytest group exceeded {GROUP_TIMEOUT_SECONDS}-second timeout\n"
+            )
     counts = _junit_counts(junit) if junit.is_file() else None
+    test_results = read_junit_test_results(junit)
     passed = (
-        completed.returncode == 0
+        returncode == 0
         and counts is not None
         and counts["tests"] > 0
         and counts["failures"] == 0
@@ -139,9 +169,172 @@ def _run_group(
         "tests": list(tests),
         "live_async_sse_required": live_async_sse,
         "command": command,
-        "returncode": completed.returncode,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "timeout_seconds": GROUP_TIMEOUT_SECONDS,
         "junit": str(junit),
         "counts": counts,
+        "test_results": test_results,
+        "status": "passed" if passed else "failed",
+    }
+
+
+def _run_rust_api_group(*, output_root: Path) -> dict[str, Any]:
+    cargo = shutil.which("cargo")
+    pg_dsn = next(
+        (os.environ[name] for name in ("KOGWISTAR_TEST_PG_DSN", "GKE_PG_DSN", "PG_DSN", "DATABASE_URL") if os.environ.get(name)),
+        None,
+    )
+    chroma_url = next(
+        (os.environ[name] for name in ("KOGWISTAR_TEST_CHROMA_URL", "KOGWISTAR_TEST_CHROMA_ENDPOINT") if os.environ.get(name)),
+        None,
+    )
+    missing = [
+        label
+        for label, value in (
+            ("cargo", cargo),
+            ("PostgreSQL DSN", pg_dsn),
+            ("Chroma URL", chroma_url),
+        )
+        if not value
+    ]
+    command = [
+        cargo or "cargo",
+        "test",
+        "--manifest-path",
+        "rust/Cargo.toml",
+        "--locked",
+        "-p",
+        "kogwistar-api",
+        "--lib",
+        "--",
+        "--include-ignored",
+    ]
+    for test_name in RUST_API_EXCLUDED_TESTS:
+        command.extend(("--skip", test_name))
+
+    stdout_path = output_root / f"{RUST_API_GROUP}.out.txt"
+    stderr_path = output_root / f"{RUST_API_GROUP}.err.txt"
+    if missing:
+        stderr_path.write_text(
+            "missing required Rust API test environment: " + ", ".join(missing) + "\n",
+            encoding="utf-8",
+        )
+        return {
+            "name": RUST_API_GROUP,
+            "command": command,
+            "returncode": None,
+            "timed_out": False,
+            "timeout_seconds": GROUP_TIMEOUT_SECONDS,
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "counts": None,
+            "excluded_test_filters": sorted(RUST_API_EXCLUDED_TESTS),
+            "required_services": ["PostgreSQL", "Chroma"],
+            "test_profile": "debug-ci",
+            "status": "failed",
+        }
+
+    child_env = os.environ.copy()
+    child_env.setdefault("KOGWISTAR_TEST_PG_DSN", pg_dsn)
+    child_env.setdefault("KOGWISTAR_TEST_CHROMA_URL", chroma_url)
+    timed_out = False
+    returncode: int | None
+    with stdout_path.open("w", encoding="utf-8") as stdout, stderr_path.open(
+        "w", encoding="utf-8"
+    ) as stderr:
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=child_env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                stdout=stdout,
+                stderr=stderr,
+                timeout=GROUP_TIMEOUT_SECONDS,
+                check=False,
+            )
+            returncode = completed.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = 124
+            stderr.write(
+                f"Rust API test group exceeded {GROUP_TIMEOUT_SECONDS}-second timeout\n"
+            )
+
+    output = stdout_path.read_text(encoding="utf-8", errors="replace")
+    summary = re.search(
+        r"test result: (?:ok|FAILED)\.\s+(?P<passed>\d+) passed;\s+"
+        r"(?P<failures>\d+) failed;\s+(?P<skipped>\d+) ignored;\s+"
+        r"\d+ measured;\s+(?P<filtered>\d+) filtered out",
+        output,
+    )
+    test_results = [
+        {
+            "source": "rust",
+            "name": match.group("name"),
+            "function": match.group("name").rsplit("::", 1)[-1],
+            "status": {
+                "ok": "passed",
+                "FAILED": "failed",
+                "ignored": "skipped",
+            }[match.group("status")],
+        }
+        for match in re.finditer(
+            r"(?m)^test\s+(?P<name>\S+)\s+\.\.\.\s+(?P<status>ok|FAILED|ignored)\s*$",
+            output,
+        )
+    ]
+    counts = None
+    if summary is not None:
+        passed = int(summary.group("passed"))
+        failures = int(summary.group("failures"))
+        counts = {
+            "tests": passed + failures,
+            "passed": passed,
+            "failures": failures,
+            "errors": 0,
+            "skipped": int(summary.group("skipped")),
+            "filtered_out": int(summary.group("filtered")),
+        }
+        observed = {
+            "passed": sum(row["status"] == "passed" for row in test_results),
+            "failures": sum(row["status"] == "failed" for row in test_results),
+            "skipped": sum(row["status"] == "skipped" for row in test_results),
+        }
+        counts["named_test_results"] = len(test_results)
+        if observed != {
+            "passed": counts["passed"],
+            "failures": counts["failures"],
+            "skipped": counts["skipped"],
+        }:
+            counts["errors"] = 1
+    passed = (
+        returncode == 0
+        and not timed_out
+        and counts is not None
+        and counts["tests"] > 0
+        and counts["failures"] == 0
+        and counts["skipped"] == 0
+        and counts["filtered_out"] == 1
+        and counts["errors"] == 0
+        and counts["named_test_results"] == counts["tests"]
+    )
+    return {
+        "name": RUST_API_GROUP,
+        "command": command,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "timeout_seconds": GROUP_TIMEOUT_SECONDS,
+        "stdout": str(stdout_path),
+        "stderr": str(stderr_path),
+        "counts": counts,
+        "test_results": test_results,
+        "excluded_test_filters": sorted(RUST_API_EXCLUDED_TESTS),
+        "required_services": ["PostgreSQL", "Chroma"],
+        "test_profile": "debug-ci",
         "status": "passed" if passed else "failed",
     }
 
@@ -151,18 +344,22 @@ def run_gate(
 ) -> dict[str, Any]:
     source_sha256, source_file_count = candidate_source_fingerprint(ROOT)
     output_root.mkdir(parents=True, exist_ok=True)
-    reports = [
-        _run_group(
-            python=python,
-            name=name,
-            tests=GROUPS[name][0],
-            output_root=output_root,
-            live_async_sse=GROUPS[name][1],
-        )
-        for name in groups
-    ]
+    reports = []
+    for name in groups:
+        if name == RUST_API_GROUP:
+            reports.append(_run_rust_api_group(output_root=output_root))
+        else:
+            reports.append(
+                _run_group(
+                    python=python,
+                    name=name,
+                    tests=GROUPS[name][0],
+                    output_root=output_root,
+                    live_async_sse=GROUPS[name][1],
+                )
+            )
     return {
-        "schema": "adr015-phase5-server-gate/v1",
+        "schema": "adr015-phase5-server-gate/v4",
         "candidate_source_sha256": source_sha256,
         "candidate_source_file_count": source_file_count,
         "server_authority": "python-baseline-before-rust-cutover",
@@ -181,7 +378,7 @@ def main() -> int:
     result = run_gate(
         python=python,
         output_root=report_path.parent / "adr015-phase5-server-gate",
-        groups=tuple(args.group or tuple(GROUPS)),
+        groups=tuple(args.group or (*GROUPS, RUST_API_GROUP)),
     )
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     report_path.parent.mkdir(parents=True, exist_ok=True)

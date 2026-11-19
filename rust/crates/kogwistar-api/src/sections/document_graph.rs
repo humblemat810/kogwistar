@@ -77,6 +77,107 @@ async fn document_id_lookup_effect<S: DocumentStore>(
     }
 }
 
+fn admin_document_delete_id(path_and_query: &str) -> Option<&str> {
+    let path = path_and_query.split('?').next()?;
+    let id = path.strip_prefix("/admin/doc/")?;
+    (!id.is_empty() && !id.contains('/')).then_some(id)
+}
+
+async fn admin_document_delete_effect<S: DocumentStore>(
+    request: &ApiEffectRequest,
+    store: &S,
+    document_id: &str,
+) -> ApiEffectResponse {
+    if principal_role(&request.principal) != "rw" {
+        return effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_ROLE_FORBIDDEN",
+            "Document deletion requires rw role",
+        );
+    }
+    if document_id.trim().is_empty() {
+        return effect_error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "KOGWISTAR_INVALID_REQUEST",
+            "doc_id must be a non-empty string",
+        );
+    }
+    if !store.supports_document_rollback() {
+        return effect_error(
+            StatusCode::NOT_IMPLEMENTED,
+            "KOGWISTAR_DOCUMENT_ROLLBACK_UNSUPPORTED",
+            "The configured document store does not support atomic document rollback",
+        );
+    }
+
+    let security_scope = security_scope_value(&request.principal);
+    let namespace = security_scope["storage_namespace"]
+        .as_str()
+        .unwrap_or("default")
+        .to_owned();
+    if !principal_strings(&request.principal, "ns")
+        .iter()
+        .any(|allowed| allowed == "*" || allowed == &namespace)
+    {
+        return effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            "Document deletion is outside the principal namespace",
+        );
+    }
+    let scope = GraphScope {
+        namespace,
+        workspace_id: request
+            .principal
+            .get("workspace_id")
+            .or_else(|| request.principal.get("workspace"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        graph_space: request
+            .principal
+            .get("graph_space")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+    };
+    let deleted_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string();
+    let rollback = match store
+        .rollback_document(DocumentRollbackRequest {
+            scope,
+            document_id: document_id.to_owned(),
+            operation_id: format!("admin-document-delete:{}", uuid::Uuid::new_v4()),
+            deleted_at,
+            page_size: 500,
+        })
+        .await
+    {
+        Ok(rollback) => rollback,
+        Err(error) => {
+            return effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_DOCUMENT_ROLLBACK_FAILED",
+                error.to_string(),
+            );
+        }
+    };
+    json_effect(
+        StatusCode::OK,
+        json!({
+            "ok": true,
+            "doc_id": document_id,
+            "deleted": {
+                "nodes": rollback.removed_node_ids.len(),
+                "edges": rollback.removed_edge_ids.len(),
+            }
+        }),
+    )
+}
+
 fn is_document_projection_route(method: &str, path_and_query: &str) -> bool {
     method == "POST"
         && matches!(

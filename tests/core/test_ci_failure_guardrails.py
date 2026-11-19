@@ -134,6 +134,9 @@ def test_rust_python_interop_uses_parallel_supported_runtime_matrix() -> None:
     assert 'label: cpython314\n            python-version: "3.14"' in interop_job
     assert "label: pypy311\n            python-version: pypy-3.11-v7.3.20" in interop_job
     assert "tests != 3 or skipped or failures or errors" in interop_job
+    assert "Verify Rust-native workflow backend matrix" in interop_job
+    assert "if: matrix.label == 'cpython313'" in interop_job
+    assert "tests != 7 or skipped or failures or errors" in interop_job
     assert "if: matrix.label == 'cpython314'" in interop_job
 
 
@@ -151,10 +154,30 @@ def test_sqlite_native_extension_cases_are_marked_requires_rust() -> None:
             and child.id in {"RustEngineSQLite", "_rust"}
             for child in ast.walk(node)
         )
-        if uses_native and not any(
+        directly_marked = any(
             ast.unparse(decorator) == "pytest.mark.requires_rust"
             for decorator in node.decorator_list
-        ):
+        )
+        parametrically_marked = any(
+            isinstance(decorator, ast.Call)
+            and ast.unparse(decorator.func) == "pytest.mark.parametrize"
+            and any(
+                isinstance(value, (ast.List, ast.Tuple))
+                and any(
+                    isinstance(parameter, ast.Call)
+                    and ast.unparse(parameter.func) == "pytest.param"
+                    and any(
+                        keyword.arg == "marks"
+                        and "pytest.mark.requires_rust" in ast.unparse(keyword.value)
+                        for keyword in parameter.keywords
+                    )
+                    for parameter in value.elts
+                )
+                for value in decorator.args[1:]
+            )
+            for decorator in node.decorator_list
+        )
+        if uses_native and not (directly_marked or parametrically_marked):
             missing_markers.append(node.name)
 
     assert not missing_markers, (

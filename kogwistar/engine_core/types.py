@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Literal, NotRequired, Protocol
 from typing_extensions import TypedDict
 
+from ..graph_types import GraphEntityKind as GraphEntityKind
+
 if TYPE_CHECKING:
     from .models import Edge, Node
 
 # Engine names remain broad; graph entity kinds are structural node/edge tokens.
 EngineType = str
-GraphEntityKind = Literal["node", "edge"]
 ExtractionSchemaMode = Literal[
     "auto", "full", "lean", "flattened_lean", "flattened_full"
 ]

@@ -80,6 +80,637 @@ fn latest_entity_events_are_batched_and_scoped_by_namespace_and_kind() {
 }
 
 #[test]
+fn latest_entity_events_page_is_keyset_ordered_and_returns_current_revisions() {
+    let (store, path) = store("latest-entity-events-page");
+    for (namespace, kind, id, event_id, op, revision) in [
+        ("scope", "node", "n2", "n2-v1", "ADD", 1),
+        ("scope", "node", "n1", "n1-v1", "ADD", 1),
+        ("scope", "node", "n1", "n1-v2", "REPLACE", 2),
+        ("scope", "edge", "e1", "e1-v1", "ADD", 1),
+        ("other", "node", "n0", "other-v1", "ADD", 1),
+    ] {
+        store
+            .append_raw_entity_event(
+                namespace,
+                NewRawEntityEvent {
+                    event_id: event_id.to_owned(),
+                    entity_kind: kind.to_owned(),
+                    entity_id: id.to_owned(),
+                    op: op.to_owned(),
+                    payload_json: serde_json::json!({"revision": revision}).to_string(),
+                },
+            )
+            .unwrap();
+    }
+
+    store
+        .immediate_transaction(|uow| {
+            let first = uow.latest_entity_events_page("scope", "node", None, 1)?;
+            assert_eq!(first.len(), 1);
+            assert_eq!(first[0].entity_id, "n1");
+            assert_eq!(first[0].event_id, "n1-v2");
+            let second = uow.latest_entity_events_page("scope", "node", Some("n1"), 1)?;
+            assert_eq!(second.len(), 1);
+            assert_eq!(second[0].entity_id, "n2");
+            assert_eq!(second[0].event_id, "n2-v1");
+            assert!(
+                uow.latest_entity_events_page("scope", "node", Some("n2"), 1)?
+                    .is_empty()
+            );
+            assert!(
+                uow.latest_entity_events_page("scope", "node", None, 0)
+                    .is_err()
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn canonical_graph_entity_page_reconstructs_lifecycle_delta_from_event_history() {
+    let (store, path) = store("canonical-graph-entity-page");
+    store
+        .immediate_transaction(|uow| {
+            for (seq, event_id, op, payload) in [
+                (
+                    1,
+                    "node-add",
+                    "ADD",
+                    serde_json::json!({
+                        "id": "n1",
+                        "label": "entity",
+                        "metadata": {"lifecycle_status": "active", "keep": true},
+                        "mentions": [{"spans": [{"doc_id": "doc-a"}]}]
+                    }),
+                ),
+                (
+                    2,
+                    "node-tombstone",
+                    "TOMBSTONE",
+                    serde_json::json!({
+                        "entity_id": "n1",
+                        "lifecycle_patch": {
+                            "lifecycle_status": "tombstoned",
+                            "redirect_to_id": null
+                        }
+                    }),
+                ),
+            ] {
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: event_id.to_owned(),
+                        entity_kind: "node".to_owned(),
+                        entity_id: "n1".to_owned(),
+                        op: op.to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+            let snapshots = uow.canonical_graph_entities_page("scope", "node", None, 10)?;
+            assert_eq!(snapshots.len(), 1);
+            assert_eq!(snapshots[0].revision, 2);
+            assert_eq!(snapshots[0].state, "deleted");
+            let payload = snapshots[0].payload.as_ref().unwrap();
+            assert_eq!(payload["label"], "entity");
+            assert_eq!(payload["metadata"]["keep"], true);
+            assert_eq!(payload["metadata"]["lifecycle_status"], "tombstoned");
+            assert!(payload["mentions"].is_array());
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn canonical_graph_entity_pages_are_keyset_stable_and_scope_isolated() {
+    let (store, path) = store("canonical-graph-entity-pages");
+    store
+        .immediate_transaction(|uow| {
+            for (namespace, seq, entity_kind, entity_id) in [
+                ("scope", 1, "node", "n-a"),
+                ("scope", 2, "node", "n-b"),
+                ("scope", 3, "node", "n-c"),
+                ("scope", 4, "edge", "e-a"),
+                ("other", 1, "node", "n-b"),
+            ] {
+                let payload = if entity_kind == "node" {
+                    serde_json::json!({
+                        "id": entity_id,
+                        "label": format!("label-{entity_id}"),
+                        "metadata": {"lifecycle_status": "active"}
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": entity_id,
+                        "relation": "links",
+                        "metadata": {"lifecycle_status": "active"}
+                    })
+                };
+                uow.append_restored_raw_entity_event(
+                    namespace,
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("{namespace}-{entity_id}"),
+                        entity_kind: entity_kind.to_owned(),
+                        entity_id: entity_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let first = uow.canonical_graph_entities_page("scope", "node", None, 2)?;
+            assert_eq!(
+                first
+                    .iter()
+                    .map(|snapshot| snapshot.entity_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["n-a", "n-b"]
+            );
+            assert_eq!(first[0].payload.as_ref().unwrap()["label"], "label-n-a");
+
+            let second =
+                uow.canonical_graph_entities_page("scope", "node", Some(&first[1].entity_id), 2)?;
+            assert_eq!(second.len(), 1);
+            assert_eq!(second[0].entity_id, "n-c");
+            assert!(
+                uow.canonical_graph_entities_page("scope", "edge", None, 10)?
+                    .iter()
+                    .all(|snapshot| snapshot.entity_id == "e-a")
+            );
+            assert_eq!(
+                uow.canonical_graph_entities_page("other", "node", None, 10)?[0].entity_id,
+                "n-b"
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn document_node_rollback_page_is_atomic_scoped_and_retry_safe() {
+    let (store, path) = store("document-node-rollback-page");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    store
+        .immediate_transaction(|uow| {
+            for (seq, entity_id, workspace_id, mentions) in [
+                (
+                    1,
+                    "a-replace",
+                    "workspace-a",
+                    serde_json::json!([{
+                        "multimodal_spans": [],
+                        "spans": [
+                            {"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-remove","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}},
+                            {"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-keep","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}}
+                        ]
+                    }]),
+                ),
+                (
+                    2,
+                    "b-tombstone",
+                    "workspace-a",
+                    serde_json::json!([{
+                        "multimodal_spans": [],
+                        "spans": [{"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-remove","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}}]
+                    }]),
+                ),
+                (
+                    3,
+                    "c-other-workspace",
+                    "workspace-b",
+                    serde_json::json!([{
+                        "multimodal_spans": [],
+                        "spans": [{"collection_page_url":"https://example.test/source","context_after":"","context_before":"","doc_id":"doc-remove","document_page_url":"https://example.test/source#span","end_char":13,"excerpt":"Node evidence","insertion_method":"contract-test","page_number":1,"source_cluster_id":null,"start_char":0,"verification":{"is_verified":false,"method":"heuristic","notes":"no explicit verification from LLM","score":null}}]
+                    }]),
+                ),
+            ] {
+                let mut payload = fixture["cases"][0]["payload"].clone();
+                payload["id"] = serde_json::json!(entity_id);
+                payload["label"] = serde_json::json!(entity_id);
+                payload["doc_id"] = serde_json::json!("doc-remove");
+                payload["mentions"] = mentions;
+                payload["metadata"]["workspace_id"] = serde_json::json!(workspace_id);
+                payload["metadata"]["graph_space"] = serde_json::json!("knowledge");
+                payload["metadata"]["lifecycle_status"] = serde_json::json!("active");
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("seed-{entity_id}"),
+                        entity_kind: "node".to_owned(),
+                        entity_id: entity_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let first = uow.apply_document_node_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+            )?;
+            assert_eq!(first.scanned_through.as_deref(), Some("c-other-workspace"));
+            assert!(!first.has_more);
+            assert_eq!(first.mutations.len(), 3);
+            assert!(first.mutations.iter().all(|mutation| mutation.inserted));
+
+            let retry = uow.apply_document_node_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+            )?;
+            assert!(retry.mutations.is_empty());
+
+            let nodes = uow.canonical_graph_entities_page("scope", "node", None, 10)?;
+            let by_id = nodes
+                .iter()
+                .map(|snapshot| (snapshot.entity_id.as_str(), snapshot))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(by_id["a-replace"].state, "deleted");
+            assert_eq!(
+                by_id["a-replace"].payload.as_ref().unwrap()["metadata"]["redirect_to_id"],
+                first.mutations[0].event.payload["id"]
+            );
+            assert_eq!(by_id["b-tombstone"].state, "deleted");
+            assert_eq!(by_id["c-other-workspace"].state, "active");
+            assert_eq!(
+                nodes
+                    .iter()
+                    .filter(|snapshot| {
+                        snapshot.state == "active"
+                            && snapshot
+                                .payload
+                                .as_ref()
+                                .and_then(|payload| payload["mentions"].as_array())
+                                .is_some_and(|mentions| {
+                                    mentions.iter().any(|mention| {
+                                        mention["spans"].as_array().is_some_and(|spans| {
+                                            spans.iter().any(|span| span["doc_id"] == "doc-keep")
+                                        })
+                                    })
+                                })
+                    })
+                    .count(),
+                1
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn document_edge_rollback_page_is_atomic_scoped_and_retry_safe() {
+    let (store, path) = store("document-edge-rollback-page");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    store
+        .immediate_transaction(|uow| {
+            for (seq, edge_id, workspace_id, remove_source_endpoint, remove_document_span) in [
+                (1, "a-replace", "workspace-a", false, true),
+                (2, "b-tombstone", "workspace-a", true, false),
+                (3, "c-other-workspace", "workspace-b", true, false),
+            ] {
+                let mut payload = fixture["cases"][1]["payload"].clone();
+                payload["id"] = serde_json::json!(edge_id);
+                payload["doc_id"] = serde_json::json!("doc-remove");
+                payload["source_ids"] = if remove_source_endpoint {
+                    serde_json::json!([])
+                } else {
+                    serde_json::json!(["node-old"])
+                };
+                payload["target_ids"] = serde_json::json!(["node-target"]);
+                payload["source_edge_ids"] = if remove_source_endpoint {
+                    serde_json::json!(["edge-removed"])
+                } else {
+                    serde_json::json!([])
+                };
+                payload["target_edge_ids"] = serde_json::json!([]);
+                if remove_document_span {
+                    let mut keep_span = payload["mentions"][0]["spans"][0].clone();
+                    payload["mentions"][0]["spans"][0]["doc_id"] = serde_json::json!("doc-remove");
+                    keep_span["doc_id"] = serde_json::json!("doc-keep");
+                    payload["mentions"][0]["spans"]
+                        .as_array_mut()
+                        .unwrap()
+                        .push(keep_span);
+                } else {
+                    payload["mentions"][0]["spans"][0]["doc_id"] = serde_json::json!("doc-keep");
+                }
+                payload["metadata"]["workspace_id"] = serde_json::json!(workspace_id);
+                payload["metadata"]["graph_space"] = serde_json::json!("knowledge");
+                payload["metadata"]["lifecycle_status"] = serde_json::json!("active");
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("seed-{edge_id}"),
+                        entity_kind: "edge".to_owned(),
+                        entity_id: edge_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let node_redirects =
+                std::collections::BTreeMap::from([("node-old".to_owned(), "node-new".to_owned())]);
+            let removed_edge_ids = std::collections::BTreeSet::from(["edge-removed".to_owned()]);
+            let first = uow.apply_document_edge_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-edge-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+                &node_redirects,
+                &std::collections::BTreeSet::new(),
+                &std::collections::BTreeMap::new(),
+                &removed_edge_ids,
+                &std::collections::BTreeMap::new(),
+            )?;
+            assert_eq!(first.scanned_through.as_deref(), Some("c-other-workspace"));
+            assert!(!first.has_more);
+            assert_eq!(first.mutations.len(), 3);
+            assert_eq!(
+                first.edge_redirects.get("a-replace").map(String::as_str),
+                first.mutations[0].event.payload["id"].as_str()
+            );
+            assert!(first.removed_edge_ids.contains("b-tombstone"));
+
+            let retry = uow.apply_document_edge_rollback_page(
+                &scope,
+                "doc-remove",
+                "rollback-edge-op-1",
+                "2026-11-15T00:00:00Z",
+                None,
+                10,
+                &node_redirects,
+                &std::collections::BTreeSet::new(),
+                &first.edge_redirects,
+                &first.removed_edge_ids,
+                &std::collections::BTreeMap::new(),
+            )?;
+            assert!(retry.mutations.is_empty());
+
+            let edges = uow.canonical_graph_entities_page("scope", "edge", None, 10)?;
+            let by_id = edges
+                .iter()
+                .map(|snapshot| (snapshot.entity_id.as_str(), snapshot))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(by_id["a-replace"].state, "deleted");
+            assert_eq!(by_id["b-tombstone"].state, "deleted");
+            assert_eq!(by_id["c-other-workspace"].state, "active");
+            let replacement = by_id[first.edge_redirects["a-replace"].as_str()];
+            assert_eq!(replacement.state, "active");
+            assert_eq!(
+                replacement.payload.as_ref().unwrap()["source_ids"],
+                serde_json::json!(["node-new"])
+            );
+            assert_eq!(
+                replacement.payload.as_ref().unwrap()["mentions"][0]["spans"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                1
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn document_rollback_reaches_edge_dependency_fixed_point_before_projection_delete() {
+    let (store, path) = store("document-rollback-fixed-point");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))
+    .unwrap();
+    store
+        .immediate_transaction(|uow| {
+            uow.upsert_source_document_projection(DocumentProjectionUpsert {
+                scope: scope.clone(),
+                record: GraphRecord {
+                    id: "doc-remove".to_owned(),
+                    document: Some("source document".to_owned()),
+                    metadata: serde_json::json!({"doc_type": "text"})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            })?;
+
+            for (seq, edge_id) in [(1, "a-dependent"), (2, "z-support"), (3, "unrelated-edge")] {
+                let mut payload = fixture["cases"][1]["payload"].clone();
+                payload["id"] = serde_json::json!(edge_id);
+                payload["metadata"]["workspace_id"] = serde_json::json!("workspace-a");
+                payload["metadata"]["graph_space"] = serde_json::json!("knowledge");
+                payload["metadata"]["lifecycle_status"] = serde_json::json!("active");
+                payload["source_ids"] = if edge_id == "z-support" {
+                    serde_json::json!(["node-source"])
+                } else {
+                    serde_json::json!([])
+                };
+                payload["target_ids"] = serde_json::json!(["node-target"]);
+                payload["source_edge_ids"] = if edge_id == "a-dependent" {
+                    serde_json::json!(["z-support"])
+                } else {
+                    serde_json::json!([])
+                };
+                payload["target_edge_ids"] = serde_json::json!([]);
+                match edge_id {
+                    "a-dependent" => {
+                        payload["mentions"][0]["spans"][0]["doc_id"] =
+                            serde_json::json!("doc-keep");
+                    }
+                    "z-support" => {
+                        payload["doc_id"] = serde_json::json!("doc-remove");
+                        let mut keep_span = payload["mentions"][0]["spans"][0].clone();
+                        payload["mentions"][0]["spans"][0]["doc_id"] =
+                            serde_json::json!("doc-remove");
+                        keep_span["doc_id"] = serde_json::json!("doc-keep");
+                        payload["mentions"][0]["spans"]
+                            .as_array_mut()
+                            .unwrap()
+                            .push(keep_span);
+                    }
+                    _ => payload["mentions"] = serde_json::json!([]),
+                }
+                uow.append_restored_raw_entity_event(
+                    "scope",
+                    RestoredRawEntityEvent {
+                        seq,
+                        event_id: format!("seed-{edge_id}"),
+                        entity_kind: "edge".to_owned(),
+                        entity_id: edge_id.to_owned(),
+                        op: "ADD".to_owned(),
+                        payload_json: payload.to_string(),
+                        created_at: seq,
+                    },
+                )?;
+            }
+
+            let result = uow.apply_document_rollback(
+                &scope,
+                "doc-remove",
+                "rollback-fixed-point-1",
+                "2026-11-15T00:00:00Z",
+                1,
+            )?;
+            assert!(result.edge_passes >= 2);
+            let dependent_id = result.edge_redirects.get("a-dependent").unwrap();
+            let support_id = result.edge_redirects.get("z-support").unwrap();
+            assert!(result.deleted_document_projection);
+            assert!(
+                uow.source_document_projection(&scope, "doc-remove")?
+                    .is_none()
+            );
+
+            let snapshots = uow.canonical_graph_entities_page("scope", "edge", None, 20)?;
+            let by_id = snapshots
+                .iter()
+                .map(|snapshot| (snapshot.entity_id.as_str(), snapshot))
+                .collect::<BTreeMap<_, _>>();
+            assert_eq!(by_id["unrelated-edge"].state, "active");
+            assert_eq!(by_id[dependent_id.as_str()].state, "active");
+            assert_eq!(by_id[support_id.as_str()].state, "active");
+            assert_eq!(
+                by_id[dependent_id.as_str()].payload.as_ref().unwrap()["source_edge_ids"],
+                serde_json::json!([support_id])
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn sqlite_store_document_rollback_wrapper_uses_one_transaction() {
+    let (store, path) = store("document-rollback-store-wrapper");
+    let scope = GraphScope {
+        namespace: "scope".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    store
+        .immediate_transaction(|uow| {
+            uow.upsert_source_document_projection(DocumentProjectionUpsert {
+                scope: scope.clone(),
+                record: GraphRecord {
+                    id: "doc-remove".to_owned(),
+                    document: Some("source document".to_owned()),
+                    metadata: Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            })?;
+            uow.append_restored_raw_entity_event(
+                "scope",
+                RestoredRawEntityEvent {
+                    seq: 1,
+                    event_id: "seed-node-remove".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    entity_id: "node-remove".to_owned(),
+                    op: "ADD".to_owned(),
+                    payload_json: serde_json::json!({
+                        "id": "node-remove",
+                        "mentions": [{"spans": [{"doc_id": "doc-remove"}]}],
+                        "metadata": {
+                            "workspace_id": "workspace-a",
+                            "graph_space": "knowledge",
+                            "lifecycle_status": "active"
+                        }
+                    })
+                    .to_string(),
+                    created_at: 1,
+                },
+            )?;
+            Ok(())
+        })
+        .unwrap();
+
+    assert!(DocumentStore::supports_document_rollback(&store));
+    let result = block_on(DocumentStore::rollback_document(
+        &store,
+        DocumentRollbackRequest {
+            scope: scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-store-wrapper".to_owned(),
+            deleted_at: "2026-11-15T00:00:00Z".to_owned(),
+            page_size: 1,
+        },
+    ))
+    .unwrap();
+    assert!(result.removed_node_ids.contains("node-remove"));
+    assert!(result.deleted_document_projection);
+    store
+        .immediate_transaction(|uow| {
+            let snapshots = uow.canonical_graph_entities_page("scope", "node", None, 10)?;
+            assert_eq!(snapshots[0].state, "deleted");
+            assert!(
+                uow.source_document_projection(&scope, "doc-remove")?
+                    .is_none()
+            );
+            Ok(())
+        })
+        .unwrap();
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn latest_entity_events_are_visible_inside_the_canonical_write_transaction() {
     let (store, path) = store("latest-events-uow");
     store

@@ -48,8 +48,12 @@ def _request_json(
     params: dict[str, QueryParam] | None = None,
     json_body: dict[str, JsonValue] | None = None,
 ) -> dict[str, JsonValue]:
+    token = os.getenv("KOGWISTAR_API_TOKEN")
+    headers = {"Authorization": f"Bearer {token}"} if token else None
     with httpx.Client(timeout=30.0) as client:
-        resp = client.request(method, url, params=params, json=json_body)
+        resp = client.request(
+            method, url, params=params, json=json_body, headers=headers
+        )
         resp.raise_for_status()
         if not resp.content:
             return {}

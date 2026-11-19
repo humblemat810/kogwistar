@@ -58,12 +58,12 @@ def _wait_for_http_process(
 @pytest.mark.integration
 @pytest.mark.e2e
 def test_rust_native_promotion_and_python_recovery_are_both_available(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pg_dsn: str | None
 ) -> None:
     """Prove Rust-native promotion and optional Python recovery from Rust output."""
-    dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
+    dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN") or pg_dsn
     if not dsn:
-        pytest.skip("set KOGWISTAR_TEST_PG_DSN to run PostgreSQL interoperability")
+        pytest.skip("PostgreSQL fixture/DSN unavailable")
     if not _server_is_current():
         pytest.skip("build the current Rust kogwistar-server binary first")
 
@@ -438,6 +438,21 @@ def test_rust_native_promotion_and_python_recovery_are_both_available(
         assert backend.node_get(
             ids=[rust_success_id], include=["embeddings", "metadatas"]
         )["embeddings"][0] == pytest.approx([0.6, 0.8])
+        promoted_reader = GraphKnowledgeEngine(
+            backend=PgVectorBackend(engine=sql_engine, embedding_dim=2, schema=schema),
+            namespace=namespace,
+            embedding_profile_mode="inspect",
+            embedding_function=lambda _texts: pytest.fail(
+                "vector retrieval must use the promoted embedding, not re-embed"
+            ),
+        )
+        try:
+            ranked = promoted_reader.read.query_nodes(
+                query_embeddings=[[0.6, 0.8]], n_results=10
+            )
+            assert rust_success_id in [node.id for node in ranked[0]], ranked
+        finally:
+            promoted_reader.close()
         assert embedding_requests == [[staged["document"]], [success_staged["document"]]]
     finally:
         if rust_process is not None:

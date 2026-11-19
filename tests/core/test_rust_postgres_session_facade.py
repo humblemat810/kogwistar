@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import uuid
 from contextlib import contextmanager
@@ -17,7 +18,9 @@ from kogwistar.engine_core.rust_postgres_session import (
     RustPostgresSession,
     _RustPostgresTransactionToken,
 )
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Document, PureChromaNode
+from kogwistar.engine_core.subsystems.extract import ExtractSubsystem
 from kogwistar.engine_core.subsystems.read import ReadSubsystem
 from kogwistar.engine_core.subsystems.acl import ACLAwareReadSubsystem
 from kogwistar.engine_core.subsystems.write import WriteSubsystem
@@ -1022,6 +1025,628 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
             connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
 
 
+def test_document_id_reads_use_native_postgres_projections_when_dsn_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set KOGWISTAR_TEST_PG_DSN to run the native PostgreSQL boundary test")
+    psycopg = pytest.importorskip("psycopg")
+    schema = f"rust_doc_ids_{uuid.uuid4().hex}"
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        store.ensure_initialized()
+        store._call("create_graph_schema", embedding_dim=2)
+        store.upsert_graph_projection(
+            namespace="doc-id-test",
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            record={
+                "id": "node-1",
+                "document": "node body",
+                "metadata": {"doc_id": "doc-1", "entity_type": "node"},
+                "embedding": None,
+            },
+            embedding_dim=2,
+        )
+        from psycopg import sql
+
+        endpoint_metadata = {
+            "namespace": "doc-id-test",
+            "doc_id": "doc-1",
+            "edge_id": "edge-1",
+            "endpoint_id": "node-1",
+        }
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(
+                sql.SQL(
+                    "INSERT INTO {} (id, document, metadata) VALUES (%s, %s, %s::jsonb)"
+                ).format(sql.Identifier(schema, "gke_edge_endpoints")),
+                (
+                    "edge-1::src::node::node-1",
+                    "edge endpoint",
+                    json.dumps(endpoint_metadata),
+                ),
+            )
+
+        class Backend:
+            nodes = SimpleNamespace(name="gke_nodes")
+            edges = SimpleNamespace(name="gke_edges")
+            documents = SimpleNamespace(name="gke_documents")
+            edge_endpoints = SimpleNamespace(name="gke_edge_endpoints")
+
+            def node_get(self, **_values: object) -> None:
+                raise AssertionError("Rust-selected document lookup used Python node read")
+
+            def edge_endpoints_get(self, **_values: object) -> None:
+                raise AssertionError(
+                    "Rust-selected document lookup used Python endpoint read"
+                )
+
+        reader = ReadSubsystem(
+            SimpleNamespace(
+                backend=Backend(),
+                metadata=store,
+                namespace="doc-id-test",
+                kg_graph_type="knowledge",
+            )
+        )
+        monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+        with implementation_selection_scope(capture_implementation_selection()):
+            assert reader.node_ids_by_doc("doc-1") == ["node-1"]
+            assert reader.edge_ids_by_doc("doc-1") == ["edge-1"]
+            assert reader.node_ids_by_doc("missing-doc") == []
+            assert reader.edge_ids_by_doc("missing-doc") == []
+    finally:
+        store.close()
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_rust_selected_insertion_method_reads_native_reference_and_entity_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RustEnginePostgresMetaStore(dsn="postgresql://example/db", schema="test")
+    node = build_entity_node(node_id="fallback-node", doc_id="doc-1")
+    with use_mode("backend"):
+        node_payload = json.loads(node.model_dump_json())
+    node_payload["mentions"][0]["spans"][0]["insertion_method"] = "test"
+    node_document = json.dumps(node_payload)
+
+    calls: list[dict[str, object]] = []
+
+    def graph_projection_records(**values: object) -> list[dict[str, object]]:
+        calls.append(values)
+        table = values["table"]
+        metadata = values["metadata"]
+        if table in {"gke_node_refs", "gke_edge_refs"}:
+            if table == "gke_node_refs" and metadata == {
+                "insertion_method": "parser",
+                "doc_id": "doc-1",
+                "node_id": "node-1",
+            }:
+                return [{"id": "ref-1", "document": "{}", "metadata": {"node_id": "node-1"}}]
+            if table == "gke_edge_refs" and metadata == {
+                "insertion_method": "parser",
+                "doc_id": "doc-1",
+            }:
+                return [{"id": "ref-2", "document": "{}", "metadata": {"edge_id": "edge-1"}}]
+            return []
+        if table == "gke_nodes":
+            return [
+                {
+                    "id": "fallback-node",
+                    "document": node_document,
+                    "metadata": {"doc_id": "doc-1"},
+                }
+            ]
+        raise AssertionError(f"unexpected native projection table {table!r}")
+
+    monkeypatch.setattr(store, "graph_projection_records", graph_projection_records)
+
+    class Backend:
+        nodes = SimpleNamespace(name="gke_nodes")
+        edges = SimpleNamespace(name="gke_edges")
+        node_refs = SimpleNamespace(name="gke_node_refs")
+        edge_refs = SimpleNamespace(name="gke_edge_refs")
+
+        def node_refs_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected lookup used Python node references")
+
+        def edge_refs_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected lookup used Python edge references")
+
+        def node_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected fallback used Python node read")
+
+        def edge_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected fallback used Python edge read")
+
+    reader = ReadSubsystem(
+        SimpleNamespace(
+            backend=Backend(),
+            metadata=store,
+            namespace="alpha",
+            kg_graph_type="knowledge",
+        )
+    )
+    monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+
+    assert reader.ids_with_insertion_method(
+        kind="node",
+        insertion_method="parser",
+        ids=["node-1", "node-2"],
+        doc_id="doc-1",
+    ) == ["node-1"]
+    assert reader.ids_with_insertion_method(
+        kind="edge", insertion_method="parser", doc_id="doc-1"
+    ) == ["edge-1"]
+    assert reader.ids_with_insertion_method(
+        kind="node",
+        insertion_method="test",
+        ids=["fallback-node"],
+        doc_id="doc-1",
+    ) == ["fallback-node"]
+    assert calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_node_refs",
+            "ids": None,
+            "metadata": {
+                "insertion_method": "parser",
+                "doc_id": "doc-1",
+                "node_id": "node-1",
+            },
+            "limit": 1,
+        },
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_node_refs",
+            "ids": None,
+            "metadata": {
+                "insertion_method": "parser",
+                "doc_id": "doc-1",
+                "node_id": "node-2",
+            },
+            "limit": 1,
+        },
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_edge_refs",
+            "ids": None,
+            "metadata": {"insertion_method": "parser", "doc_id": "doc-1"},
+            "limit": 200,
+        },
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_node_refs",
+            "ids": None,
+            "metadata": {
+                "insertion_method": "test",
+                "doc_id": "doc-1",
+                "node_id": "fallback-node",
+            },
+            "limit": 1,
+        },
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "ids": ["fallback-node"],
+            "metadata": {},
+            "limit": 200,
+        },
+    ]
+
+
+def test_insertion_method_reads_use_native_postgres_reference_projections_when_dsn_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set KOGWISTAR_TEST_PG_DSN to run the native PostgreSQL boundary test")
+    psycopg = pytest.importorskip("psycopg")
+    schema = f"rust_ref_ids_{uuid.uuid4().hex}"
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        store.ensure_initialized()
+        store._call("create_graph_schema", embedding_dim=2)
+        fallback_node = build_entity_node(node_id="fallback-node", doc_id="doc-1")
+        with use_mode("backend"):
+            fallback_payload = json.loads(fallback_node.model_dump_json())
+        fallback_payload["mentions"][0]["spans"][0]["insertion_method"] = "legacy"
+        store.upsert_graph_projection(
+            namespace="doc-ref-test",
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            record={
+                "id": "fallback-node",
+                "document": json.dumps(fallback_payload),
+                "metadata": {"doc_id": "doc-1", "entity_type": "node"},
+                "embedding": None,
+            },
+            embedding_dim=2,
+        )
+        indexed_node = build_entity_node(node_id="node-1", doc_id="doc-1")
+        indexed_edge = build_relationship_edge(
+            edge_id="edge-1", src="node-1", tgt="node-2", doc_id="doc-1"
+        )
+        with use_mode("backend"):
+            node_document = indexed_node.model_dump_json()
+            edge_document = indexed_edge.model_dump_json()
+        for table, entity_id, document, entity_type in (
+            ("gke_nodes", "node-1", node_document, "node"),
+            ("gke_edges", "edge-1", edge_document, "edge"),
+        ):
+            store.upsert_graph_projection(
+                namespace="doc-ref-test",
+                workspace_id=None,
+                graph_space=None,
+                table=table,
+                record={
+                    "id": entity_id,
+                    "document": document,
+                    "metadata": {"doc_id": "doc-1", "entity_type": entity_type},
+                    "embedding": None,
+                },
+                embedding_dim=2,
+            )
+
+        from psycopg import sql
+
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            for table, entity_key, entity_id in (
+                ("gke_node_refs", "node_id", "node-1"),
+                ("gke_edge_refs", "edge_id", "edge-1"),
+            ):
+                metadata = {
+                    "namespace": "doc-ref-test",
+                    "doc_id": "doc-1",
+                    "insertion_method": "parser",
+                    entity_key: entity_id,
+                }
+                connection.execute(
+                    sql.SQL(
+                        "INSERT INTO {} (id, document, metadata) VALUES (%s, %s, %s::jsonb)"
+                    ).format(sql.Identifier(schema, table)),
+                    (f"{entity_id}::reference", "{}", json.dumps(metadata)),
+                )
+            with connection.cursor() as cursor:
+                cursor.executemany(
+                    sql.SQL(
+                        "INSERT INTO {} (id, document, metadata) VALUES (%s, %s, %s::jsonb)"
+                    ).format(sql.Identifier(schema, "gke_node_refs")),
+                    [
+                        (
+                            f"large-node-{index:03d}::reference",
+                            "{}",
+                            json.dumps(
+                                {
+                                    "namespace": "doc-ref-test",
+                                    "doc_id": "large-doc",
+                                    "node_id": f"large-node-{index:03d}",
+                                }
+                            ),
+                        )
+                        for index in range(205)
+                    ],
+                )
+
+        class Backend:
+            nodes = SimpleNamespace(name="gke_nodes")
+            edges = SimpleNamespace(name="gke_edges")
+            node_refs = SimpleNamespace(name="gke_node_refs")
+            edge_refs = SimpleNamespace(name="gke_edge_refs")
+
+            def node_refs_get(self, **_values: object) -> None:
+                raise AssertionError("Rust-selected lookup used Python node references")
+
+            def edge_refs_get(self, **_values: object) -> None:
+                raise AssertionError("Rust-selected lookup used Python edge references")
+
+            def node_get(self, **_values: object) -> None:
+                raise AssertionError("Rust-selected fallback used Python node read")
+
+            def edge_get(self, **_values: object) -> None:
+                raise AssertionError("Rust-selected fallback used Python edge read")
+
+        reader = ReadSubsystem(
+            SimpleNamespace(
+                backend=Backend(),
+                metadata=store,
+                namespace="doc-ref-test",
+                kg_graph_type="knowledge",
+            )
+        )
+        monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+        with implementation_selection_scope(capture_implementation_selection()):
+            assert reader.ids_with_insertion_method(
+                kind="node",
+                insertion_method="parser",
+                ids=["node-1", "node-missing"],
+                doc_id="doc-1",
+            ) == ["node-1"]
+            assert reader.ids_with_insertion_method(
+                kind="edge", insertion_method="parser", doc_id="doc-1"
+            ) == ["edge-1"]
+            assert reader.ids_with_insertion_method(
+                kind="node",
+                insertion_method="legacy",
+                ids=["fallback-node"],
+                doc_id="doc-1",
+            ) == ["fallback-node"]
+            assert reader.nodes_by_doc(
+                "doc-1", where={"insertion_method": "parser"}
+            ) == ["node-1"]
+            assert reader.edges_by_doc(
+                "doc-1", {"insertion_method": "parser"}
+            ) == ["edge-1"]
+            assert reader.nodes_by_doc("large-doc") == [
+                f"large-node-{index:03d}" for index in range(205)
+            ]
+            assert [node.id for node in reader.list_nodes_with_ref_filter("doc-1")] == [
+                "node-1"
+            ]
+            assert [edge.id for edge in reader.list_edges_with_ref_filter("doc-1")] == [
+                "edge-1"
+            ]
+    finally:
+        store.close()
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_python_insertion_method_fallback_scans_grounding_spans() -> None:
+    node = build_entity_node(node_id="fallback-node", doc_id="doc-1")
+    with use_mode("backend"):
+        payload = json.loads(node.model_dump_json())
+    payload["mentions"][0]["spans"][0]["insertion_method"] = "legacy"
+    document = json.dumps(payload)
+
+    class Backend:
+        def node_refs_get(self, **_values: object) -> dict[str, object]:
+            return {"metadatas": []}
+
+        def node_get(self, **_values: object) -> dict[str, object]:
+            return {"ids": ["fallback-node"], "documents": [document]}
+
+    reader = ReadSubsystem(
+        SimpleNamespace(
+            backend=Backend(),
+            metadata=object(),
+            namespace="alpha",
+            kg_graph_type="knowledge",
+        )
+    )
+
+    assert reader.ids_with_insertion_method(
+        kind="node",
+        insertion_method="legacy",
+        doc_id="doc-1",
+    ) == ["fallback-node"]
+
+
+def test_rust_selected_document_reference_reads_and_hydration_are_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RustEnginePostgresMetaStore(dsn="postgresql://example/db", schema="test")
+    node = build_entity_node(node_id="node-1", doc_id="doc-1")
+    with use_mode("backend"):
+        node_document = node.model_dump_json()
+    calls: list[dict[str, object]] = []
+
+    def graph_projection_records(**values: object) -> list[dict[str, object]]:
+        calls.append(values)
+        if values["table"] == "gke_node_refs":
+            if values["metadata"] == {"doc_id": "large-doc"}:
+                return [
+                    {
+                        "id": f"large-ref-{index:03d}",
+                        "document": "{}",
+                        "metadata": {"node_id": f"large-node-{index:03d}"},
+                    }
+                    for index in range(205)
+                ]
+            return [
+                {"id": "node-ref-1", "document": "{}", "metadata": {"node_id": "node-1"}}
+            ]
+        if values["table"] == "gke_edge_refs":
+            return [
+                {"id": "edge-ref-1", "document": "{}", "metadata": {"edge_id": "edge-1"}}
+            ]
+        if values["table"] == "gke_nodes" and values["ids"] == ["node-1"]:
+            return [
+                {
+                    "id": "node-1",
+                    "document": node_document,
+                    "metadata": {"doc_id": "doc-1"},
+                    "embedding": None,
+                }
+            ]
+        raise AssertionError(f"unexpected native reference read: {values!r}")
+
+    monkeypatch.setattr(store, "graph_projection_records", graph_projection_records)
+
+    class Backend:
+        nodes = SimpleNamespace(name="gke_nodes")
+        edges = SimpleNamespace(name="gke_edges")
+        documents = SimpleNamespace(name="gke_documents")
+        edge_endpoints = SimpleNamespace(name="gke_edge_endpoints")
+        node_refs = SimpleNamespace(name="gke_node_refs")
+        edge_refs = SimpleNamespace(name="gke_edge_refs")
+
+        def node_refs_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected lookup used Python node references")
+
+        def edge_refs_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected lookup used Python edge references")
+
+        def node_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected hydration used Python node read")
+
+        def edge_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected hydration used Python edge read")
+
+    reader = ReadSubsystem(
+        SimpleNamespace(
+            backend=Backend(),
+            metadata=store,
+            namespace="alpha",
+            kg_graph_type="knowledge",
+            extract=SimpleNamespace(
+                fetch_document_text=lambda _doc_id: None,
+                coerce_pages=lambda _document: [],
+            ),
+        )
+    )
+    monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+
+    assert reader.nodes_by_doc("doc-1", where={"insertion_method": "parser"}) == [
+        "node-1"
+    ]
+    assert reader.edges_by_doc("doc-1", {"insertion_method": "parser"}) == [
+        "edge-1"
+    ]
+    assert reader.nodes_by_doc("large-doc") == [
+        f"large-node-{index:03d}" for index in range(205)
+    ]
+    assert [call["limit"] for call in calls if call["table"] == "gke_node_refs"] == [
+        (1 << 63) - 1,
+        (1 << 63) - 1,
+    ]
+    assert [node.id for node in reader.list_nodes_with_ref_filter("doc-1")] == [
+        "node-1"
+    ]
+    assert len(reader.extract_reference_contexts("node-1")) == 1
+    with pytest.raises(RuntimeError, match="equality filters only.*refusing Python"):
+        reader.nodes_by_doc("doc-1", where={"tags": {"$in": ["blue"]}})
+    assert all(call["table"] != "gke_edges" for call in calls)
+
+
+def test_rust_selected_reference_context_document_text_reads_are_native(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RustEnginePostgresMetaStore(dsn="postgresql://example/db", schema="test")
+    calls: list[dict[str, object]] = []
+
+    def graph_projection_records(**values: object) -> list[dict[str, object]]:
+        calls.append(values)
+        if values["ids"] == ["document-1"]:
+            return [
+                {
+                    "id": "document-1",
+                    "document": "direct body",
+                    "metadata": {},
+                    "embedding": None,
+                }
+            ]
+        if values["metadata"] == {"doc_id": "legacy-document"}:
+            return [
+                {
+                    "id": "legacy-page-1",
+                    "document": "legacy body",
+                    "metadata": {"doc_id": "legacy-document"},
+                    "embedding": None,
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(store, "graph_projection_records", graph_projection_records)
+
+    class Backend:
+        documents = SimpleNamespace(name="gke_documents")
+
+        def document_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected document read used Python backend")
+
+    engine = SimpleNamespace(
+        backend=Backend(),
+        metadata=store,
+        namespace="alpha",
+        kg_graph_type="knowledge",
+    )
+    reader = ReadSubsystem(engine)
+    monkeypatch.setattr(reader, "_rust_postgres_projection_selected", lambda: True)
+    engine.read = reader
+    extractor = ExtractSubsystem(engine)
+
+    assert extractor.fetch_document_text("document-1") == "direct body"
+    assert extractor.fetch_document_text("legacy-document") == "legacy body"
+    assert [call["ids"] for call in calls] == [
+        ["document-1"],
+        ["legacy-document"],
+        None,
+    ]
+
+
+def test_legacy_engine_graph_reads_use_native_projection_helpers_when_selected() -> None:
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class NativeRead:
+        def _rust_postgres_projection_get(self, **values: object) -> dict[str, object]:
+            calls.append(("get", values))
+            return {"ids": list(values["ids"] or [])}
+
+        def _rust_postgres_projection_query(
+            self, **values: object
+        ) -> dict[str, object]:
+            calls.append(("query", values))
+            return {"ids": [["hit"]]}
+
+    class Backend:
+        def document_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected document ID read used Python backend")
+
+        def node_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected node ID read used Python backend")
+
+        def edge_get(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected edge ID read used Python backend")
+
+        def node_query(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected node search used Python backend")
+
+        def edge_query(self, **_values: object) -> None:
+            raise AssertionError("Rust-selected edge search used Python backend")
+
+    engine = SimpleNamespace(read=NativeRead(), backend=Backend())
+    assert GraphKnowledgeEngine.check_document_exist(engine, ["document-1"]) == {
+        "document-1"
+    }
+    assert GraphKnowledgeEngine.nodes_by_ids(engine, ["node-1"]) == {
+        "ids": ["node-1"]
+    }
+    assert GraphKnowledgeEngine.edges_by_ids(engine, ["edge-1"]) == {
+        "ids": ["edge-1"]
+    }
+    assert GraphKnowledgeEngine.vector_search_nodes(engine, [0.25, 0.75], 3) == {
+        "ids": [["hit"]]
+    }
+    assert GraphKnowledgeEngine.vector_search_edges(engine, [0.25, 0.75], 4) == {
+        "ids": [["hit"]]
+    }
+    assert [(kind, values["entity_kind"]) for kind, values in calls] == [
+        ("get", "document"),
+        ("get", "node"),
+        ("get", "edge"),
+        ("query", "node"),
+        ("query", "edge"),
+    ]
+
+
 def test_native_vector_filter_accepts_only_lossless_supported_forms():
     assert ReadSubsystem._native_vector_filter(
         {"$and": [{"team": "red"}, {"entity_type": {"$ne": "acl_record"}}]}
@@ -1584,6 +2209,7 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
         nodes = SimpleNamespace(name="gke_nodes")
         edges = SimpleNamespace(name="gke_edges")
         documents = SimpleNamespace(name="gke_documents")
+        edge_endpoints = SimpleNamespace(name="gke_edge_endpoints")
         embedding_dim = 3
         distance = "cosine"
 
@@ -1598,6 +2224,11 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
 
         def edge_query(self, **_values):
             return {"ids": [["python-edge-query"]]}
+
+        def edge_endpoints_get(self, **_values):
+            raise AssertionError(
+                "Rust-selected document lookup used Python endpoint read"
+            )
 
         def document_get(self, **_values):
             raise AssertionError("exact document read used Python backend")
@@ -1741,6 +2372,62 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     assert acl_filter_calls[-1]["metadata_not_equals"] == {
         "entity_type": "acl_record"
     }
+
+    document_read_calls: list[dict] = []
+
+    def native_document_records(**values):
+        document_read_calls.append(values)
+        if values["table"] == "gke_nodes":
+            return [
+                {
+                    "id": "n1",
+                    "document": native_document,
+                    "metadata": {"doc_id": "doc-1"},
+                    "embedding": None,
+                }
+            ]
+        if values["table"] == "gke_edge_endpoints":
+            return [
+                {
+                    "id": "endpoint-1",
+                    "document": None,
+                    "metadata": {"doc_id": "doc-1", "edge_id": "e1"},
+                    "embedding": None,
+                }
+            ]
+        raise AssertionError(
+            f"unexpected native document-index table: {values['table']}"
+        )
+
+    monkeypatch.setattr(store, "graph_projection_records", native_document_records)
+
+    def reject_python_node_document_read(**_values):
+        raise AssertionError("Rust-selected document lookup used Python node read")
+
+    monkeypatch.setattr(engine.backend, "node_get", reject_python_node_document_read)
+    assert reader.node_ids_by_doc("doc-1") == ["n1"]
+    assert reader.edge_ids_by_doc("doc-1") == ["e1"]
+    assert document_read_calls == [
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "ids": None,
+            "metadata": {"doc_id": "doc-1"},
+            "limit": 200,
+            "for_update": False,
+        },
+        {
+            "namespace": "alpha",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_edge_endpoints",
+            "ids": None,
+            "metadata": {"doc_id": "doc-1"},
+            "limit": 200,
+        },
+    ]
 
     batch_query_calls: list[dict] = []
 

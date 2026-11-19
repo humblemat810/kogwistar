@@ -134,12 +134,163 @@ struct RuntimeOwnerBindingV1 {
 struct PreparedConversationAdmission {
     conversation_id: String,
     owner_id: String,
+    request_fingerprint: Option<String>,
     expected_tail_id: Option<String>,
     scope: GraphScope,
     acl_principal: GraphAclPrincipal,
     mutations: Vec<(GraphMutation, kogwistar_contracts::GraphModelEnvelope)>,
     index_jobs: Vec<NewIndexJob>,
     actor_user_id: String,
+}
+
+fn conversation_idempotency_key(args: &Map<String, Value>) -> Result<Option<String>, String> {
+    let Some(value) = args.get("idempotency_key") else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return if value.is_null() {
+            Ok(None)
+        } else {
+            Err("idempotency_key must be a string".to_owned())
+        };
+    };
+    let key = value.trim();
+    if key.is_empty() || key.len() > 256 || key.chars().any(char::is_control) {
+        return Err("idempotency_key must be printable and at most 256 bytes".to_owned());
+    }
+    Ok(Some(key.to_owned()))
+}
+
+fn conversation_send_message_id(kind: &str, owner: &str, conversation: &str, key: &str) -> String {
+    kogwistar_contracts::stable_id(
+        kind,
+        &[
+            owner.to_owned(),
+            conversation.to_owned(),
+            key.to_owned(),
+        ],
+    )
+    .to_string()
+}
+
+fn conversation_send_message_fingerprint(
+    owner: &str,
+    conversation: &str,
+    workflow: &str,
+    text: &str,
+) -> String {
+    kogwistar_contracts::stable_id(
+        "conversation.send_message.fingerprint",
+        &[
+            owner.to_owned(),
+            conversation.to_owned(),
+            workflow.to_owned(),
+            text.to_owned(),
+        ],
+    )
+    .to_string()
+}
+
+struct ConversationIdempotencyExpectation<'a> {
+    run_id: &'a str,
+    conversation_id: &'a str,
+    owner_id: &'a str,
+    workflow_id: &'a str,
+    turn_id: &'a str,
+    request_fingerprint: &'a str,
+}
+
+fn conversation_idempotency_replay_result(
+    run: &ServerRun,
+    events: &[ServerRunEvent],
+    expected: ConversationIdempotencyExpectation<'_>,
+) -> Result<Value, String> {
+    let created_payload = events
+        .iter()
+        .find(|event| event.event_type == "run.created")
+        .and_then(|event| serde_json::from_str::<Value>(&event.payload_json).ok());
+    let fingerprint_matches = created_payload
+        .as_ref()
+        .and_then(|payload| payload.get("request_fingerprint"))
+        .and_then(Value::as_str)
+        == Some(expected.request_fingerprint);
+    if run.run_id != expected.run_id
+        || run.conversation_id != expected.conversation_id
+        || run.workflow_id != expected.workflow_id
+        || run.user_id.as_deref() != Some(expected.owner_id)
+        || run.user_turn_node_id.as_deref() != Some(expected.turn_id)
+        || !fingerprint_matches
+    {
+        return Err("idempotency_key was already used for a different request".to_owned());
+    }
+    Ok(json!({
+        "run_id": run.run_id,
+        "conversation_id": run.conversation_id,
+        "workflow_id": run.workflow_id,
+        "turn_node_id": expected.turn_id,
+        "status": "queued",
+        "admission": "accepted",
+        "idempotent": true,
+    }))
+}
+
+#[cfg(test)]
+mod conversation_idempotency_contract_tests {
+    use super::{
+        conversation_idempotency_key, conversation_send_message_fingerprint,
+        conversation_send_message_id,
+    };
+    use serde_json::json;
+
+    fn parse_key(args: serde_json::Value) -> Result<Option<String>, String> {
+        conversation_idempotency_key(args.as_object().expect("args are an object"))
+    }
+
+    #[test]
+    fn stable_ids_and_fingerprint_match_python_contract() {
+        assert_eq!(
+            conversation_send_message_id(
+                "conversation.send_message.run",
+                "alice",
+                "conv-1",
+                "key-1",
+            ),
+            "233cbfc0-3a1c-5fef-8486-2643deac1023"
+        );
+        assert_eq!(
+            conversation_send_message_id(
+                "conversation.send_message.turn",
+                "alice",
+                "conv-1",
+                "key-1",
+            ),
+            "2b700a62-2c7e-58ff-8244-b25bf91acda7"
+        );
+        assert_eq!(
+            conversation_send_message_fingerprint(
+                "alice",
+                "conv-1",
+                "agentic_answering.v2",
+                "hello",
+            ),
+            "bcc027a3-cbab-50ca-83b6-a5c2eb2ee37a"
+        );
+    }
+
+    #[test]
+    fn idempotency_key_validation_is_bounded_and_rejects_controls() {
+        assert_eq!(
+            parse_key(json!({"idempotency_key": " key-1 "})),
+            Ok(Some("key-1".to_owned()))
+        );
+        assert_eq!(
+            parse_key(json!({"idempotency_key": null})),
+            Ok(None)
+        );
+        assert!(parse_key(json!({"idempotency_key": 42})).is_err());
+        assert!(parse_key(json!({"idempotency_key": "bad\u{0085}key"})).is_err());
+        assert!(parse_key(json!({"idempotency_key": "x".repeat(257)})).is_err());
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

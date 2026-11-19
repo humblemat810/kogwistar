@@ -18,6 +18,17 @@ def _get(url: str) -> tuple[int, dict]:
         return response.status, json.load(response)
 
 
+def _post(url: str, payload: dict) -> tuple[int, dict]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return response.status, json.load(response)
+
+
 def main() -> None:
     import kogwistar._rust as native
 
@@ -27,7 +38,8 @@ def main() -> None:
     native_file = Path(native.__file__).resolve()
     assert package_file.is_relative_to(Path(sys.prefix))
     assert native_file.is_relative_to(Path(sys.prefix))
-    assert native.CONTRACT_VERSION >= 1
+    contract_major = int(str(native.CONTRACT_VERSION).split(".", maxsplit=1)[0])
+    assert contract_major >= 1
     assert hasattr(native, "api_run_server")
     assert any(
         item.name == "kogwistar-rust-server"
@@ -71,6 +83,39 @@ def main() -> None:
                 time.sleep(0.1)
         else:
             raise RuntimeError(f"server did not become healthy: {last_error}")
+
+        token_status, token_result = _post(
+            "http://127.0.0.1:18087/auth/dev-token",
+            {
+                "username": "adr015-cli-smoke",
+                "role": "ro",
+                "ns": ["workflow"],
+                "capabilities": ["project_view", "read_security_scope"],
+            },
+        )
+        assert token_status == 200
+        token = token_result.get("token")
+        assert isinstance(token, str) and token
+        cli_environment = {**environment, "KOGWISTAR_API_TOKEN": token}
+        cli_executable = Path(sys.executable).with_name("kogwistar")
+        visibility = subprocess.run(
+            [
+                str(cli_executable),
+                "api",
+                "workflow",
+                "workflow.visibility_snapshot",
+                "--base-url",
+                "http://127.0.0.1:18087",
+            ],
+            env=cli_environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert visibility.returncode == 0, visibility.stderr
+        visibility_result = json.loads(visibility.stdout)
+        assert visibility_result.get("current_subject") == "adr015-cli-smoke"
+        assert visibility_result.get("namespaces", {}).get("execution_namespace") == "workflow"
         print(
             json.dumps(
                 {
@@ -78,6 +123,9 @@ def main() -> None:
                     "extension": str(native_file),
                     "entrypoint": str(executable),
                     "health": health,
+                    "cli_http": {
+                        "workflow_visibility_snapshot": "passed",
+                    },
                 },
                 sort_keys=True,
             )

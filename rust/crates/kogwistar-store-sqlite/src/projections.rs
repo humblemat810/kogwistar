@@ -269,6 +269,65 @@ pub(super) fn replace_source_document_projection(
     )
 }
 
+pub(super) fn delete_source_document_projection(
+    conn: &Connection,
+    scope: &GraphScope,
+    document_id: &str,
+) -> SqliteStoreResult<bool> {
+    let key = source_document_projection_key(scope, document_id)?;
+    let deleted = conn.execute(
+        "DELETE FROM named_projections WHERE namespace = ?1 AND key = ?2",
+        rusqlite::params![SOURCE_DOCUMENT_PROJECTION_NAMESPACE, key],
+    )?;
+    Ok(deleted > 0)
+}
+
+pub(super) fn delete_source_document_projections_by_source_id(
+    conn: &Connection,
+    scope: &GraphScope,
+    source_document_id: &str,
+) -> SqliteStoreResult<Vec<String>> {
+    let exact_key = source_document_projection_key(scope, source_document_id)?;
+    let mut statement = conn.prepare(
+        "SELECT key, json_extract(payload_json, '$.record.id') \
+         FROM named_projections \
+         WHERE namespace = ?1 \
+           AND json_extract(payload_json, '$.namespace') = ?2 \
+           AND COALESCE(json_extract(payload_json, '$.workspace_id'), '') = ?3 \
+           AND COALESCE(json_extract(payload_json, '$.graph_space'), '') = ?4 \
+           AND (key = ?5 OR json_extract(payload_json, '$.record.metadata.doc_id') = ?6) \
+         ORDER BY key ASC",
+    )?;
+    let rows = statement
+        .query_map(
+            rusqlite::params![
+                SOURCE_DOCUMENT_PROJECTION_NAMESPACE,
+                scope.namespace,
+                scope.workspace_id.as_deref().unwrap_or(""),
+                scope.graph_space.as_deref().unwrap_or(""),
+                exact_key,
+                source_document_id,
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut deleted_ids = Vec::with_capacity(rows.len());
+    for (key, id) in rows {
+        let id = id.ok_or_else(|| {
+            SqliteStoreError::TransactionAborted(
+                "source-document projection is missing its record ID".to_owned(),
+            )
+        })?;
+        conn.execute(
+            "DELETE FROM named_projections WHERE namespace = ?1 AND key = ?2",
+            rusqlite::params![SOURCE_DOCUMENT_PROJECTION_NAMESPACE, key],
+        )?;
+        deleted_ids.push(id);
+    }
+    Ok(deleted_ids)
+}
+
 pub(super) fn replace_named_projection(
     conn: &Connection,
     namespace: &str,

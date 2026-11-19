@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "valid_event": {
+    "namespace": "golden-parity",
+    "entity_kind": "node",
+    "entity_id": "node-雪",
+    "op": "UPSERT",
+    "payload_json": " {\"title\":\"café\",\"count\":2} "
+  },
+  "invalid_operation": {
+    "kind": "raw_append",
+    "namespace": "golden-parity",
+    "event_id": "invalid-event",
+    "entity_kind": "node",
+    "entity_id": "node-invalid",
+    "op": "UPSERT",
+    "payload_json": "{}",
+    "unexpected": true
+  },
+  "expected_invalid_error": "KOGWISTAR_STORE_INVALID_PAYLOAD"
+}

@@ -143,6 +143,25 @@
         assert_eq!(malformed_value["error"]["code"], -32602);
         assert!(seen.lock().unwrap().is_none());
 
+        let invalid_key = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"ask-invalid-key","method":"tools/call","params":{"name":"conversation.ask","arguments":{"conversation_id":"conv-1","text":"hello","idempotency_key":"  "}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let invalid_key_body = to_bytes(invalid_key.into_body(), 4096).await.unwrap();
+        let invalid_key_value: Value = serde_json::from_slice(&invalid_key_body).unwrap();
+        assert_eq!(invalid_key_value["error"]["code"], -32602);
+        assert!(seen.lock().unwrap().is_none());
+
         let response = app
             .oneshot(
                 Request::builder()
@@ -187,7 +206,8 @@
                     "conversation_id": ask_contract["arguments"]["conversation_id"],
                     "text": ask_contract["arguments"]["text"],
                     "user_id": ask_contract["arguments"]["user_id"],
-                    "workflow_id":"agentic_answering.v2"
+                    "workflow_id":"agentic_answering.v2",
+                    "idempotency_key": ask_contract["arguments"]["idempotency_key"]
                 }
             })
         );

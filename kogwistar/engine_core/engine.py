@@ -6,7 +6,7 @@ import pathlib
 import threading
 import time
 import uuid
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Sequence
 from contextlib import (
     AbstractContextManager,
     AbstractAsyncContextManager,
@@ -457,6 +457,26 @@ except Exception:
 from kogwistar.engine_core.embedding_factory import (
     get_embedding_function,  # backwards compat alias → OllamaEmbeddingFunction
 )
+
+
+class _ChromaInputEmbeddingAdapter:
+    """Translate Chroma's required ``input`` callback to Kogwistar's embedder API."""
+
+    def __init__(self, delegate: EmbeddingFunctionLike) -> None:
+        self._delegate = delegate
+
+    def name(self) -> str:
+        delegate_name = getattr(self._delegate, "name", None)
+        if callable(delegate_name):
+            resolved_name = delegate_name()
+            if isinstance(resolved_name, str):
+                return resolved_name
+        if isinstance(delegate_name, str):
+            return delegate_name
+        return type(self._delegate).__name__
+
+    def __call__(self, input: Sequence[str]) -> list[list[float]]:
+        return self._delegate(list(input))
 
 
 def engine_context(
@@ -1599,7 +1619,9 @@ class GraphKnowledgeEngine:
                 embedding_profile_checked = True
             # IMPORTANT: pass embedding_function to vector collections
             collection_embedding_function = (
-                None if self.embedding_profile_mode == "inspect" else self._ef
+                None
+                if self.embedding_profile_mode == "inspect"
+                else _ChromaInputEmbeddingAdapter(self._ef)
             )
             collection_metric = (
                 self.embedding_profile.similarity_metric
@@ -2328,7 +2350,17 @@ class GraphKnowledgeEngine:
 
     def check_document_exist(self, document_id: str | list[str]) -> set[str]:
         doc_ids = [document_id] if isinstance(document_id, str) else list(document_id)
-        got = run_awaitable_blocking(self.backend.document_get(ids=doc_ids, include=[]))
+        got = cast(ReadSubsystem, self.read)._rust_postgres_projection_get(
+            entity_kind="document",
+            ids=doc_ids,
+            where=None,
+            limit=len(doc_ids),
+            include=[],
+        )
+        if got is None:
+            got = run_awaitable_blocking(
+                self.backend.document_get(ids=doc_ids, include=[])
+            )
         stored_ids = _decode_backend_ids_response(got)
         if stored_ids is None:
             return set(doc_ids)
@@ -2523,9 +2555,27 @@ class GraphKnowledgeEngine:
         return self.read.list_edges_with_ref_filter(doc_id, where=where)
 
     def nodes_by_ids(self, node_ids: Sequence[str]) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_get(
+            entity_kind="node",
+            ids=node_ids,
+            where=None,
+            limit=200,
+            include=["documents", "metadatas"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(self.backend.node_get(ids=node_ids))
 
     def edges_by_ids(self, edge_ids: Sequence[str]) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_get(
+            entity_kind="edge",
+            ids=edge_ids,
+            where=None,
+            limit=400,
+            include=["documents", "metadatas"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(self.backend.edge_get(ids=edge_ids))
 
     def nodes_by_doc(self, doc_id: str, *, where: dict | None = None) -> list[str]:
@@ -2553,11 +2603,29 @@ class GraphKnowledgeEngine:
     # Vector queries
     # ----------------------------
     def vector_search_nodes(self, embedding: list[float], top_k: int = 5) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_query(
+            entity_kind="node",
+            query_embeddings=[embedding],
+            where=None,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(
             self.backend.node_query(query_embeddings=[embedding], n_results=top_k)
         )
 
     def vector_search_edges(self, embedding: list[float], top_k: int = 5) -> object:
+        native = cast(ReadSubsystem, self.read)._rust_postgres_projection_query(
+            entity_kind="edge",
+            query_embeddings=[embedding],
+            where=None,
+            n_results=top_k,
+            include=["documents", "metadatas", "distances"],
+        )
+        if native is not None:
+            return native
         return run_awaitable_blocking(
             self.backend.edge_query(query_embeddings=[embedding], n_results=top_k)
         )

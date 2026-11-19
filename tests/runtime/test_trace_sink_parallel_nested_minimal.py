@@ -59,7 +59,7 @@ def _add_node(
             "wf_fanout": bool(fanout),
             "wf_join": bool(wf_join),
             "wf_join_is_merge": True,
-            "wf_version": "v_test",
+            "wf_version": "v1",
         },
     )
     workflow_engine.write.add_node(n)
@@ -101,7 +101,7 @@ def _add_edge(
             "wf_priority": int(priority),
             "wf_is_default": bool(is_default),
             "wf_multiplicity": multiplicity,
-            "wf_version": "v_test",
+            "wf_version": "v1",
         },
     )
     workflow_engine.write.add_edge(e)
@@ -366,8 +366,11 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
                 logging.info("release is set")
                 return
             if sync["run_done"].is_set():
+                with errors_lock:
+                    worker_errors = repr(errors)
                 raise AssertionError(
-                    f"{run_id}: run finished before both branches started"
+                    f"{run_id}: run finished before both branches started; "
+                    f"worker_errors={worker_errors}"
                 )
             time.sleep(0.01)
         logging.info(f"release is not set. {a_is_set=} {b_is_set=}")
@@ -523,6 +526,10 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
                     initial_state={},
                     run_id=run_id,
                 )
+                if rr.status != "succeeded":
+                    raise AssertionError(
+                        f"{run_id}: runtime returned {rr.status}; errors={rr.errors!r}"
+                    )
                 assert rr.final_state.get("ended") is True
                 assert rr.final_state.get("nested_done") is True
             except BaseException as e:

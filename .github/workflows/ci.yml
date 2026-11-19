@@ -14,6 +14,11 @@ on:
         required: false
         type: boolean
         default: false
+      performance:
+        description: Run the live Python/Rust persistent performance gate
+        required: false
+        type: boolean
+        default: false
       pypy_url:
         description: Optional immutable PyPy 3.12 beta archive URL
         required: false
@@ -30,6 +35,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  live-performance-gate:
+    if: >-
+      github.event_name == 'push' ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.performance == true)
+    name: Live Python/Rust performance gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up pinned Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+
+      - name: Install package, benchmark, and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[test,benchmark]" "sqlalchemy[asyncio]>=2.0"
+
+      - name: Run live persistent performance test
+        env:
+          KOGWISTAR_RUN_PERFORMANCE_GATES: "1"
+          KOGWISTAR_PERFORMANCE_REPORT: ${{ runner.temp }}/rust-persistent-performance.json
+        run: >-
+          python -m pytest
+          tests/core/test_rust_port_persistent_benchmark.py
+          tests/core/test_rust_port_live_performance_gate.py
+          -q -p no:cacheprovider
+
+      - name: Preserve benchmark report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-persistent-performance-${{ github.run_id }}
+          path: ${{ runner.temp }}/rust-persistent-performance.json
+          if-no-files-found: ignore
+
   ci:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
     name: CI (${{ matrix.label }})
@@ -314,6 +366,24 @@ jobs:
       - name: Make Rust API server executable
         run: chmod +x target/debug/kogwistar-server
 
+      - name: Set up Python for Rust/Python PostgreSQL interop
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install Python PostgreSQL interop dependencies
+        run: |
+          python - <<'PY'
+          import subprocess
+          import sys
+          import tomllib
+
+          with open("../pyproject.toml", "rb") as project_file:
+              project = tomllib.load(project_file)["project"]
+          dependencies = project["dependencies"] + project["optional-dependencies"]["pgvector"]
+          subprocess.run([sys.executable, "-m", "pip", "install", *dependencies], check=True)
+          PY
+
       - name: Test Rust workspace
         env:
           KOGWISTAR_TEST_CHROMA_ENDPOINT: http://127.0.0.1:8000
@@ -480,6 +550,30 @@ jobs:
           if tests != 3 or skipped or failures or errors:
               raise SystemExit(
                   f"${{ matrix.label }} mixed-worker matrix incomplete: "
+                  f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
+              )
+          PY
+
+      - name: Verify Rust-native workflow backend matrix
+        if: matrix.label == 'cpython313'
+        shell: bash
+        run: |
+          set -euo pipefail
+          report="$RUNNER_TEMP/rust-native-workflow-matrix.xml"
+          python -m pytest -q -p no:cacheprovider --junitxml="$report" \
+            tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker
+          python - "$report" <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          suites = ET.parse(sys.argv[1]).getroot().findall(".//testsuite")
+          tests = sum(int(suite.attrib.get("tests", "0")) for suite in suites)
+          skipped = sum(int(suite.attrib.get("skipped", "0")) for suite in suites)
+          failures = sum(int(suite.attrib.get("failures", "0")) for suite in suites)
+          errors = sum(int(suite.attrib.get("errors", "0")) for suite in suites)
+          if tests != 7 or skipped or failures or errors:
+              raise SystemExit(
+                  "Rust-native workflow matrix incomplete: "
                   f"tests={tests}, skipped={skipped}, failures={failures}, errors={errors}"
               )
           PY
@@ -1227,7 +1321,7 @@ jobs:
           PIP_RETRIES: "10"
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e ".[test,server,full]"
+          python -m pip install -e ".[test,server,full,benchmark]"
 
       - name: Run full CI tests
         env:

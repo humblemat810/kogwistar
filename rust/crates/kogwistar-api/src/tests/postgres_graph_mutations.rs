@@ -294,6 +294,31 @@
             json!("public-graph-upsert-doc");
         extraction["edges"][0]["references"][0]["doc_id"] =
             json!("public-graph-upsert-doc");
+        let graph_projection_count_before_denial: i64 = client
+            .query_one(
+                &format!(
+                    "SELECT (SELECT count(*) FROM \"{schema}\".\"gke_documents\") + \
+                     (SELECT count(*) FROM \"{schema}\".\"gke_nodes\") + \
+                     (SELECT count(*) FROM \"{schema}\".\"gke_edges\") + \
+                     (SELECT count(*) FROM \"{schema}\".\"gke_edge_endpoints\")"
+                ),
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        let events_before_denial = service
+            .store
+            .replay_raw_events("alpha", 0, 10_000)
+            .await
+            .unwrap()
+            .len();
+        let index_jobs_before_denial = service
+            .store
+            .list_index_jobs(Some("alpha"), None, None, None, None, 10_000)
+            .await
+            .unwrap()
+            .len();
         let denied_upsert = make_app()
             .oneshot(
                 Request::builder()
@@ -319,6 +344,41 @@
             .unwrap()
             .get(0);
         assert_eq!(denied_document_count, 0);
+        let graph_projection_count_after_denial: i64 = client
+            .query_one(
+                &format!(
+                    "SELECT (SELECT count(*) FROM \"{schema}\".\"gke_documents\") + \
+                     (SELECT count(*) FROM \"{schema}\".\"gke_nodes\") + \
+                     (SELECT count(*) FROM \"{schema}\".\"gke_edges\") + \
+                     (SELECT count(*) FROM \"{schema}\".\"gke_edge_endpoints\")"
+                ),
+                &[],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        assert_eq!(
+            graph_projection_count_after_denial,
+            graph_projection_count_before_denial
+        );
+        assert_eq!(
+            service
+                .store
+                .replay_raw_events("alpha", 0, 10_000)
+                .await
+                .unwrap()
+                .len(),
+            events_before_denial
+        );
+        assert_eq!(
+            service
+                .store
+                .list_index_jobs(Some("alpha"), None, None, None, None, 10_000)
+                .await
+                .unwrap()
+                .len(),
+            index_jobs_before_denial
+        );
 
         let mut rollback_extraction = extraction.clone();
         rollback_extraction["doc_id"] = json!("public-graph-upsert-rollback-doc");

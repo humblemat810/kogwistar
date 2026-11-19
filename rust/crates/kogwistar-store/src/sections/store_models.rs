@@ -32,6 +32,14 @@ pub trait DocumentStore: Send + Sync {
         false
     }
 
+    fn supports_document_projection_delete(&self) -> bool {
+        false
+    }
+
+    fn supports_document_rollback(&self) -> bool {
+        false
+    }
+
     fn document_projection_ids(
         &self,
         _scope: GraphScope,
@@ -53,6 +61,50 @@ pub trait DocumentStore: Send + Sync {
             Err(StoreError::Backend {
                 backend: "document".to_owned(),
                 message: "document projection is not supported by this store".to_owned(),
+            })
+        }
+    }
+
+    /// Delete one source-document projection by its canonical document ID.
+    /// Implementations must scope the delete and make repeated deletes safe.
+    fn delete_document_projection(
+        &self,
+        _scope: GraphScope,
+        _document_id: String,
+    ) -> impl Future<Output = StoreResult<bool>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "document projection deletion is not supported by this store".to_owned(),
+            })
+        }
+    }
+
+    /// Delete source-document rows identified by their record ID or `metadata.doc_id`.
+    /// The operation must apply the full graph scope in one backend transaction.
+    fn delete_document_projections_by_source_id(
+        &self,
+        _scope: GraphScope,
+        _source_document_id: String,
+    ) -> impl Future<Output = StoreResult<Vec<String>>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "source-document group deletion is not supported by this store".to_owned(),
+            })
+        }
+    }
+
+    /// Remove document-grounded graph contributions and its source projection
+    /// within the backend's declared transaction/atomicity boundary.
+    fn rollback_document(
+        &self,
+        _request: DocumentRollbackRequest,
+    ) -> impl Future<Output = StoreResult<AppliedDocumentRollback>> + Send {
+        async {
+            Err(StoreError::Backend {
+                backend: "document".to_owned(),
+                message: "document rollback is not supported by this store".to_owned(),
             })
         }
     }

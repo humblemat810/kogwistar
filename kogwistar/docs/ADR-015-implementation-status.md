@@ -7,22 +7,136 @@ its rollout evidence, not a deprecation decision. Transaction ownership and
 the optional native execution paths are specified in
 `ADR-022-dual-language-capability-paths.md`.
 
-Updated: 2026-09-28
+Updated: 2026-11-17
+
+Active Rust capability implementation and library-UAT tasklets, with the sole
+current completion count, are tracked in
+[`ADR-015-capability-completion-worklist.md`](ADR-015-capability-completion-worklist.md).
+That worklist is the single source for the current percentage and counts; this
+status document intentionally does not duplicate them. Kogwistar is a library:
+clean Docker UAT on one identified candidate is its deployment-grade end-to-end
+acceptance. No customer fleet, traffic percentage, or external canary is
+required for library completion.
+The closed ADR-022 worklist remains a historical evidence inventory.
+[`ADR-015-implementation-tasklets.md`](ADR-015-implementation-tasklets.md)
+contains 11 already-closed implementation slices; it is supporting evidence,
+not a second active progress denominator.
+
+**Historical-note boundary:** Remaining sections below preserve dated test and
+design history. Any wording there that requires customer production canaries,
+traffic percentages, or customer-fleet promotion is superseded for Kogwistar
+library completion by the active capability worklist above. Candidate Docker
+UAT and required CI are the relevant end-to-end acceptance evidence.
 
 ## Current Source and Release Boundary
 
-PR #42's SQLite Python/Rust interoperability fixes are merged in `main` at
-`50cd6c4`; release-version commit `6066d11` sets package version `0.6.1`.
-Tag `v0.6.1` points to that release commit. The tagged release workflow passed
-wheel/sdist build and artifact audit, but its PyPI publish job is waiting for
-the protected `pypi` environment approval. Therefore, the tag exists but PyPI
-publication is not yet verified.
+Current package metadata is `0.7.0`; local tag `v0.7.0` points to release
+commit `3bdfa92171a16998a6ea7d13efb1277df198f549`. The maintainer confirmed
+that `0.7.0` was published to PyPI. This environment did not independently
+recheck the remote PyPI record or GitHub release workflow.
 
-The detailed phase evidence and source digests below are historical snapshots
-from their named candidate commits. They do not prove the current `0.6.1`
-source or promote any Rust authority flag. Re-run the relevant current-source
-gates before making those claims. Release workflow state is tracked in
+The detailed phase evidence and source digests below are candidate-specific;
+older reports do not prove current source behavior or promote Rust authority.
+Re-run relevant gates against the current source before making those claims.
+Release workflow design is tracked in
 [`ADR-015-library-release.md`](ADR-015-library-release.md).
+
+Previous broad current-source Windows verification: code commit `246b2501`;
+candidate source SHA-256
+`bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`.
+The rebuilt PyO3 wheel passed its SQLite transaction ABI smoke. Rust API tests
+passed **409**, with **40 ignored**, on Windows and again in the isolated Linux
+Docker UAT using Rust 1.97.1 (Linux run: **2m40s** build, **9.25s** tests).
+The Rust server binary was rebuilt from this checkout; its real HTTP/MCP
+no-Python workflow matrix passed **6/6** cells across SQLite, SQLite+Chroma, and
+the existing disposable pgvector:pg16 container, in external-worker and
+inline-server modes. The PostgreSQL cells used unique temporary schemas and
+cleaned them after each run. A restricted Windows attempt failed at loopback
+with OS error 10013; the elevated UAT rerun passed all six, so that first result
+is an environment-permission failure, not application evidence.
+The same rebuilt server also passed
+`tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
+(**1 passed**, 134.36s) against disposable pgvector:pg16. Rust HTTP/MCP graph
+operations and persisted records were read and parity-checked through Python's
+`GraphKnowledgeEngine` against the same PostgreSQL state, including scoped ACL
+and retrieval checks. Temporary schemas were removed by fixture teardown. This
+proves this bounded mixed-language path in UAT, not whole-stack or production
+cutover readiness.
+The opt-in local Chroma interop suite passed on the current checkout:
+`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**, 100.82s).
+It covers Python Chroma projection read/reconciliation by Rust, Rust-authenticated
+graph mutation projected to Chroma and read after Python engine reopen, idempotent
+retry of that mutation batch, Python readback of the three canonical SQLite events,
+Python Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1
+promotion by the Python worker. These are isolated local UAT handoffs, not
+production cutover evidence.
+Across the same source/native identity, all five Phase 4 runtime-authority groups
+passed: durable-worker **185**, bijection
+**72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
+zero skips, failures, or errors. PostgreSQL variants in the durable-worker
+group were rerun against the existing pgvector container with a DSN, not
+silently skipped. These are local/UAT verification results, not production
+canary or rollout evidence. Docker-emulated runs are isolated UAT, equivalent
+to a separate UAT environment; local Windows runs are also not production.
+
+Latest focused source verification: code commit `d82c1bb4`; candidate source
+SHA-256 `399599f2a416f8d32db0c851c6c17eb2029db648551546611a657b24eed1d503`
+(939 source files). Windows CPython 3.12, 3.13, and 3.14 each passed the full
+SQLite context invariant suite (**37 passed, 2 skipped**) and supervisor/worker
+E2E plus runner (**6 passed**). Linux Docker UAT on CPython 3.13 passed the
+SQLite context suite (**39 passed**). The rebuilt current-source Rust HTTP/MCP
+server passed the no-Python workflow smoke across SQLite and SQLite+Chroma in
+external-worker and inline-server modes, plus PostgreSQL/pgvector in both modes
+(**6 passed**). PostgreSQL used disposable per-run schemas, removed by fixture
+teardown. These runs are isolated local/Docker UAT evidence only; Docker is a
+separate UAT environment, not production cutover or a production canary. Hosted
+Ubuntu CI run [43708852346](https://github.com/humblemat810/kogwistar/actions/runs/43708852346), job `SQLite context invariants (ubuntu-latest / CPython 3.13)`, passed the refreshed lock suite (**37 passed**) and SQLite differential step. This closes the hosted-CI verification gate for that SQLite lock protocol only; unrelated failures in the enclosing workflow remain separate, and Docker/local runs remain UAT rather than production evidence.
+The Python-only memory runtime E2E sync/async cells also passed (**2 passed**)
+with Rust extension loading patched to fail if attempted; `cargo tree` confirmed
+the native API's normal dependency closure contains no Python binding/PyO3
+crates. These checks cover the tested paths, not every optional integration.
+On current HEAD `d2f77258`, the rebuilt Rust server passed the mixed
+Python-worker/Rust-native SQLite integration
+(`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
+**1 passed**, 56.80s). It exercised sync/async success and failure, native-step
+handoff, durable events, restart, and checkpoint recovery. The same current
+binary's PostgreSQL UAT passed the `[pg]` case (**1 passed**, 351.97s) against
+the disposable pgvector container with temporary-schema cleanup. These are
+bounded local UAT results only; neither Docker nor local runs are production
+canary/cutover evidence, and capability readiness remains unchanged.
+The current-source all-Rust-native HTTP workflow matrix also passed (**7/7**,
+340.56s) against the rebuilt server: in-memory inline-server, and SQLite,
+SQLite+Chroma, and PostgreSQL in both external-worker and inline-server modes.
+Every trace reported `implementation_authority=rust-native` and
+`seam_crossings=[]`; PostgreSQL used a disposable schema with teardown. This
+proves these tested UAT paths only, not unrestricted stack parity or production
+readiness.
+Commit `3fc5063a`'s in-memory runtime slice passed isolated Docker UAT: full
+store-memory suite (**48 passed**) and API library suite (**410 passed, 40
+ignored**). Focused graph-effect atomicity/stale-ACL tests (**2 passed**),
+in-memory inline graph/ACL tests (**5 passed**), and native-operation/provider-
+event regressions (**6 passed**) also passed. `cargo check -p kogwistar-api
+--tests` and `cargo fmt --all -- --check` passed. The supporting Rust contracts,
+runtime, engine, SQLite-store, and PostgreSQL-store crate suites also passed;
+the PostgreSQL store's normally ignored live integration tests were explicitly
+run against the disposable pgvector:pg16 service (**33 passed**, 11 ordinary
+tests excluded by the filter). Each live test uses an isolated schema. These
+Docker-backed runs are isolated UAT, not production or production-cutover
+evidence; they do not change deployment gates or capability-readiness counts.
+The API crate's ignored PostgreSQL integration suite then passed all **35**
+database cases against the same disposable service, excluding four live-Chroma
+tests and one manual Python-MCP SDK smoke. The first run had 34 passes and one
+harness precondition failure because `kogwistar-server` had not been built;
+after building that binary, the remaining native-answer workflow test passed.
+Commit `7cfcc5bc` adds the previously missing SQLite+Chroma inline graph-V2
+success cell: canonical SQLite event, host-derived ACL record, durable index
+job, successful run, and completed lane are asserted together. The focused test
+and owner-revocation regression passed; the full API library suite passed
+**411 tests, 40 ignored**, and `cargo check --locked -p kogwistar-api --tests`
+passed. The complementary live PostgreSQL inline V2 authority test also passed
+against disposable pgvector, covering host-derived ACL/index effects,
+idempotent ACL defaults, cross-scope denial, and transaction rollback. These
+remain isolated Docker UAT results, not production evidence.
 
 ADR-015 is not complete as a production migration. Local implementation and
 compatibility work is substantially complete, but authoritative ownership and
@@ -38,7 +152,11 @@ PyPy 3.11, Rust, native-wheel smoke, and lint. Local dependency-boundary and
 Rust contract checks also passed. This records verification evidence only; it
 does not promote any Rust capability to production authority.
 
-## Scope-locked completion ledger
+## Historical Candidate Evidence Ledger
+
+The following dated ledger records prior candidate evidence and decisions. It
+is not the active checklist or completion denominator; use
+[`ADR-015-capability-completion-worklist.md`](ADR-015-capability-completion-worklist.md).
 
 This ledger replaces percentage-complete estimates. Percentages mixed local
 implementation effort with production rollout gates and therefore overstated
@@ -91,7 +209,13 @@ gates remain separate evidence.
 - [ ] `workflow-runtime`: readiness remains false.
 - [ ] `server-rest-sse-mcp-cli`: readiness remains false.
 
-`chroma-adapter` is intentionally Python-owned and is not a Rust-port blocker.
+`chroma-adapter` in the authority manifest refers to Python's embedded
+`persist_directory` adapter; it does not mean Rust lacks Chroma support. Rust
+also implements an HTTP `GraphReadStore`/`GraphWriteStore` adapter. In the
+SQLite+Chroma composition, SQLite remains canonical for events and index jobs;
+Chroma remains an eventual, non-transactional projection. Python and Rust
+interoperability is covered by the current-source local UAT above. This does
+not establish concurrent multi-writer guarantees or production promotion.
 LLM SDKs, OCR, LangGraph conversion, and user-authored Python callback bodies
 remain integrations/workers as allowed by ADR-015; they are not to be rewritten
 for language purity.
@@ -104,34 +228,56 @@ Only these local items remain in scope before production rollout:
   current candidate; prove fault rollback, lease/CAS/sequence concurrency,
   Python/Rust mutual readability, rebuild equality, and update/tombstone replay.
   `scripts/durable_store_gate.py` produced
-  `.codex/adr015-phase3-store-gate.json` for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
-  memory 17, SQLite 27, and live pgvector PostgreSQL 36 all passed with zero
+  `.tmp/adr015-runtime-refresh-pg/phase3-store-after.json` for source
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`:
+  memory 17, SQLite 90, and live pgvector PostgreSQL 83 tests passed, with zero
   failures, errors, or skips. The gate rejects a skipped PostgreSQL group.
 - [ ] Phase 3: promote each of the four pending durable-store capabilities only
   when its capability-specific evidence and rollback evidence pass. Do not flip
-  one broad store flag from a narrow test. Current-source local evidence is
-  now separately recorded by `scripts/durable_store_capability_gate.py` in
-  `.codex/adr015-phase3-capability-gate.json`: PostgreSQL sequence/event-log
-  4, projection/snapshot/run-registry 6, queue/lease/lane 3, and graph/pgvector
-  23 all passed with zero failures, errors, or skips for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`.
-  This proves each local slice; each `rust_cutover_ready` remains false until
-  its same-candidate production canary and rollback evidence exists.
+  one broad store flag from a narrow test. Current-source local evidence used
+  `scripts/host_native_wheel_builder.py` and
+  `scripts/durable_store_capability_gate.py`, CPython 3.13, and live
+  `pgvector/pgvector:pg16`. Native wheel/SQLite transaction ABI smoke passed;
+  all four capability groups passed with zero failures, errors, or skips:
+  PostgreSQL sequence/event-log 4, projection/snapshot/run-registry 6,
+  queue/lease/lane 3, and graph/pgvector 47 (**60 total**). Candidate source
+  SHA-256 is
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`;
+  report: `.tmp/adr015-runtime-refresh-pg/phase3-capability-after.json`.
+  Follow-up on current source
+  `09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092`:
+  rebuilt Windows CPython 3.12 native wheel and live `pgvector/pgvector:pg16`
+  passed all four capability groups on the same candidate: sequence/event-log
+  **4**, projection/snapshot/run-registry **6**, queue/lease/lane **3**, and
+  graph/pgvector **47** (**60 total**), with zero skips, failures, or errors.
+  The graph group initially exposed a flaky 10-second Python child-process
+  startup allowance under the full gate; its focused rerun passed, then the
+  test allowance was raised to 30 seconds and the complete four-group gate
+  passed. The bound is test startup/teardown only; lock behavior assertions are
+  unchanged. Report: `.tmp/adr015-phase3-refresh-capabilities.json`; native
+  wheel evidence: `.tmp/adr015-phase3-refresh-native.json`. These counts are
+  local-only mixed-path evidence; each `rust_cutover_ready` remains false until
+  same-candidate staged canary and rollback evidence exists. Remaining rollout
+  tasklets are tracked in `ADR-015-capability-completion-worklist.md`.
 - [x] Phase 4: finish the already-bounded recorded runtime cutover. Existing
   reducer, frontier, serving projection, indexed dedup, frozen route validation,
   lane transaction, and Python worker adapter stay within this item. Current
-  native evidence is `.codex/adr015-phase4-runtime-gate.json` for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`.
+  native evidence is `.tmp/adr015-runtime-refresh-pg/native-report.json` for
+  source `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`.
+  Additional current-source evidence: the authenticated two-step Rust-native
+  route test confirms frontier successor scheduling and completion. Full Linux
+  Docker UAT unit suites passed: runtime 49, store-memory 46, API 409 (40
+  ignored). `cargo check -p kogwistar-api --tests` and `cargo fmt --check` also
+  passed on Windows. These local checks do not promote `workflow-runtime`
+  readiness or production cutover.
 - [x] Phase 4: pass existing sync, async, bridge-parity, suspend/resume, and
   terminal suites; recorded state/event/terminal-result parity; crash/restart;
   cancellation/backpressure; and Python-worker restart gates. The persisted
-  gate passed durable-worker 61, sync/async bijection 64, bridge parity 17,
-  suspend/terminal 23, and live PostgreSQL 10 tests, all with zero failures,
-  errors, or skips. Async authority now has a bounded `async-v2` callback
+  gate's current-source result and exact group counts are recorded in the
+  current-source Phase-4 entry below. Async authority has a bounded `async-v2` callback
   worker protocol, evidenced separately below; it was intentionally
   fail-closed under the earlier `sync-v1` worker protocol.
-- [ ] Phase 4: route the public runtime owner through the proven Rust durable
+- [x] Phase 4: route the public runtime owner through the proven Rust durable
   scheduler while keeping dynamic Python callbacks behind the versioned worker
   boundary. Unsupported nested/sandbox/side-effect protocol features stay
   fail-closed; no new runtime-state operation may be invented. Local routing now
@@ -140,14 +286,101 @@ Only these local items remain in scope before production rollout:
   async-v2 callback authority: explicit lane protocol,
   sync/async cross-rejection, replay-safe local journal, and live Rust SQLite
   scheduler round trip; service-triggered SQLite/PostgreSQL runs preserve the
-  same protocol. This line remains unchecked:
-  public authority promotion still requires its capability canary and the
-  explicit `workflow-runtime` readiness decision.
-- [x] Phase 5: explicitly version/defer the 1 currently frozen Python-owned
-  server operations listed by `PENDING_SERVER_CUTOVER_ROUTES`. The manifest
-  records grouped Python rollback ownership, prerequisite Rust authorities, and
-  exit evidence; its exact operation set is bidirectionally checked against the
-  Rust fail-closed inventory.
+  same protocol. Sync `resume_run` now also fails closed when Rust authority is
+  selected without a URL, matching async resume and preventing Python checkpoint
+  fallback; focused dispatch/fail-closed tests pass. `StepContext.events.emit()`
+  is buffered per callback invocation and included in the accepted worker
+  effect's `trace_events`; the thread-safe buffer is capped at 256 events/1 MiB,
+  rejecting the effect on overflow; the Rust result transaction remains the
+  durable owner. The complete worker-adapter file passed (**80 passed** before
+  buffer-cap/thread-safety follow-ups); sync/async delivery, count/byte overflow,
+  and 1,024 concurrent-emission regressions pass (**5 focused cases passed**).
+  The real Rust SQLite server integration also passes
+  (`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
+  **1 passed**): event is visible through the durable run-event API exactly
+  once after worker restart and result-ACK loss/recovery.
+  The current packaged-server native path also passes all four SQLite and
+  SQLite+Chroma external-worker/inline-server combinations
+  (`test_rust_native_workflow_runs_through_real_server_without_python_worker`,
+  **4 passed**); the workflow event traces attest `implementation_authority=rust`
+  and `seam_crossings=[]`. Re-run against current source
+  `2ff2554c09f7d5865eb8e53ea4caccec956c3cce` passed all four combinations
+  (**4 passed**, 25.55s). Current-source fail-closed coverage also passed for
+  public sync/async run selection without an authority URL, sync resume without
+  an authority URL, and Python transaction entry across generic, PostgreSQL,
+  SQLite/memory, and engine metadata paths (**7 passed**, 3.09s). The mixed
+  Python-worker/Rust-native callback recovery integration also passed on that
+  candidate (`test_python_worker_and_rust_native_step_interoperate_over_real_server[sqlite]`,
+  **1 passed**, 62.24s), including event durability, failed-result recovery,
+  async callback delivery, and checkpoint inspection. A later runtime contract
+  check exposed that Rust public resume waited for a terminal result only when
+  `wait_for_completion=true`, unlike Python's default synchronous result. The
+  SQLite and PostgreSQL Rust handlers now wait by default; the SQLite lifecycle
+  contract (**1 passed**), Python route parity (**1 passed**), and live
+  PostgreSQL shared-result contract (**1 passed**, pgvector:pg16) pass without
+  a query flag. `cargo build -p kogwistar-api --bin kogwistar-server` and
+  `cargo fmt --all --check` pass. This closes the sync-result behavior gap, not
+  the Rust runtime production canary/readiness gate. A current-source recheck
+  found and fixed the Python-worker resume deadlock: Rust SQLite and PostgreSQL
+  now honor explicit `wait_for_completion=false`, while omitted/invalid values
+  retain synchronous waiting; Python sync/async authorities request admission
+  before pumping their worker. The six real-server SQLite and live pgvector 16
+  sync/async success/error cells pass; the shared query parser unit test and
+  public SQLite synchronous-resume test pass. `cargo check`, server build,
+  formatting, and Ruff pass. A writable Linux `rust:1.97.1-bookworm` container
+  passed the query-policy and durable SQLite suspend/resume tests (**1 each**).
+  The same two focused tests also pass in a clean Ubuntu 24.04 container using
+  Rust 1.97.1 (**2 passed**); this adds an OS image check, not a separate
+  production/dev behavior contract. The full API library suite passes on both
+  Windows and Ubuntu 24.04: **402 passed, 39 ignored, 0 failed** (441
+  discovered on each). Windows used Cargo 1.91.1 and the repo venv's MCP/httpx
+  subprocess; Ubuntu used Rust 1.97.1 with matching subprocess dependencies.
+  The earlier restricted-shell Windows run hit `WSAEACCES 10013` connecting to
+  a loopback port and left fixture tasks awaiting `accept`; tests now preflight
+  ephemeral loopback ports and check OIDC response before joining its fixture.
+  Thus the earlier stall was the test runner's socket boundary, not a
+  production/dev mode difference. Ignored tests remain outside these results;
+  neither OS suite is production canary evidence.
+  Rebuilt HEAD `d11951781f4ee1b604e528fcaaa39bfce34362d5` and reran the native
+  HTTP workflow matrix across SQLite, SQLite+Chroma, and PostgreSQL (**6 passed**).
+  SQLite and SQLite+Chroma passed in external-worker and inline-server modes
+  (**4 passed**, 34.01s); PostgreSQL passed in both modes against the existing
+  disposable pgvector container (**2 passed**, 17.60s). All traces reported
+  `implementation_authority=rust` and `seam_crossings=[]`. Production/development
+  labels are not separate gates when behavior and configuration match; this
+  local test is not deployment canary evidence or full store-cutover evidence.
+  The same source and six-cell matrix also passed inside Linux Docker
+  `rust:1.97.1-bookworm` with a Linux-built server (**6 passed**, 24.87s),
+  including the existing pgvector container over `host.docker.internal`. This
+  confirms cross-OS execution behavior, not a distinct production-vs-development
+  contract; Docker build used a dedicated Cargo target volume.
+  Python-only run metadata and parent lease-renewal callbacks remain fail-closed
+  at the Python/Rust authority boundary. `_run_owner_id` now crosses as the
+  non-authoritative `expected_run_owner_id` assertion; Rust compares it with
+  the authenticated principal in memory, SQLite, and PostgreSQL admission. The
+  shared Rust submit DTO fixture covers this optional wire field.
+  The principal remains the sole source of persisted owner/ACL identity, and a
+  mismatch is rejected before run persistence. Trace context crosses sync and
+  async adapters as typed `RuntimeTraceContextV1`; each Rust backend strips
+  caller-supplied `_rt_trace_context` and installs only the validated admission
+  seed. Native Rust steps and Python callbacks inherit the same parent trace/span
+  from `contracts/golden/runtime-trace-context-v1.json`. Focused Python owner and
+  trace tests passed (**6 passed**); Ubuntu Docker Rust tests passed for the
+  shared owner assertion, in-memory admission, SQLite run service, and
+  PostgreSQL pre-storage rejection (**1 each**). Rust runtime trace tests passed
+  (**2 passed**) and reserved-state/DTO test passed (**1 passed**). These close
+  two context transport seams only, not the public runtime-owner/canary gate.
+  Current source `bf40f0f195d854a53aa6312baa52ecb3306ac8871a936e851cd7c00eafaf1a6b`
+  passed all five runtime-authority groups with zero skips: durable-worker
+  **185**, bijection **72**, bridge **30**, suspend-terminal **23**, and live
+  PostgreSQL **10**. This closes the local public-runtime-owner implementation
+  gate only. Production readiness flags remain unchanged; capability canary
+  and explicit `workflow-runtime` readiness decision remain open in the
+  cutover worklist.
+- [x] Phase 5: zero currently frozen HTTP operations; four syscall operations
+  remain explicitly deferred. The manifest records the remaining grouped
+  Python ownership, prerequisite Rust authorities, and exit evidence; its exact
+  operation set is bidirectionally checked against Rust's fail-closed inventory.
 - [x] The PostgreSQL Rust service now serves
   `GET /api/conversations/{conversation_id}/snapshots/latest` through its
   existing ACL-filtered snapshot projection, with Python-compatible namespace,
@@ -198,11 +431,18 @@ Only these local items remain in scope before production rollout:
   protocol authority, and required exit evidence.
 - [x] Phase 5: pass current-candidate local route/auth/capability/error,
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
-  `scripts/server_contract_gate.py` produced
-  `.codex/adr015-phase5-server-gate.json` for source
-  `294b384b37e423ca5b08c3c3d1be443de1c2549f9b7e185da689cba2502e7f00`:
-  REST/SSE 4, auth/syscall 41, MCP 13, frozen contracts 3, and live async
-  Chroma/PostgreSQL SSE 6 passed with zero failures, errors, or skips.
+  `scripts/server_contract_gate.py` re-run produced local report
+  `.tmp/adr015-runtime-refresh-pg/server-contract-after.json` for source
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`:
+  REST/SSE 4, auth/syscall 54, MCP 130, frozen contracts 3, and live async
+  Chroma/PostgreSQL SSE 6 passed (197 total) with zero failures, errors, or
+  skips. An initial restricted-shell run exposed the Windows Python 3.13
+  `socketpair` TCP fallback blocking at loopback `accept`; the same focused
+  test and full gate passed with local loopback access enabled. The gate
+  previously exposed and fixed a PostgreSQL startup `Engine` NameError; MCP
+  capability coverage now uses each registered tool's actual namespace
+  without weakening authorization. This is current local contract evidence,
+  not production rollout/canary evidence.
 - [ ] Phase 5: pass mixed-version/rolling-upgrade and operational
   implementation/parity/queue/replay/schema telemetry gates in a production
   canary. Local gate deliberately records this as unproven rather than
@@ -234,34 +474,24 @@ They are changed only if an existing Phase 4 parity/interoperability gate proves
 a concrete mismatch. Performance improvements beyond recorded thresholds and
 test-framework changes beyond the completed harness are deferred.
 
-### External rollout and elapsed-release gates
+### Library Acceptance and Authority
 
-These cannot be satisfied by more local unit-test implementation:
+Kogwistar is a library; there is no customer production fleet or traffic rollout
+to perform. Acceptance uses the same-candidate isolated Docker UAT, required
+interpreter CI, capability-specific backend tests, and backward-compatible
+rollback evidence. No `0%`/`1%`/`10%`/`50%`/`100%` customer canary is required.
 
-- [ ] Run one same-candidate production canary for each Rust-target capability,
-  each through `internal/test`, `1%`, `10%`, `50%`, and `100%`, with real
-  observation windows, zero unexplained mismatch, and tested rollback. The
-  schema-v2 rehearsal set proves required evidence shape only; neither it nor a
-  successful canary for one capability can promote another capability.
-  `contracts/canary/adr015-capability-canary-set-v2.json` is the committed
-  rehearsal template; its all-zero identity and `rehearsal` kind deliberately
-  fail a release promotion.
-- [ ] Make the ready Rust capabilities default only after production evidence.
-- [ ] Complete one full compatibility release with Python rollback retained.
-- [ ] Then satisfy the historical Phase 6 Rust-default deployment checks:
-  graph/storage/runtime/server behavior, Python API tests against Rust,
-  upgrade/rollback survival, and all consumer/E2E gates. Under ADR-022 these
-  checks do not retire the independently selectable Python implementation.
-
-Current objective facts: 2 of 8 Rust-target capability flags are ready; 6 are
-not ready; completed production capability canaries are 0 of 8 (0 of 40
-capability-stage observations); the required full compatibility release has not
-elapsed. These counts, not a floating percentage, govern ADR completion.
+`rust_cutover_ready` is a capability-specific permission to select Rust
+authority explicitly after its evidence gates pass. It does not switch defaults,
+remove Python, or imply customer deployment. Python remains independently
+supported. Current ledger: **2/8 Rust-target capabilities ready; 6 remain not
+ready**. Their blockers are implementation/parity/UAT evidence, not absent
+customer traffic.
 
 ### Historical local validation and release boundary
 
 ADR-015 has no current percentage-complete estimate. Earlier percentages mixed
-library implementation with downstream production rollout and are retained
+library implementation with downstream deployment rollout and are retained
 nowhere as a release criterion. The scope-locked ledger and the
 authority/canary counts above govern ADR completion; the fixed library release
 claim is recorded separately in `ADR-015-library-release.md`.
@@ -278,7 +508,7 @@ blocker. PostgreSQL live checks remain a separate capability-specific
 requirement: the Docker compatibility workers deliberately do not reach the
 host Docker daemon, so PostgreSQL fixtures correctly skip there rather than
 creating a false environmental pass. Neither result advances a capability flag
-until its listed capability-specific evidence and production canary pass.
+until its listed capability-specific evidence and isolated library UAT pass.
 
 The later metadata-only lifecycle candidate also passed the full current-source
 host selector (`505 passed, 4 skipped, 1182 deselected`) and all four isolated
@@ -432,14 +662,18 @@ not authorize a broad authority-flag promotion or replace production canaries.
   service projection against concurrent duplicate spawn. REST and MCP share
   this path. Rust syscall dispatch now owns spawn/terminate process,
   checkpoint, resume, and approval branches over existing authoritative run
-  and capability services. Conversation/tool-dependent syscall branches remain
-  explicitly fail-closed in `PENDING_SYSCALL_CUTOVER_OPS`. The
+  and capability services. Conversation/tool-dependent branches remain listed
+  in `PENDING_SYSCALL_CUTOVER_OPS` and are not cutover-ready; implemented
+  handlers may still run under explicit Rust selection in isolated UAT with
+  ordinary authorization checks. The inventory is a promotion gate, not a
+  runtime disable switch. The
   graph-validation route now validates frozen Node/Edge provenance shape and
   preserves Python's metadata-pointer lift without touching storage. Three
   visualization HTML shells are embedded from the existing packaged templates;
   unresolved Jinja drift fails closed. The data-bearing D3 bundle remains
-  Python-owned until graph reads cut over. API coverage is 30/30; 16
-  frozen server operations remain Python-owned.
+  Python-owned until graph reads cut over. The frozen HTTP route inventory is
+  empty; four conversation/tool syscalls remain listed as not promotion-ready,
+  not as disabled Rust handlers.
 - Focused execution exposed and fixed a pre-existing capability regression:
   capability snapshots again require both `project_view` and
   `read_security_scope`. The capability contract file now imports its fixture
@@ -483,14 +717,19 @@ not authorize a broad authority-flag promotion or replace production canaries.
   lane, and projection-contract tests pass; workspace Clippy remains warning-free.
   Serving projection namespace/cursor/schema metadata also comes from one shared
   store-contract helper, preventing backend-local projection field drift.
-- Current-source Phase 4 runtime evidence is green: sync/async bijection
-  68/68, bridge parity 17/17, non-slow suspend/terminal coverage 23/23, and
-  SQLite/PostgreSQL checkpoint, fault rollback, restart, claimed-worker, and
-  handoff coverage 37/37 (the PostgreSQL cases used a live pgvector container).
-  A current native extension was rebuilt before the latter gate; an initial
-  34-failure run was diagnosed as the stale ignored local `_rust.pyd` rejecting
-  the newer `transaction_id` ABI field, not a runtime semantic regression.
-  Rebuilt current Rust server then passed the real TCP SQLite authority E2E.
+- Current-source Phase 4 runtime gate passes all 311 tests with zero failures,
+  errors, or skips: durable worker 184, sync/async bijection 72, bridge parity
+  22, suspend/terminal 23, and live PostgreSQL 10. Source SHA-256 is
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc`; the
+  current native extension SHA-256 is
+  `a8986916cbb62f139582c8f4614d7b0d59c2f33c2e990b385071b8fb9143dfff`.
+  The regression fix removes schema DDL from each PostgreSQL embedding-worker
+  batch; server startup remains the schema-bootstrap owner, avoiding DDL/DML
+  deadlocks during runtime claims. The focused Python-worker/PostgreSQL case
+  passes against the rebuilt server, and the complete gate passes against the
+  live pgvector container. This is local Phase 4 evidence, not production
+  canary or `workflow-runtime` cutover readiness. Full report:
+  `.tmp/adr015-runtime-refresh-pg/runtime-authority-after.json`.
 - Host-native focused verification now has a persisted exact-ABI build and smoke
   path. It builds a wheel for the selected Python interpreter, atomically
   refreshes the ignored source-tree extension, records source/wheel/extension
@@ -536,9 +775,11 @@ library delivery item. It means no downstream adopter has supplied the independe
 deployment canary evidence required to make Rust its live default writer.
 
 - Public PostgreSQL meta/event-log, projection, run-registry, and queue facades
-  are implemented behind the coordinated sync PostgreSQL selector. Fresh
-  current-candidate four-layer evidence now passes, but the capability readiness
-  flags remain false until capability-specific production canaries exist.
+  are implemented behind the coordinated sync PostgreSQL selector. Earlier
+  four-layer evidence passed for its then-current candidate; current source
+  `f548410c70b09cdba877ef80d4ea3b3f60ed899559f228d48a7f6813623e9ccc` has fresh
+  Phase 3/4/5 evidence but still needs a same-candidate four-layer run. Capability
+  readiness flags remain false until capability-specific production canaries.
   `KOGWISTAR_IMPL_META_STORE=rust`
   independently promotes only the ready `sqlite-meta` capability on SQLite.
 - Sync PostgreSQL base graph mutation, replay, repair, and rollback writers are
@@ -546,37 +787,60 @@ deployment canary evidence required to make Rust its live default writer.
   node-ref/endpoint tables remain disposable Python adapters driven by native
   index jobs. `graph-pgvector` remains not ready pending capability-specific
   production canaries. Chroma remains a Python single-writer adapter.
-- Coordinated sync PostgreSQL now routes exact singleton base node/edge/document reads
-  through the native projection ABI. Rust projection reads accept legacy Python
-  default-scope rows lacking scope metadata. Single-vector node/edge queries
-  with exact-equality metadata filters also use the native projection ABI;
-  multi-row gets, complex-filter queries, and derived-index reads remain Python
-  adapters pending ordering and filter contract cutover.
+- Coordinated sync PostgreSQL routes base node/edge/document reads, including
+  multi-ID gets with exact-equality metadata filters, through the native
+  projection ABI. Rust projection reads accept legacy Python default-scope rows
+  lacking scope metadata. A live pgvector test verifies multi-ID node selection,
+  missing-ID omission, metadata filtering, and no Python backend fallback.
+  Native Rust reads and Python PostgreSQL collection reads both order by entity
+  ID; a regression test verifies deterministic Python get ordering. Complex-
+  filter queries and some derived-index reads remain Python adapters. Under
+  Rust PostgreSQL authority,
+  document-to-node ID lookup uses the native graph projection read,
+  document-to-edge ID lookup reuses the native endpoint projection reader, and
+  `nodes_by_doc`, `edges_by_doc`, and insertion-method lookups use native
+  node/edge reference projections. Ref-filter entity lists and
+  `extract_reference_contexts` hydrate entities and source text through the
+  native base projection path. Legacy `nodes_by_ids`, `edges_by_ids`, and
+  node/edge vector-search facades, and `check_document_exist` use the same
+  native projection read/query boundary.
+  When the insertion-method reference index has no match, its primary-record
+  fallback also stays native; both selectors inspect nested grounding spans
+  with shared insertion-method normalization. Python authority remains on its
+  Python backend. These bounded seam reductions do not close the
+  `graph-pgvector` gate.
 - Rust runtime owns recorded durable reducer/scheduler slices, not the full
   public `WorkflowRuntime` resolver and side-effect lifecycle.
   `ADR-015-runtime-semantics-contract.md` now freezes the bounded Python
   routing/failure/join/worker behavior required for that cutover and names its
-  executable evidence; implementation and fresh four-layer proof remain pending.
+  executable evidence. Local runtime gaps and their acceptance oracles are
+  tracked in `ADR-015-implementation-tasklets.md`; same-candidate four-layer proof
+  remains pending.
 - Rust server binary and application services exist, but server and runtime
   cutover readiness remain false.
+- Effective Rust server readiness now requires both pending HTTP-route and
+  pending syscall inventories to be empty, in addition to the declared flag
+  and route-count checks. `server_readiness_cannot_overclaim_pending_routes`
+  guards against manually setting the route count complete while syscalls
+  remain deferred. This is a fail-closed local invariant, not production
+  readiness evidence; Docker-backed runs remain UAT only.
 - The currently deferred Rust server routes and four remaining frozen
   conversation/tool syscalls are classified in `server_operation_deferrals` in
   `contracts/rust-port-v1.json`. Each records a prerequisite authority and
   capability-specific exit evidence; a contract test requires an exact,
-  duplicate-free match with Rust's direct fail-closed inventories. Implemented
+  duplicate-free match with Rust's pending cutover inventories. Implemented
   routes leave this inventory only after their native authority path and
   capability-specific evidence are verified. This closes classification only,
   not the remaining Rust authority or Phase 5 conformance gates.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
-- No downstream adopter production internal/test, 1%, 10%, 50%, and 100% canary
-  records exist. Those are explicitly deferred deployment operations, not library
-  release blockers.
+- Customer traffic canary records do not exist and are not required for library
+  acceptance; capability readiness remains governed by the explicit test/UAT gates.
 
 Every downstream default switch requires explicit `rust_cutover_ready: true`;
-omitted readiness fails closed. `scripts/rust_port_readiness.py` validates canary
-evidence. Rehearsal evidence may validate its shape but can never authorize a
-downstream ownership promotion.
+omitted readiness fails closed. `scripts/rust_port_readiness.py` verifies that
+compatibility evidence came from the isolated Docker UAT candidate; it does not
+authorize a default switch or claim customer deployment.
 
 ## Library delivery checklist
 

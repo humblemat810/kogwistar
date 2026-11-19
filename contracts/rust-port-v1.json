@@ -90,10 +90,10 @@
   "current_persistent_evidence": {
     "benchmark_report": "contracts/benchmarks/rust-persistent-sqlite-current-linux.json",
     "benchmark_command": ".venv/Scripts/python.exe scripts/rust_port_persistent_benchmark.py --items 100 --read-cycles 20 --samples 5 --output-root <runtime-dir> --report contracts/benchmarks/rust-persistent-sqlite-current-windows.json",
-    "scope": "persistent authoritative SQLite event and named-projection capabilities through the shipped Python and PyO3 facades",
-    "gate_status": "passed",
+    "scope": "historical diagnostic of persistent SQLite event and named-projection calls through the Python/PyO3 hybrid facade; timings are not a CI performance guarantee",
+    "gate_status": "diagnostic_only",
     "cutover_use": "sqlite-meta-authority-verified",
-    "result": "Persistent Rust handle removed per-call SQLite open/WAL churn. All p95 latency, throughput, peak RSS, and state-digest checks pass. KOGWISTAR_IMPL_META_STORE=rust routes the public SQLite meta facade to one Rust writer; clean-wheel core feature compatibility passed with Python rollback readability verified."
+    "result": "Historical measurements remain available for comparison, and persisted state parity was checked. CI performance acceptance now measures Python directly against the standalone Rust-native worker; hybrid timings are non-gating."
   },
   "runtime_serving_evidence": {
     "benchmark_report": "contracts/benchmarks/rust-runtime-serving-current-windows.json",
@@ -508,25 +508,9 @@
     "contract_version": 1,
     "status": "versioned-intentionally-deferred",
     "owner": "python-rollback-deployment",
-    "rule": "A deferred operation must remain listed in Rust's PENDING_SERVER_CUTOVER_ROUTES or PENDING_SYSCALL_CUTOVER_OPS, fail closed when sent directly to the Rust application service, and retain the Python rollback route. Removing an entry requires its listed authority and exit evidence; transport registration alone is insufficient.",
-    "route_groups": [
-      {
-        "name": "document-and-graph-mutations",
-        "owner": "python",
-        "status": "intentionally-deferred",
-        "required_authority": [
-          "graph-pgvector",
-          "queues-leases-lanes"
-        ],
-        "exit_evidence": "native graph mutation/read parity, derived-index admission/replay, rollback, and public route conformance",
-        "operations": [
-          {
-            "method": "DELETE",
-            "path": "/admin/doc/{doc_id}"
-          }
-        ]
-      }
-    ],
+    "rule": "A deferred operation remains listed in Rust's PENDING_SERVER_CUTOVER_ROUTES or PENDING_SYSCALL_CUTOVER_OPS and retains the Python fallback route. Deferred means not approved for capability readiness; it does not disable an implemented Rust handler in an explicitly selected local or isolated Docker UAT path. Capability-specific authority and exit evidence remain required; transport registration alone is insufficient.",
+    "execution_policy": "Explicit Rust selection may exercise implemented handlers in local or isolated Docker UAT with normal authorization and authority checks. This inventory blocks capability-readiness claims, not handler execution. Library acceptance requires capability-specific tests and same-candidate Docker UAT; no customer traffic rollout is implied.",
+    "route_groups": [],
     "syscall_group": {
       "owner": "python",
       "status": "intentionally-deferred",

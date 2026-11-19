@@ -130,6 +130,41 @@ def test_rust_trace_join_allows_session_lifecycle_count_differences() -> None:
     assert joined["trace_join"]["observed_bridge_replay_ffi_calls"] == 6
 
 
+def test_rust_trace_join_rejects_undeclared_serialization_seam() -> None:
+    result = _joined_rust_http_sample()
+    seam = result["seam_metrics"]
+    assert isinstance(seam, dict)
+    operations = seam["ffi_by_operation"]
+    assert isinstance(operations, dict)
+    operations["execute_python_callback"] = 1
+    seam["ffi_calls"] = sum(operations.values())
+
+    with pytest.raises(RuntimeError, match="undeclared FFI operations"):
+        _bind_trace_identity(
+            result,
+            run_id="run-a",
+            trace_sha256="trace-a",
+            expected_operations=2,
+            mode="rust_authority_http",
+        )
+
+
+def test_rust_trace_join_records_exact_declared_seam_profile() -> None:
+    result = _bind_trace_identity(
+        _joined_rust_http_sample(),
+        run_id="run-a",
+        trace_sha256="trace-a",
+        expected_operations=2,
+        mode="rust_authority_http",
+    )
+
+    assert result["trace_join"]["observed_serialization_seams"] == [
+        "mcp_http_json",
+        "mcp_tool_dispatch",
+        "python_rust_json_ffi",
+    ]
+
+
 def test_rust_trace_join_rejects_graph_call_count_difference() -> None:
     result = _joined_rust_http_sample()
     bridge = result["native_bridge_trace"]
@@ -229,6 +264,11 @@ def test_trace_attribution_joins_http_ingress_and_rust_transaction_owner() -> No
         "serialized_bytes": 100,
         "transaction_boundaries": 2,
         "transaction_owner": "rust_meta_store",
+        "observed_serialization_seams": [
+            "mcp_http_json",
+            "mcp_tool_dispatch",
+            "python_rust_json_ffi",
+        ],
         "observed_bridge_input_bytes": 90,
         "observed_bridge_output_bytes": 60,
         "observed_bridge_replay_ffi_calls": 4,
@@ -373,6 +413,13 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
             tmp_path / "rust-authority-http.sqlite3", trace, "rust_authority_http"
         )
     )
+    http_joined = _bind_trace_identity(
+        http,
+        run_id="integration-run",
+        trace_sha256="integration-trace",
+        expected_operations=len(trace),
+        mode="http",
+    )
     rust_http_joined = _bind_trace_identity(
         rust_authority_http,
         run_id="integration-run",
@@ -400,6 +447,10 @@ def test_mcp_registry_and_local_http_run_the_same_trace(tmp_path) -> None:
     assert rust_authority_http["seam_metrics"]["ffi_calls"] > 0
     assert rust_authority_http["seam_metrics"]["tool_dispatches"] == len(trace)
     assert rust_authority_http["seam_metrics"]["transport_requests"] == len(trace)
+    assert http_joined["trace_join"]["observed_serialization_seams"] == [
+        "mcp_http_json",
+        "mcp_tool_dispatch",
+    ]
     assert rust_http_joined["trace_join"]["transaction_owner"] == "rust_meta_store"
     assert rust_http_joined["trace_join"]["ingress_requests"] == len(trace)
     assert rust_http_joined["trace_join"]["bridge_replay_state_matches"] is True
@@ -415,8 +466,29 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
     rust_result = _run_one_sync(
         tmp_path / "rust-authority.sqlite3", trace, "rust_authority"
     )
+    python_joined = _bind_trace_identity(
+        python_result,
+        run_id="sync-run",
+        trace_sha256="sync-trace",
+        expected_operations=len(trace),
+        mode="in_process",
+    )
+    rust_joined = _bind_trace_identity(
+        rust_result,
+        run_id="sync-run",
+        trace_sha256="sync-trace",
+        expected_operations=len(trace),
+        mode="rust_authority",
+    )
 
     assert python_result["state_digest"] == rust_result["state_digest"]
+    assert python_joined["trace_join"]["observed_serialization_seams"] == [
+        "mcp_tool_dispatch"
+    ]
+    assert rust_joined["trace_join"]["observed_serialization_seams"] == [
+        "mcp_tool_dispatch",
+        "python_rust_json_ffi",
+    ]
     assert python_result["operations"] == rust_result["operations"] == len(trace)
     assert python_result["seam_metrics"]["tool_dispatches"] == len(trace)
     assert python_result["seam_metrics"]["ffi_calls"] == 0
@@ -432,6 +504,7 @@ def test_sync_mcp_modes_preserve_the_same_trace_digest(tmp_path) -> None:
 
 
 @pytest.mark.ci_full
+@pytest.mark.requires_cargo
 def test_rust_native_http_transport_attribution_is_complete(tmp_path) -> None:
     trace = build_read_after_write_trace(2)
     result = asyncio.run(
@@ -467,6 +540,13 @@ def test_rust_batched_write_seam_preserves_trace_and_commit_boundaries(
     batched = _run_one_sync(
         tmp_path / "rust-batched.sqlite3", trace, "rust_authority_batch_write"
     )
+    batch_joined = _bind_trace_identity(
+        batched,
+        run_id="batch-run",
+        trace_sha256="batch-trace",
+        expected_operations=len(trace),
+        mode="rust_authority_batch_write",
+    )
 
     assert ordinary["state_digest"] == batched["state_digest"]
     assert ordinary["operations"] == batched["operations"] == len(trace)
@@ -486,6 +566,11 @@ def test_rust_batched_write_seam_preserves_trace_and_commit_boundaries(
         == ordinary["seam_metrics"]["transaction_boundaries"]
     )
     assert batched["native_bridge_trace"]["ffi_calls"] == batched["seam_metrics"]["ffi_calls"]
+    assert batch_joined["trace_join"]["transaction_owner_operation"] == "batch"
+    assert batch_joined["trace_join"]["observed_serialization_seams"] == [
+        "mcp_tool_dispatch",
+        "python_rust_json_ffi",
+    ]
 
 
 def test_native_seam_metrics_require_complete_zero_ffi_attestation() -> None:
@@ -631,6 +716,7 @@ def test_native_seam_metrics_reject_false_or_incomplete_attestation(
 
 
 @pytest.mark.ci_full
+@pytest.mark.requires_cargo
 def test_concurrent_mcp_transports_preserve_exact_visibility(tmp_path) -> None:
     report = _run_concurrent_mcp_profiles(tmp_path, items=2, samples=2)
 

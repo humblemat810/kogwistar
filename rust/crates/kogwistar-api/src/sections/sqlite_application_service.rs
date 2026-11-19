@@ -35,11 +35,15 @@ impl ApplicationService for SqliteRunApplicationService {
                 run_id: None,
                 recipient_ids: vec!["rust-native-worker".to_owned()],
             };
+            let lease_seconds = input.lease_seconds;
             let recipients = effective_runtime_claim_recipients(&input.recipient_ids)?;
             let mut claimed = self.claim_runtime_work_items(input, recipients)?;
             let Some(work) = claimed.pop() else {
                 return Ok(false);
             };
+            let message_id = work.message_id.clone();
+            let claimed_by = work.claimed_by.clone();
+            let operation = async move {
             let operation = work
                 .payload
                 .get("op")
@@ -279,7 +283,23 @@ impl ApplicationService for SqliteRunApplicationService {
                     applied.status
                 ));
             }
-            Ok(true)
+            Ok::<bool, String>(true)
+            };
+            match kogwistar_engine::with_lane_claim_renewal(
+                &self.store,
+                &message_id,
+                &claimed_by,
+                lease_seconds,
+                operation,
+            )
+            .await
+            {
+                Ok(Some(result)) => result,
+                Ok(None) => Err(
+                    "native runtime lane lease was lost; result was not committed".to_owned(),
+                ),
+                Err(error) => Err(format!("native runtime lane lease renewal failed: {error}")),
+            }
         })
     }
 
@@ -818,6 +838,9 @@ impl ApplicationService for SqliteRunApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "DELETE" && admin_document_delete_id(path).is_some() {
+            return self.store.supports_document_rollback();
+        }
         let is_composed_search_index = method == "GET"
             && path == "/api/search_index_hybrid"
             && self.search_index_fts.is_some()
@@ -918,6 +941,16 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "DELETE"
+                && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
+            {
+                return admin_document_delete_effect(
+                    &request,
+                    &self.store,
+                    document_id,
+                )
+                .await;
+            }
             if request.method == "POST"
                 && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
                 && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["resume"]
@@ -958,6 +991,9 @@ impl ApplicationService for SqliteRunApplicationService {
                 handoff.path_and_query = format!("/api/workflow/runs/{run_id}/resume");
                 let admitted = self.execute_sync(handoff);
                 if !(200..300).contains(&admitted.status) {
+                    return admitted;
+                }
+                if !query_boolean(&request.path_and_query, "wait_for_completion", true) {
                     return admitted;
                 }
                 loop {

@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 
 from kogwistar._rust_bridge import RustParityError, store_sqlite
+from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.runtime.rust_runtime_adapter import (
     apply_claimed_worker_result,
     apply_recorded_transition,
@@ -111,7 +112,7 @@ def _result() -> dict[str, Any]:
         "parent_token_id": None,
         "state_update": [["u", {"answer": "worker"}]],
         "frontier": {
-            "pending": [],
+            "pending": [["next", 1, "token-1", None]],
             "suspended": [],
             "join_node_ids": [],
             "join_outstanding": [],
@@ -131,7 +132,10 @@ def _events(path: Path) -> list[dict[str, Any]]:
     )
 
 
-def test_claimed_worker_result_atomically_records_and_acks(tmp_path: Path) -> None:
+def test_claimed_worker_result_atomically_records_and_acks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "python")
     path = tmp_path / "handoff.sqlite"
     _start(path)
     _request(path)
@@ -155,6 +159,29 @@ def test_claimed_worker_result_atomically_records_and_acks(tmp_path: Path) -> No
     assert reopened is not None
     assert reopened["state"]["answer"] == "worker"
     assert reopened["last_step_seq"] == 0
+    assert reopened["frontier"]["pending"] == [["next", 1, "token-1", None]]
+
+    python_reopened = EngineSQLite(tmp_path, filename=path.name)
+    python_reopened.ensure_initialized()
+    python_events = python_reopened.list_server_run_events("run-1")
+    python_run = python_reopened.get_server_run("run-1")
+    python_lane_messages = python_reopened.list_projected_lane_messages(
+        namespace="runtime", run_id="run-1", limit=10
+    )
+    python_projection = python_reopened.get_named_projection(
+        "workflow_runtime_current_state", "run-1"
+    )
+    assert [event["seq"] for event in python_events] == [1, 2]
+    assert python_run is not None and python_run["status"] == "running"
+    assert len(python_lane_messages) == 1
+    assert python_lane_messages[0].message_id == "request-1"
+    assert python_lane_messages[0].status == "completed"
+    assert python_projection is not None
+    assert python_projection["last_authoritative_seq"] == 2
+    assert python_projection["payload"]["state"]["answer"] == "worker"
+    assert python_projection["payload"]["frontier"]["pending"] == [
+        ["next", 1, "token-1", None]
+    ]
 
     changed = copy.deepcopy(_result())
     changed["result"] = {"answer": "changed"}
@@ -239,3 +266,23 @@ def test_fault_after_writes_rolls_back_result_checkpoint_and_ack(
     assert reopened is not None
     assert reopened["state"]["answer"] == "seed"
     assert reopened["last_step_seq"] == -1
+
+    accepted = apply_claimed_worker_result(
+        path=path, handoff=_handoff(), transition=_result()
+    )
+    duplicate = apply_claimed_worker_result(
+        path=path, handoff=_handoff(), transition=_result()
+    )
+    assert accepted["idempotent"] is False
+    assert duplicate["idempotent"] is True
+    assert duplicate["event_seq"] == accepted["event_seq"] == 2
+    assert _lane(path)["status"] == "completed"
+    assert len(_events(path)) == 2
+    reopened_after_retry = read_recorded_runtime_state(
+        path=path, run_id="run-1", workflow_id="wf-1", conversation_id="conv-1"
+    )
+    assert reopened_after_retry is not None
+    assert reopened_after_retry["state"]["answer"] == "worker"
+    assert reopened_after_retry["frontier"]["pending"] == [
+        ["next", 1, "token-1", None]
+    ]

@@ -5,6 +5,14 @@ impl DocumentStore for SqliteStore {
         true
     }
 
+    fn supports_document_projection_delete(&self) -> bool {
+        true
+    }
+
+    fn supports_document_rollback(&self) -> bool {
+        true
+    }
+
     async fn document_projection_ids(
         &self,
         scope: GraphScope,
@@ -40,5 +48,42 @@ impl DocumentStore for SqliteStore {
             });
         }
         SqliteStore::upsert_source_document_projection(self, write).map_err(trait_error)
+    }
+
+    async fn delete_document_projection(
+        &self,
+        scope: GraphScope,
+        document_id: String,
+    ) -> StoreResult<bool> {
+        SqliteStore::delete_source_document_projection(self, &scope, &document_id)
+            .map_err(trait_error)
+    }
+
+    async fn delete_document_projections_by_source_id(
+        &self,
+        scope: GraphScope,
+        source_document_id: String,
+    ) -> StoreResult<Vec<String>> {
+        SqliteStore::delete_source_document_projections_by_source_id(
+            self,
+            &scope,
+            &source_document_id,
+        )
+        .map_err(trait_error)
+    }
+
+    async fn rollback_document(
+        &self,
+        request: DocumentRollbackRequest,
+    ) -> StoreResult<AppliedDocumentRollback> {
+        SqliteStore::rollback_document(
+            self,
+            request.scope,
+            request.document_id,
+            request.operation_id,
+            request.deleted_at,
+            request.page_size,
+        )
+        .map_err(trait_error)
     }
 }

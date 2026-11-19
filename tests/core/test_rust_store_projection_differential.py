@@ -156,6 +156,79 @@ def test_postgres_named_projections_python_and_rust_interoperate(sa_engine, pg_d
     _assert_projection_contract(call, db.get_named_projection, db.list_named_projections, raw)
 
 
+def test_postgres_projection_valid_invalid_fixture_matches_python_rust(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, _ = _require_pg(pg_dsn, pg_schema)
+    schema = f"gke_projection_golden_{uuid.uuid4().hex}"
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "postgres-projection-parity-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    valid = fixture["valid_operation"]
+    invalid = fixture["invalid_operation"]
+    call = lambda operation: store_postgres(dsn=dsn, schema=schema, operation=operation)
+    db = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    try:
+        call({"kind": "ensure_schema"})
+        db.ensure_initialized()
+
+        # Python-authored and Rust-authored rows must deserialize identically.
+        db.replace_named_projection(
+            valid["namespace"],
+            "python-written",
+            valid["payload"],
+            last_authoritative_seq=valid["last_authoritative_seq"],
+            last_materialized_seq=valid["last_materialized_seq"],
+            projection_schema_version=valid["projection_schema_version"],
+            materialization_status=valid["materialization_status"],
+        )
+        python_row = db.get_named_projection(valid["namespace"], "python-written")
+        assert call(
+            {
+                "namespace": valid["namespace"],
+                "key": "python-written",
+                "kind": "get_named_projection",
+            }
+        ) == python_row
+
+        call(valid)
+        rust_row = call(
+            {
+                "kind": "get_named_projection",
+                "namespace": valid["namespace"],
+                "key": valid["key"],
+            }
+        )
+        assert db.get_named_projection(valid["namespace"], valid["key"]) == rust_row
+        assert rust_row["payload"] == valid["payload"]
+        assert rust_row["last_authoritative_seq"] == valid["last_authoritative_seq"]
+        assert rust_row["last_materialized_seq"] == valid["last_materialized_seq"]
+        assert (
+            rust_row["projection_schema_version"]
+            == valid["projection_schema_version"]
+        )
+        assert rust_row["materialization_status"] == valid["materialization_status"]
+
+        with pytest.raises(RustParityError) as exc:
+            call(invalid)
+        assert exc.value.code == fixture["expected_invalid_error"]
+        assert db.get_named_projection(invalid["namespace"], invalid["key"]) is None
+        assert call(
+            {
+                "kind": "get_named_projection",
+                "namespace": invalid["namespace"],
+                "key": invalid["key"],
+            }
+        ) is None
+    finally:
+        with sa_engine.begin() as conn:
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
 def test_postgres_rust_created_projection_schema_python_reads_and_atomic_batch(sa_engine, pg_dsn: str | None, pg_schema: str | None) -> None:
     dsn, _ = _require_pg(pg_dsn, pg_schema)
     schema = f"gke_projection_{uuid.uuid4().hex}"
@@ -184,5 +257,90 @@ def test_postgres_rust_created_projection_schema_python_reads_and_atomic_batch(s
         assert db.get_latest_entity_event_seq(namespace="atomic") == 1
         assert db.get_named_projection("atomic", "rollback") is None
     finally:
+        with sa_engine.begin() as conn:
+            conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_postgres_source_document_group_delete_crosses_python_rust_session(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, _ = _require_pg(pg_dsn, pg_schema)
+    schema = f"gke_document_delete_{uuid.uuid4().hex}"
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.json_types import JsonValue
+
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=3, schema=schema)
+    rust_store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        backend.ensure_schema()
+        rust_store.ensure_initialized()
+        ids = [
+            "source-doc",
+            "source-doc::chunk-1",
+            "source-doc::chunk-2",
+            "unrelated-doc",
+            "source-doc::other-workspace",
+        ]
+        metadatas: list[dict[str, JsonValue]] = [
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-a",
+                "graph_space": "knowledge",
+                "doc_id": "unrelated-doc",
+            },
+            {
+                "namespace": "docs",
+                "workspace_id": "workspace-b",
+                "graph_space": "knowledge",
+                "doc_id": "source-doc",
+            },
+        ]
+        backend.document_upsert(
+            ids=ids,
+            documents=[f"text-{item}" for item in ids],
+            metadatas=metadatas,
+        )
+
+        with rust_store.native_session.transaction():
+            deleted = rust_store.delete_document_projections_by_source_id(
+                source_document_id="source-doc",
+                namespace="docs",
+                workspace_id="workspace-a",
+                graph_space="knowledge",
+            )
+        assert deleted == ["source-doc", "source-doc::chunk-1", "source-doc::chunk-2"]
+        assert rust_store.delete_document_projections_by_source_id(
+            source_document_id="source-doc",
+            namespace="docs",
+            workspace_id="workspace-a",
+            graph_space="knowledge",
+        ) == []
+
+        remaining = backend.document_get(include=["metadatas"])
+        assert sorted(remaining["ids"]) == [
+            "source-doc::other-workspace",
+            "unrelated-doc",
+        ]
+    finally:
+        rust_store.close()
         with sa_engine.begin() as conn:
             conn.exec_driver_sql(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

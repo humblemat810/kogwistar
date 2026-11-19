@@ -30,7 +30,15 @@ def test_python_mount_memory_result_matches_shared_wire_fixture() -> None:
             / "contracts/golden/mount-memory-result-v1.json"
         ).read_text(encoding="utf-8")
     )
-    owner = SimpleNamespace(_conversation_service=lambda: _SnapshotService())
+    acl = SimpleNamespace(
+        current_principal_context=lambda: ("test-principal", (), None),
+        decide_acl=lambda **_: SimpleNamespace(visible=True),
+    )
+    engine = SimpleNamespace(acl=acl, kg_graph_type="conversation")
+    owner = SimpleNamespace(
+        _conversation_service=lambda: _SnapshotService(),
+        _conversation_engine=lambda: engine,
+    )
     queries = _ConversationQueryService(cast(Any, owner))
 
     result = queries.latest_snapshot(

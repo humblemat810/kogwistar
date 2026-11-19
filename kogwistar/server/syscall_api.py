@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from .chat_service import ChatRunService
+from .chat_service_shared import IdempotencyConflictError
 from .error_reporting import internal_http_error
 
 
@@ -26,6 +27,8 @@ class SyscallResponse(BaseModel):
 
 
 def _as_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, IdempotencyConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ValueError):
@@ -122,6 +125,13 @@ def create_syscall_router(
 ) -> APIRouter:
     router = APIRouter(prefix="/api/syscall", tags=["syscall"])
     audit_log: list[dict[str, Any]] = []
+
+    def mount_memory(service: ChatRunService, args: dict[str, Any]) -> dict[str, Any]:
+        return service.latest_snapshot(
+            str(args["conversation_id"]),
+            run_id=args.get("run_id"),
+            stage=args.get("stage"),
+        )
 
     @router.get("/v1")
     def list_syscalls() -> dict[str, Any]:
@@ -235,6 +245,7 @@ def create_syscall_router(
                     user_id=inp.args.get("user_id") or (get_user_id() if callable(get_user_id) else None),
                     text=str(inp.args["text"]),
                     workflow_id=str(inp.args.get("workflow_id") or "agentic_answering.v2"),
+                    idempotency_key=inp.args.get("idempotency_key"),
                 )
                 return _ok(version, op, payload)
             if op == "receive_message":
@@ -247,11 +258,7 @@ def create_syscall_router(
             if op == "mount_memory":
                 require_role("ro")
                 require_namespace(conversation_namespace)
-                payload = service.latest_snapshot(
-                    str(inp.args["conversation_id"]),
-                    run_id=inp.args.get("run_id"),
-                    stage=inp.args.get("stage"),
-                )
+                payload = mount_memory(service, inp.args)
                 resp = _ok(version, op, payload)
                 audit_log.append({"ts_ms": started_at, "version": version, "op": op, "status": "ok"})
                 return resp

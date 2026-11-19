@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,8 +24,16 @@ def _native_extension() -> Any:
     return pytest.importorskip("kogwistar._rust")
 
 
-def _rust(dsn: str | None, schema: str, operation: dict[str, Any]) -> Any:
-    return store_postgres(dsn=dsn, schema=schema, operation=operation)
+def _rust(
+    dsn: str | None,
+    schema: str,
+    operation: dict[str, Any],
+    *,
+    context_id: str | None = None,
+) -> Any:
+    return store_postgres(
+        dsn=dsn, schema=schema, operation=operation, context_id=context_id
+    )
 
 
 def _require_pg(pg_dsn: str | None, pg_schema: str | None) -> tuple[str, str]:
@@ -81,6 +94,55 @@ def test_python_created_schema_rust_reads_writes_and_replay_maps_exclusive(
         schema,
         {"kind": "exclusive_raw_replay", "namespace": "alpha", "after_seq": 1, "limit": 10},
     )[0]["seq"] == 2
+
+
+def test_postgres_valid_invalid_operations_match_shared_golden_fixture(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "postgres-event-store-parity-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    valid = fixture["valid_event"]
+    namespace = f"{valid['namespace']}-{uuid.uuid4().hex}"
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    python.append_entity_event(
+        namespace=namespace,
+        event_id="python-golden",
+        entity_kind=valid["entity_kind"],
+        entity_id=valid["entity_id"],
+        op=valid["op"],
+        payload_json=valid["payload_json"],
+    )
+    replay = _rust(
+        dsn,
+        schema,
+        {"kind": "exclusive_raw_replay", "namespace": namespace, "after_seq": 0, "limit": 10},
+    )
+    assert replay[0]["payload_json"] == valid["payload_json"]
+    assert replay[0]["entity_id"] == valid["entity_id"]
+
+    rust_event = {
+        **valid,
+        "kind": "raw_append",
+        "namespace": namespace,
+        "event_id": "rust-golden",
+    }
+    assert _rust(dsn, schema, rust_event)["seq"] == 2
+    assert list(python.iter_entity_events(namespace=namespace, from_seq=1)) == [
+        (1, "node", "node-雪", "UPSERT", valid["payload_json"]),
+        (2, "node", "node-雪", "UPSERT", valid["payload_json"]),
+    ]
+
+    invalid = {**fixture["invalid_operation"], "namespace": namespace}
+    with pytest.raises(RustParityError) as rejected:
+        _rust(dsn, schema, invalid)
+    assert rejected.value.code == fixture["expected_invalid_error"]
 
 
 def test_rust_created_schema_python_reads_writes_and_cursor_contracts(
@@ -243,6 +305,86 @@ def test_rust_postgres_concurrent_idempotency_collision_and_atomic_rollback(
     assert _rust(dsn, schema, {"kind": "cursor_get", "namespace": "rollback", "consumer": "sink"})[
         "last_seq"
     ] == 0
+
+
+def test_rust_postgres_lost_ack_replays_committed_event_after_reopen(
+    sa_engine, pg_dsn: str | None, pg_schema: str | None
+) -> None:
+    # PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-postgres/src/event_projection.rs#append_raw_entity_event; python=kogwistar/engine_core/engine_postgres_meta.py#append_entity_event; rust_test=rust/crates/kogwistar-store-postgres/src/tests/events.rs#postgres_integration_event_store_core; python_test=tests/core/test_rust_store_postgres_differential.py#test_rust_postgres_lost_ack_replays_committed_event_after_reopen; note=commit followed by lost acknowledgement must replay one canonical event after reopening either language facade.
+    dsn, schema = _require_pg(pg_dsn, pg_schema)
+    python = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python.ensure_initialized()
+    context_id = uuid.uuid4().hex
+    event_id = f"lost-ack-{uuid.uuid4().hex}"
+    append = {
+        "kind": "raw_append",
+        "namespace": "lost-ack",
+        "event_id": event_id,
+        "entity_kind": "node",
+        "entity_id": "node-after-lost-ack",
+        "op": "UPSERT",
+        "payload_json": '{"value":"committed"}',
+    }
+
+    def commit_then_drop_ack() -> None:
+        _rust(dsn, schema, append, context_id=context_id)
+        raise TimeoutError("simulated acknowledgement loss after commit")
+
+    with pytest.raises(TimeoutError, match="acknowledgement loss"):
+        commit_then_drop_ack()
+
+    # Close the original native context, then use a fresh Python facade and
+    # separate Rust-owning process to prove recovery survives process memory loss.
+    _rust(dsn, schema, {"kind": "close_store"}, context_id=context_id)
+    python_reopened = EnginePostgresMetaStore(engine=sa_engine, schema=schema)
+    python_events = list(
+        python_reopened.iter_entity_events(namespace="lost-ack", from_seq=1)
+    )
+    assert python_events == [
+        (1, "node", "node-after-lost-ack", "UPSERT", '{"value":"committed"}')
+    ]
+    child_code = """
+import json, os, sys, uuid
+from kogwistar._rust_bridge import store_postgres
+dsn = os.environ["KOGWISTAR_LOST_ACK_TEST_DSN"]
+schema, append_json = sys.argv[1:]
+append = json.loads(append_json)
+context_id = uuid.uuid4().hex
+retry = store_postgres(dsn=dsn, schema=schema, context_id=context_id, operation=append)
+replay = store_postgres(
+    dsn=dsn,
+    schema=schema,
+    context_id=context_id,
+    operation={"kind":"exclusive_raw_replay", "namespace":"lost-ack", "after_seq":0, "limit":10},
+)
+latest = store_postgres(
+    dsn=dsn,
+    schema=schema,
+    context_id=context_id,
+    operation={"kind":"latest_retained_event_seq", "namespace":"lost-ack"},
+)
+print(json.dumps({"retry": retry, "replay": replay, "latest": latest}))
+"""
+    child_env = os.environ.copy()
+    child_env["KOGWISTAR_LOST_ACK_TEST_DSN"] = dsn
+    completed = subprocess.run(
+        [sys.executable, "-c", child_code, schema, json.dumps(append)],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env=child_env,
+    )
+    recovered = json.loads(completed.stdout)
+    assert recovered["retry"]["inserted"] is False
+    assert recovered["retry"]["seq"] == 1
+    assert recovered["retry"]["event"]["event_id"] == event_id
+    assert (
+        recovered["retry"]["event"]["payload_json"]
+        == '{"value":"committed"}'
+    )
+    assert recovered["replay"] == [recovered["retry"]["event"]]
+    assert recovered["latest"] == 1
 
 
 def test_rust_postgres_schema_isolation_and_rejects_unknown_fields(

@@ -15,13 +15,13 @@ use kogwistar_runtime::{
 };
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser,
-    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, EntityEvent,
-    EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
-    EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation, GraphMutationBatch,
-    GraphRecord, GraphScope, IndexJob, IndexJobClaimFilter, IndexJobReadStore, IndexJobWriteStore,
-    LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore, LaneMessageWriteStore,
-    NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
+    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentRollbackRequest, DocumentStore,
+    EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
+    EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphMutation,
+    GraphMutationBatch, GraphRecord, GraphScope, IndexJob, IndexJobClaimFilter, IndexJobReadStore,
+    IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter, LaneMessageReadStore,
+    LaneMessageWriteStore, NamedProjection, NamedProjectionWrite, NewEntityEvent, NewIndexJob,
+    NewProjectedLaneMessage, ProjectedLaneMessage, ProjectionReadStore, ProjectionWriteStore,
     RUNTIME_CURRENT_STATE_NAMESPACE, ReplayCursor, ResolveExternalIdentity, ServerRun,
     ServerRunCreate, ServerRunEvent, ServerRunReadStore, ServerRunUpdate, ServerRunWriteStore,
     StoreError, StoreResult, WorkflowDesignDelta, WorkflowDesignDeltaWrite,
@@ -122,8 +122,11 @@ use authority::{ProcessAuthorityLock, database_initialization_lock, is_private_m
 #[cfg(test)]
 use authority_identity::ACTIVE_DATABASE_IDENTITIES;
 use authority_identity::{register_active_database_identity, unregister_active_database_identity};
-pub use connection_uow::SqliteUnitOfWork;
 use connection_uow::*;
+pub use connection_uow::{
+    AppliedDocumentEdgeRollbackPage, AppliedDocumentNodeRollbackPage, AppliedDocumentRollback,
+    SqliteUnitOfWork,
+};
 use events_recovery::*;
 use index_jobs::*;
 use lane_messages::*;

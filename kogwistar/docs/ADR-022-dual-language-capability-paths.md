@@ -105,21 +105,45 @@ themselves proof of full backend or endpoint parity.
 
 ```mermaid
 flowchart LR
-    C[REST / MCP / SDK caller] --> S{Select capability implementation}
-    S --> P[Python ingress and runtime]
-    S --> R[Rust ingress and runtime]
-    P --> PG[Python graph and persistence coordination]
-    R --> RG[Rust graph and persistence coordination]
-    P <-->|versioned DTO / PyO3 / worker protocol| R
-    PG --> B[(Authoritative store)]
-    RG --> B
+    C[REST / MCP / SDK caller] -->|O1 request handling · Python OPT-IN · DL-17| API[Public API]
+    C -->|O1 request handling · Rust OPT-IN · DL-03| API
+
+    API -->|O2 workflow execution · Python ENABLED · DL-14A| RT[Workflow runtime]
+    API -->|O2 workflow execution · Rust OPT-IN · DL-13| RT
+
+    RT -->|O3 PostgreSQL graph / vector ops · Python ENABLED · DL-16| G[PostgreSQL graph / vector operations]
+    RT -->|O3 PostgreSQL graph / vector ops · Rust OPT-IN · DL-16I| G
+
+    G -->|O4 SQLite metadata · Python ENABLED · DL-07A| SQ[(SQLite metadata store)]
+    G -->|O4 SQLite metadata · Rust OPT-IN · DL-18| SQ
+
+    G -->|O5 PostgreSQL event log · Python ENABLED · DL-07B| PG[(PostgreSQL graph store)]
+    G -->|O5 PostgreSQL event log · Rust OPT-IN · DL-07B| PG
+
+    RT -->|O6 run projections / registry · Python ENABLED · DL-09| PR[Run projections / registry]
+    RT -->|O6 run projections / registry · Rust DISABLED · DL-09| PR
+
+    RT -->|O7 provider invocation · Python UNVERIFIED| P[LLM / tool provider]
+    RT -->|O7 provider invocation · Rust UNVERIFIED| P
+
+    linkStyle 0,2,4,6,8,10,12 stroke:#2878b5,stroke-width:2px;
+    linkStyle 1,3,5,7,9,11,13 stroke:#d17a00,stroke-width:2px;
 ```
 
-The diagram shows possible deployments, not simultaneous authority over the
-same data. A native Python request follows `C -> P -> PG -> B`; a native Rust
-request follows `C -> R -> RG -> B`. A mixed request uses one declared crossing
-and retains the same authority and graph semantics. Selection is made for a
-capability and execution context, not separately for every helper call.
+Each `O#` is one directed operation between the same components. Its Python
+and Rust implementations are separate parallel edges, not separate stacks.
+Statuses and evidence IDs mirror
+`contracts/dual-language-support-matrix-v1.json`: `ENABLED` is the enabled
+profile; `OPT-IN` is implemented only for an explicitly selected profile;
+`DISABLED` is not currently selectable; `UNVERIFIED` has no matching evidence
+in that matrix. Thus O6 is Python-only today; O7 remains unknown. These labels
+are capability-level, not claims that every operation or backend within a
+capability has parity. Both `ENABLED` and `OPT-IN` mean the capability is
+available under its declared selection policy; they do not imply identical
+behavior or production cutover. A mixed deployment follows explicitly
+selected edges and crosses languages only at a declared seam. Update the source
+matrix and linked evidence gates together; do not maintain a second checklist
+here.
 
 ## Implementation strategy
 
@@ -710,10 +734,14 @@ a native Rust path. Deployment labels must reflect the actual request path.
    capability execution. In particular, Python and Rust SQLite handles do not
    overlap on one database in one process; handoff closes/releases ownership
    according to the existing SQLite interop contract. Participating Python and
-   Rust entrypoints also use cooperative cross-process authority locks for the
-   database path and file identity: POSIX file locks and Windows named mutexes.
-   Existing tests cover bounded startup, contention, crash, and handoff cases;
-   see the open `DL-07E` gate for remaining platform and entrypoint coverage.
+   Rust entrypoints also use the shared cross-process authority protocol for
+   database path and file identity. A short exclusive admission lock serializes
+   ownership checks; each implementation then holds a shared lease lock, so
+   multiple same-language processes may use SQLite concurrently while a
+   Python/Rust overlap fails closed. POSIX uses `flock`; Windows uses
+   `LockFileEx`. SQLite transactions still provide write serialization. The
+   focused Windows tests cover both same-language sharing and cross-language
+   rejection; the refreshed POSIX protocol awaits hosted Linux CI evidence.
    These locks do not govern non-participating SQLite clients or guarantee
    behavior on every filesystem or Windows session. Deployments must establish
    equivalent ownership for clients outside this protocol.

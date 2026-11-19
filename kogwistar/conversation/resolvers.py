@@ -30,6 +30,7 @@ from typing_extensions import TypedDict
 from .models import (
     ConversationEdge,
     ConversationNode,
+    FilteringResult,
     KnowledgeRetrievalResult,
     MemoryRetrievalResult,
     MetaFromLastSummary,
@@ -640,15 +641,20 @@ def _memory_result_from_state(state: ConversationState) -> MemoryRetrievalResult
     return MemoryRetrievalResult(**cast(dict[str, Any], payload))
 
 
-def _knowledge_result_from_state(
+def _knowledge_selection_from_state(
     state: ConversationState,
-) -> KnowledgeRetrievalResult | None:
-    """Rehydrate the persisted KG JSON mirror at the workflow boundary."""
+) -> FilteringResult | None:
+    """Rehydrate the typed selection consumed by the KG pin step."""
 
     payload = state.get("kg")
     if not isinstance(payload, dict):
         return None
-    return KnowledgeRetrievalResult(**cast(dict[str, Any], payload))
+    selected_payload = payload.get("selected")
+    if isinstance(selected_payload, FilteringResult) or selected_payload is None:
+        return selected_payload
+    elif isinstance(selected_payload, dict):
+        return FilteringResult.model_validate(selected_payload)
+    raise ValueError("persisted KG selection must be an object or null")
 
 
 @default_resolver.register("add_user_turn")
@@ -1429,19 +1435,18 @@ def _kg_pin(ctx: StepContext) -> StepRunResult:
         max_retrieval_level=max_retrieval_level,
     )
 
-    kg_rehydrated = _knowledge_result_from_state(state)
+    selected_knowledge = _knowledge_selection_from_state(state)
     pinned_ptrs: list[str] = []
     pinned_edges: list[str] = []
     worker_effect_batch: dict[str, JsonValue] | None = None
-    if kg_rehydrated is not None and kg_rehydrated.selected is not None:
-        selected = kg_rehydrated.selected
+    if selected_knowledge is not None:
         pin_kwargs = {
             "user_id": state["user_id"],
             "conversation_id": state["conversation_id"],
             "turn_node_id": state["turn_node_id"],
             "turn_index": state["turn_index"],
             "self_span": _span_from_state(state.get("self_span")),
-            "selected_knowledge": selected,
+            "selected_knowledge": selected_knowledge,
             "prev_turn_meta_summary": prev_turn_meta_summary,
         }
         if deps.get("_rust_worker_effects") is True:

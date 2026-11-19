@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "valid_operation": {
+    "kind": "replace_named_projection",
+    "namespace": "golden-projection",
+    "key": "rust-written",
+    "payload": {
+      "unicode": "雪😀",
+      "nested": [true, {"answer": 42}]
+    },
+    "last_authoritative_seq": 11,
+    "last_materialized_seq": 9,
+    "projection_schema_version": 2,
+    "materialization_status": "ready"
+  },
+  "invalid_operation": {
+    "kind": "replace_named_projection",
+    "namespace": "golden-projection",
+    "key": "must-not-exist",
+    "payload": {"must_not_persist": true},
+    "last_authoritative_seq": 11,
+    "last_materialized_seq": 9,
+    "projection_schema_version": 2,
+    "materialization_status": "ready",
+    "unexpected": true
+  },
+  "expected_invalid_error": "KOGWISTAR_STORE_INVALID_PAYLOAD"
+}

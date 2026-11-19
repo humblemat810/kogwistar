@@ -1,10 +1,11 @@
 use serde_json::Value;
 
-/// Versioned evidence that a response was produced by the native Rust path.
+/// Versioned response annotation for a native Rust path.
 ///
-/// This is diagnostic metadata, not an authorization grant. Keeping its
-/// construction in one module prevents individual Rust services from silently
-/// drifting in the fields used to audit language-seam crossings.
+/// This helper does not observe execution or prove that no language seam was
+/// crossed. Callers may attach independently observed crossings first; this
+/// function preserves them. The annotation is diagnostic, never an
+/// authorization grant.
 pub const NATIVE_SEAM_ATTESTATION_VERSION: u32 = 1;
 pub const RUST_NATIVE_IMPLEMENTATION_AUTHORITY: &str = "rust";
 pub const RUST_NATIVE_EXECUTOR_AUTHORITY: &str = "rust-native";
@@ -47,7 +48,9 @@ pub fn attach_native_seam_attestation(value: &mut Value, implementation_authorit
         "seam_attestation_version".to_owned(),
         Value::from(NATIVE_SEAM_ATTESTATION_VERSION),
     );
-    object.insert("seam_crossings".to_owned(), Value::Array(Vec::new()));
+    object
+        .entry("seam_crossings".to_owned())
+        .or_insert_with(|| Value::Array(Vec::new()));
 }
 
 pub fn attach_rust_native_seam_attestation(value: &mut Value) {
@@ -111,6 +114,16 @@ mod tests {
 
         attach_typed_native_seam_attestation(&mut value, NativeSeamAuthority::Graph);
         value["seam_crossings"] = json!(["python-json"]);
+        assert!(!native_seam_attestation_is_valid(&value));
+    }
+
+    #[test]
+    fn native_seam_attestation_preserves_observed_crossings() {
+        let mut value = json!({"result": "ok", "seam_crossings": ["python-json"]});
+
+        attach_rust_native_seam_attestation(&mut value);
+
+        assert_eq!(value["seam_crossings"], json!(["python-json"]));
         assert!(!native_seam_attestation_is_valid(&value));
     }
 }

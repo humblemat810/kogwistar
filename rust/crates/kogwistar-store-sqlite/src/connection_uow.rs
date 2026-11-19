@@ -80,9 +80,14 @@ pub struct SqliteUnitOfWork<'connection> {
 
 mod acl_records;
 mod design_and_runs;
+mod document_rollback;
 mod events_recovery;
 mod graph_mutations;
 mod index_jobs;
 mod lane_messages;
 mod projections;
 mod recorded_runtime;
+
+pub use document_rollback::{
+    AppliedDocumentEdgeRollbackPage, AppliedDocumentNodeRollbackPage, AppliedDocumentRollback,
+};

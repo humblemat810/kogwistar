@@ -2,18 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import gc
 import json
+import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, MentionVerification, Span
-from kogwistar.json_types import JsonObject
+from kogwistar.json_types import JsonObject, JsonValue
 from kogwistar.runtime import AsyncWorkflowRuntime, WorkflowRuntime
 from kogwistar.runtime.models import (
     RunFailure,
@@ -371,6 +374,727 @@ def test_runtime_parity_bridge_route_next_shared_semantics():
     assert sync_default_next == ["n|fallback"]
     assert async_default_next == sync_default_next
     assert sync_default_decision.selected == [("e-default", "n|fallback", "default")]
+
+
+@pytest.mark.requires_rust
+def test_rust_shadow_route_selection_matches_python_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.runtime.routing import compute_route_next
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge.runtime_implementation_mode", lambda: "shadow"
+    )
+    nodes = _mk_nodes()
+
+    def choose(
+        edge: _JoinEdge, state: dict[str, object], result: object
+    ) -> bool:
+        return True
+
+    predicates = {"choose": choose}
+
+    predicate_edges = [
+        _join_edge(
+            "e-low",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|left",
+            predicate="choose",
+            priority=10,
+            multiplicity="many",
+        ),
+        _join_edge(
+            "e-high",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|right",
+            predicate="choose",
+            priority=20,
+            multiplicity="many",
+        ),
+    ]
+    selected = compute_route_next(
+        edges=predicate_edges,
+        state={},
+        last_result=SimpleNamespace(status="success"),
+        fanout=False,
+        predicate_registry=predicates,
+        nodes=nodes,
+    )
+    assert selected.next_node_ids == ["n|right", "n|left"]
+    assert selected.selected == [
+        ("e-low", "n|left", "predicate"),
+        ("e-high", "n|right", "predicate"),
+    ]
+
+    explicit = compute_route_next(
+        edges=_mk_fanout_edges(),
+        state={},
+        last_result=RunSuccess(
+            conversation_node_id=None,
+            state_update=[],
+            _route_next=["go_left", "right_op"],
+        ),
+        fanout=True,
+        predicate_registry={},
+        nodes=nodes,
+    )
+    assert explicit.next_node_ids == ["n|left", "n|right"]
+
+    defaulted = compute_route_next(
+        edges=_mk_default_edges(),
+        state={},
+        last_result=SimpleNamespace(status="success"),
+        fanout=False,
+        predicate_registry={
+            "if_true": lambda _edge, _state, _result: False,
+            "if_false": lambda _edge, _state, _result: False,
+        },
+        nodes=nodes,
+    )
+    assert defaulted.next_node_ids == ["n|fallback"]
+
+    failure_edges = [
+        _join_edge(
+            "e-base",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|left",
+        ),
+        _join_edge(
+            "e-default",
+            workflow_id="route-parity",
+            src="start",
+            dst="n|fallback",
+            is_default=True,
+        ),
+    ]
+    failure = compute_route_next(
+        edges=failure_edges,
+        state={},
+        last_result=SimpleNamespace(status="failure"),
+        fanout=False,
+        predicate_registry={},
+        nodes=nodes,
+    )
+    assert failure.next_node_ids == []
+    assert failure.selected == []
+
+
+def test_python_workflow_failure_matches_rust_durable_state_and_step_event(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar._rust_bridge import store_sqlite
+    from kogwistar.runtime.rust_runtime_adapter import apply_recorded_transition
+
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/runtime-worker-failure-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    case = contract["cases"]["unhandled"]
+    workflow_id = "wf_worker_failure_parity"
+    run_id = "run_worker_failure_parity"
+    conversation_id = "conv_worker_failure_parity"
+    turn_id = "turn_worker_failure_parity"
+    workflow_engine = _JoinWorkflowEngine(
+        [
+            _join_node(
+                "step-1",
+                workflow_id=workflow_id,
+                op="start",
+                start=True,
+                terminal=True,
+            )
+        ],
+        [],
+    )
+    conversation_engine = _JoinConversationEngine()
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _fail(_ctx):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[(mode, payload) for mode, payload in case["state_update"]],
+            errors=case["errors"],
+        )
+
+    python_run = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=_TraceEmitter(),
+    ).run(
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+        turn_node_id=turn_id,
+        run_id=run_id,
+        initial_state={"answer": "seed"},
+    )
+    python_step_nodes = [
+        node
+        for node in conversation_engine.nodes
+        if node.metadata.get("entity_type") == "workflow_step_exec"
+    ]
+    assert len(python_step_nodes) == 1
+    python_step = python_step_nodes[0]
+    python_result = json.loads(python_step.metadata["result_json"])
+
+    database = tmp_path / "python-rust-failure-parity.sqlite"
+    initial_frontier = {
+        "pending": [["step-1", 0, "token-1", None]],
+        "suspended": [],
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+    }
+    apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "parity-start",
+            "expected_event_seq": 0,
+            "kind": "start",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "user_id": "user-1",
+            "user_turn_node_id": turn_id,
+            "step_seq": 0,
+            "node_id": "step-1",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "initial_state": {"answer": "seed"},
+            "frontier": initial_frontier,
+        },
+    )
+    rust_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "parity-failure",
+            "expected_event_seq": 1,
+            "kind": "fail",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 0,
+            "node_id": "step-1",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": case["state_update"],
+            "frontier": {
+                "pending": [],
+                "suspended": [],
+                "join_node_ids": [],
+                "join_outstanding": [],
+                "join_waiters": {},
+            },
+            "result": {"workflow_status": "failed"},
+            "errors": case["errors"],
+        },
+    )
+    rust_events = store_sqlite(
+        path=database,
+        operation={
+            "kind": "list_server_run_events",
+            "run_id": run_id,
+            "after_seq": 0,
+            "limit": 10,
+        },
+    )
+    rust_failure_event = rust_events[-1]["payload"]
+
+    python_semantics = {
+        "status": "failed" if python_run.status == "failure" else python_run.status,
+        "state": {"answer": python_run.final_state["answer"]},
+        "step_seq": python_step.metadata["step_seq"],
+        "state_update": python_result["state_update"],
+        "errors": python_result["errors"],
+    }
+    rust_semantics = {
+        "status": rust_result["state"]["status"],
+        "state": {"answer": rust_result["state"]["state"]["answer"]},
+        "step_seq": rust_failure_event["reduced"]["state"]["last_step_seq"],
+        "state_update": rust_failure_event["reduced"]["state_update"],
+        "errors": rust_failure_event["reduced"]["errors"],
+    }
+    assert python_semantics == rust_semantics
+    assert python_semantics["state_update"] == case["state_update"]
+    assert python_semantics["errors"] == case["errors"]
+    assert rust_failure_event["reduced"]["state"]["frontier"]["pending"] == []
+    assert len(rust_events) == 2
+
+
+def test_python_workflow_success_matches_rust_durable_successor_admission(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar._rust_bridge import store_sqlite
+    from kogwistar.runtime.rust_runtime_adapter import apply_recorded_transition
+
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/runtime-worker-success-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    workflow_id = "wf_worker_success_parity"
+    run_id = "run_worker_success_parity"
+    conversation_id = "conv_worker_success_parity"
+    turn_id = "turn_worker_success_parity"
+    nodes = [
+        _join_node("start", workflow_id=workflow_id, op="start", start=True),
+        _join_node("done", workflow_id=workflow_id, op="done", terminal=True),
+    ]
+    edges = [
+        _join_edge(
+            "e-start-done", workflow_id=workflow_id, src="start", dst="done"
+        )
+    ]
+    workflow_engine = _JoinWorkflowEngine(nodes, edges)
+    conversation_engine = _JoinConversationEngine()
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[
+                (mode, payload) for mode, payload in contract["state_update"]
+            ],
+            _route_next=contract["route_next"],
+        )
+
+    @resolver.register("done")
+    def _done(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    python_run = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        trace=True,
+        events=_TraceEmitter(),
+    ).run(
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+        turn_node_id=turn_id,
+        run_id=run_id,
+        initial_state={"answer": "seed"},
+    )
+    python_steps = [
+        node
+        for node in conversation_engine.nodes
+        if node.metadata.get("entity_type") == "workflow_step_exec"
+    ]
+    assert len(python_steps) == 2
+    assert [node.metadata["step_seq"] for node in python_steps] == [0, 1]
+    assert python_run.status == "succeeded"
+    assert python_run.final_state["answer"] == contract["expected_state"]["answer"]
+
+    database = tmp_path / "python-rust-success-parity.sqlite"
+    empty_frontier = {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+    }
+    apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "success-parity-start",
+            "expected_event_seq": 0,
+            "kind": "start",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "user_id": "user-1",
+            "user_turn_node_id": turn_id,
+            "step_seq": 0,
+            "node_id": "start",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "initial_state": {"answer": "seed"},
+            "frontier": {
+                **empty_frontier,
+                "pending": [["start", 0, "token-1", None]],
+            },
+        },
+    )
+    rust_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "success-parity-step",
+            "expected_event_seq": 1,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 0,
+            "node_id": "start",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": contract["state_update"],
+            "result": {"answer": "worker"},
+            "frontier": {
+                **empty_frontier,
+                "pending": [["done", 1, "token-1", None]],
+            },
+        },
+    )
+    rust_done_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "success-parity-done",
+            "expected_event_seq": 2,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 1,
+            "node_id": "done",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": [],
+            "result": {"answer": "worker"},
+            "frontier": empty_frontier,
+        },
+    )
+    rust_complete_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "success-parity-complete",
+            "expected_event_seq": 3,
+            "kind": "complete",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 1,
+            "node_id": "done",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "result": {"workflow_status": "succeeded"},
+            "frontier": empty_frontier,
+        },
+    )
+    rust_events = store_sqlite(
+        path=database,
+        operation={
+            "kind": "list_server_run_events",
+            "run_id": run_id,
+            "after_seq": 0,
+            "limit": 10,
+        },
+    )
+    rust_step_events = [event["payload"]["reduced"] for event in rust_events[1:3]]
+    python_step_history = [
+        {
+            "step_seq": int(node.metadata["step_seq"]),
+            "node_id": node.metadata["workflow_node_id"],
+            "state_update": json.loads(node.metadata["result_json"])["state_update"],
+            "errors": json.loads(node.metadata["result_json"]).get("errors", []),
+        }
+        for node in sorted(python_steps, key=lambda node: int(node.metadata["step_seq"]))
+    ]
+    rust_step_history = [
+        {
+            "step_seq": event["state"]["last_step_seq"],
+            "node_id": event["state"]["last_node_id"],
+            "state_update": event["state_update"],
+            "errors": event["errors"],
+        }
+        for event in rust_step_events
+    ]
+    assert python_step_history == rust_step_history
+    assert rust_result["state"]["state"]["answer"] == python_run.final_state["answer"]
+    assert rust_result["state"]["frontier"]["pending"] == [
+        ["done", 1, "token-1", None]
+    ]
+    assert rust_done_result["state"]["frontier"]["pending"] == []
+    assert rust_complete_result["state"]["status"] == "completed"
+    assert (
+        rust_complete_result["state"]["state"]["answer"]
+        == python_run.final_state["answer"]
+    )
+    assert rust_step_events[0]["state"]["frontier"]["pending"] == [
+        ["done", 1, "token-1", None]
+    ]
+    assert len(rust_events) == 4
+
+
+def test_python_handled_failure_matches_rust_durable_recovery_admission(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar._rust_bridge import store_sqlite
+    from kogwistar.runtime.rust_runtime_adapter import apply_recorded_transition
+
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/runtime-worker-failure-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    case = contract["cases"]["handled"]
+    workflow_id = "wf_worker_handled_failure_parity"
+    run_id = "run_worker_handled_failure_parity"
+    conversation_id = "conv_worker_handled_failure_parity"
+    turn_id = "turn_worker_handled_failure_parity"
+    nodes = [
+        _join_node("exec", workflow_id=workflow_id, op="exec", start=True),
+        _join_node("recover", workflow_id=workflow_id, op="recover"),
+        _join_node("end", workflow_id=workflow_id, op="end", terminal=True),
+    ]
+    edges = [
+        _join_edge(
+            "e-recover",
+            workflow_id=workflow_id,
+            src="exec",
+            dst="recover",
+            predicate="if_failure",
+        ),
+        _join_edge(
+            "e-default",
+            workflow_id=workflow_id,
+            src="exec",
+            dst="end",
+            is_default=True,
+        ),
+        _join_edge("e-end", workflow_id=workflow_id, src="recover", dst="end"),
+    ]
+    workflow_engine = _JoinWorkflowEngine(nodes, edges)
+    conversation_engine = _JoinConversationEngine()
+    resolver = MappingStepResolver()
+
+    @resolver.register("exec")
+    def _exec(_ctx):
+        return RunFailure(
+            conversation_node_id=None,
+            state_update=[(mode, payload) for mode, payload in case["state_update"]],
+            errors=case["errors"],
+        )
+
+    @resolver.register("recover")
+    def _recover(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"recovered": True})],
+        )
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(
+            conversation_node_id=None,
+            state_update=[("u", {"ended": True})],
+        )
+
+    python_run = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={
+            "if_failure": lambda _edge, _state, result: result.status == "failure"
+        },
+        trace=True,
+        events=_TraceEmitter(),
+    ).run(
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+        turn_node_id=turn_id,
+        run_id=run_id,
+        initial_state={"answer": "seed"},
+    )
+    python_failure_step = next(
+        node
+        for node in conversation_engine.nodes
+        if node.metadata.get("entity_type") == "workflow_step_exec"
+        and node.metadata.get("workflow_node_id") == "exec"
+    )
+    python_failure_result = json.loads(python_failure_step.metadata["result_json"])
+    assert python_failure_step.metadata["status"] == "failure"
+    assert python_run.status == "succeeded"
+    assert python_run.final_state["recovered"] is True
+    assert python_run.final_state["ended"] is True
+
+    database = tmp_path / "python-rust-handled-failure-parity.sqlite"
+    empty_frontier = {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+    }
+    apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-start",
+            "expected_event_seq": 0,
+            "kind": "start",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "user_id": "user-1",
+            "user_turn_node_id": turn_id,
+            "step_seq": 0,
+            "node_id": "exec",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "initial_state": {"answer": "seed"},
+            "frontier": {
+                **empty_frontier,
+                "pending": [["exec", 0, "token-1", None]],
+            },
+        },
+    )
+    rust_failure_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-failure",
+            "expected_event_seq": 1,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 0,
+            "node_id": "exec",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": case["state_update"],
+            "result": {"workflow_status": "failure"},
+            "errors": case["errors"],
+            "frontier": {
+                **empty_frontier,
+                "pending": [["recover", 1, "token-1", None]],
+            },
+        },
+    )
+    rust_recovery_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-recover",
+            "expected_event_seq": 2,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 1,
+            "node_id": "recover",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": [["u", {"recovered": True}]],
+            "result": {"workflow_status": "success"},
+            "frontier": {
+                **empty_frontier,
+                "pending": [["end", 2, "token-1", None]],
+            },
+        },
+    )
+    rust_end_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-end",
+            "expected_event_seq": 3,
+            "kind": "recorded_step_success",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 2,
+            "node_id": "end",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "state_update": [["u", {"ended": True}]],
+            "result": {"workflow_status": "success"},
+            "frontier": empty_frontier,
+        },
+    )
+    rust_result = apply_recorded_transition(
+        path=database,
+        transition={
+            "contract_version": 1,
+            "transition_id": "handled-parity-complete",
+            "expected_event_seq": 4,
+            "kind": "complete",
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": 2,
+            "node_id": "end",
+            "token_id": "token-1",
+            "parent_token_id": None,
+            "result": {"workflow_status": "succeeded"},
+            "frontier": empty_frontier,
+        },
+    )
+    rust_events = store_sqlite(
+        path=database,
+        operation={
+            "kind": "list_server_run_events",
+            "run_id": run_id,
+            "after_seq": 0,
+            "limit": 10,
+        },
+    )
+    rust_step_events = [event["payload"]["reduced"] for event in rust_events[1:4]]
+    python_steps = sorted(
+        (
+            node
+            for node in conversation_engine.nodes
+            if node.metadata.get("entity_type") == "workflow_step_exec"
+        ),
+        key=lambda node: int(node.metadata["step_seq"]),
+    )
+    python_step_history = [
+        {
+            "step_seq": int(node.metadata["step_seq"]),
+            "node_id": node.metadata["workflow_node_id"],
+            "state_update": json.loads(node.metadata["result_json"])["state_update"],
+            "errors": json.loads(node.metadata["result_json"]).get("errors", []),
+        }
+        for node in python_steps
+    ]
+    rust_step_history = [
+        {
+            "step_seq": event["state"]["last_step_seq"],
+            "node_id": event["state"]["last_node_id"],
+            "state_update": event["state_update"],
+            "errors": event["errors"],
+        }
+        for event in rust_step_events
+    ]
+    assert python_step_history == rust_step_history
+    assert python_failure_step.metadata["step_seq"] == rust_failure_result["state"][
+        "last_step_seq"
+    ]
+    assert python_failure_result["state_update"] == rust_step_events[0]["state_update"]
+    assert python_failure_result["errors"] == rust_step_events[0]["errors"]
+    assert rust_step_events[0]["state"]["frontier"]["pending"] == [
+        ["recover", 1, "token-1", None]
+    ]
+    assert rust_recovery_result["state"]["frontier"]["pending"] == [
+        ["end", 2, "token-1", None]
+    ]
+    assert rust_end_result["state"]["frontier"]["pending"] == []
+    assert rust_result["state"]["status"] == "completed"
+    assert rust_result["state"]["state"]["ended"] is True
+    assert rust_result["state"]["state"]["recovered"] is True
+    assert len(rust_events) == 5
 
 
 def _seed_join_bridge_graph(workflow_id: str):
@@ -1007,6 +1731,200 @@ def test_runtime_parity_bridge_join_barrier_waits_for_all_arrivals(monkeypatch):
     assert async_out == sync_out
 
 
+def test_rust_shadow_join_accounting_matches_python_runtime(monkeypatch):
+    pytest.importorskip("kogwistar._rust")
+    python_out = _run_sync_join_bridge()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "shadow")
+    shadow_out = _run_sync_join_bridge()
+
+    assert shadow_out == python_out == {
+        "parts": ["a", "b"],
+        "join_calls": 1,
+        "done": True,
+    }
+
+
+def _run_sync_join_retry_cancel_bridge() -> dict:
+    workflow_id = "wf_join_retry_cancel"
+    nodes, edges = _seed_join_bridge_graph(workflow_id)
+    edges.append(
+        _join_edge(
+            "e-retry-b",
+            workflow_id=workflow_id,
+            src="b",
+            dst="b",
+            is_default=False,
+        )
+    )
+    joined = threading.Event()
+    retry_started = threading.Event()
+    release_retry = threading.Event()
+    cancel = {"requested": False}
+    retry_attempts = {"count": 0}
+
+    class _CancelAfterJoinWaiting(EventEmitter):
+        def emit(self, *, type, ctx, payload=None):
+            event_id = super().emit(type=type, ctx=ctx, payload=payload)
+            if type == "join_waiting":
+                joined.set()
+                cancel["requested"] = True
+                release_retry.set()
+            return event_id
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("a")
+    def _a(_ctx):
+        assert retry_started.wait(timeout=5)
+        return RunSuccess(
+            conversation_node_id=None, state_update=[("a", {"parts": "a"})]
+        )
+
+    @resolver.register("b")
+    def _b(_ctx):
+        retry_attempts["count"] += 1
+        if retry_attempts["count"] == 1:
+            return RunFailure(
+                conversation_node_id=None,
+                state_update=[],
+                errors=["retry branch once"],
+                next_step_names=["b"],
+            )
+        retry_started.set()
+        assert release_retry.wait(timeout=5)
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("join")
+    def _join(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    runtime = WorkflowRuntime(
+        workflow_engine=_JoinWorkflowEngine(nodes, edges),
+        conversation_engine=_JoinConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        events=_CancelAfterJoinWaiting(),
+        cancel_requested=lambda _run_id: cancel["requested"],
+        max_workers=2,
+    )
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-join-retry-cancel",
+        turn_node_id="turn-join-retry-cancel",
+        run_id="run-join-retry-cancel",
+        initial_state={},
+    )
+    assert joined.is_set()
+    join_state = out.final_state["_rt_join"]
+    return {
+        "status": out.status,
+        "retry_attempts": retry_attempts["count"],
+        "frontier": {
+            "pending": join_state["pending"],
+            "suspended": join_state["suspended"],
+            "join_node_ids": join_state["join_node_ids"],
+            "join_outstanding": join_state["join_outstanding"],
+            "join_waiters": join_state["join_waiters"],
+        },
+    }
+
+
+def test_rust_shadow_join_retry_cancel_matches_python_terminal_frontier(monkeypatch):
+    pytest.importorskip("kogwistar._rust")
+    python_out = _run_sync_join_retry_cancel_bridge()
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "shadow")
+    shadow_out = _run_sync_join_retry_cancel_bridge()
+
+    assert shadow_out == python_out
+    assert python_out["status"] == "cancelled"
+    assert python_out["retry_attempts"] == 2
+    assert python_out["frontier"] == {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": ["join"],
+        "join_outstanding": [0],
+        "join_waiters": {"join": []},
+    }
+
+
+def test_cancelled_fanout_clears_queued_join_obligations():
+    workflow_id = "wf_cancel_queued_join_branch"
+    nodes, edges = _seed_join_bridge_graph(workflow_id)
+    branch_started = threading.Event()
+    release_branch = threading.Event()
+    cancel = {"requested": False}
+    queued_branch_runs = {"count": 0}
+    resolver = MappingStepResolver()
+
+    @resolver.register("start")
+    def _start(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("a")
+    def _a(_ctx):
+        branch_started.set()
+        assert release_branch.wait(timeout=5)
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("b")
+    def _b(_ctx):
+        queued_branch_runs["count"] += 1
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("join")
+    def _join(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    @resolver.register("end")
+    def _end(_ctx):
+        return RunSuccess(conversation_node_id=None, state_update=[])
+
+    def request_cancel() -> None:
+        assert branch_started.wait(timeout=5)
+        cancel["requested"] = True
+        release_branch.set()
+
+    cancel_thread = threading.Thread(target=request_cancel)
+    cancel_thread.start()
+    runtime = WorkflowRuntime(
+        workflow_engine=_JoinWorkflowEngine(nodes, edges),
+        conversation_engine=_JoinConversationEngine(),
+        step_resolver=resolver,
+        predicate_registry={},
+        cancel_requested=lambda _run_id: cancel["requested"],
+        max_workers=1,
+    )
+    out = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id="conv-cancel-queued-branch",
+        turn_node_id="turn-cancel-queued-branch",
+        run_id="run-cancel-queued-branch",
+        initial_state={},
+    )
+    cancel_thread.join(timeout=5)
+
+    assert not cancel_thread.is_alive()
+    assert out.status == "cancelled"
+    assert queued_branch_runs["count"] == 0
+    assert out.final_state["_rt_join"] == {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": ["join"],
+        "join_outstanding": [0],
+        "join_waiters": {"join": []},
+    }
+
+
 def test_runtime_parity_bridge_trace_sink_parallel_nested_minimal(monkeypatch):
     """Bridge parity: sync and async emit compatible minimal trace step metadata for terminal execution."""
     sync_state, sync_trace = _run_sync_trace_bridge()
@@ -1282,12 +2200,57 @@ def _normalize_resume_result(
     }
 
 
-def _run_sync_wait_reason_suspend_resume(tmp_path: Path) -> dict:
+def _workflow_step_history(engine: GraphKnowledgeEngine, run_id: str) -> list[dict]:
+    nodes = engine.read.get_nodes(
+        where={
+            "$and": [
+                {"entity_type": "workflow_step_exec"},
+                {"run_id": run_id},
+            ]
+        },
+        limit=100,
+    )
+    history = []
+    for node in sorted(nodes, key=lambda item: int(item.metadata["step_seq"])):
+        result = json.loads(node.metadata["result_json"])
+        history.append(
+            {
+                "step_seq": int(node.metadata["step_seq"]),
+                "node_id": str(node.metadata["workflow_node_id"]),
+                "status": str(node.metadata["status"]),
+                "state_update": result.get("state_update", []),
+                "errors": result.get("errors", []),
+                "resume_payload": result.get("resume_payload"),
+                "token_id": str(node.metadata["token_id"]),
+            }
+        )
+    return history
+
+
+def _run_sync_wait_reason_suspend_resume(
+    tmp_path: Path,
+    *,
+    capture: dict | None = None,
+    restart_before_resume: bool = False,
+) -> dict:
     wf_id = "wf_wait_bridge_sync"
     run_id = "run_wait_bridge_sync"
     conv_id = "conv_wait_bridge_sync"
-    wf_engine = _make_engine(tmp_path / "wf_sync", "workflow")
-    conv_engine = _make_engine(tmp_path / "conv_sync", "conversation")
+    if restart_before_resume:
+        persist_directory = str(tmp_path / "chroma")
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="workflow",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="conversation",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+    else:
+        wf_engine = _make_engine(tmp_path / "wf_sync", "workflow")
+        conv_engine = _make_engine(tmp_path / "conv_sync", "conversation")
     _seed_suspend_resume_workflow(wf_engine, wf_id)
 
     resolver = MappingStepResolver()
@@ -1331,6 +2294,26 @@ def _run_sync_wait_reason_suspend_resume(tmp_path: Path) -> dict:
     )
     checkpoint_state = _latest_checkpoint_state(conv_engine, run_id)
     suspended_token_id = checkpoint_state["_rt_join"]["suspended"][0][2]
+    if restart_before_resume:
+        del runtime, conv_engine, wf_engine
+        gc.collect()
+        wf_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="workflow",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+        conv_engine = GraphKnowledgeEngine(
+            persist_directory=persist_directory,
+            kg_graph_type="conversation",
+            embedding_function=ConstantEmbeddingFunction(dim=16),
+        )
+        runtime = WorkflowRuntime(
+            workflow_engine=wf_engine,
+            conversation_engine=conv_engine,
+            step_resolver=resolver,
+            predicate_registry={},
+            checkpoint_every_n_steps=1,
+        )
     out2 = runtime.resume_run(
         run_id=run_id,
         suspended_node_id="gate",
@@ -1343,6 +2326,18 @@ def _run_sync_wait_reason_suspend_resume(tmp_path: Path) -> dict:
         conversation_id=conv_id,
         turn_node_id="turn_1",
     )
+    if capture is not None:
+        capture.update(
+            {
+                "run_id": run_id,
+                "workflow_id": wf_id,
+                "conversation_id": conv_id,
+                "first_status": str(out1.status),
+                "checkpoint_state": checkpoint_state,
+                "final_state": dict(out2.final_state or {}),
+                "step_history": _workflow_step_history(conv_engine, run_id),
+            }
+        )
     return _normalize_suspend_resume_result(
         suspended_status=out1.status,
         checkpoint_state=checkpoint_state,
@@ -1733,6 +2728,194 @@ def test_runtime_parity_bridge_wait_reason_suspend_resume():
         "final_suspended_nodes": [],
     }
     assert async_out == sync_out
+
+
+@pytest.mark.ci_full
+def test_python_suspend_resume_matches_rust_durable_ordered_history(
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("kogwistar._rust")
+    from kogwistar._rust_bridge import store_sqlite
+    from kogwistar.runtime.rust_runtime_adapter import (
+        apply_recorded_transition,
+        read_recorded_runtime_state,
+    )
+
+    python_trace: dict = {}
+    python_result = _run_sync_wait_reason_suspend_resume(
+        tmp_path / "python", capture=python_trace, restart_before_resume=True
+    )
+    run_id = python_trace["run_id"]
+    workflow_id = python_trace["workflow_id"]
+    conversation_id = python_trace["conversation_id"]
+    turn_id = "turn_1"
+    empty_frontier = {
+        "pending": [],
+        "suspended": [],
+        "join_node_ids": [],
+        "join_outstanding": [],
+        "join_waiters": {},
+    }
+    python_suspended_step = next(
+        step for step in python_trace["step_history"] if step["status"] == "suspended"
+    )
+    token_id = python_suspended_step["token_id"]
+    database = tmp_path / "rust" / "suspend-resume.sqlite"
+    initial_frontier = {
+        **empty_frontier,
+        "pending": [["start", 0, token_id, None]],
+    }
+
+    def record(
+        kind: str,
+        transition_id: str,
+        expected_event_seq: int,
+        step_seq: int,
+        node_id: str,
+        **fields: JsonValue,
+    ) -> JsonObject:
+        transition: JsonObject = {
+            "contract_version": 1,
+            "transition_id": transition_id,
+            "expected_event_seq": expected_event_seq,
+            "kind": kind,
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "step_seq": step_seq,
+            "node_id": node_id,
+            "token_id": token_id,
+            "parent_token_id": None,
+        }
+        transition.update(fields)
+        return apply_recorded_transition(path=database, transition=transition)
+
+    record(
+        "start",
+        "suspend-parity-start",
+        0,
+        0,
+        "start",
+        user_id="test",
+        user_turn_node_id=turn_id,
+        initial_state=_initial_state(conversation_id),
+        frontier=initial_frontier,
+    )
+    record(
+        "recorded_step_success",
+        "suspend-parity-start-step",
+        1,
+        0,
+        "start",
+        state_update=[["u", {"started": True}]],
+        result={"workflow_status": "success"},
+        frontier={**empty_frontier, "pending": [["gate", 0, token_id, None]]},
+    )
+    suspended_frontier = {
+        **empty_frontier,
+        "suspended": [["gate", 0, token_id, None]],
+    }
+    record(
+        "suspend",
+        "suspend-parity-gate",
+        2,
+        1,
+        "gate",
+        wait_reason="approval",
+        resume_payload=python_suspended_step["resume_payload"],
+        frontier=suspended_frontier,
+    )
+
+    reopened = read_recorded_runtime_state(
+        path=database,
+        run_id=run_id,
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+    )
+    assert reopened is not None
+    assert reopened["status"] == "suspended"
+    assert reopened["wait_reason"] == python_trace["checkpoint_state"]["wait_reason"]
+    assert reopened["resume_payload"] == python_suspended_step["resume_payload"]
+    python_frontier = python_trace["checkpoint_state"]["_rt_join"]
+    for key in (
+        "pending",
+        "suspended",
+        "join_node_ids",
+        "join_outstanding",
+        "join_waiters",
+    ):
+        assert reopened["frontier"][key] == python_frontier[key]
+
+    record(
+        "resume_result",
+        "suspend-parity-resume",
+        3,
+        2,
+        "gate",
+        state_update=[["u", {"resumed": True}]],
+        resume_payload={"approved": True},
+        result={"workflow_status": "success"},
+        frontier={**empty_frontier, "pending": [["end", 0, token_id, None]]},
+    )
+    rust_end = record(
+        "recorded_step_success",
+        "suspend-parity-end",
+        4,
+        3,
+        "end",
+        state_update=[["u", {"ended": True}]],
+        result={"workflow_status": "success"},
+        frontier=empty_frontier,
+    )
+    rust_complete = record(
+        "complete",
+        "suspend-parity-complete",
+        5,
+        3,
+        "end",
+        result={"workflow_status": "succeeded"},
+        frontier=empty_frontier,
+    )
+    rust_events = store_sqlite(
+        path=database,
+        operation={
+            "kind": "list_server_run_events",
+            "run_id": run_id,
+            "after_seq": 0,
+            "limit": 20,
+        },
+    )
+    rust_step_events = [event["payload"]["reduced"] for event in rust_events[1:5]]
+    rust_step_history = [
+        {
+            "step_seq": event["state"]["last_step_seq"],
+            "node_id": event["state"]["last_node_id"],
+            "status": "suspended" if event["kind"] == "suspend" else "ok",
+            "state_update": event["state_update"],
+            "errors": event["errors"],
+            "resume_payload": (
+                {"type": "recoverable_error", "category": "approval"}
+                if event["kind"] == "suspend"
+                else None
+            ),
+            "token_id": event["state"]["last_token_id"],
+        }
+        for event in rust_step_events
+    ]
+    assert python_trace["step_history"] == rust_step_history
+    assert len({step["token_id"] for step in python_trace["step_history"]}) == 1
+    assert len({step["token_id"] for step in rust_step_history}) == 1
+    assert python_result["suspended_status"] == "suspended"
+    assert python_result["resumed_status"] == "succeeded"
+    assert rust_end["state"]["frontier"] == empty_frontier
+    assert rust_complete["state"]["status"] == "completed"
+    user_state_keys = ("started", "resumed", "ended")
+    assert {
+        key: python_trace["final_state"].get(key) for key in user_state_keys
+    } == {
+        key: rust_complete["state"]["state"].get(key) for key in user_state_keys
+    }
+    assert [event["seq"] for event in rust_events] == list(range(1, 7))
 
 
 @pytest.mark.ci_full

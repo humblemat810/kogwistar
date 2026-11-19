@@ -33,6 +33,10 @@ class RunCancelledError(RuntimeError):
     """Raised when a submitted chat run is cancelled cooperatively."""
 
 
+class IdempotencyConflictError(ValueError):
+    """Raised when an idempotency key is reused for different request data."""
+
+
 def capture_auth_claims(principal_id: str | None = None) -> JsonObject | None:
     """Capture request identity before work crosses a background-thread boundary."""
     claims = claims_ctx.get()

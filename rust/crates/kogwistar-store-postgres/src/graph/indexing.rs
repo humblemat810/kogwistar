@@ -1,5 +1,22 @@
 use super::super::*;
 
+fn mutation_is_tombstoned(mutation: &GraphMutation) -> bool {
+    mutation.op == "TOMBSTONE"
+        || mutation
+            .payload
+            .get("lifecycle_patch")
+            .and_then(Value::as_object)
+            .and_then(|patch| patch.get("lifecycle_status"))
+            .and_then(Value::as_str)
+            == Some("tombstoned")
+        || mutation
+            .record
+            .metadata
+            .get("lifecycle_status")
+            .and_then(Value::as_str)
+            .is_some_and(|status| matches!(status, "tombstoned" | "deleted"))
+}
+
 pub(crate) fn graph_scope_pairs(
     scope: &kogwistar_store::GraphScope,
 ) -> PostgresStoreResult<Vec<(String, Value)>> {
@@ -166,7 +183,7 @@ where
         tables,
         &mutation.scope,
         &mutation.record.id,
-        if mutation.op == "TOMBSTONE" {
+        if mutation_is_tombstoned(mutation) {
             None
         } else {
             Some(&mutation.payload)

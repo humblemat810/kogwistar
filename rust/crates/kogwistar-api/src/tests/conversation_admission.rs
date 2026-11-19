@@ -1,3 +1,60 @@
+    #[derive(Clone)]
+    struct ConcurrentIdempotencyEmbeddingProvider {
+        barrier: Arc<tokio::sync::Barrier>,
+        arrivals: Arc<std::sync::atomic::AtomicUsize>,
+        synchronize: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl kogwistar_engine::embedding::EmbeddingProvider for ConcurrentIdempotencyEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            static PROFILE: std::sync::OnceLock<kogwistar_engine::embedding::EmbeddingProfile> =
+                std::sync::OnceLock::new();
+            PROFILE.get_or_init(|| kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "concurrent-idempotency-v1".to_owned(),
+                dimension: 3,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            })
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move {
+                if self.synchronize.load(std::sync::atomic::Ordering::SeqCst) {
+                    use std::sync::atomic::Ordering;
+
+                    self.arrivals.fetch_add(1, Ordering::SeqCst);
+                    if tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        self.barrier.wait(),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err(kogwistar_engine::embedding::EmbeddingError::Request(
+                            format!(
+                                "concurrent admission probe timed out after {} embedding call(s)",
+                                self.arrivals.load(Ordering::SeqCst)
+                            ),
+                        ));
+                    }
+                }
+                Ok(vec![vec![0.6, 0.8, 0.0]; texts.len()])
+            })
+        }
+    }
+
     #[tokio::test]
     async fn postgres_send_message_checks_actor_and_request_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
@@ -91,32 +148,17 @@
             auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
             ..AuthConfig::default()
         };
-        let provider = Arc::new(FixedEmbeddingProvider {
-            profile: kogwistar_engine::embedding::EmbeddingProfile {
-                provider: "test".to_owned(),
-                model: "fixed-v1".to_owned(),
-                dimension: 3,
-                similarity_metric: "cosine".to_owned(),
-                endpoint_fingerprint: None,
-                max_sequence_length: None,
-                crop_token_budget: None,
-                tokenizer_fingerprint: None,
-                crop_policy: None,
-                embedding_kind: Some("single_vector".to_owned()),
-                model_revision: None,
-                preprocessing_fingerprint: None,
-                max_image_patches: None,
-            },
-            vector: vec![0.6, 0.8, 0.0],
-            calls: Arc::new(Mutex::new(Vec::new())),
-            fail: None,
+        let provider = Arc::new(ConcurrentIdempotencyEmbeddingProvider {
+            barrier: Arc::new(tokio::sync::Barrier::new(2)),
+            arrivals: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            synchronize: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         });
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
             .unwrap()
             .with_owner_auth_config(&auth_config)
             .await
             .unwrap()
-            .with_embedding_provider(provider);
+            .with_embedding_provider(provider.clone());
         service.ensure_graph_type_schemas().await.unwrap();
         service
             .conversation_store
@@ -353,7 +395,7 @@
         let token = make_token("conversation", &["send_message"]);
         let missing_capability_token = make_token("conversation", &[]);
         let wrong_namespace_token = make_token("workflow", &["send_message"]);
-        let mcp_ask = |bearer: &str, request_id: &str| {
+        let mcp_ask = |bearer: &str, request_id: &str, text: &str| {
             Request::builder()
                 .method("POST")
                 .uri("/mcp/conversation")
@@ -368,9 +410,10 @@
                             "name":"conversation.ask",
                             "arguments":{
                                 "conversation_id":conversation_id,
-                                "text":"A user question",
+                                "text":text,
                                 "user_id":"conversation-owner",
-                                "workflow_id":"send-message-admission-test"
+                                "workflow_id":"send-message-admission-test",
+                                "idempotency_key":"conversation-admission-key"
                             }
                         }
                     })
@@ -378,11 +421,41 @@
                 ))
                 .unwrap()
         };
+        let rest_send = |bearer: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/send_message")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {bearer}"))
+                .body(Body::from(
+                    json!({
+                        "version":"v1",
+                        "op":"send_message",
+                        "args":{
+                            "conversation_id":conversation_id,
+                            "text":"A user question",
+                            "user_id":"conversation-owner",
+                            "workflow_id":"send-message-admission-test",
+                            "idempotency_key":"conversation-admission-key"
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        for bearer in [&missing_capability_token, &wrong_namespace_token] {
+            let denied = app.clone().oneshot(rest_send(bearer)).await.unwrap();
+            assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        }
         for (bearer, request_id) in [
             (&missing_capability_token, "ask-no-capability"),
             (&wrong_namespace_token, "ask-wrong-namespace"),
         ] {
-            let denied = app.clone().oneshot(mcp_ask(bearer, request_id)).await.unwrap();
+            let denied = app
+                .clone()
+                .oneshot(mcp_ask(bearer, request_id, "A user question"))
+                .await
+                .unwrap();
             assert_eq!(denied.status(), StatusCode::OK);
             let denied_body = to_bytes(denied.into_body(), 8192).await.unwrap();
             let denied_value: Value = serde_json::from_slice(&denied_body).unwrap();
@@ -422,13 +495,22 @@
         drop(verify_client);
         connection_task.await.unwrap().unwrap();
 
-        let accepted = app
-            .clone()
-            .oneshot(
-                mcp_ask(&token, "send-message-ask"),
-            )
-            .await
-            .unwrap();
+        provider
+            .arrivals
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        provider
+            .synchronize
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let (accepted, concurrent_duplicate) = tokio::join!(
+            app.clone()
+                .oneshot(mcp_ask(&token, "send-message-ask", "A user question")),
+            app.clone().oneshot(mcp_ask(
+                &token,
+                "send-message-concurrent-retry",
+                "A user question"
+            )),
+        );
+        let accepted = accepted.unwrap();
         assert_eq!(accepted.status(), StatusCode::OK);
         let accepted_body = to_bytes(accepted.into_body(), 65_536).await.unwrap();
         let response: Value = serde_json::from_slice(&accepted_body).unwrap();
@@ -439,6 +521,38 @@
         );
         let run_id = response["result"]["run_id"].as_str().unwrap();
         let turn_id = response["result"]["user_turn_node_id"].as_str().unwrap();
+        let concurrent_duplicate = concurrent_duplicate.unwrap();
+        let concurrent_body = to_bytes(concurrent_duplicate.into_body(), 65_536)
+            .await
+            .unwrap();
+        let concurrent_value: Value = serde_json::from_slice(&concurrent_body).unwrap();
+        assert_eq!(
+            concurrent_value["result"]["run_id"],
+            run_id,
+            "concurrent idempotent request was not replayed: {concurrent_value:#}"
+        );
+        assert_eq!(concurrent_value["result"]["user_turn_node_id"], turn_id);
+        let retry = app
+            .clone()
+            .oneshot(mcp_ask(&token, "send-message-retry", "A user question"))
+            .await
+            .unwrap();
+        let retry_body = to_bytes(retry.into_body(), 65_536).await.unwrap();
+        let retry_value: Value = serde_json::from_slice(&retry_body).unwrap();
+        assert_eq!(retry_value["result"]["run_id"], run_id);
+        assert_eq!(retry_value["result"]["user_turn_node_id"], turn_id);
+        let changed = app
+            .clone()
+            .oneshot(mcp_ask(&token, "send-message-conflict", "Changed question"))
+            .await
+            .unwrap();
+        let changed_body = to_bytes(changed.into_body(), 65_536).await.unwrap();
+        let changed_value: Value = serde_json::from_slice(&changed_body).unwrap();
+        assert_eq!(
+            changed_value["error"]["data"]["code"],
+            "KOGWISTAR_IDEMPOTENCY_CONFLICT",
+            "{changed_value:#}"
+        );
         let nodes = service
             .conversation_store
             .graph_projection_records(GraphProjectionRead {
@@ -528,7 +642,39 @@
             BTreeSet::from(["edge_endpoints", "edge_refs", "node_docs", "node_refs"])
         );
 
+        drop(app);
         drop(service);
+        let reopened = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+            .unwrap()
+            .with_owner_auth_config(&auth_config)
+            .await
+            .unwrap()
+            .with_embedding_provider(provider);
+        let reopened_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["rw".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(http_secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(reopened.clone()),
+        );
+        let after_restart = reopened_app
+            .oneshot(mcp_ask(&token, "send-message-after-restart", "A user question"))
+            .await
+            .unwrap();
+        assert_eq!(after_restart.status(), StatusCode::OK);
+        let after_restart_body = to_bytes(after_restart.into_body(), 65_536).await.unwrap();
+        let after_restart_value: Value = serde_json::from_slice(&after_restart_body).unwrap();
+        assert_eq!(after_restart_value["result"]["run_id"], run_id);
+        assert_eq!(after_restart_value["result"]["user_turn_node_id"], turn_id);
+        drop(reopened);
+
         let (cleanup, connection) =
             tokio_postgres::connect(&dsn, tokio_postgres::NoTls).await.unwrap();
         let connection_task = tokio::spawn(connection);

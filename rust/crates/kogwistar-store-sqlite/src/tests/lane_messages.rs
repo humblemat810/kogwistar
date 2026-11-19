@@ -211,3 +211,101 @@ fn strict_lane_ack_requires_the_active_claim_owner_and_lease() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn lane_claim_renewal_requires_current_live_owner() {
+    let (store, path) = store("lane-claim-renewal");
+    for message_id in ["renew-live", "renew-expired"] {
+        let mut row = runtime_worker_lane("run-target", message_id);
+        row.available_at = 0;
+        store.project_lane_message(row).unwrap();
+    }
+    let live = store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "runtime".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            claimed_by: "attempt-1".to_owned(),
+            message_ids: Some(vec!["renew-live".to_owned()]),
+            run_id: Some("run-target".to_owned()),
+            msg_type: Some("workflow.worker.request.v1".to_owned()),
+            recipient_id: Some("python-worker".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        })
+        .unwrap();
+    let old_deadline = live[0].lease_until.as_ref().unwrap().as_i64().unwrap();
+    assert!(
+        !store
+            .renew_projected_lane_message_claim("renew-live", "other-worker", 120)
+            .unwrap()
+    );
+    assert!(
+        store
+            .renew_projected_lane_message_claim("renew-live", "attempt-1", 120)
+            .unwrap()
+    );
+    let renewed = store
+        .get_projected_lane_message("renew-live")
+        .unwrap()
+        .unwrap();
+    assert!(renewed.lease_until.unwrap().as_i64().unwrap() > old_deadline);
+    assert!(
+        !store
+            .renew_projected_lane_message_claim("missing", "attempt-1", 120)
+            .unwrap()
+    );
+
+    let expired = store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "runtime".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            claimed_by: "attempt-1".to_owned(),
+            message_ids: Some(vec!["renew-expired".to_owned()]),
+            run_id: Some("run-target".to_owned()),
+            msg_type: Some("workflow.worker.request.v1".to_owned()),
+            recipient_id: Some("python-worker".to_owned()),
+            limit: 1,
+            lease_seconds: -1,
+        })
+        .unwrap();
+    assert_eq!(expired.len(), 1);
+    let reclaimed = store
+        .claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+            namespace: "runtime".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            claimed_by: "attempt-2".to_owned(),
+            message_ids: Some(vec!["renew-expired".to_owned()]),
+            run_id: Some("run-target".to_owned()),
+            msg_type: Some("workflow.worker.request.v1".to_owned()),
+            recipient_id: Some("python-worker".to_owned()),
+            limit: 1,
+            lease_seconds: 120,
+        })
+        .unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert!(
+        !store
+            .renew_projected_lane_message_claim("renew-expired", "attempt-1", 120)
+            .unwrap()
+    );
+    assert!(
+        store
+            .renew_projected_lane_message_claim("renew-expired", "attempt-2", 180)
+            .unwrap()
+    );
+    assert!(
+        store
+            .renew_projected_lane_message_claim("renew-live", "attempt-1", 0)
+            .is_err()
+    );
+    store
+        .ack_projected_lane_message("renew-live", "attempt-1")
+        .unwrap();
+    assert!(
+        !store
+            .renew_projected_lane_message_claim("renew-live", "attempt-1", 120)
+            .unwrap()
+    );
+    drop(store);
+    fs::remove_file(path).unwrap();
+}

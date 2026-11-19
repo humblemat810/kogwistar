@@ -11,7 +11,7 @@
   "counts": {
     "http_operations": 84,
     "mcp_operations": 62,
-    "pending_http_operations": 1,
+    "pending_http_operations": 0,
     "allowlisted_mcp_operations": 62,
     "pending_syscalls": 4,
     "python_syscalls": 11,
@@ -22,7 +22,7 @@
       "method": "DELETE",
       "path": "/admin/doc/{doc_id}",
       "python": "openapi",
-      "rust": "pending"
+      "rust": "application-route-in-cutover-inventory"
     },
     {
       "method": "POST",
@@ -1016,21 +1016,24 @@
       "source": "rust/crates/kogwistar-api/src/sections/in_memory_service.rs#InMemoryRunApplicationService.execute",
       "dispatches": [
         "create_conversation",
-        "receive_message"
+        "invoke_tool",
+        "mount_memory",
+        "receive_message",
+        "send_message"
       ],
       "unavailable": [
         "checkpoint",
-        "invoke_tool",
-        "mount_memory",
         "project_view",
         "request_approval",
         "resume",
-        "send_message",
         "spawn_process",
         "terminate_process"
       ],
       "cutover_deferred": [
-        "receive_message"
+        "invoke_tool",
+        "mount_memory",
+        "receive_message",
+        "send_message"
       ],
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     }

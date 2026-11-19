@@ -80,6 +80,16 @@ impl LaneMessageWriteStore for PostgresStore {
             .await
             .map_err(trait_error)
     }
+    async fn renew_projected_lane_message_claim(
+        &self,
+        id: &str,
+        owner: &str,
+        lease_seconds: i64,
+    ) -> StoreResult<bool> {
+        PostgresStore::renew_projected_lane_message_claim(self, id, owner, lease_seconds)
+            .await
+            .map_err(trait_error)
+    }
     async fn requeue_projected_lane_message(
         &self,
         id: &str,

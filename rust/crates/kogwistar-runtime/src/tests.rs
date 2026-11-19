@@ -248,6 +248,40 @@
     }
 
     #[test]
+    fn native_trace_context_inherits_python_nested_run_seed() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../contracts/golden/runtime-trace-context-v1.json"
+        ))
+        .unwrap();
+        let seed = &fixture["nested_run_seed"];
+        let step = &seed["step"];
+        let request = RuntimeNativeStepRequest {
+            executor_target: RUST_NATIVE_EXECUTOR_TARGET.to_owned(),
+            operation: "noop".to_owned(),
+            op_version: "v1".to_owned(),
+            run_id: step["run_id"].as_str().unwrap().to_owned(),
+            workflow_id: "workflow".to_owned(),
+            node_id: step["node_id"].as_str().unwrap().to_owned(),
+            conversation_id: "conversation".to_owned(),
+            turn_node_id: Some("turn".to_owned()),
+            token_id: step["token_id"].as_str().unwrap().to_owned(),
+            parent_token_id: None,
+            step_seq: step["step_seq"].as_i64().unwrap(),
+            state: Map::from_iter([(
+                "_rt_trace_context".to_owned(),
+                seed["trace_context"].clone(),
+            )]),
+            runtime_routes: Vec::new(),
+            ephemeral_context: Map::new(),
+        };
+
+        let fields = native_trace_context_fields(&request);
+        for (field, expected) in seed["expected"].as_object().unwrap() {
+            assert_eq!(&fields[field], expected, "field {field}");
+        }
+    }
+
+    #[test]
     fn native_routed_operation_selects_only_frozen_successors() {
         let mut registry = NativeOperationRegistry::default();
         registry
@@ -2513,4 +2547,65 @@ fn provider_event_ack_effect_field_is_backward_compatible_and_optional() {
             started.state.frontier.pending
         );
         assert!(resumed.state.frontier.suspended.is_empty());
+    }
+
+    #[test]
+    fn suspend_resume_preserves_unrelated_pending_and_join_obligations() {
+        let mut initial_frontier = RuntimeFrontier {
+            pending: vec![
+                ("gate".to_owned(), 0, "gate-token".to_owned(), None),
+                (
+                    "unrelated".to_owned(),
+                    0,
+                    "unrelated-token".to_owned(),
+                    None,
+                ),
+            ],
+            join_node_ids: vec!["join".to_owned()],
+            join_outstanding: vec![1],
+            join_waiters: BTreeMap::from([(
+                "join".to_owned(),
+                vec![(1, "arrived-token".to_owned(), None)],
+            )]),
+            ..RuntimeFrontier::default()
+        };
+        initial_frontier.pending.sort();
+        let mut start = transition(RecordedTransitionKind::Start, "start", 0, 0);
+        start.initial_state = Some(Map::new());
+        start.frontier = Some(initial_frontier.clone());
+        let started = reduce_recorded_transition(None, &start).unwrap();
+
+        let parked_frontier =
+            frontier_after_worker_suspend(&started.state.frontier, "gate", "gate-token", None)
+                .unwrap();
+        let mut suspend = transition(RecordedTransitionKind::Suspend, "suspend", 1, 0);
+        suspend.node_id = Some("gate".to_owned());
+        suspend.token_id = Some("gate-token".to_owned());
+        suspend.frontier = Some(parked_frontier.clone());
+        suspend.wait_reason = Some("approval".to_owned());
+        let suspended = reduce_recorded_transition(Some(&started.state), &suspend).unwrap();
+        assert_eq!(suspended.state.frontier, parked_frontier);
+        assert!(suspended.state.frontier.pending.iter().any(|token| {
+            token.0 == "unrelated" && token.2 == "unrelated-token"
+        }));
+        assert_eq!(suspended.state.frontier.join_outstanding, vec![1]);
+        assert_eq!(
+            suspended.state.frontier.join_waiters["join"],
+            vec![(1, "arrived-token".to_owned(), None)]
+        );
+
+        let resumed_frontier =
+            frontier_after_worker_resume(&suspended.state.frontier, "gate", "gate-token", None)
+                .unwrap();
+        let mut resume = transition(RecordedTransitionKind::ResumeResult, "resume", 2, 1);
+        resume.node_id = Some("gate".to_owned());
+        resume.token_id = Some("gate-token".to_owned());
+        resume.frontier = Some(resumed_frontier.clone());
+        resume.resume_payload = Some(json!({"approved": true}));
+        let resumed = reduce_recorded_transition(Some(&suspended.state), &resume).unwrap();
+
+        assert_eq!(resumed.state.frontier, initial_frontier);
+        assert_eq!(resumed.state.status, RecordedRunStatus::Running);
+        assert_eq!(resumed.state.wait_reason, None);
+        assert_eq!(resumed.state.resume_payload, Some(json!({"approved": true})));
     }

@@ -80,13 +80,13 @@ fn concurrent_file_identity_replacement_has_one_active_winner() {
     unregister_active_database_identity(&path, winners[0]);
 }
 #[test]
-fn standalone_rust_process_cannot_open_an_authority_owned_database() {
+fn standalone_rust_process_shares_same_implementation_authority() {
     let Ok(path) = std::env::var("KOGWISTAR_SQLITE_LOCK_CHILD_PATH") else {
         let path = database_path("cross-process-authority");
         let ready_path = PathBuf::from(format!("{}.ready", path.display()));
         let mut child = Command::new(std::env::current_exe().unwrap())
             .args([
-                "tests::authority::standalone_rust_process_cannot_open_an_authority_owned_database",
+                "tests::authority::standalone_rust_process_shares_same_implementation_authority",
                 "--nocapture",
             ])
             .env("KOGWISTAR_SQLITE_LOCK_CHILD_PATH", &path)
@@ -104,8 +104,9 @@ fn standalone_rust_process_cannot_open_an_authority_owned_database() {
             ready_path.exists(),
             "child did not acquire SQLite authority"
         );
-        let error = SqliteStore::open(&path).unwrap_err();
-        assert!(matches!(error, SqliteStoreError::AuthorityConflict { .. }));
+        let store = SqliteStore::open(&path)
+            .expect("same-implementation processes must share SQLite authority");
+        drop(store);
         drop(child.stdin.take());
         assert!(child.wait().unwrap().success());
         let _ = fs::remove_file(&path);

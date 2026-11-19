@@ -428,14 +428,18 @@ def _pytest_args(values: list[str]) -> list[str]:
 
 
 def _marker_expression(layer: str, profile: str) -> str:
-    exclusions = "not manual and not llm_real and not legacy and not requires_ollama"
+    exclusions = (
+        "not manual and not llm_real and not legacy and not requires_ollama "
+        "and not requires_cargo"
+    )
     if profile == "feature":
         if layer == "sink":
             # Sink marker debt: retain its deterministic unmarked suite until
             # the consumer classifies feature/regression tests explicitly.
             return (
                 "not slow and not manual and not integration and not longrun "
-                "and not external and not llm_real and not requires_ollama"
+                "and not external and not llm_real and not requires_ollama "
+                "and not requires_cargo"
             )
         return f"(ci or regression) and not slow and {exclusions}"
     if profile == "regression":
@@ -444,12 +448,12 @@ def _marker_expression(layer: str, profile: str) -> str:
         if layer in {"core", "parser"}:
             return (
                 "(ci or ci_full) and not slow and not manual and not llm_real "
-                "and not legacy and not requires_ollama"
+                "and not legacy and not requires_ollama and not requires_cargo"
             )
         if layer == "application":
             return (
                 "(ci or ci_full) and not slow and not manual and not llm_real "
-                "and not legacy and not requires_ollama"
+                "and not legacy and not requires_ollama and not requires_cargo"
             )
         if layer == "sink":
             # The sink does not classify its deterministic tests with ci markers.
@@ -823,6 +827,10 @@ def _parse_args(manifest: dict[str, Any] | None = None) -> argparse.Namespace:
         )
     parser.add_argument("--backend", default="unspecified")
     parser.add_argument("--storage-root", default="unspecified")
+    parser.add_argument(
+        "--wheel-sha256",
+        help="Digest of the exact wheel under test; required for milestone identity.",
+    )
     for name in (
         "core",
         "application",
@@ -880,13 +888,24 @@ def _parse_args(manifest: dict[str, Any] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--report")
     parser.add_argument("pytest_args", nargs=argparse.REMAINDER)
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.wheel_sha256 is not None and (
+        len(args.wheel_sha256) != 64
+        or any(character not in "0123456789abcdefABCDEF" for character in args.wheel_sha256)
+    ):
+        parser.error("--wheel-sha256 must be 64 hexadecimal characters")
+    args.wheel_sha256 = (
+        None if args.wheel_sha256 is None else args.wheel_sha256.lower()
+    )
+    return args
 
 
 def main() -> int:
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     args = _parse_args(manifest)
     profile = "milestone" if args.release else args.profile
+    if profile == "milestone" and args.wheel_sha256 is None:
+        raise SystemExit("milestone candidate identity requires --wheel-sha256")
     pytest_args = _pytest_args(args.pytest_args)
     if args.release and args.profile != "feature":
         raise SystemExit("--release cannot be combined with an explicit --profile")
@@ -981,6 +1000,8 @@ def main() -> int:
     identity["consumer_python_executable"] = consumer_identity["python_executable"]
     identity["contract_version"] = manifest["contract_version"]
     identity["test_profile"] = profile
+    if args.wheel_sha256 is not None:
+        identity["wheel_sha256"] = args.wheel_sha256
     fingerprint = _candidate_identity_fingerprint(identity)
     identity["identity_sha256"] = fingerprint
     timing_history = _timing_history(

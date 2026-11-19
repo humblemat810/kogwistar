@@ -243,6 +243,17 @@ impl PostgresRunApplicationService {
     }
 
     async fn execute_async(&self, request: ApiEffectRequest) -> ApiEffectResponse {
+        if request.method == "DELETE"
+            && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
+        {
+            let graph_store = self.graph_store_for_type(&self.graph_role);
+            return admin_document_delete_effect(
+                &request,
+                graph_store,
+                document_id,
+            )
+            .await;
+        }
         if request.method == "POST"
             && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
             && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["resume"]

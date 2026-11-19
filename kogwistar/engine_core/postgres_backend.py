@@ -1708,6 +1708,7 @@ class PgVectorBackend:
         q = sa.select(*cols)
         if limit is not None:
             q = q.limit(int(limit))
+        q = q.order_by(table.c.id.asc())
         if ids is not None:
             q = q.where(table.c.id.in_(list(ids)))
         if where:
@@ -1746,6 +1747,7 @@ class PgVectorBackend:
         q = sa.select(*cols)
         if limit is not None:
             q = q.limit(int(limit))
+        q = q.order_by(table.c.id.asc())
         if ids is not None:
             q = q.where(table.c.id.in_(list(ids)))
         if where:

@@ -4,7 +4,8 @@
   "arguments": {
     "conversation_id": "conv-ask-contract",
     "text": "hello from the shared MCP contract",
-    "user_id": "alice"
+    "user_id": "alice",
+    "idempotency_key": "contract-ask-1"
   },
   "result": {
     "run_id": "<generated>",

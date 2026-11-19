@@ -72,6 +72,16 @@ impl SqliteStore {
     ) -> SqliteStoreResult<()> {
         self.immediate_transaction(|uow| uow.ack_projected_lane_message(message_id, claimed_by))
     }
+    pub fn renew_projected_lane_message_claim(
+        &self,
+        message_id: &str,
+        claimed_by: &str,
+        lease_seconds: i64,
+    ) -> SqliteStoreResult<bool> {
+        self.immediate_transaction(|uow| {
+            uow.renew_projected_lane_message_claim(message_id, claimed_by, lease_seconds)
+        })
+    }
     pub fn requeue_projected_lane_message(
         &self,
         message_id: &str,

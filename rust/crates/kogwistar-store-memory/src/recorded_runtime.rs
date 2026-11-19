@@ -1,24 +1,35 @@
 use super::{
     InMemoryStore, NamedProjection, ServerRun, ServerRunEvent, State, now_ms, now_seconds,
 };
+use kogwistar_contracts::stable_id;
 use kogwistar_runtime::{
     PersistedRecordedTransition, RECORDED_RUNTIME_CONTRACT_VERSION, RecordedRunStatus,
     RecordedRuntimeState, RecordedRuntimeTransition, RecordedTransitionKind,
     RecordedTransitionResult, RecordedWorkerHandoff, RecordedWorkerSuccessEffect,
-    RuntimeWorkerEffectStatus, RuntimeWorkerSuccessEffect,
-    authoritative_runtime_successors_for_result, frontier_after_worker_success,
-    frontier_after_worker_suspend, reduce_recorded_transition, transition_digest,
-    worker_effect_digest,
+    RuntimeStepExecutePayload, RuntimeStepExecuteRequest, RuntimeWorkerEffectStatus,
+    RuntimeWorkerSuccessEffect, authoritative_runtime_successors_for_result,
+    frontier_after_worker_success, frontier_after_worker_suspend, reduce_recorded_transition,
+    transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
-    EntityEvent, GraphMutation, GraphMutationBatch, NewIndexJob, NewProjectedLaneMessage,
-    ProjectedLaneMessage, RUNTIME_CURRENT_STATE_NAMESPACE, ServerRunCreate, StoreError,
-    StoreResult, runtime_checkpoint_namespace, runtime_projection_write, runtime_status_namespace,
-    timestamp_i64, validate_graph_mutation_batch, validate_graph_mutation_replay,
+    EntityEvent, GraphMutation, GraphMutationBatch, GraphProjectionRead, GraphRecord, NewIndexJob,
+    NewProjectedLaneMessage, ProjectedLaneMessage, RUNTIME_CURRENT_STATE_NAMESPACE,
+    ServerRunCreate, StoreError, StoreResult, runtime_checkpoint_namespace,
+    runtime_projection_write, runtime_status_namespace, timestamp_i64,
+    validate_graph_mutation_batch, validate_graph_mutation_replay,
 };
 use serde_json::Value;
+use std::sync::{Arc, RwLock};
 
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
+
+/// Projection rows that must remain unchanged when graph effects and a new
+/// runtime are admitted together.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphProjectionExpectation {
+    pub read: GraphProjectionRead,
+    pub records: Vec<GraphRecord>,
+}
 
 // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#persist_provider_event_publication; python=kogwistar/engine_core/in_memory_meta.py#append_server_run_event,kogwistar/messaging/service.py#project_lane_message; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_publication_commits_graph_lane_and_trace_atomically_and_idempotently; python_test=tests/agent/test_provider_event_cross_language_contract.py; note=Rust memory backend atomically publishes graph projection, inbox record, and trace under one process-local lock; Python components remain independently callable.
 /// One provider event and every graph/runtime projection derived from it.
@@ -361,6 +372,133 @@ impl InMemoryStore {
         Ok(started)
     }
 
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#admit_server_run_with_graph_and_start; python=kogwistar/server/chat_service_run_execution.py#submit_turn_for_answer; rust_test=recorded_runtime::tests::runtime_admission_commits_graph_and_run_as_one_unit; python_test=tests/server/test_chat_service.py#test_submit_turn_for_answer_is_transactional
+    /// Atomically commits initial graph/index effects and run/start/lane state
+    /// under the same in-process writer lock, matching Python's conversation
+    /// unit-of-work boundary. This is volatile memory atomicity, not durability.
+    pub fn admit_server_run_with_graph_and_start(
+        &self,
+        graph_batch: GraphMutationBatch,
+        run: ServerRunCreate,
+        admission_payload: Value,
+        transition: RecordedRuntimeTransition,
+        lane: NewProjectedLaneMessage,
+    ) -> StoreResult<RecordedTransitionResult> {
+        self.admit_server_run_with_graph_and_start_if_unchanged(
+            graph_batch,
+            &[],
+            run,
+            admission_payload,
+            transition,
+            lane,
+        )
+    }
+
+    /// Atomically admits graph effects and runtime state only if each supplied
+    /// projection snapshot still matches under the writer lock.
+    pub fn admit_server_run_with_graph_and_start_if_unchanged(
+        &self,
+        graph_batch: GraphMutationBatch,
+        expected_projections: &[GraphProjectionExpectation],
+        run: ServerRunCreate,
+        admission_payload: Value,
+        transition: RecordedRuntimeTransition,
+        lane: NewProjectedLaneMessage,
+    ) -> StoreResult<RecordedTransitionResult> {
+        validate_graph_mutation_batch(&graph_batch)?;
+
+        let mut committed = self.state.write().expect("in-memory store lock poisoned");
+        let replaying_existing_run = committed.server_runs.contains_key(&run.run_id);
+        if replaying_existing_run {
+            for mutation in &graph_batch.mutations {
+                let existing = committed
+                    .namespaces
+                    .get(&mutation.scope.namespace)
+                    .and_then(|namespace| {
+                        namespace
+                            .event_seq_by_id
+                            .get(&mutation.event_id)
+                            .and_then(|seq| namespace.events.iter().find(|event| event.seq == *seq))
+                    })
+                    .ok_or_else(|| {
+                        runtime_conflict(
+                            "runtime admission replay is missing its committed graph events",
+                        )
+                    })?;
+                validate_graph_mutation_replay(mutation, existing)?;
+            }
+            for job in &graph_batch.index_jobs {
+                let existing = committed.index_jobs.get(&job.job_id).ok_or_else(|| {
+                    runtime_conflict(
+                        "runtime admission replay is missing its committed index intents",
+                    )
+                })?;
+                if existing.namespace != job.namespace
+                    || existing.entity_kind != job.entity_kind
+                    || existing.entity_id != job.entity_id
+                    || existing.index_kind != job.index_kind
+                    || existing.op != job.op
+                    || existing.max_retries != job.max_retries
+                    || existing.payload_json != job.payload_json
+                {
+                    return Err(runtime_conflict(
+                        "runtime admission replay changed its graph index intent",
+                    ));
+                }
+            }
+        }
+
+        if !replaying_existing_run {
+            for expectation in expected_projections {
+                let read = &expectation.read;
+                let mut rows = committed
+                    .graph_projections
+                    .get(&read.scope)
+                    .map(|projection| {
+                        projection
+                            .record_order
+                            .iter()
+                            .filter(|(table, _)| table == &read.table)
+                            .filter_map(|key| projection.records.get(key))
+                            .filter(|record| read.metadata.matches(&record.metadata))
+                            .cloned()
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                if let Some(ids) = &read.ids {
+                    rows.retain(|record| ids.contains(&record.id));
+                }
+                rows.truncate(read.limit);
+                if rows != expectation.records {
+                    return Err(runtime_conflict(
+                        "graph projection changed during runtime admission",
+                    ));
+                }
+            }
+        }
+
+        // Stage against a private copy. The original store lock remains held,
+        // so readers cannot observe graph effects without the run admission.
+        let staged_store = InMemoryStore {
+            state: Arc::new(RwLock::new(committed.clone())),
+        };
+        if !replaying_existing_run {
+            let mut staged = staged_store
+                .state
+                .write()
+                .expect("staged in-memory store lock poisoned");
+            super::apply_graph_mutation_batch_to_state(&mut staged, graph_batch)?;
+        }
+        let result =
+            staged_store.admit_server_run_with_start(run, admission_payload, transition, lane)?;
+        *committed = staged_store
+            .state
+            .read()
+            .expect("staged in-memory store lock poisoned")
+            .clone();
+        Ok(result)
+    }
+
     /// Atomically records a Rust/Python-compatible runtime transition in the
     /// process-local store. One write lock is the transaction boundary; no
     /// resolver, provider, or graph callback runs while that lock is held.
@@ -381,6 +519,15 @@ impl InMemoryStore {
         handoff: RecordedWorkerHandoff,
         effect: RecordedWorkerSuccessEffect,
     ) -> StoreResult<RecordedTransitionResult> {
+        self.apply_claimed_recorded_worker_effect_inner(handoff, effect, false)
+    }
+
+    fn apply_claimed_recorded_worker_effect_inner(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        effect: RecordedWorkerSuccessEffect,
+        allow_graph_effect: bool,
+    ) -> StoreResult<RecordedTransitionResult> {
         validate_handoff(&handoff)?;
         if effect.contract_version != RECORDED_RUNTIME_CONTRACT_VERSION
             || effect.effect_id.is_empty()
@@ -389,15 +536,15 @@ impl InMemoryStore {
                 "worker effect contract_version/effect_id is invalid",
             ));
         }
-        if effect.graph_mutation_batch.is_some()
-            || effect.graph_mutation_batch_v2.is_some()
+        if ((!allow_graph_effect)
+            && (effect.graph_mutation_batch.is_some() || effect.graph_mutation_batch_v2.is_some()))
             || !effect.provider_event_publications.is_empty()
             || effect.provider_event_acknowledgements.len() > 1
             || (!effect.provider_event_acknowledgements.is_empty()
                 && effect.status != RuntimeWorkerEffectStatus::Success)
         {
             return Err(runtime_conflict(
-                "in-memory worker result supports at most one successful provider-event acknowledgement and no graph/publication effects",
+                "in-memory worker result has unsupported graph/publication effects or provider-event acknowledgements",
             ));
         }
         let effect_digest = worker_effect_digest(&effect).map_err(runtime_error)?;
@@ -701,8 +848,9 @@ impl InMemoryStore {
                 .map_err(json_error)?,
             ));
         }
+        let mut staged = state.clone();
         let applied = apply_transition(
-            &mut state,
+            &mut staged,
             transition,
             Some((handoff.clone(), effect_digest)),
             false,
@@ -718,17 +866,20 @@ impl InMemoryStore {
                 .join_waiters
                 .values()
                 .any(|waiters| !waiters.is_empty());
+        if unfinished {
+            enqueue_pending_runtime_lanes(&mut staged, &applied.reduced.state, applied.event_seq)?;
+        }
         let result = if unfinished || applied.reduced.state.status.is_terminal() {
             applied
         } else {
             let completed_state = &applied.reduced.state;
-            let expected_event_seq = state
+            let expected_event_seq = staged
                 .server_run_events
                 .get(&handoff.run_id)
                 .and_then(|events| events.last())
                 .map_or(0, |event| event.seq);
             apply_transition(
-                &mut state,
+                &mut staged,
                 RecordedRuntimeTransition {
                     contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
                     transition_id: format!("complete-{}", effect.effect_id),
@@ -760,7 +911,7 @@ impl InMemoryStore {
         let mut next_seq = result.event_seq;
         if let Some((message_id, payload_json)) = acknowledgement {
             next_seq += 1;
-            state
+            staged
                 .server_run_events
                 .entry(handoff.run_id.clone())
                 .or_default()
@@ -771,7 +922,7 @@ impl InMemoryStore {
                     payload_json,
                     created_at_ms: now_ms(),
                 });
-            let lane = state
+            let lane = staged
                 .lane_messages
                 .get_mut(&message_id)
                 .expect("validated provider event lane remains present under write lock");
@@ -781,7 +932,7 @@ impl InMemoryStore {
         }
         for (event_type, payload_json) in telemetry_events {
             next_seq += 1;
-            state
+            staged
                 .server_run_events
                 .entry(handoff.run_id.clone())
                 .or_default()
@@ -793,13 +944,14 @@ impl InMemoryStore {
                     created_at_ms: now_ms(),
                 });
         }
-        let lane = state
+        let lane = staged
             .lane_messages
             .get_mut(&handoff.message_id)
             .expect("validated worker lane remains present under write lock");
         lane.status = "completed".to_owned();
         lane.claimed_by = None;
         lane.lease_until = None;
+        *state = staged;
         Ok(result)
     }
 
@@ -812,19 +964,83 @@ impl InMemoryStore {
         effect: RecordedWorkerSuccessEffect,
         graph_batch: GraphMutationBatch,
     ) -> StoreResult<RecordedTransitionResult> {
-        if effect.provider_event_acknowledgements.len() != 1
-            || effect.status != RuntimeWorkerEffectStatus::Success
-        {
+        if effect.provider_event_acknowledgements.len() != 1 {
             return Err(runtime_conflict(
                 "causal graph commit requires exactly one successful provider-event acknowledgement",
             ));
         }
+        self.apply_claimed_recorded_worker_effect_with_graph_effects(
+            handoff,
+            effect,
+            graph_batch,
+            None,
+        )
+    }
+
+    /// Commit a declared worker graph effect (or provider ACK projection) with
+    /// its runtime transition and lane acknowledgement under one write lock.
+    /// Optional ACL snapshots prevent applying defaults derived from stale ACL
+    /// truth when another writer changed a target during preparation.
+    pub fn apply_claimed_recorded_worker_effect_with_graph_effects(
+        &self,
+        handoff: RecordedWorkerHandoff,
+        effect: RecordedWorkerSuccessEffect,
+        graph_batch: GraphMutationBatch,
+        acl_snapshot: Option<super::GraphAclSnapshot>,
+    ) -> StoreResult<RecordedTransitionResult> {
+        let has_graph_effect =
+            effect.graph_mutation_batch.is_some() || effect.graph_mutation_batch_v2.is_some();
+        if effect.status != RuntimeWorkerEffectStatus::Success
+            || (effect.graph_mutation_batch.is_some() && effect.graph_mutation_batch_v2.is_some())
+            || (effect.provider_event_acknowledgements.is_empty() && !has_graph_effect)
+            || (has_graph_effect && !effect.provider_event_acknowledgements.is_empty())
+        {
+            return Err(runtime_conflict(
+                "atomic graph commit requires a successful declared graph effect or provider-event acknowledgement",
+            ));
+        }
         validate_graph_mutation_batch(&graph_batch)?;
+        validate_declared_graph_effect(&effect, &graph_batch)?;
+        if acl_snapshot.as_ref().is_some_and(|snapshot| {
+            graph_batch
+                .mutations
+                .first()
+                .is_none_or(|mutation| mutation.scope != snapshot.scope)
+        }) {
+            return Err(runtime_conflict(
+                "ACL snapshot scope differs from the worker graph batch",
+            ));
+        }
+        match (&effect.graph_mutation_batch_v2, &acl_snapshot) {
+            (Some(batch), Some(snapshot))
+                if batch.default_acl.truth_graph == snapshot.truth_graph
+                    && declared_acl_snapshot_targets(batch, snapshot) => {}
+            (Some(_), Some(_)) => {
+                return Err(runtime_conflict(
+                    "ACL snapshot scope, targets, or truth graph differs from worker intent",
+                ));
+            }
+            (Some(_), None) => {
+                return Err(runtime_conflict(
+                    "ACL-aware worker graph effect requires an ACL snapshot",
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(runtime_conflict(
+                    "ACL snapshot is only valid for an ACL-aware graph effect",
+                ));
+            }
+            (None, None) => {}
+        }
         let mut committed = self.state.write().expect("in-memory store lock poisoned");
+        if let Some(snapshot) = acl_snapshot.as_ref() {
+            validate_acl_snapshot(&committed, snapshot)?;
+        }
         let staged_store = InMemoryStore {
             state: std::sync::Arc::new(std::sync::RwLock::new(committed.clone())),
         };
-        let result = staged_store.apply_claimed_recorded_worker_effect(handoff, effect)?;
+        let result =
+            staged_store.apply_claimed_recorded_worker_effect_inner(handoff, effect, true)?;
         if result.idempotent {
             return Ok(result);
         }
@@ -842,6 +1058,235 @@ impl InMemoryStore {
             .clone();
         Ok(result)
     }
+}
+
+fn validate_declared_graph_effect(
+    effect: &RecordedWorkerSuccessEffect,
+    batch: &GraphMutationBatch,
+) -> StoreResult<()> {
+    let (mutations, jobs): (
+        &[kogwistar_contracts::GraphMutationV1],
+        &[kogwistar_contracts::GraphIndexJobV1],
+    ) = if let Some(declared) = effect.graph_mutation_batch.as_ref() {
+        declared.validate().map_err(runtime_error)?;
+        (&declared.mutations, &declared.index_jobs)
+    } else if let Some(declared) = effect.graph_mutation_batch_v2.as_ref() {
+        declared.validate().map_err(runtime_error)?;
+        (&declared.mutations, &declared.index_jobs)
+    } else {
+        return Ok(());
+    };
+
+    let is_acl_aware = effect.graph_mutation_batch_v2.is_some();
+    if batch.mutations.len() < mutations.len()
+        || !mutations
+            .iter()
+            .zip(&batch.mutations)
+            .all(|(declared, actual)| graph_mutation_matches_wire(declared, actual))
+        || batch.index_jobs.len() < jobs.len()
+        || !jobs
+            .iter()
+            .zip(&batch.index_jobs)
+            .all(|(declared, actual)| {
+                actual.job_id == declared.job_id
+                    && actual.namespace == declared.namespace
+                    && actual.entity_kind == declared.entity_kind
+                    && actual.entity_id == declared.entity_id
+                    && actual.index_kind == declared.index_kind
+                    && actual.op == declared.op
+                    && actual.payload_json == declared.payload_json
+                    && actual.max_retries == declared.max_retries
+            })
+        || (!is_acl_aware
+            && (batch.mutations.len() != mutations.len() || batch.index_jobs.len() != jobs.len()))
+        || (is_acl_aware
+            && !valid_host_acl_effects(
+                effect
+                    .graph_mutation_batch_v2
+                    .as_ref()
+                    .expect("ACL-aware batch was checked"),
+                &batch.mutations[mutations.len()..],
+                &batch.index_jobs[jobs.len()..],
+            ))
+    {
+        return Err(runtime_conflict(
+            "prepared graph batch differs from worker-declared graph effect",
+        ));
+    }
+    Ok(())
+}
+
+fn valid_host_acl_effects(
+    declared: &kogwistar_contracts::GraphMutationBatchV2,
+    extra_mutations: &[GraphMutation],
+    extra_jobs: &[NewIndexJob],
+) -> bool {
+    let target_ids = declared
+        .mutations
+        .iter()
+        .map(|mutation| mutation.record.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut acl_record_ids = std::collections::BTreeSet::new();
+    let mut supersedes_edge_ids = std::collections::BTreeSet::new();
+    for mutation in extra_mutations {
+        let metadata = &mutation.record.metadata;
+        let payload_metadata = mutation.payload.get("metadata").and_then(Value::as_object);
+        if metadata.get("acl_truth_graph").and_then(Value::as_str)
+            != Some(declared.default_acl.truth_graph.as_str())
+            || metadata
+                .get("acl_target_entity_id")
+                .and_then(Value::as_str)
+                .is_none_or(|target| !target_ids.contains(target))
+            || payload_metadata.and_then(|payload| payload.get("entity_type"))
+                != metadata.get("entity_type")
+            || payload_metadata.and_then(|payload| payload.get("acl_truth_graph"))
+                != metadata.get("acl_truth_graph")
+            || payload_metadata.and_then(|payload| payload.get("acl_target_entity_id"))
+                != metadata.get("acl_target_entity_id")
+        {
+            return false;
+        }
+        match metadata.get("entity_type").and_then(Value::as_str) {
+            Some("acl_record")
+                if mutation.entity_kind == "node" && mutation.table == "gke_nodes" =>
+            {
+                acl_record_ids.insert(mutation.record.id.as_str());
+            }
+            Some("acl_supersedes")
+                if mutation.entity_kind == "edge" && mutation.table == "gke_edges" =>
+            {
+                supersedes_edge_ids.insert(mutation.record.id.as_str());
+            }
+            _ => return false,
+        }
+    }
+    extra_jobs.iter().all(|job| {
+        job.op == "UPSERT"
+            && ((acl_record_ids.contains(job.entity_id.as_str())
+                && matches!(job.index_kind.as_str(), "node_docs" | "node_refs"))
+                || (supersedes_edge_ids.contains(job.entity_id.as_str())
+                    && matches!(job.index_kind.as_str(), "edge_refs" | "edge_endpoints")))
+    })
+}
+
+fn declared_acl_snapshot_targets(
+    declared: &kogwistar_contracts::GraphMutationBatchV2,
+    snapshot: &super::GraphAclSnapshot,
+) -> bool {
+    let expected = declared
+        .mutations
+        .iter()
+        .map(|mutation| mutation.record.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual = snapshot
+        .target_entity_ids
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    actual.len() == snapshot.target_entity_ids.len() && actual == expected
+}
+
+fn graph_mutation_matches_wire(
+    declared: &kogwistar_contracts::GraphMutationV1,
+    actual: &GraphMutation,
+) -> bool {
+    let mut payload = declared.payload.clone();
+    let mut metadata = declared.record.metadata.clone();
+    if let Some(envelope) = &declared.model_envelope {
+        let class_name = envelope.model_class.python_name();
+        metadata.insert(
+            "_class_name".to_owned(),
+            Value::String(class_name.to_owned()),
+        );
+        if let Some(payload_metadata) = payload.get_mut("metadata").and_then(Value::as_object_mut) {
+            payload_metadata.insert(
+                "_class_name".to_owned(),
+                Value::String(class_name.to_owned()),
+            );
+        }
+    }
+    actual.scope.namespace == declared.scope.namespace
+        && actual.scope.workspace_id == declared.scope.workspace_id
+        && actual.scope.graph_space == declared.scope.graph_space
+        && actual.table == declared.table
+        && actual.entity_kind == declared.entity_kind
+        && actual.event_id == declared.event_id
+        && actual.op == declared.op
+        && actual.payload == payload
+        && actual.record.id == declared.record.id
+        && actual.record.document == declared.record.document
+        && actual.record.metadata == metadata
+        && actual.record.embedding == declared.record.embedding
+        && actual.embedding_dim == declared.embedding_dim
+}
+
+fn validate_acl_snapshot(
+    state: &super::State,
+    snapshot: &super::GraphAclSnapshot,
+) -> StoreResult<()> {
+    if snapshot.truth_graph.trim().is_empty()
+        || snapshot
+            .target_entity_ids
+            .iter()
+            .any(|id| id.trim().is_empty())
+    {
+        return Err(runtime_conflict("ACL snapshot identity is invalid"));
+    }
+    let targets = snapshot
+        .target_entity_ids
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    if targets.len() != snapshot.target_entity_ids.len() {
+        return Err(runtime_conflict("ACL snapshot targets contain duplicates"));
+    }
+    let mut expected = snapshot.records.clone();
+    if expected.iter().any(|record| {
+        record.metadata.get("entity_type").and_then(Value::as_str) != Some("acl_record")
+            || record
+                .metadata
+                .get("acl_truth_graph")
+                .and_then(Value::as_str)
+                != Some(snapshot.truth_graph.as_str())
+            || record
+                .metadata
+                .get("acl_target_entity_id")
+                .and_then(Value::as_str)
+                .is_none_or(|target| !targets.contains(target))
+    }) {
+        return Err(runtime_conflict(
+            "ACL snapshot contains an unrelated record",
+        ));
+    }
+    expected.sort_by(|left, right| left.id.cmp(&right.id));
+    let mut current = state
+        .graph_projections
+        .get(&snapshot.scope)
+        .into_iter()
+        .flat_map(|projection| projection.records.iter())
+        .filter(|((table, _), record)| {
+            table == "gke_nodes"
+                && record.metadata.get("entity_type").and_then(Value::as_str) == Some("acl_record")
+                && record
+                    .metadata
+                    .get("acl_truth_graph")
+                    .and_then(Value::as_str)
+                    == Some(snapshot.truth_graph.as_str())
+                && record
+                    .metadata
+                    .get("acl_target_entity_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|target| targets.contains(target))
+        })
+        .map(|(_, record)| record.clone())
+        .collect::<Vec<_>>();
+    current.sort_by(|left, right| left.id.cmp(&right.id));
+    if current != expected {
+        return Err(runtime_conflict(
+            "ACL truth changed while worker graph effect was being prepared",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_runtime_admission(
@@ -964,6 +1409,92 @@ fn insert_initial_lane(state: &mut State, row: NewProjectedLaneMessage) {
             conversation_tail_message_id: Some(message_id),
         },
     );
+}
+
+fn enqueue_pending_runtime_lanes(
+    state: &mut State,
+    runtime: &RecordedRuntimeState,
+    expected_event_seq: i64,
+) -> StoreResult<()> {
+    for (node_id, join_mask, token_id, parent_token_id) in &runtime.frontier.pending {
+        let already_active = state.lane_messages.values().any(|lane| {
+            lane.run_id.as_deref() == Some(runtime.run_id.as_str())
+                && matches!(lane.status.as_str(), "pending" | "claimed")
+                && lane
+                    .payload_json
+                    .as_deref()
+                    .and_then(|payload| serde_json::from_str::<Value>(payload).ok())
+                    .is_some_and(|payload| {
+                        payload["token_id"].as_str() == Some(token_id.as_str())
+                            && payload["node_id"].as_str() == Some(node_id.as_str())
+                    })
+        });
+        if already_active {
+            continue;
+        }
+        let step_seq = runtime.last_step_seq.saturating_add(1);
+        let message_id = format!(
+            "lane|{}",
+            stable_id(
+                "runtime.worker.request",
+                &[
+                    runtime.run_id.clone(),
+                    token_id.clone(),
+                    node_id.clone(),
+                    step_seq.to_string(),
+                ],
+            )
+        );
+        if state.lane_messages.contains_key(&message_id) {
+            return Err(runtime_conflict(
+                "runtime successor lane ID already exists outside the active frontier",
+            ));
+        }
+        let op = runtime
+            .state
+            .get("_rt_node_ops")
+            .and_then(Value::as_object)
+            .and_then(|operations| operations.get(node_id))
+            .cloned()
+            .unwrap_or_else(|| Value::String("noop".to_owned()));
+        let payload = RuntimeStepExecutePayload::from_recorded_state(
+            runtime,
+            RuntimeStepExecuteRequest {
+                node_id: node_id.clone(),
+                op,
+                join_mask: *join_mask,
+                token_id: token_id.clone(),
+                parent_token_id: parent_token_id.clone(),
+                step_seq,
+                expected_event_seq,
+                resume_effect: None,
+            },
+        );
+        let payload_json = serde_json::to_string(&payload).map_err(json_error)?;
+        let now = now_seconds();
+        insert_initial_lane(
+            state,
+            NewProjectedLaneMessage {
+                message_id,
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: runtime.conversation_id.clone(),
+                recipient_id: "rust-native-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "pending".to_owned(),
+                created_at: now,
+                available_at: now,
+                run_id: Some(runtime.run_id.clone()),
+                step_id: Some(node_id.clone()),
+                correlation_id: Some(runtime.run_id.clone()),
+                payload_json: Some(payload_json),
+                error_json: None,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn apply_transition(
@@ -1304,8 +1835,9 @@ fn runtime_conflict(message: impl Into<String>) -> StoreError {
 mod tests {
     use super::*;
     use kogwistar_store::{
-        GraphRecord, GraphScope, LaneMessageClaimFilter, LaneMessageReadStore,
-        LaneMessageWriteStore, NewProjectedLaneMessage, ProjectionReadStore, ServerRunReadStore,
+        GraphMutationStore, GraphProjectionRead, GraphRecord, GraphScope, IndexJobReadStore,
+        LaneMessageClaimFilter, LaneMessageReadStore, LaneMessageWriteStore, MetadataFilter,
+        NewProjectedLaneMessage, ProjectionReadStore, ServerRunReadStore,
     };
     use serde_json::json;
     use std::future::Future;
@@ -1687,6 +2219,294 @@ mod tests {
     }
 
     #[test]
+    fn runtime_admission_commits_graph_and_run_as_one_unit() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: None,
+            graph_space: Some("conversation".to_owned()),
+        };
+        let graph_batch = || GraphMutationBatch {
+            mutations: vec![GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "conversation-turn-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id": "conversation-turn", "metadata": {}}),
+                record: GraphRecord {
+                    id: "conversation-turn".to_owned(),
+                    document: Some("user turn".to_owned()),
+                    metadata: serde_json::Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }],
+            index_jobs: vec![NewIndexJob {
+                job_id: "conversation-turn-index".to_owned(),
+                namespace: "conversation".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: "conversation-turn".to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
+        let run = ServerRunCreate {
+            run_id: "memory-run".to_owned(),
+            conversation_id: "memory-conversation".to_owned(),
+            workflow_id: "memory-workflow".to_owned(),
+            user_id: Some("user-1".to_owned()),
+            user_turn_node_id: "conversation-turn".to_owned(),
+            status: "queued".to_owned(),
+        };
+        let mut transition = pending_start();
+        transition.expected_event_seq = 1;
+        transition.node_id = Some("noop".to_owned());
+        transition.user_turn_node_id = Some("conversation-turn".to_owned());
+        let mut admission_payload = runtime_admission_payload();
+        admission_payload["turn_node_id"] = json!("conversation-turn");
+
+        let mut invalid = transition.clone();
+        invalid.expected_event_seq = 0;
+        assert!(
+            store
+                .admit_server_run_with_graph_and_start(
+                    graph_batch(),
+                    run.clone(),
+                    admission_payload.clone(),
+                    invalid,
+                    worker_lane(),
+                )
+                .is_err()
+        );
+        assert!(block_on(store.server_run("memory-run")).unwrap().is_none());
+        assert!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["conversation-turn".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            block_on(store.index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                Some("node"),
+                Some("conversation-turn"),
+                Some("node_embedding"),
+                10,
+            ))
+            .unwrap()
+            .is_empty()
+        );
+
+        let first = store
+            .admit_server_run_with_graph_and_start(
+                graph_batch(),
+                run.clone(),
+                admission_payload.clone(),
+                transition.clone(),
+                worker_lane(),
+            )
+            .unwrap();
+        assert!(!first.idempotent);
+        let replay = store
+            .admit_server_run_with_graph_and_start(
+                graph_batch(),
+                run.clone(),
+                admission_payload.clone(),
+                transition.clone(),
+                worker_lane(),
+            )
+            .unwrap();
+        assert!(replay.idempotent);
+        let mut changed_graph = graph_batch();
+        changed_graph.mutations[0].payload["summary"] = json!("changed");
+        assert!(
+            store
+                .admit_server_run_with_graph_and_start(
+                    changed_graph,
+                    run.clone(),
+                    admission_payload.clone(),
+                    transition.clone(),
+                    worker_lane(),
+                )
+                .is_err()
+        );
+        let mut changed_index = graph_batch();
+        changed_index.index_jobs[0].op = "DELETE".to_owned();
+        assert!(
+            store
+                .admit_server_run_with_graph_and_start(
+                    changed_index,
+                    run,
+                    admission_payload,
+                    transition,
+                    worker_lane(),
+                )
+                .is_err()
+        );
+        assert_eq!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["conversation-turn".to_owned()]),
+                metadata: Default::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                Some("node"),
+                Some("conversation-turn"),
+                Some("node_embedding"),
+                10,
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+    }
+
+    #[test]
+    fn runtime_admission_rejects_stale_graph_projection_without_partial_writes() {
+        let store = InMemoryStore::new();
+        let scope = GraphScope {
+            namespace: "conversation".to_owned(),
+            workspace_id: None,
+            graph_space: Some("conversation".to_owned()),
+        };
+        let tail_read = GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec!["existing-tail".to_owned()]),
+            metadata: Default::default(),
+            limit: 1,
+        };
+        let expectation = GraphProjectionExpectation {
+            records: block_on(store.graph_projection_records(tail_read.clone())).unwrap(),
+            read: tail_read,
+        };
+        assert!(expectation.records.is_empty());
+
+        block_on(store.apply_graph_mutation(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "concurrent-tail-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id": "existing-tail", "metadata": {}}),
+            record: GraphRecord {
+                id: "existing-tail".to_owned(),
+                document: Some("concurrent conversation turn".to_owned()),
+                metadata: serde_json::Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        }))
+        .unwrap();
+
+        let mut transition = pending_start();
+        transition.expected_event_seq = 1;
+        transition.node_id = Some("noop".to_owned());
+        transition.user_turn_node_id = Some("new-turn".to_owned());
+        let mut admission_payload = runtime_admission_payload();
+        admission_payload["turn_node_id"] = json!("new-turn");
+        let batch = GraphMutationBatch {
+            mutations: vec![GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: "new-turn-event".to_owned(),
+                op: "ADD".to_owned(),
+                payload: json!({"id": "new-turn", "metadata": {}}),
+                record: GraphRecord {
+                    id: "new-turn".to_owned(),
+                    document: Some("stale submitted turn".to_owned()),
+                    metadata: serde_json::Map::new(),
+                    embedding: None,
+                },
+                embedding_dim: 0,
+            }],
+            index_jobs: vec![NewIndexJob {
+                job_id: "new-turn-index".to_owned(),
+                namespace: "conversation".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: "new-turn".to_owned(),
+                index_kind: "node_embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
+        let error = store
+            .admit_server_run_with_graph_and_start_if_unchanged(
+                batch,
+                &[expectation],
+                ServerRunCreate {
+                    run_id: "memory-run".to_owned(),
+                    conversation_id: "memory-conversation".to_owned(),
+                    workflow_id: "memory-workflow".to_owned(),
+                    user_id: Some("user-1".to_owned()),
+                    user_turn_node_id: "new-turn".to_owned(),
+                    status: "queued".to_owned(),
+                },
+                admission_payload,
+                transition,
+                worker_lane(),
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("graph projection changed"));
+        assert!(block_on(store.server_run("memory-run")).unwrap().is_none());
+        assert!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["new-turn".to_owned()]),
+                metadata: Default::default(),
+                limit: 1,
+            }))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            block_on(store.index_jobs(
+                Some("conversation"),
+                Some("PENDING"),
+                Some("node"),
+                Some("new-turn"),
+                Some("node_embedding"),
+                10,
+            ))
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn provider_event_publication_commits_graph_lane_and_trace_atomically_and_idempotently() {
         let store = admitted_store();
         let publication = provider_publication("provider-event-1");
@@ -1876,6 +2696,327 @@ mod tests {
                 .unwrap()
                 .len(),
             4
+        );
+    }
+
+    #[test]
+    fn claimed_graph_effect_commits_projection_index_and_lane_atomically() {
+        let store = admitted_store();
+        let claimed_by = "rust-native-worker#graph-effect";
+        assert_eq!(
+            block_on(
+                store.claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                    namespace: "workflow".to_owned(),
+                    inbox_id: "workflow-runtime".to_owned(),
+                    claimed_by: claimed_by.to_owned(),
+                    message_ids: Some(vec!["lane-noop-1".to_owned()]),
+                    run_id: Some("memory-run".to_owned()),
+                    msg_type: Some("workflow.step.execute".to_owned()),
+                    recipient_id: Some("rust-native-worker".to_owned()),
+                    limit: 1,
+                    lease_seconds: 60,
+                })
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+
+        let scope = GraphScope {
+            namespace: "docs".to_owned(),
+            workspace_id: Some("workspace-1".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "native-graph-effect-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id": "native-graph-effect-node", "metadata": {}}),
+            record: GraphRecord {
+                id: "native-graph-effect-node".to_owned(),
+                document: Some("native graph effect".to_owned()),
+                metadata: serde_json::Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let graph_batch = GraphMutationBatch {
+            mutations: vec![mutation],
+            index_jobs: vec![NewIndexJob {
+                job_id: "native-graph-effect-index".to_owned(),
+                namespace: "docs".to_owned(),
+                entity_kind: "node".to_owned(),
+                entity_id: "native-graph-effect-node".to_owned(),
+                index_kind: "embedding".to_owned(),
+                op: "UPSERT".to_owned(),
+                payload_json: None,
+                max_retries: 3,
+            }],
+        };
+        let effect: RecordedWorkerSuccessEffect = serde_json::from_value(json!({
+            "contract_version": 1,
+            "effect_id": "native-graph-effect",
+            "status": "success",
+            "state_update": [],
+            "successors": [],
+            "route_next": [],
+            "result": {"workflow_status": "succeeded"},
+            "graph_mutation_batch": {
+                "contract_version": 1,
+                "atomic": true,
+                "mutations": [{
+                    "scope": {"namespace": "docs", "workspace_id": "workspace-1", "graph_space": "knowledge"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": "native-graph-effect-event",
+                    "op": "ADD",
+                    "payload": {"id": "native-graph-effect-node", "metadata": {}},
+                    "record": {"id": "native-graph-effect-node", "document": "native graph effect", "metadata": {}, "embedding": null},
+                    "embedding_dim": 0
+                }],
+                "index_jobs": [{
+                    "job_id": "native-graph-effect-index",
+                    "namespace": "docs",
+                    "entity_kind": "node",
+                    "entity_id": "native-graph-effect-node",
+                    "index_kind": "embedding",
+                    "op": "UPSERT",
+                    "payload_json": null,
+                    "max_retries": 3
+                }]
+            }
+        }))
+        .unwrap();
+        let worker_handoff = handoff(claimed_by);
+        let mut mismatched_batch = graph_batch.clone();
+        mismatched_batch.mutations[0].record.document = Some("substituted payload".to_owned());
+        assert!(
+            store
+                .apply_claimed_recorded_worker_effect_with_graph_effects(
+                    worker_handoff.clone(),
+                    effect.clone(),
+                    mismatched_batch,
+                    None,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("differs from worker-declared graph effect")
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed"
+        );
+        let mut undeclared_batch = graph_batch.clone();
+        let mut undeclared_mutation = undeclared_batch.mutations[0].clone();
+        undeclared_mutation.event_id = "undeclared-graph-event".to_owned();
+        undeclared_mutation.record.id = "undeclared-node".to_owned();
+        undeclared_mutation.payload["id"] = json!("undeclared-node");
+        undeclared_batch.mutations.push(undeclared_mutation);
+        assert!(
+            store
+                .apply_claimed_recorded_worker_effect_with_graph_effects(
+                    worker_handoff.clone(),
+                    effect.clone(),
+                    undeclared_batch,
+                    None,
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("differs from worker-declared graph effect")
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed"
+        );
+        let first = store
+            .apply_claimed_recorded_worker_effect_with_graph_effects(
+                worker_handoff.clone(),
+                effect.clone(),
+                graph_batch.clone(),
+                None,
+            )
+            .unwrap();
+        assert!(!first.idempotent);
+        assert_eq!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "completed"
+        );
+        assert_eq!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["native-graph-effect-node".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert_eq!(
+            block_on(store.index_jobs(
+                Some("docs"),
+                Some("PENDING"),
+                Some("node"),
+                Some("native-graph-effect-node"),
+                Some("embedding"),
+                10,
+            ))
+            .unwrap()
+            .len(),
+            1
+        );
+        assert!(
+            store
+                .apply_claimed_recorded_worker_effect_with_graph_effects(
+                    worker_handoff,
+                    effect,
+                    graph_batch,
+                    None,
+                )
+                .unwrap()
+                .idempotent
+        );
+    }
+
+    #[test]
+    fn stale_acl_snapshot_rejects_graph_effect_without_acknowledging_lane() {
+        let store = admitted_store();
+        let claimed_by = "rust-native-worker#stale-acl";
+        block_on(
+            store.claim_projected_lane_messages_filtered(LaneMessageClaimFilter {
+                namespace: "workflow".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                claimed_by: claimed_by.to_owned(),
+                message_ids: Some(vec!["lane-noop-1".to_owned()]),
+                run_id: Some("memory-run".to_owned()),
+                msg_type: Some("workflow.step.execute".to_owned()),
+                recipient_id: Some("rust-native-worker".to_owned()),
+                limit: 1,
+                lease_seconds: 60,
+            }),
+        )
+        .unwrap();
+        let scope = GraphScope {
+            namespace: "docs".to_owned(),
+            workspace_id: Some("workspace-1".to_owned()),
+            graph_space: Some("knowledge".to_owned()),
+        };
+        let acl_record = GraphRecord {
+            id: "acl-for-new-node".to_owned(),
+            document: None,
+            metadata: json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "knowledge",
+                "acl_target_entity_id": "new-node"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            embedding: None,
+        };
+        let acl_payload = json!({"id": acl_record.id, "metadata": acl_record.metadata});
+        block_on(store.apply_graph_mutation(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "concurrent-acl-write".to_owned(),
+            op: "ADD".to_owned(),
+            payload: acl_payload,
+            record: acl_record,
+            embedding_dim: 0,
+        }))
+        .unwrap();
+        let mutation = GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: "stale-acl-graph-event".to_owned(),
+            op: "ADD".to_owned(),
+            payload: json!({"id": "new-node", "metadata": {}}),
+            record: GraphRecord {
+                id: "new-node".to_owned(),
+                document: None,
+                metadata: serde_json::Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        };
+        let effect: RecordedWorkerSuccessEffect = serde_json::from_value(json!({
+            "contract_version": 1,
+            "effect_id": "stale-acl-graph-effect",
+            "status": "success",
+            "state_update": [],
+            "successors": [],
+            "route_next": [],
+            "result": {"workflow_status": "succeeded"},
+            "graph_mutation_batch_v2": {
+                "contract_version": 2,
+                "atomic": true,
+                "mutations": [{
+                    "scope": {"namespace": "docs", "workspace_id": "workspace-1", "graph_space": "knowledge"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": "stale-acl-graph-event",
+                    "op": "ADD",
+                    "payload": {"id": "new-node", "metadata": {}},
+                    "record": {"id": "new-node", "document": null, "metadata": {}, "embedding": null},
+                    "embedding_dim": 0
+                }],
+                "index_jobs": [],
+                "default_acl": {"truth_graph": "knowledge"}
+            }
+        }))
+        .unwrap();
+        let snapshot = super::super::GraphAclSnapshot {
+            scope: scope.clone(),
+            truth_graph: "knowledge".to_owned(),
+            target_entity_ids: vec!["new-node".to_owned()],
+            records: Vec::new(),
+        };
+        assert!(
+            store
+                .apply_claimed_recorded_worker_effect_with_graph_effects(
+                    handoff(claimed_by),
+                    effect,
+                    GraphMutationBatch {
+                        mutations: vec![mutation],
+                        index_jobs: Vec::new(),
+                    },
+                    Some(snapshot),
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("ACL truth changed")
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("lane-noop-1"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "claimed"
+        );
+        assert!(
+            block_on(store.graph_projection_records(GraphProjectionRead {
+                scope,
+                table: "gke_nodes".to_owned(),
+                ids: Some(vec!["new-node".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            }))
+            .unwrap()
+            .is_empty()
         );
     }
 

@@ -1,0 +1,52 @@
+{
+  "schema_version": "document-rollback-span-filter/v1",
+  "document_id": "doc-remove",
+  "mentions": [
+    {
+      "spans": [
+        {
+          "collection_page_url": "https://example.test/collection",
+          "document_page_url": "https://example.test/document/doc-remove",
+          "doc_id": "doc-remove",
+          "insertion_method": "llm",
+          "page_number": 1,
+          "start_char": 0,
+          "end_char": 4,
+          "excerpt": "gone",
+          "context_before": "",
+          "context_after": "kept"
+        },
+        {
+          "collection_page_url": "https://example.test/collection",
+          "document_page_url": "https://example.test/document/doc-keep",
+          "doc_id": "doc-keep",
+          "insertion_method": "llm",
+          "page_number": 1,
+          "start_char": 5,
+          "end_char": 9,
+          "excerpt": "kept",
+          "context_before": "gone",
+          "context_after": ""
+        }
+      ]
+    },
+    {
+      "spans": [
+        {
+          "collection_page_url": "https://example.test/collection",
+          "document_page_url": "https://example.test/document/doc-remove",
+          "doc_id": "doc-remove",
+          "insertion_method": "llm",
+          "page_number": 2,
+          "start_char": 10,
+          "end_char": 13,
+          "excerpt": "old",
+          "context_before": "",
+          "context_after": ""
+        }
+      ]
+    }
+  ],
+  "expected_span_doc_ids": [["doc-keep"]],
+  "changed": true
+}

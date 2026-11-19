@@ -144,6 +144,27 @@ pub struct RuntimeStepExecuteRequest {
     pub resume_effect: Option<Value>,
 }
 
+// PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-runtime/src/sections/native_operations.rs#RuntimeTraceContextV1; python=kogwistar/runtime/telemetry.py#TraceContext; rust_test=rust/crates/kogwistar-api/src/tests/runtime_wire_contracts.rs#runtime_trace_context_is_server_installed_not_caller_state; python_test=tests/runtime/test_rust_runtime_authority.py#test_sync_rust_authority_submit_serializes_trace_context
+/// Parent trace identity transported at run admission and installed by the
+/// server in reserved runtime state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeTraceContextV1 {
+    pub trace_id: String,
+    pub span_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_span_id: Option<String>,
+}
+
+impl RuntimeTraceContextV1 {
+    pub fn is_valid(&self) -> bool {
+        let valid_id = |value: &str| !value.trim().is_empty() && value.len() <= 256;
+        valid_id(&self.trace_id)
+            && valid_id(&self.span_id)
+            && self.parent_span_id.as_deref().is_none_or(valid_id)
+    }
+}
+
 /// The deliberately small first native execution slice.  Native operations
 /// are explicit and never inferred from an arbitrary Python operation name.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -182,8 +203,20 @@ pub fn native_trace_context_fields(request: &RuntimeNativeStepRequest) -> Map<St
         .and_then(Value::as_u64)
         .filter(|attempt| *attempt > 0)
         .unwrap_or(1);
+    let seed = request
+        .state
+        .get("_rt_trace_context")
+        .and_then(|value| serde_json::from_value::<RuntimeTraceContextV1>(value.clone()).ok())
+        .filter(RuntimeTraceContextV1::is_valid);
     Map::from_iter([
-        ("trace_id".to_owned(), Value::String(request.run_id.clone())),
+        (
+            "trace_id".to_owned(),
+            Value::String(
+                seed.as_ref()
+                    .map(|context| context.trace_id.clone())
+                    .unwrap_or_else(|| request.run_id.clone()),
+            ),
+        ),
         (
             "span_id".to_owned(),
             Value::String(format!(
@@ -193,7 +226,10 @@ pub fn native_trace_context_fields(request: &RuntimeNativeStepRequest) -> Map<St
         ),
         (
             "parent_span_id".to_owned(),
-            Value::String(format!("tok:{}:{}", request.run_id, request.token_id)),
+            Value::String(seed.map_or_else(
+                || format!("tok:{}:{}", request.run_id, request.token_id),
+                |context| context.span_id,
+            )),
         ),
         ("attempt".to_owned(), Value::from(attempt)),
     ])

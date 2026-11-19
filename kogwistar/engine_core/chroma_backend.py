@@ -131,16 +131,26 @@ class ChromaStorageInspector:
 
 
 def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
-    """Adapt unsupported compound, null, and empty-list metadata for Chroma.
+    """Adapt compound filters and unsupported metadata for Chroma.
 
-    Chroma accepts only scalar metadata values and flat lists. Compound JSON
-    values use a tagged string representation and are restored on reads.
+    Chroma requires multi-field filters to use an explicit logical operator;
+    flat metadata filters retain their public AND semantics via ``$and``.
+    Chroma also accepts only scalar metadata values and flat lists. Compound
+    JSON values use a tagged string representation and are restored on reads.
     Null values are omitted, preserving their effective ``metadata.get(key)``
     behavior. Inputs are never mutated.
     """
+    safe_kwargs = kwargs
+    where = kwargs.get("where")
+    if isinstance(where, Mapping) and len(where) > 1:
+        safe_kwargs = {
+            **safe_kwargs,
+            "where": {"$and": [{key: value} for key, value in where.items()]},
+        }
+
     metadatas = kwargs.get("metadatas")
     if not isinstance(metadatas, (list, tuple)):
-        return kwargs
+        return safe_kwargs
     sanitized: list[object] = []
     changed = False
     for metadata in metadatas:
@@ -162,8 +172,8 @@ def _chroma_safe_kwargs(kwargs: dict[str, object]) -> dict[str, object]:
         sanitized.append(safe_metadata)
         changed = changed or safe_metadata != metadata
     if not changed:
-        return kwargs
-    return {**kwargs, "metadatas": sanitized}
+        return safe_kwargs
+    return {**safe_kwargs, "metadatas": sanitized}
 
 
 def _is_compound_chroma_metadata(value: object) -> bool:

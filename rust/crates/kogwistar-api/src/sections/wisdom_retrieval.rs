@@ -16,8 +16,30 @@ struct SemanticSeedExpandRequest {
 fn graph_record_document_json(record: &GraphRecord) -> Option<String> {
     let mut document: Value = serde_json::from_str(record.document.as_deref()?).ok()?;
     let object = document.as_object_mut()?;
-    object.insert("metadata".to_owned(), json!(record.metadata));
+    let mut metadata = record.metadata.clone();
+    metadata
+        .entry("redirect_to_id".to_owned())
+        .or_insert(Value::Null);
+    object.insert("metadata".to_owned(), json!(metadata));
     object.insert("embedding".to_owned(), json!(record.embedding));
+
+    if let Some(mentions) = object.get_mut("mentions").and_then(Value::as_array_mut) {
+        for grounding in mentions {
+            let Some(spans) = grounding
+                .get_mut("spans")
+                .and_then(Value::as_array_mut)
+            else {
+                continue;
+            };
+            for span in spans {
+                if let Some(fields) = span.as_object_mut() {
+                    fields.remove("insertion_method");
+                    fields.remove("verification");
+                }
+            }
+        }
+    }
+
     serde_json::to_string(&document).ok()
 }
 

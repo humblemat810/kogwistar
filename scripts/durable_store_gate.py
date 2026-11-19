@@ -16,8 +16,10 @@ from typing import Any
 from xml.etree import ElementTree
 
 try:
+    from gate_test_results import read_junit_test_results
     from source_fingerprint import candidate_source_fingerprint
 except ModuleNotFoundError:  # imported as a repository module in tests
+    from scripts.gate_test_results import read_junit_test_results
     from scripts.source_fingerprint import candidate_source_fingerprint
 
 
@@ -100,6 +102,7 @@ def _junit_counts(path: Path) -> dict[str, int]:
                 totals["errors"] += 1
             if case.find("skipped") is not None:
                 totals["skipped"] += 1
+    totals["passed"] = totals["tests"] - totals["failures"] - totals["errors"] - totals["skipped"]
     return totals
 
 
@@ -113,8 +116,6 @@ def _run_group(
 ) -> dict[str, Any]:
     junit = output_root / f"{name}.junit.xml"
     command = [str(python), "-m", "pytest", "-q", f"--junitxml={junit}"]
-    if live_postgres:
-        command.extend(("-k", "postgres"))
     command.extend(tests)
     completed = subprocess.run(
         command,
@@ -128,6 +129,7 @@ def _run_group(
     (output_root / f"{name}.out.txt").write_text(completed.stdout, encoding="utf-8")
     (output_root / f"{name}.err.txt").write_text(completed.stderr, encoding="utf-8")
     counts = _junit_counts(junit) if junit.is_file() else None
+    test_results = read_junit_test_results(junit)
     passed = (
         completed.returncode == 0
         and counts is not None
@@ -144,6 +146,7 @@ def _run_group(
         "returncode": completed.returncode,
         "junit": str(junit),
         "counts": counts,
+        "test_results": test_results,
         "status": "passed" if passed else "failed",
     }
 

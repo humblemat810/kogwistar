@@ -17,11 +17,11 @@ use kogwistar_runtime::{
 };
 use kogwistar_store::{
     AcceptedIndexJobResult, AppendedEvent, AppliedGraphMutation, AuthIdentityStore, AuthUser,
-    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, EntityEvent,
-    EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest, EventPruneStore,
-    EventReadStore, EventWriteStore, ExternalIdentity, GraphAuthorityCapability, GraphEndpointKind,
-    GraphIncidentEdgeRead, GraphMutation, GraphMutationBatch, GraphMutationStore,
-    GraphProjectionPageRead, GraphProjectionRead, GraphProjectionVectorQuery,
+    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentRollbackRequest, DocumentStore,
+    EntityEvent, EntityRebuildRequest, EntityRecoveryReport, EntityRecoveryRequest,
+    EventPruneStore, EventReadStore, EventWriteStore, ExternalIdentity, GraphAuthorityCapability,
+    GraphEndpointKind, GraphIncidentEdgeRead, GraphMutation, GraphMutationBatch,
+    GraphMutationStore, GraphProjectionPageRead, GraphProjectionRead, GraphProjectionVectorQuery,
     GraphProjectionWriteStore, GraphRecord, GraphScope, IndexJob, IndexJobClaimFilter,
     IndexJobReadStore, IndexJobWriteStore, LaneMessageClaimFilter, LaneMessageFilter,
     LaneMessageReadStore, LaneMessageWriteStore, NamedProjection, NamedProjectionWrite,
@@ -58,6 +58,7 @@ const STAGE1_PROJECTIONS_TABLE: &str = "gke_stage1_projections";
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 mod types;
+pub use kogwistar_store::AppliedDocumentRollback;
 pub use types::{
     AppendedRawEvent, GraphDeleteMutation, GraphIndexTableNames, GraphMetadataPatchMutation,
     GraphProjectionMetadataPatch, GraphProjectionUpsert, GraphTableNames, NamedProjectionCas,

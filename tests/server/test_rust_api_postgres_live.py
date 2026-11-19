@@ -2023,6 +2023,18 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "conversation",
             ),
         )
+        auth_db.execute(
+            """CREATE TABLE workflow_acl (
+                workflow_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(64) NOT NULL,
+                role VARCHAR(32) NOT NULL,
+                PRIMARY KEY (workflow_id, user_id)
+            )"""
+        )
+        auth_db.execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?, ?, ?)",
+            ("debug.rag.v1", "conversation-owner", "rw"),
+        )
     env = os.environ.copy()
     for name in ("JWT_SECRET", "JWT_ALG", "JWT_ISS", "JWT_AUD"):
         env.pop(name, None)
@@ -2425,6 +2437,24 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             actual_seed_ids, actual_layers = semantic_ids(rust_semantic)
             assert actual_seed_ids == expected_seed_ids, principal_id
             assert expected_seed_ids[0] == visible_target.id
+            python_seed_records = {
+                record["id"]: record
+                for record in (json.loads(item) for item in python_semantic["seeds"])
+            }
+            rust_seed_records = {
+                record["id"]: record
+                for record in (json.loads(item) for item in rust_semantic["seeds"])
+            }
+            python_record = python_seed_records[visible_target.id]
+            rust_record = rust_seed_records[visible_target.id]
+            differences = {
+                key: {"python": python_record.get(key), "rust": rust_record.get(key)}
+                for key in python_record.keys() | rust_record.keys()
+                if python_record.get(key) != rust_record.get(key)
+            }
+            assert not differences, (
+                f"{principal_id}: canonical visible node payload differs: {differences}"
+            )
             assert expected_seed_ids[-1] == other_doc_target.id
             assert len(actual_layers) == len(expected_layers), principal_id
             for actual, expected in zip(actual_layers, expected_layers, strict=True):
@@ -3060,7 +3090,11 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             "roles": ["reader"],
             "ns": "workflow",
             "storage_ns": "workflow",
-            "capabilities": ["workflow.design.write", "workflow.design.inspect"],
+            "capabilities": [
+                "workflow.design.write",
+                "workflow.design.inspect",
+                "write_graph",
+            ],
             "exp": 4_102_444_800,
         }
         python_worker_operations = {
@@ -3137,6 +3171,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "write_graph",
                 "read_graph",
                 "workflow.run.write",
+                "workflow.run.read",
             ],
         }
         rust_turn = httpx.post(
@@ -3251,13 +3286,30 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
                 "conversation_id": rust_conversation_id,
                 "text": "Rust persisted syscall question",
                 "workflow_id": workflow_id,
+                "idempotency_key": f"{id_prefix}-mcp-ask-once",
             },
             turn_claims,
             endpoint="/mcp/conversation",
         )
         assert rust_syscall_turn["run_id"]
-        assert rust_syscall_turn["turn_node_id"]
-        rust_syscall_turn_id = rust_syscall_turn["turn_node_id"]
+        assert rust_syscall_turn["user_turn_node_id"]
+        replayed_syscall_turn = rust_mcp_tool(
+            "conversation.ask",
+            {
+                "conversation_id": rust_conversation_id,
+                "text": "Rust persisted syscall question",
+                "workflow_id": workflow_id,
+                "idempotency_key": f"{id_prefix}-mcp-ask-once",
+            },
+            turn_claims,
+            endpoint="/mcp/conversation",
+        )
+        assert replayed_syscall_turn["run_id"] == rust_syscall_turn["run_id"]
+        assert (
+            replayed_syscall_turn["user_turn_node_id"]
+            == rust_syscall_turn["user_turn_node_id"]
+        )
+        rust_syscall_turn_id = rust_syscall_turn["user_turn_node_id"]
         with RustRuntimeWorker.from_step_resolver(
             base_url=base,
             worker_id="python-mcp-answer-worker",
@@ -3337,6 +3389,7 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
         finally:
             claims_ctx.reset(conversation_read_token)
         assert any(node.id == rust_start_node_id for node in python_rust_nodes)
+        assert sum(node.id == rust_syscall_turn_id for node in python_rust_nodes) == 1
         assert len(rest_next_edges) == 1
         assert rest_next_edges[0].source_ids == [rust_user_turn_id]
         assert rest_next_edges[0].target_ids == [rust_assistant_turn_id]
@@ -3407,6 +3460,58 @@ def test_rust_postgres_graph_read_tools_match_python_over_shared_projection(
             f"rest_assistant_id={rust_assistant_turn_id!r}; "
             f"mcp_assistant_id={mcp_assistant_turn_id!r}"
         )
+
+        import sqlalchemy as sa
+
+        reopened_sqlalchemy_engine = sa.create_engine(sa_engine.url, future=True)
+        reopened_conversation_engine = GraphKnowledgeEngine(
+            persist_directory=str(tmp_path / "python_reopened_conversation"),
+            backend=PgVectorBackend(
+                engine=reopened_sqlalchemy_engine,
+                embedding_dim=3,
+                schema=conversation_schema,
+            ),
+            namespace="conversation",
+            kg_graph_type="conversation",
+            embedding_function=fixture_embedding,
+            embedding_profile=EmbeddingProfile(
+                provider="ollama",
+                model="fixture-embedding-v1",
+                dimension=3,
+                similarity_metric="cosine",
+                embedding_kind="single_vector",
+            ),
+            acl_enabled=True,
+        )
+        try:
+            reopened_read_token = claims_ctx.set(conversation_owner)
+            try:
+                reopened_nodes = reopened_conversation_engine.read.get_nodes(
+                    where={"conversation_id": rust_conversation_id}
+                )
+            finally:
+                claims_ctx.reset(reopened_read_token)
+        finally:
+            reopened_conversation_engine.close()
+        reopened_transcript = [
+            {
+                "node_id": node.id,
+                "turn_index": node.turn_index,
+                "role": node.role,
+                "content": node.summary,
+                "entity_type": node.metadata["entity_type"],
+            }
+            for node in sorted(
+                reopened_nodes,
+                key=lambda node: (
+                    node.turn_index if isinstance(node.turn_index, int) else -1,
+                    node.id,
+                ),
+            )
+            if node.metadata.get("entity_type")
+            in {"conversation_turn", "assistant_turn"}
+        ]
+        assert reopened_transcript == expected_python_rust_transcript
     finally:
         process.terminate()
         try:

@@ -63,10 +63,11 @@ def _memory_info() -> tuple[int | None, int | None]:
                 return int(counters.WorkingSetSize), int(counters.PeakWorkingSetSize)
         except (AttributeError, OSError, ValueError):
             pass
+    rss = None
     try:
         import psutil
 
-        return int(psutil.Process(os.getpid()).memory_info().rss), None
+        rss = int(psutil.Process(os.getpid()).memory_info().rss)
     except (ImportError, OSError):
         pass
     try:
@@ -75,9 +76,9 @@ def _memory_info() -> tuple[int | None, int | None]:
         peak = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
         if sys.platform != "darwin":
             peak *= 1024
-        return None, peak
+        return rss, peak
     except (ImportError, OSError, ValueError):
-        return None, None
+        return rss, None
 
 
 def _artifact_bytes(root: Path) -> int:

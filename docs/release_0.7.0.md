@@ -26,9 +26,12 @@
 
 ## Verification
 
-- Candidate only. Publish after the tag-triggered PyPI workflow passes its
-  artifact audit and deployment gate, then verify a clean PyPy 3.11.13/7.3.20
-  install from PyPI and import from `site-packages`.
-- Local candidate wheel/install checks are supporting evidence, not proof of
-  published PyPI support.
+- Published from tag `v0.7.0`. GitHub Actions release run
+  [43706093143](https://github.com/humblemat810/kogwistar/actions/runs/43706093143)
+  passed release verification, artifact audit, trusted publication, and all
+  wheel/source-distribution jobs.
+- A clean PyPy 3.11.13/7.3.20 environment installed `kogwistar==0.7.0` and
+  passed the pure-wheel import smoke from `site-packages`. This verifies the
+  Python-authority compatibility profile only; it does not claim native Rust
+  extension support on PyPy or full Rust/Python behavior parity.
 

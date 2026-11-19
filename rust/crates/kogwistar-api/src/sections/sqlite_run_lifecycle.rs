@@ -38,7 +38,10 @@ impl SqliteRunApplicationService {
         let authenticated_owner = authenticated_run_owner_id(&request.principal);
         if input.user_id.as_deref().is_some_and(|requested| {
             authenticated_owner.is_none_or(|owner| owner != requested.trim())
-        }) {
+        }) || !expected_run_owner_matches(
+            input.expected_run_owner_id.as_deref(),
+            authenticated_owner,
+        ) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_RUN_OWNER_FORBIDDEN",
@@ -221,6 +224,16 @@ impl SqliteRunApplicationService {
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state.clone();
+        if let Err(message) = install_runtime_trace_context(
+            &mut initial_state,
+            input.trace_context.as_ref(),
+        ) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_TRACE_CONTEXT",
+                message,
+            );
+        }
         // Runtime scope and owner are server-derived authority, never caller state.
         // Keep SQLite admission aligned with PostgreSQL before scheduling any step.
         initial_state.remove("_rt_graph_scope");
@@ -497,6 +510,12 @@ impl SqliteRunApplicationService {
                         "user_id": actor_user_id,
                         "operation": "send_message",
                     });
+                }
+                if let Some(fingerprint) = conversation_admission
+                    .as_ref()
+                    .and_then(|admission| admission.request_fingerprint.as_deref())
+                {
+                    payload["request_fingerprint"] = json!(fingerprint);
                 }
                 serde_json::to_string(&payload)?
             })?;

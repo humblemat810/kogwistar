@@ -33,8 +33,8 @@ use kogwistar_runtime::{
 };
 use kogwistar_store::{
     AuthIdentityStore, AuthUser, ConversationListAccumulator, DistanceMetric,
-    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentStore, EntityEvent,
-    GraphAclIndex, GraphAclPrincipal, GraphAclProjection, GraphAuthorityCapability,
+    DocumentAuthorityCapability, DocumentProjectionUpsert, DocumentRollbackRequest, DocumentStore,
+    EntityEvent, GraphAclIndex, GraphAclPrincipal, GraphAclProjection, GraphAuthorityCapability,
     GraphEntityKind, GraphFindEdgesQuery, GraphKHopQuery, GraphMutation, GraphMutationBatch,
     GraphMutationStore, GraphProjectionRead, GraphProjectionVectorQuery, GraphReadStore,
     GraphRecord, GraphScope, GraphShortestPathQuery, IndexJobClaimFilter, LaneMessageClaimFilter,
@@ -129,6 +129,38 @@ include!("sections/http_transport.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn bind_reachable_loopback_listener() -> tokio::net::TcpListener {
+        use std::io::ErrorKind;
+
+        for _ in 0..256 {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind loopback test listener");
+            let address = listener.local_addr().expect("read loopback test address");
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                tokio::net::TcpStream::connect(address),
+            )
+            .await
+            {
+                Ok(Ok(client)) => {
+                    let (accepted, _) =
+                        tokio::time::timeout(std::time::Duration::from_secs(1), listener.accept())
+                            .await
+                            .expect("accept loopback reachability probe")
+                            .expect("accept loopback reachability probe");
+                    drop((client, accepted));
+                    return listener;
+                }
+                Ok(Err(error)) if error.kind() == ErrorKind::PermissionDenied => continue,
+                Ok(Err(error)) => panic!("loopback reachability probe failed: {error}"),
+                Err(_) => continue,
+            }
+        }
+
+        panic!("could not bind a client-reachable loopback test port after 256 attempts");
+    }
 
     include!("tests/graph_scope_contracts.rs");
     include!("tests/server_routes.rs");

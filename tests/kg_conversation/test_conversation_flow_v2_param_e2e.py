@@ -41,6 +41,7 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
+from kogwistar.runtime.runtime import WorkflowRuntime
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.graph_builders import mk_excerpt_span as _mk_span
 
@@ -611,6 +612,7 @@ def test_conversation_flow_v2_param_e2e(
     tmp_path: Path,
     sa_engine,
     pg_schema,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     """
     True E2E (v2 entrypoint): orchestrator.add_conversation_turn_workflow_v2
@@ -762,19 +764,34 @@ def test_conversation_flow_v2_param_e2e(
 
     svc.create_conversation(user_id, conv_id, "start_node_v2")
 
-    res = orc.add_conversation_turn_workflow_v2(
-        run_id=run_id,
-        user_id=user_id,
-        conversation_id=conv_id,
-        turn_id=turn_id,
-        mem_id="mem0",
-        role="user",
-        content=question,
-        filtering_callback=filtering_callback,
-        workflow_id="conversation.add_turn.v2.test",
-        in_conv=True,
-        add_turn_only=False,
-    )
+    run_results: list[Any] = []
+    original_run = WorkflowRuntime.run
+
+    def capture_run_result(
+        runtime: WorkflowRuntime, *args: Any, **kwargs: Any
+    ) -> Any:
+        result = original_run(runtime, *args, **kwargs)
+        run_results.append(result)
+        return result
+
+    monkeypatch.setattr(WorkflowRuntime, "run", capture_run_result)
+    try:
+        res = orc.add_conversation_turn_workflow_v2(
+            run_id=run_id,
+            user_id=user_id,
+            conversation_id=conv_id,
+            turn_id=turn_id,
+            mem_id="mem0",
+            role="user",
+            content=question,
+            filtering_callback=filtering_callback,
+            workflow_id="conversation.add_turn.v2.test",
+            in_conv=True,
+            add_turn_only=False,
+        )
+    except RuntimeError as exc:
+        failures = [result.errors for result in run_results if result.status != "succeeded"]
+        raise AssertionError(f"{exc}; workflow errors={failures!r}") from exc
 
     # Verify: user turn exists
     assert res.user_turn_node_id

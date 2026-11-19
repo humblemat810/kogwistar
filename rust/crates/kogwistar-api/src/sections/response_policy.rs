@@ -326,6 +326,16 @@ fn query_integer(path_and_query: &str, name: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+fn query_boolean(path_and_query: &str, name: &str, default: bool) -> bool {
+    let query = path_and_query
+        .split_once('?')
+        .map(|(_, query)| query)
+        .unwrap_or_default();
+    url::form_urlencoded::parse(query.as_bytes())
+        .find_map(|(key, value)| (key == name).then(|| value.parse::<bool>().ok()).flatten())
+        .unwrap_or(default)
+}
+
 fn query_parameter_present(path_and_query: &str, name: &str) -> bool {
     path_and_query
         .split_once('?')

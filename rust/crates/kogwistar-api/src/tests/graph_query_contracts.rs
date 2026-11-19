@@ -1,4 +1,279 @@
     #[test]
+    fn semantic_graph_record_projection_matches_python_llm_slice() {
+        let record = GraphRecord {
+            id: "node-1".to_owned(),
+            document: Some(
+                json!({
+                    "id":"node-1",
+                    "mentions":[{"spans":[{
+                        "doc_id":"doc-1",
+                        "start_char":0,
+                        "end_char":1,
+                        "insertion_method":"private-backend-value",
+                        "verification":{"method":"human","is_verified":true}
+                    }]}]
+                })
+                .to_string(),
+            ),
+            metadata: json!({
+                "lifecycle_status":"active",
+                "mentions":"backend metadata remains unchanged"
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+            embedding: None,
+        };
+
+        let projected: Value =
+            serde_json::from_str(&graph_record_document_json(&record).unwrap()).unwrap();
+        let span = &projected["mentions"][0]["spans"][0];
+        assert_eq!(span["doc_id"], "doc-1");
+        assert!(span.get("insertion_method").is_none());
+        assert!(span.get("verification").is_none());
+        assert_eq!(projected["metadata"]["redirect_to_id"], Value::Null);
+        assert_eq!(
+            projected["metadata"]["mentions"],
+            "backend metadata remains unchanged"
+        );
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/wisdom_retrieval.rs#graph_record_document_json; python=tests/core/test_graph_model_adapter.py#test_python_hyperedge_round_trips_shared_backend_fixture; fixture=contracts/golden/python-graph-model-payloads-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#semantic_edge_projection_preserves_node_and_edge_endpoint_ids; python_test=tests/core/test_graph_model_adapter.py#test_python_hyperedge_round_trips_shared_backend_fixture
+    #[test]
+    fn semantic_edge_projection_preserves_node_and_edge_endpoint_ids() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+        ))
+        .unwrap();
+        let edge = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "edge_with_edge_endpoints")
+            .unwrap()["payload"]
+            .clone();
+        let record = GraphRecord {
+            id: edge["id"].as_str().unwrap().to_owned(),
+            document: Some(edge.to_string()),
+            metadata: edge["metadata"]
+                .as_object()
+                .unwrap()
+                .clone(),
+            embedding: None,
+        };
+
+        let projected: Value =
+            serde_json::from_str(&graph_record_document_json(&record).unwrap()).unwrap();
+        assert_eq!(projected["source_ids"], edge["source_ids"]);
+        assert_eq!(projected["target_ids"], edge["target_ids"]);
+        assert_eq!(projected["source_edge_ids"], edge["source_edge_ids"]);
+        assert_eq!(projected["target_edge_ids"], edge["target_edge_ids"]);
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#authorized_evidence_records; python=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract; fixture=contracts/golden/visualization-hyperedge-v1.json
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+    async fn postgres_edge_hydration_preserves_hyperedge_endpoint_ids() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_edge_hydration_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service
+            .store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let namespace = format!("edge-hydration-{}", uuid::Uuid::new_v4().simple());
+        let scope = GraphScope {
+            namespace: namespace.clone(),
+            workspace_id: None,
+            graph_space: None,
+        };
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/visualization-hyperedge-v1.json"
+        ))
+        .unwrap();
+        let entities = fixture["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entity| ("gke_nodes", "node", entity))
+            .chain(
+                fixture["edges"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|entity| ("gke_edges", "edge", entity)),
+            );
+        for (table, kind, entity) in entities {
+            let id = entity["id"].as_str().unwrap();
+            let mut stored_document = entity.clone();
+            let mut metadata = json!({"entity_type":kind,"visibility":"public"});
+            if id == "e-hyper" {
+                stored_document["mentions"] = json!([{
+                    "spans": [{
+                        "collection_page_url": "document_collection/doc-source-map-fixture",
+                        "document_page_url": "document/doc-source-map-fixture",
+                        "doc_id": "doc-source-map-fixture",
+                        "insertion_method": "parser",
+                        "start_char": 5,
+                        "end_char": 10,
+                        "excerpt": " beta"
+                    }]
+                }]);
+                metadata["_kogwistar_source_revision"] = json!(23);
+            }
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: table.to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(stored_document.to_string()),
+                        metadata: metadata.as_object().unwrap().clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":id,
+                            "acl_target_grain":kind,
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+        for (grain, item_id) in [
+            ("grounding", "e-hyper::mention::0"),
+            ("span", "e-hyper::mention::0::span::0"),
+        ] {
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-e-hyper-{grain}"),
+                        document: None,
+                        metadata: json!({
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"knowledge",
+                            "acl_target_entity_id":"e-hyper",
+                            "acl_target_grain":grain,
+                            "acl_target_item_id":item_id,
+                            "acl_version":1,
+                            "acl_mode":"public"
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 0,
+                })
+                .await
+                .unwrap();
+        }
+
+        let records = match service
+            .authorized_evidence_records(
+                &json!({
+                    "sub":"reader",
+                    "role":"ro",
+                    "ns":"knowledge",
+                    "storage_ns":namespace,
+                    "capabilities":["read_graph"]
+                }),
+                &[],
+                &["e-hyper".to_owned()],
+                "knowledge",
+            )
+            .await
+        {
+            Ok(records) => records,
+            Err(_) => panic!("authorized edge hydration rejected public hyperedge"),
+        };
+        let edge_document: Value = serde_json::from_str(
+            records["edges"][0]["document"]
+                .as_str()
+                .expect("hydrated edge document is serialized JSON"),
+        )
+        .unwrap();
+        let fixture_edge = fixture["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|edge| edge["id"] == "e-hyper")
+            .unwrap();
+        for field in [
+            "source_ids",
+            "target_ids",
+            "source_edge_ids",
+            "target_edge_ids",
+        ] {
+            assert_eq!(edge_document[field], fixture_edge[field], "field={field}");
+        }
+        assert_eq!(
+            edge_document["mentions"][0]["spans"][0],
+            json!({
+                "collection_page_url":"document_collection/doc-source-map-fixture",
+                "document_page_url":"document/doc-source-map-fixture",
+                "doc_id":"doc-source-map-fixture",
+                "insertion_method":"parser",
+                "start_char":5,
+                "end_char":10,
+                "excerpt":" beta"
+            })
+        );
+        assert_eq!(records["edges"][0]["metadata"]["_kogwistar_source_revision"], 23);
+
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[test]
     fn graph_neighbor_request_is_typed_and_closed_to_unknown_fields() {
         let request: GraphNeighborsRequestV1 =
             serde_json::from_str(r#"{"rid":" n1 ","doc_id":"doc-1"}"#).unwrap();
@@ -75,6 +350,21 @@
             })
             .await;
         assert_eq!(malformed.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+
+        let unsupported_filter = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/graph/vector-query".to_owned(),
+                body: br#"{"entity_kind":"node","query_embeddings":[[0.1]],"metric":"cosine","where":{"$gt":2}}"#.to_vec(),
+                principal: json!({"sub":"alice","capabilities":["read_graph"]}),
+            })
+            .await;
+        assert_eq!(
+            unsupported_filter.status,
+            StatusCode::UNPROCESSABLE_ENTITY.as_u16(),
+            "unsupported query syntax must fail before PostgreSQL access or fallback"
+        );
     }
 
     #[tokio::test]
@@ -110,7 +400,9 @@
             workspace_id: fixture["scope"]["workspace_id"]
                 .as_str()
                 .map(str::to_owned),
-            graph_space: None,
+            graph_space: fixture["scope"]["graph_space"]
+                .as_str()
+                .map(str::to_owned),
         };
         for (entity_kind, table, entities) in [
             ("node", "gke_nodes", &fixture["nodes"]),
@@ -118,6 +410,14 @@
         ] {
             for entity in entities.as_array().unwrap() {
                 let entity_id = entity["id"].as_str().unwrap();
+                let entity_scope = GraphScope {
+                    graph_space: entity
+                        .get("graph_space")
+                        .and_then(Value::as_str)
+                        .or_else(|| fixture["scope"]["graph_space"].as_str())
+                        .map(str::to_owned),
+                    ..scope.clone()
+                };
                 let mut metadata = Map::new();
                 metadata.insert("entity_type".to_owned(), json!(entity_kind));
                 if entity_kind == "node" {
@@ -126,6 +426,13 @@
                     metadata.insert("source_ids".to_owned(), entity["source_ids"].clone());
                     metadata.insert("target_ids".to_owned(), entity["target_ids"].clone());
                 }
+                metadata.insert(
+                    "graph_space".to_owned(),
+                    entity
+                        .get("graph_space")
+                        .cloned()
+                        .unwrap_or_else(|| json!("facts")),
+                );
                 if let Some(lifecycle_status) = entity["lifecycle_status"].as_str() {
                     metadata.insert("lifecycle_status".to_owned(), json!(lifecycle_status));
                 }
@@ -135,7 +442,7 @@
                 service
                     .store
                     .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                        scope: scope.clone(),
+                        scope: entity_scope.clone(),
                         table: table.to_owned(),
                         record: GraphRecord {
                             id: entity_id.to_owned(),
@@ -170,7 +477,7 @@
                 service
                     .store
                     .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
-                        scope: scope.clone(),
+                        scope: entity_scope,
                         table: "gke_nodes".to_owned(),
                         record: GraphRecord {
                             id: format!("acl-{entity_id}"),
@@ -238,11 +545,13 @@
 
         for principal in fixture["principals"].as_array().unwrap() {
             let subject = principal["id"].as_str().unwrap();
+            let graph_scope_expected = &fixture["graph_space_expected"][subject];
             let mut principal_claims = json!({
                 "sub": subject,
                 "ns": scope.namespace,
                 "storage_ns": scope.namespace,
                 "workspace_id": scope.workspace_id,
+                "graph_space": graph_scope_expected["graph_space"],
                 "capabilities": ["read_graph"]
             });
             if let Some(scope_parts) = principal.get("scope_parts") {
@@ -259,6 +568,9 @@
                     "metric": fixture["metric"],
                     "truth_graph": fixture["truth_graph"],
                     "n_results": fixture["n_results"],
+                    "where": {
+                        "graph_space": graph_scope_expected["graph_space"]
+                    },
                     "include": ["distances"]
                 });
                 let response = service
@@ -274,19 +586,20 @@
                 let result: Value = serde_json::from_slice(&response.body).unwrap();
                 assert_eq!(
                     result["ids"],
-                    principal["expected"][expected_key],
+                    graph_scope_expected[expected_key],
                     "unexpected {entity_kind} vector results for {subject}"
                 );
                 let redirect = &fixture["current_vector_redirect_contract"][entity_kind];
-                for row in result["ids"].as_array().unwrap() {
-                    let ids = row.as_array().unwrap();
-                    assert!(!ids.contains(&redirect["source_id"]));
-                    assert!(ids.contains(&redirect["target_id"]));
+                if graph_scope_expected["graph_space"] == fixture["scope"]["graph_space"] {
+                    for row in result["ids"].as_array().unwrap() {
+                        let ids = row.as_array().unwrap();
+                        assert!(!ids.contains(&redirect["source_id"]));
+                        assert!(ids.contains(&redirect["target_id"]));
+                    }
                 }
                 let actual_distances = result["distances"].as_array().unwrap();
-                let expected_distances = principal["expected"]["distances"][expected_key]
-                    .as_array()
-                    .unwrap();
+                let expected_distances = graph_scope_expected["distances"][expected_key]
+                    .as_array().unwrap();
                 assert_eq!(actual_distances.len(), expected_distances.len());
                 for (actual, expected) in actual_distances.iter().zip(expected_distances) {
                     let actual = actual.as_array().unwrap();
@@ -301,6 +614,7 @@
                         );
                     }
                 }
+
             }
         }
 
@@ -731,7 +1045,9 @@
             .unwrap();
         let connection_task = tokio::spawn(connection);
         client
-            .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
             .await
             .unwrap();
         drop(client);

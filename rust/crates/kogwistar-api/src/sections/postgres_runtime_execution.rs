@@ -34,7 +34,10 @@ impl PostgresRunApplicationService {
         let authenticated_owner = authenticated_run_owner_id(&request.principal);
         if input.user_id.as_deref().is_some_and(|requested| {
             authenticated_owner.is_none_or(|owner| owner != requested.trim())
-        }) {
+        }) || !expected_run_owner_matches(
+            input.expected_run_owner_id.as_deref(),
+            authenticated_owner,
+        ) {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_RUN_OWNER_FORBIDDEN",
@@ -203,6 +206,16 @@ impl PostgresRunApplicationService {
             .get(&effective_start_node_id)
             .cloned();
         let mut initial_state = input.initial_state;
+        if let Err(message) = install_runtime_trace_context(
+            &mut initial_state,
+            input.trace_context.as_ref(),
+        ) {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_INVALID_TRACE_CONTEXT",
+                message,
+            );
+        }
         initial_state.remove("_rt_graph_scope");
         initial_state.remove("_rt_run_owner_id");
         initial_state.remove("_rt_node_worker_identities");
@@ -530,6 +543,12 @@ impl PostgresRunApplicationService {
                             "user_id": actor_user_id,
                             "operation": "send_message",
                         });
+                    }
+                    if let Some(fingerprint) = conversation_admission
+                        .as_ref()
+                        .and_then(|admission| admission.request_fingerprint.as_deref())
+                    {
+                        created_payload["request_fingerprint"] = json!(fingerprint);
                     }
                     let created = uow
                         .append_server_run_event(
@@ -1859,6 +1878,9 @@ impl PostgresRunApplicationService {
         handoff.path_and_query = format!("/api/workflow/runs/{run_id}/resume");
         let admitted = self.resume_runtime_run(run_id, &handoff).await;
         if !(200..300).contains(&admitted.status) {
+            return admitted;
+        }
+        if !query_boolean(&request.path_and_query, "wait_for_completion", true) {
             return admitted;
         }
         loop {

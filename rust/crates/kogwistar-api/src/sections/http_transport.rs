@@ -797,15 +797,25 @@ async fn mcp_dispatch(
                 let user_id_valid = arguments
                     .get("user_id")
                     .is_none_or(|value| value.is_null() || value.is_string());
+                let parsed_idempotency_key = conversation_idempotency_key(&arguments);
+                let idempotency_key_valid = parsed_idempotency_key.is_ok();
+                let idempotency_key = parsed_idempotency_key.ok().flatten();
                 let workflow_id = arguments
                     .get("workflow_id")
                     .and_then(Value::as_str)
                     .unwrap_or("agentic_answering.v2");
-                let known_arguments = ["conversation_id", "text", "user_id", "workflow_id"];
+                let known_arguments = [
+                    "conversation_id",
+                    "text",
+                    "user_id",
+                    "workflow_id",
+                    "idempotency_key",
+                ];
                 conversation_id
                     .zip(text)
                     .filter(|_| {
                         user_id_valid
+                            && idempotency_key_valid
                             && arguments.get("workflow_id").is_none_or(Value::is_string)
                             && arguments
                                 .keys()
@@ -819,6 +829,9 @@ async fn mcp_dispatch(
                         });
                         if let Some(user_id) = arguments.get("user_id") {
                             syscall_args["user_id"] = user_id.clone();
+                        }
+                        if let Some(idempotency_key) = &idempotency_key {
+                            syscall_args["idempotency_key"] = json!(idempotency_key);
                         }
                         ApiEffectRequest {
                             contract_version: 1,

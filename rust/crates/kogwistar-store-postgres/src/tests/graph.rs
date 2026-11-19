@@ -81,6 +81,250 @@ fn graph_reference_rows_match_python_reference_projection_contract() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_document_rollback_updates_canonical_graph_and_indexes_atomically()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("document_rollback");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(2, GraphTableNames::default())
+        .await?;
+    let scope = GraphScope {
+        namespace: format!("document-rollback-{}", std::process::id()),
+        workspace_id: Some("ws".to_owned()),
+        graph_space: Some("facts".to_owned()),
+    };
+    let node = |id: &str, mentions: serde_json::Value| {
+        let metadata = serde_json::json!({
+            "workspace_id": "ws",
+            "graph_space": "facts",
+            "lifecycle_status": "active"
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let payload = serde_json::json!({
+            "id": id,
+            "name": id,
+            "doc_id": "doc-remove",
+            "mentions": mentions,
+            "metadata": metadata
+        });
+        GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("add-{id}"),
+            op: "ADD".to_owned(),
+            payload: payload.clone(),
+            record: GraphRecord {
+                id: id.to_owned(),
+                document: Some(payload.to_string()),
+                metadata: payload["metadata"].as_object().unwrap().clone(),
+                embedding: None,
+            },
+            embedding_dim: 2,
+        }
+    };
+    let edge_payload = serde_json::json!({
+        "id": "edge-remove",
+        "relation": "supports",
+        "source_ids": ["node-remove"],
+        "target_ids": ["node-keep"],
+        "source_edge_ids": [],
+        "target_edge_ids": [],
+        "doc_id": "doc-remove",
+        "mentions": [{"spans": [{"doc_id": "doc-remove"}]}],
+        "metadata": {
+            "workspace_id": "ws",
+            "graph_space": "facts",
+            "lifecycle_status": "active"
+        }
+    });
+    let edge = GraphMutation {
+        scope: scope.clone(),
+        table: "gke_edges".to_owned(),
+        entity_kind: "edge".to_owned(),
+        event_id: "add-edge-remove".to_owned(),
+        op: "ADD".to_owned(),
+        payload: edge_payload.clone(),
+        record: GraphRecord {
+            id: "edge-remove".to_owned(),
+            document: Some(edge_payload.to_string()),
+            metadata: edge_payload["metadata"].as_object().unwrap().clone(),
+            embedding: None,
+        },
+        embedding_dim: 2,
+    };
+    store
+        .apply_graph_mutations_atomic(vec![
+            node(
+                "node-keep",
+                serde_json::json!([{"spans": [
+                    {"doc_id": "doc-remove"}, {"doc_id": "doc-keep"}
+                ]}]),
+            ),
+            node(
+                "node-remove",
+                serde_json::json!([{"spans": [{"doc_id": "doc-remove"}]}]),
+            ),
+            edge,
+        ])
+        .await?;
+    store
+        .upsert_graph_projection(GraphProjectionUpsert {
+            scope: scope.clone(),
+            table: "gke_documents".to_owned(),
+            record: GraphRecord {
+                id: "doc-remove".to_owned(),
+                document: Some("source".to_owned()),
+                metadata: Map::new(),
+                embedding: None,
+            },
+            embedding_dim: 2,
+        })
+        .await?;
+
+    let client = store.client().await?;
+    let node_table = format!("{}.\"gke_nodes\"", tables.quoted_schema);
+    client
+        .batch_execute(&format!(
+            "CREATE FUNCTION {}.fail_document_rollback() RETURNS trigger \
+             LANGUAGE plpgsql AS $$ BEGIN \
+             IF NEW.metadata->>'lifecycle_status' = 'tombstoned' THEN \
+             RAISE EXCEPTION 'injected document rollback failure'; END IF; \
+             RETURN NEW; END $$; \
+             CREATE TRIGGER fail_document_rollback BEFORE UPDATE ON {node_table} \
+             FOR EACH ROW EXECUTE FUNCTION {}.fail_document_rollback()",
+            tables.quoted_schema, tables.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+    assert!(
+        store
+            .rollback_document(
+                scope.clone(),
+                "doc-remove".to_owned(),
+                "rollback-op-failing".to_owned(),
+                "2026-11-15T00:00:00Z".to_owned(),
+                2,
+            )
+            .await
+            .is_err()
+    );
+    let original_events: i64 = client
+        .query_one(
+            &format!(
+                "SELECT count(*) FROM {} WHERE namespace=$1 AND entity_kind IN ('node','edge')",
+                tables.entity_events
+            ),
+            &[&scope.namespace],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert_eq!(original_events, 3);
+    let original_source_exists: bool = client
+        .query_one(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {}.\"gke_documents\" WHERE id='doc-remove')",
+                tables.quoted_schema
+            ),
+            &[],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert!(original_source_exists);
+    client
+        .batch_execute(&format!(
+            "DROP TRIGGER fail_document_rollback ON {node_table}; \
+             DROP FUNCTION {}.fail_document_rollback()",
+            tables.quoted_schema
+        ))
+        .await
+        .map_err(backend)?;
+
+    assert!(DocumentStore::supports_document_rollback(&store));
+    let result = DocumentStore::rollback_document(
+        &store,
+        DocumentRollbackRequest {
+            scope: scope.clone(),
+            document_id: "doc-remove".to_owned(),
+            operation_id: "rollback-op".to_owned(),
+            deleted_at: "2026-11-15T00:00:00Z".to_owned(),
+            page_size: 2,
+        },
+    )
+    .await?;
+    assert!(result.node_redirects.contains_key("node-keep"));
+    assert!(result.removed_node_ids.contains("node-remove"));
+    assert!(result.removed_edge_ids.contains("edge-remove"));
+    assert!(result.deleted_document_projection);
+
+    let node_rows = client
+        .query(
+            &format!(
+                "SELECT id, metadata->>'lifecycle_status', metadata->>'redirect_to_id' \
+                 FROM {node_table} WHERE id = ANY($1) ORDER BY id"
+            ),
+            &[&vec!["node-keep".to_owned(), "node-remove".to_owned()]],
+        )
+        .await
+        .map_err(backend)?;
+    assert_eq!(node_rows.len(), 2);
+    assert_eq!(node_rows[0].get::<_, String>(1), "tombstoned");
+    assert!(node_rows[0].get::<_, Option<String>>(2).is_some());
+    assert_eq!(node_rows[1].get::<_, String>(1), "tombstoned");
+    let stale_docs: i64 = client
+        .query_one(
+            &format!(
+                "SELECT count(*) FROM {} WHERE metadata->>'node_id' = ANY($1)",
+                tables.node_docs
+            ),
+            &[&vec!["node-keep".to_owned(), "node-remove".to_owned()]],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert_eq!(stale_docs, 0);
+    let stale_edge_indexes: i64 = client
+        .query_one(
+            &format!(
+                "SELECT (SELECT count(*) FROM {} WHERE metadata->>'edge_id' = 'edge-remove') + \
+                 (SELECT count(*) FROM {} WHERE metadata->>'edge_id' = 'edge-remove')",
+                tables.edge_endpoints, tables.edge_refs
+            ),
+            &[],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert_eq!(stale_edge_indexes, 0);
+    let document_exists: bool = client
+        .query_one(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {}.\"gke_documents\" WHERE id='doc-remove')",
+                tables.quoted_schema
+            ),
+            &[],
+        )
+        .await
+        .map_err(backend)?
+        .get(0);
+    assert!(!document_exists);
+    client
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract; python=kogwistar/engine_core/vector_search.py#similarity_from_distance; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract; python_test=tests/core/test_search_nodes_as_of.py#test_postgres_vector_metric_contract_is_shared_with_rust
 async fn postgres_graph_vector_metrics_match_shared_distance_and_similarity_contract()
 -> PostgresStoreResult<()> {
@@ -185,6 +429,88 @@ async fn postgres_graph_vector_metrics_match_shared_distance_and_similarity_cont
                 (actual_similarity - expected_similarity).abs() < 1e-5,
                 "{} normalized score: expected {expected_similarity}, got {actual_similarity}",
                 case["metric"]
+            );
+        }
+    }
+
+    for case in fixture["tie_cases"].as_array().unwrap() {
+        for vector in case["vectors"].as_array().unwrap() {
+            let id = vector["id"].as_str().unwrap();
+            let metadata = Map::from_iter([
+                ("lifecycle_status".to_owned(), serde_json::json!("active")),
+                ("tie_metric".to_owned(), case["metric"].clone()),
+            ]);
+            let embedding = vector["embedding"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|value| value.as_f64().unwrap() as f32)
+                .collect::<Vec<_>>();
+            store
+                .apply_graph_mutation(GraphMutation {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    entity_kind: "node".to_owned(),
+                    event_id: format!("tie-{id}-{}", std::process::id()),
+                    op: "ADD".to_owned(),
+                    payload: serde_json::json!({"id": id, "metadata": metadata}),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(id.to_owned()),
+                        metadata,
+                        embedding: Some(embedding),
+                    },
+                    embedding_dim: 2,
+                })
+                .await?;
+        }
+
+        let metric = match case["metric"].as_str().unwrap() {
+            "cosine" => DistanceMetric::Cosine,
+            "l2" => DistanceMetric::L2,
+            "ip" => DistanceMetric::InnerProduct,
+            other => panic!("unknown tie fixture metric {other}"),
+        };
+        let hits = store
+            .graph_projection_vector_query(GraphProjectionVectorQuery {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                query: VectorQuery {
+                    embedding: fixture["query_embedding"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|value| value.as_f64().unwrap() as f32)
+                        .collect(),
+                    limit: 2,
+                    metadata: MetadataFilter {
+                        equals: [("tie_metric".to_owned(), case["metric"].clone())]
+                            .into_iter()
+                            .collect(),
+                    },
+                    metric,
+                },
+                embedding_dim: 2,
+            })
+            .await?;
+        let expected_ids = case["expected_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect::<Vec<_>>();
+        let actual_ids = hits
+            .iter()
+            .map(|hit| hit.record.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_ids, expected_ids, "tie order for {}", case["metric"]);
+        for hit in hits {
+            let expected = case["expected_distance"].as_f64().unwrap();
+            assert!(
+                (hit.distance - expected).abs() < 1e-5,
+                "tie distance for {}: {} != {expected}",
+                case["metric"],
+                hit.distance
             );
         }
     }
@@ -1320,6 +1646,40 @@ fn graph_read_filter_accepts_only_legacy_default_scope_rows() {
     assert_eq!(values, vec!["namespace", "workspace_id"]);
     assert!(!sql.contains("NOT (metadata"));
 }
+
+#[test]
+fn graph_read_filter_combines_equality_and_exclusion_safely() {
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let filter = MetadataFilter {
+        equals: BTreeMap::from([("team".to_owned(), serde_json::json!("red"))]),
+    };
+    let exclusions = BTreeMap::from([(
+        "entity_type".to_owned(),
+        serde_json::json!("acl_record'); DROP TABLE gke_nodes; --"),
+    )]);
+
+    let (sql, values) = graph_filter_sql_with_exclusions(&scope, &filter, &exclusions, 4).unwrap();
+
+    assert_eq!(
+        values,
+        vec![
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "team",
+            "entity_type"
+        ]
+    );
+    assert!(sql.contains("metadata -> $8::TEXT IS DISTINCT FROM"));
+    assert!(sql.contains("'\"acl_record''); DROP TABLE gke_nodes; --\"'::JSONB"));
+    assert!(sql.contains("metadata -> $7::TEXT"));
+    assert_eq!(sql.matches(" IS DISTINCT FROM ").count(), 1);
+}
+
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn arbitrary_precision_graph_mutation_survives_postgres_reopen_when_dsn_available()

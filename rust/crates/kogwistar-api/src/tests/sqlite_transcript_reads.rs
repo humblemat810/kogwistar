@@ -57,6 +57,7 @@
                         ("turn-other-workspace", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":4,"role":"assistant","summary":"other workspace","workspace_id":"workspace-b"})),
                         ("turn-other-graph-space", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":5,"role":"assistant","summary":"other graph space","graph_space":"knowledge"})),
                         ("snapshot", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer","snapshot_seq":7})),
+                        ("snapshot-private", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-private","stage":"answer","snapshot_seq":8})),
                         ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-2", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-2","acl_version":1,"acl_mode":"public"})),
@@ -64,6 +65,7 @@
                         ("acl-turn-other-workspace", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-workspace","acl_version":1,"acl_mode":"public","workspace_id":"workspace-b"})),
                         ("acl-turn-other-graph-space", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-graph-space","acl_version":1,"acl_mode":"public","graph_space":"knowledge"})),
                         ("acl-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot","acl_version":1,"acl_mode":"public"})),
+                        ("acl-snapshot-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
                         ("foreign-start", json!({"entity_type":"conversation_start","conversation_id":"c-foreign","user_id":"other-user","status":"active"})),
                         ("acl-foreign-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"foreign-start","acl_version":1,"acl_mode":"public"})),
                     ];
@@ -135,6 +137,7 @@
             ("turn-2", "public", None),
             ("turn-private", "private", Some("someone-else")),
             ("snapshot", "public", None),
+            ("snapshot-private", "private", Some("someone-else")),
             ("foreign-start", "public", None),
         ] {
             let acl_id = format!("acl-{target}");
@@ -276,6 +279,19 @@
         assert_eq!(mounted["result"]["metadata"]["summary"], "stored summary");
         assert_eq!(mounted["result"]["properties"]["references"], json!(["evidence-1"]));
         assert!(mounted["result"].get("schema_version").is_none());
+        let initial_mount_memory = mounted["result"].clone();
+        let private_mount = service
+            .execute(request(
+                "mount_memory",
+                json!({"conversation_id":"c1","run_id":"run-private","stage":"answer"}),
+                json!({
+                    "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+                    "graph_space":"conversation", "ns":["conversation"], "capabilities":["project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(private_mount.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&private_mount.body).contains("snapshot-private"));
 
         let invoked_transcript = service
             .execute(request(
@@ -428,9 +444,10 @@
             3
         );
         let mount_audit = audit_for("mount_memory");
-        assert_eq!(mount_audit.len(), 2);
+        assert_eq!(mount_audit.len(), 3);
         assert_eq!(mount_audit[0]["status"], "error");
         assert_eq!(mount_audit[1]["status"], "ok");
+        assert_eq!(mount_audit[2]["status"], "error");
         let invoke_audit = audit_for("invoke_tool");
         assert_eq!(invoke_audit.len(), 5);
         assert_eq!(
@@ -793,6 +810,32 @@
             initial_snapshot_digest,
             "the same ACL-filtered snapshot syscall result survives service restart"
         );
+        let retried_mount_memory = service
+            .execute(request(
+                "mount_memory",
+                json!({"conversation_id":"c1","run_id":"run-a","stage":"answer"}),
+                json!({
+                    "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+                    "graph_space":"conversation", "ns":["conversation"], "capabilities":["project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(retried_mount_memory.status, StatusCode::OK.as_u16());
+        let retried_mount_memory: Value =
+            serde_json::from_slice(&retried_mount_memory.body).unwrap();
+        assert_eq!(retried_mount_memory["result"], initial_mount_memory);
+        let retried_private_mount = service
+            .execute(request(
+                "mount_memory",
+                json!({"conversation_id":"c1","run_id":"run-private","stage":"answer"}),
+                json!({
+                    "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+                    "graph_space":"conversation", "ns":["conversation"], "capabilities":["project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(retried_private_mount.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&retried_private_mount.body).contains("snapshot-private"));
         let _ = stop_chroma.send(());
         let requests = fake.await.unwrap();
         assert!(requests

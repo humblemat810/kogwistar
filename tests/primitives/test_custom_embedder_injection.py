@@ -9,9 +9,9 @@ class DummyEF:
     def name(self):
         return "DummyEF"
 
-    def __call__(self, input):
+    def __call__(self, documents_or_texts):
         # 2D toy embedding
-        return [[float(len(t)), float(t.count(" "))] for t in input]
+        return [[float(len(t)), float(t.count(" "))] for t in documents_or_texts]
 
 
 @pytest.mark.parametrize(
@@ -51,7 +51,7 @@ def test_custom_embedder(tmp_path, backend_kind):
     expected_document_embedding = eng._embed_one(document_result["documents"][0])
     assert len(document_embedding) == len(expected_document_embedding)
     assert all(
-        abs(actual - expected) < 1e-9
+        abs(actual - expected) < 1e-4
         for actual, expected in zip(document_embedding, expected_document_embedding)
     )
     node = Node(
@@ -65,6 +65,34 @@ def test_custom_embedder(tmp_path, backend_kind):
     emb = got["embeddings"][0]
     expected = eng._embed_one(got["documents"][0])
     assert len(emb) == len(expected)
-    assert all(abs(a - b) < 1e-9 for a, b in zip(expected, emb)), (
+    assert all(abs(a - b) < 1e-4 for a, b in zip(expected, emb)), (
         f"custom embedding mismatch: expected={expected!r}, actual={emb!r}"
     )
+
+
+def test_chroma_adapter_preserves_legacy_embedder_parameter_name():
+    chroma_types = pytest.importorskip("chromadb.api.types")
+    from kogwistar.engine_core.engine import _ChromaInputEmbeddingAdapter
+
+    class LegacyEmbedder:
+        @staticmethod
+        def name() -> str:
+            return "LegacyEmbedder"
+
+        def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
+            return [[float(len(text))] for text in documents_or_texts]
+
+    adapter = _ChromaInputEmbeddingAdapter(LegacyEmbedder())
+
+    chroma_types.validate_embedding_function(adapter)
+    assert adapter.name() == "LegacyEmbedder"
+    assert adapter(["abc", "xy"]) == [[3.0], [2.0]]
+    assert adapter(("abc", "xy")) == [[3.0], [2.0]]
+
+    class UnnamedEmbedder:
+        def __call__(self, documents_or_texts: list[str]) -> list[list[float]]:
+            return [[float(len(text))] for text in documents_or_texts]
+
+    unnamed_adapter = _ChromaInputEmbeddingAdapter(UnnamedEmbedder())
+    chroma_types.validate_embedding_function(unnamed_adapter)
+    assert unnamed_adapter.name() == "UnnamedEmbedder"

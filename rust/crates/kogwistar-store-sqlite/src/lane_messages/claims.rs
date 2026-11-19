@@ -129,6 +129,30 @@ pub(crate) fn ack_projected_lane_message(
     Ok(())
 }
 
+pub(crate) fn renew_projected_lane_message_claim(
+    conn: &Connection,
+    id: &str,
+    owner: &str,
+    lease_seconds: i64,
+) -> SqliteStoreResult<bool> {
+    if lease_seconds <= 0 {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(
+            "lane message lease duration must be positive".to_owned(),
+        ));
+    }
+    let now = unix_epoch_seconds();
+    let Some(until) = now.checked_add(lease_seconds) else {
+        return Err(SqliteStoreError::RecordedRuntimeConflict(
+            "lane message lease duration overflows timestamp".to_owned(),
+        ));
+    };
+    let changed = conn.execute(
+        "UPDATE projected_lane_messages SET lease_until=?1 WHERE message_id=?2 AND status='claimed' AND claimed_by=?3 AND lease_until>=?4",
+        params![until, id, owner, now],
+    )?;
+    Ok(changed == 1)
+}
+
 pub(crate) fn ack_claimed_projected_lane_message(
     conn: &Connection,
     id: &str,

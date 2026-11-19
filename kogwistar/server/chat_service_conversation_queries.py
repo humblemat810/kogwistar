@@ -167,6 +167,23 @@ class _ConversationQueryService(_BaseComponent):
             raise KeyError(
                 f"No context snapshot found for conversation_id={conversation_id!r}"
             )
+        engine = self._conversation_engine()
+        principal_id, principal_groups, security_scope = (
+            engine.acl.current_principal_context()
+        )
+        decision = engine.acl.decide_acl(
+            grain="node",
+            truth_graph=engine.kg_graph_type,
+            entity_id=str(snap.id),
+            principal_id=principal_id,
+            principal_groups=principal_groups,
+            security_scope=security_scope,
+        )
+        if not decision.visible:
+            # Keep unauthorized and missing snapshots indistinguishable.
+            raise KeyError(
+                f"No context snapshot found for conversation_id={conversation_id!r}"
+            )
         payload = svc.get_context_snapshot_payload(snapshot_node_id=str(snap.id))
         return {
             "snapshot_node_id": str(snap.id),

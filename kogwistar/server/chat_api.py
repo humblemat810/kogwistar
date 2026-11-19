@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from kogwistar.json_types import JsonValue
 from kogwistar.server.chat_service import ChatRunService
+from kogwistar.server.chat_service_shared import IdempotencyConflictError
 from kogwistar.server.error_reporting import internal_http_error
 
 
@@ -23,6 +24,7 @@ class SubmitAnswerIn(BaseModel):
     user_id: str | None = None
     text: str = Field(min_length=1)
     workflow_id: str = "debug.rag.v1" #<-- debug quicker use , production use "agentic_answering.v2"
+    idempotency_key: str | None = None
 
 
 class ResumeRunIn(BaseModel):
@@ -36,6 +38,8 @@ class ResumeRunIn(BaseModel):
 
 
 def _as_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, IdempotencyConflictError):
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail=str(exc))
     if isinstance(exc, ValueError):
@@ -128,6 +132,7 @@ def create_chat_router(
                 user_id=effective_user_id,
                 text=inp.text,
                 workflow_id=inp.workflow_id,
+                idempotency_key=inp.idempotency_key,
             )
             return JSONResponse(status_code=202, content=payload)
         except Exception as exc:  # noqa: BLE001

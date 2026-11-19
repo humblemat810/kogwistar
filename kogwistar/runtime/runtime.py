@@ -474,9 +474,14 @@ class WorkflowRuntime(
             from .rust_runtime_authority import (
                 run_with_rust_authority,
                 rust_runtime_authority_selected,
+                validate_rust_run_context,
             )
 
             if rust_runtime_authority_selected():
+                validate_rust_run_context(
+                    run_metadata=_run_metadata,
+                    parent_lease_renew=_parent_lease_renew,
+                )
                 if _resume_step_seq is not None or _resume_last_exec_node is not None:
                     raise NotImplementedError(
                         "Rust runtime authority uses the versioned resume endpoint; "
@@ -492,6 +497,8 @@ class WorkflowRuntime(
                     initial_state=initial_state,
                     run_id=str(run_id),
                     cache_dir=cache_dir,
+                    trace_context=_trace_context,
+                    run_owner_id=_run_owner_id,
                 )
 
             ownership: RunOwnership | None = None
@@ -746,9 +753,23 @@ class WorkflowRuntime(
                         pending_tokens.discard(
                             (str(nid), int(mask), str(tok), parent_tok)
                         )
+                        _dec(int(mask))
                         _work_done(1)
                     except queue.Empty:
                         break
+
+                for _nid, mask, _tok, _parent_tok in suspended_tokens.values():
+                    _dec(int(mask))
+                suspended_tokens.clear()
+
+                for join_id in join_node_ids:
+                    waiters = list(_join_waiters.get(join_id, []))
+                    if not waiters:
+                        continue
+                    _join_waiters[join_id] = []
+                    _work_done(len(waiters))
+                    for waiter_mask, _waiter_token, _waiter_parent in waiters:
+                        _dec(int(waiter_mask))
                 _persist_rt_join_runtime()
                 try:
                     tc_cancel = _lifecycle_trace_context(

@@ -224,6 +224,75 @@ where
     Ok(true)
 }
 
+pub(crate) async fn delete_source_document_projection<C>(
+    client: &C,
+    tables: &Tables,
+    scope: &GraphScope,
+    document_id: &str,
+) -> PostgresStoreResult<bool>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&scope.namespace)?;
+    if document_id.trim().is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    let table = graph_table(tables, "gke_documents")?;
+    let deleted = client
+        .execute(
+            &format!(
+                "DELETE FROM {table} WHERE id = $1 AND {}",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &document_id,
+                &scope.namespace,
+                &scope.workspace_id.as_deref().unwrap_or(""),
+                &scope.graph_space.as_deref().unwrap_or(""),
+            ],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(deleted > 0)
+}
+
+pub(crate) async fn delete_source_document_projections_by_source_id<C>(
+    client: &C,
+    tables: &Tables,
+    scope: &GraphScope,
+    source_document_id: &str,
+) -> PostgresStoreResult<Vec<String>>
+where
+    C: GenericClient + Sync,
+{
+    require_namespace(&scope.namespace)?;
+    if source_document_id.trim().is_empty() {
+        return Err(StoreError::EmptyRecordId.into());
+    }
+    let table = graph_table(tables, "gke_documents")?;
+    let rows = client
+        .query(
+            &format!(
+                "DELETE FROM {table} WHERE (id = $1 OR metadata ->> 'doc_id' = $1) AND {} RETURNING id",
+                graph_scope_identity_predicate(2)
+            ),
+            &[
+                &source_document_id,
+                &scope.namespace,
+                &scope.workspace_id.as_deref().unwrap_or(""),
+                &scope.graph_space.as_deref().unwrap_or(""),
+            ],
+        )
+        .await
+        .map_err(backend)?;
+    let mut deleted_ids = rows
+        .iter()
+        .map(|row| row.try_get::<_, String>(0).map_err(backend))
+        .collect::<PostgresStoreResult<Vec<_>>>()?;
+    deleted_ids.sort();
+    Ok(deleted_ids)
+}
+
 pub(crate) async fn patch_graph_projection_metadata<C>(
     client: &C,
     tables: &Tables,

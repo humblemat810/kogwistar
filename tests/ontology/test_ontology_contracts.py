@@ -273,6 +273,16 @@ def test_cli_schema_and_validation(tmp_path: Path, capsys: pytest.CaptureFixture
     assert composed["composition"]["package_count"] == 2
 
 
+def test_cli_help_lists_supported_commands(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--help"])
+
+    assert exit_info.value.code == 0
+    help_text = capsys.readouterr().out
+    for command in ("quickstart", "serve", "api", "demo", "ontology"):
+        assert command in help_text
+
+
 def test_checked_in_schema_matches_pydantic_source_of_truth() -> None:
     schema_path = Path(__file__).parents[2] / "contracts/ontology/ontology_package.v1.schema.json"
     assert json.loads(schema_path.read_text(encoding="utf-8")) == ontology_package_json_schema()

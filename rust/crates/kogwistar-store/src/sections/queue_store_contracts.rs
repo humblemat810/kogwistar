@@ -254,6 +254,22 @@ pub trait LaneMessageWriteStore: LaneMessageReadStore {
         &self,
         filter: LaneMessageClaimFilter,
     ) -> impl Future<Output = StoreResult<Vec<ProjectedLaneMessage>>> + Send;
+    /// Extends only a still-live claim held by `claimed_by`; returns false if
+    /// ownership was lost, the lease expired, or the message is no longer claimed.
+    fn renew_projected_lane_message_claim(
+        &self,
+        message_id: &str,
+        claimed_by: &str,
+        lease_seconds: i64,
+    ) -> impl Future<Output = StoreResult<bool>> + Send {
+        let _ = (message_id, claimed_by, lease_seconds);
+        async {
+            Err(StoreError::Backend {
+                backend: "lane message store".to_owned(),
+                message: "claim renewal is unsupported".to_owned(),
+            })
+        }
+    }
     fn ack_projected_lane_message(
         &self,
         message_id: &str,

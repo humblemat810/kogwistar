@@ -141,6 +141,7 @@ markers = [
   "requires_rust: tests that require the built kogwistar native extension",
   "requires_langgraph: tests that require the optional LangGraph dependency",
   "requires_pgvector: tests that require the optional pgvector dependency",
+  "performance: live performance measurements with explicit regression thresholds",
 ]
 
 [tool.ruff]

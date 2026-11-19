@@ -2420,8 +2420,12 @@ struct RuntimeSubmitRun {
     turn_node_id: Option<String>,
     #[serde(default)]
     user_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expected_run_owner_id: Option<String>,
     #[serde(default)]
     initial_state: serde_json::Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    trace_context: Option<kogwistar_runtime::RuntimeTraceContextV1>,
     #[serde(default = "default_runtime_priority_class")]
     priority_class: String,
     #[serde(default)]
@@ -2449,6 +2453,29 @@ struct RuntimeSubmitRun {
     node_worker_identities: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     node_executor_targets: BTreeMap<String, String>,
+}
+
+fn expected_run_owner_matches(expected: Option<&str>, authenticated: Option<&str>) -> bool {
+    expected.is_none_or(|expected| authenticated == Some(expected.trim()))
+}
+
+fn install_runtime_trace_context(
+    state: &mut serde_json::Map<String, Value>,
+    trace_context: Option<&kogwistar_runtime::RuntimeTraceContextV1>,
+) -> Result<(), &'static str> {
+    // The caller cannot smuggle reserved trace state through initial_state.
+    state.remove("_rt_trace_context");
+    let Some(trace_context) = trace_context else {
+        return Ok(());
+    };
+    if !trace_context.is_valid() {
+        return Err("trace_context contains invalid or oversized identifiers");
+    }
+    state.insert(
+        "_rt_trace_context".to_owned(),
+        serde_json::to_value(trace_context).expect("runtime trace context serializes"),
+    );
+    Ok(())
 }
 
 fn default_runtime_claim_limit() -> usize {

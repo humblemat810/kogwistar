@@ -419,8 +419,8 @@
     {
       "method": "DELETE",
       "path": "/admin/doc/{doc_id}",
-      "classification": "unsupported",
-      "tasklet_id": "FW-03-03B"
+      "classification": "application-route-in-cutover-inventory",
+      "tasklet_id": "SRV-01"
     }
   ]
 }

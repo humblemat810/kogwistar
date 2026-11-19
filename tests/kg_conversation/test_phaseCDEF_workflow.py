@@ -8,9 +8,31 @@ import pytest
 
 pytestmark = pytest.mark.ci_full
 
-from kogwistar.conversation.models import ConversationAIResponse
-from kogwistar.conversation.resolvers import default_resolver
+from kogwistar.conversation.models import (
+    ConversationAIResponse,
+    FilteringResult,
+)
+from kogwistar.conversation.resolvers import (
+    _knowledge_selection_from_state,
+    default_resolver,
+)
 from kogwistar.runtime.models import RunSuccess
+
+
+def test_knowledge_state_rehydrates_selected_ids_from_json_mirror() -> None:
+    selected = _knowledge_selection_from_state(
+        {
+            "kg": {
+                "node_id_entry": None,
+                "candidate": {"nodes": [], "edges": []},
+                "selected": {"node_ids": ["kg:apple"], "edge_ids": []},
+                "reasoning": "selected from persisted workflow state",
+            }
+        }
+    )
+
+    assert isinstance(selected, FilteringResult)
+    assert selected.node_ids == ["kg:apple"]
 
 
 class FakeConversationEngine:

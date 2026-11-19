@@ -89,6 +89,11 @@
 
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let repository_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .canonicalize()
+            .unwrap();
+        let python = std::env::var_os("KOGWISTAR_PYTHON").unwrap_or_else(|| "python".into());
         let schema = format!("rust_run_owner_{}", uuid::Uuid::new_v4().simple());
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();
@@ -150,36 +155,51 @@
             .apply_recorded_runtime_transition(runtime_start, false)
             .await
             .unwrap();
-        service
-            .store
-            .project_lane_message(NewProjectedLaneMessage {
-                message_id: "lane-1".to_owned(),
-                namespace: "workflow".to_owned(),
-                purpose: "system".to_owned(),
-                inbox_id: "workflow-runtime".to_owned(),
-                conversation_id: "conversation".to_owned(),
-                recipient_id: "python-worker".to_owned(),
-                sender_id: "rust-scheduler".to_owned(),
-                msg_type: "workflow.step.execute".to_owned(),
-                status: "pending".to_owned(),
-                created_at: 1,
-                available_at: 1,
-                run_id: Some("owned-run".to_owned()),
-                step_id: Some("step-1".to_owned()),
-                correlation_id: Some("owned-run".to_owned()),
-                payload_json: Some(
-                    json!({
-                        "workflow_id": "workflow",
-                        "conversation_id": "conversation",
-                        "token_id": "owned-run",
-                        "parent_token_id": null
-                    })
-                    .to_string(),
-                ),
-                error_json: None,
-            })
-            .await
-            .unwrap();
+        let python_seed_lane = r#"
+import json
+import os
+import sqlalchemy as sa
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+dsn = os.environ["KOGWISTAR_TEST_PG_DSN"]
+if dsn.startswith("postgres://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgres://")
+elif dsn.startswith("postgresql://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgresql://")
+engine = sa.create_engine(dsn)
+try:
+    store = EnginePostgresMetaStore(
+        engine=engine, schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"]
+    )
+    store.project_lane_message(
+        message_id="lane-1", namespace="workflow", purpose="system",
+        inbox_id="workflow-runtime", conversation_id="conversation",
+        recipient_id="python-worker", sender_id="rust-scheduler",
+        msg_type="workflow.step.execute", status="pending", created_at=1,
+        available_at=1, run_id="owned-run", step_id="step-1",
+        correlation_id="owned-run",
+        payload_json=json.dumps({
+            "workflow_id": "workflow", "conversation_id": "conversation",
+            "token_id": "owned-run", "parent_token_id": None,
+        }),
+    )
+finally:
+    engine.dispose()
+"#;
+        let seed_result = std::process::Command::new(&python)
+            .arg("-c")
+            .arg(python_seed_lane)
+            .current_dir(&repository_root)
+            .env("KOGWISTAR_TEST_PG_DSN", &dsn)
+            .env("KOGWISTAR_TEST_PG_SCHEMA", &schema)
+            .output()
+            .expect("launch Python PostgreSQL lane writer");
+        assert!(
+            seed_result.status.success(),
+            "Python lane writer failed; stdout={}; stderr={}",
+            String::from_utf8_lossy(&seed_result.stdout),
+            String::from_utf8_lossy(&seed_result.stderr)
+        );
         let claimed = service
             .store
             .claim_projected_lane_messages("workflow", "workflow-runtime", "worker-1", 1, 30)
@@ -187,7 +207,18 @@
             .unwrap();
         assert_eq!(claimed.len(), 1);
         assert_eq!(claimed[0].message_id, "lane-1");
+        assert_eq!(claimed[0].namespace, "workflow");
+        assert_eq!(claimed[0].purpose, "system");
+        assert_eq!(claimed[0].inbox_id, "workflow-runtime");
+        assert_eq!(claimed[0].conversation_id, "conversation");
+        assert_eq!(claimed[0].recipient_id, "python-worker");
+        assert_eq!(claimed[0].sender_id, "rust-scheduler");
+        assert_eq!(claimed[0].msg_type, "workflow.step.execute");
         assert_eq!(claimed[0].status, "claimed");
+        assert_eq!(claimed[0].run_id.as_deref(), Some("owned-run"));
+        assert_eq!(claimed[0].step_id.as_deref(), Some("step-1"));
+        assert_eq!(claimed[0].correlation_id.as_deref(), Some("owned-run"));
+        assert_eq!(claimed[0].claimed_by.as_deref(), Some("worker-1"));
 
         let mut worker_result = json!({
                     "handoff": {
@@ -590,11 +621,39 @@
             .unwrap()
             .len();
 
+        // Reopen the API against the same durable PostgreSQL schema before
+        // retrying, so recovery does not depend on the original process state.
+        server.abort();
+        let _ = server.await;
+        let reopened_service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        reopened_service.ensure_schema().await.unwrap();
+        let reopened_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(reopened_service.clone()),
+        );
+        let reopened_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let reopened_address = reopened_listener.local_addr().unwrap();
+        let reopened_server =
+            tokio::spawn(async move { axum::serve(reopened_listener, reopened_app).await.unwrap() });
+        let reopened_base = format!("http://{reopened_address}");
+
         // The caller did not observe the first response and retries the exact
         // request. Graph, index intent, runtime event, and lane ack share one
         // PostgreSQL transaction and must remain single-application effects.
         let retry = client
-            .post(format!("{base}/internal/runtime/results"))
+            .post(format!("{reopened_base}/internal/runtime/results"))
             .bearer_auth(&owner_token)
             .json(&worker_result)
             .send()
@@ -602,7 +661,7 @@
             .unwrap();
         assert_eq!(retry.status(), StatusCode::OK);
         assert_eq!(
-            service
+            reopened_service
                 .store
                 .list_server_run_events("owned-run", 0, usize::MAX)
                 .await
@@ -610,7 +669,7 @@
                 .len(),
             run_events_after_commit
         );
-        let replayed_events = service
+        let replayed_events = reopened_service
             .store
             .replay_raw_events("alpha", 0, 100)
             .await
@@ -622,7 +681,77 @@
                 .count(),
             1
         );
-        let replayed_records = service
+        let python_probe = r#"
+import os
+import json
+import sqlalchemy as sa
+from kogwistar.engine_core.engine_postgres_meta import EnginePostgresMetaStore
+
+dsn = os.environ["KOGWISTAR_TEST_PG_DSN"]
+if dsn.startswith("postgres://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgres://")
+elif dsn.startswith("postgresql://"):
+    dsn = "postgresql+psycopg://" + dsn.removeprefix("postgresql://")
+engine = sa.create_engine(dsn)
+try:
+    store = EnginePostgresMetaStore(
+        engine=engine, schema=os.environ["KOGWISTAR_TEST_PG_SCHEMA"]
+    )
+    matching = [
+        event
+        for event in store.iter_entity_event_envelopes(namespace="alpha")
+        if event.event_id == "owner-check-event"
+    ]
+    assert len(matching) == 1, f"expected one canonical event, got {matching!r}"
+    event = matching[0]
+    payload = json.loads(event.payload_json)
+    assert (event.entity_kind, event.entity_id, event.op) == (
+        "node", "owner-check-node", "ADD"
+    ), event
+    assert payload["id"] == "owner-check-node", payload
+    lane_rows = store.list_projected_lane_messages(
+        namespace="workflow", inbox_id="workflow-runtime", run_id="owned-run"
+    )
+    assert len(lane_rows) == 1, lane_rows
+    lane = lane_rows[0]
+    assert (
+        lane.message_id, lane.namespace, lane.inbox_id, lane.conversation_id,
+        lane.run_id, lane.step_id, lane.correlation_id, lane.status, lane.claimed_by,
+    ) == (
+        "lane-1", "workflow", "workflow-runtime", "conversation",
+        "owned-run", "step-1", "owned-run", "completed", None,
+    ), lane
+    run_events = store.list_server_run_events("owned-run")
+    worker_events = [
+        event
+        for event in run_events
+        if event["event_type"] == "workflow.recorded_transition.v1"
+        and event["payload"].get("worker_handoff") is not None
+    ]
+    assert len(worker_events) == 1, worker_events
+    assert worker_events[0]["run_id"] == "owned-run"
+    assert worker_events[0]["payload"]["worker_handoff"] == {
+        "message_id": "lane-1", "claimed_by": "worker-2", "run_id": "owned-run",
+        "step_id": "step-1", "correlation_id": "owned-run",
+    }, worker_events[0]
+finally:
+    engine.dispose()
+"#;
+        let python_result = std::process::Command::new(python)
+            .arg("-c")
+            .arg(python_probe)
+            .current_dir(&repository_root)
+            .env("KOGWISTAR_TEST_PG_DSN", &dsn)
+            .env("KOGWISTAR_TEST_PG_SCHEMA", &schema)
+            .output()
+            .expect("launch Python PostgreSQL event reader");
+        assert!(
+            python_result.status.success(),
+            "Python reader must observe exactly one committed worker effect; stdout={}; stderr={}",
+            String::from_utf8_lossy(&python_result.stdout),
+            String::from_utf8_lossy(&python_result.stderr)
+        );
+        let replayed_records = reopened_service
             .store
             .graph_projection_records(GraphProjectionRead {
                 scope: GraphScope {
@@ -638,7 +767,7 @@
             .await
             .unwrap();
         assert_eq!(replayed_records.len(), 1);
-        let replayed_jobs = service
+        let replayed_jobs = reopened_service
             .store
             .list_index_jobs(Some("alpha"), None, None, None, None, 100)
             .await
@@ -651,7 +780,7 @@
             1
         );
         assert_eq!(
-            service
+            reopened_service
                 .store
                 .get_projected_lane_message("lane-1")
                 .await
@@ -660,5 +789,5 @@
                 .status,
             "completed"
         );
-        server.abort();
+        reopened_server.abort();
     }

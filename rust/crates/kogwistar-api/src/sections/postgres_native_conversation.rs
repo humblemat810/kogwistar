@@ -792,7 +792,6 @@ impl PostgresRunApplicationService {
             .profile()
             .validate()
             .map_err(|error| error.to_string())?;
-        self.ensure_graph_type_schemas().await?;
 
         let store = self.graph_store_for_type(&self.graph_role).clone();
         let provider_store = store.clone();
@@ -1365,6 +1364,16 @@ impl PostgresRunApplicationService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("agentic_answering.v2");
+        let idempotency_key = match conversation_idempotency_key(&input.args) {
+            Ok(key) => key,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::BAD_REQUEST,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error,
+                );
+            }
+        };
         let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
         let nodes = match self.authorized_conversation_nodes(&request.principal).await {
             Ok(nodes) => nodes,
@@ -1509,6 +1518,84 @@ impl PostgresRunApplicationService {
             }
         };
 
+        let request_fingerprint = idempotency_key.as_deref().map(|_| {
+            conversation_send_message_fingerprint(
+                &owner_id,
+                conversation_id,
+                workflow_id,
+                text,
+            )
+        });
+        let turn_id = idempotency_key
+            .as_deref()
+            .map(|key| {
+                conversation_send_message_id(
+                    "conversation.send_message.turn",
+                    &owner_id,
+                    conversation_id,
+                    key,
+                )
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let run_id = idempotency_key
+            .as_deref()
+            .map(|key| {
+                conversation_send_message_id(
+                    "conversation.send_message.run",
+                    &owner_id,
+                    conversation_id,
+                    key,
+                )
+            })
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if let Some(expected_fingerprint) = request_fingerprint.as_deref() {
+            let existing = match self.store.get_server_run(&run_id).await {
+                Ok(existing) => existing,
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_STORAGE_UNAVAILABLE",
+                        "could not verify idempotent conversation admission",
+                    );
+                }
+            };
+            if let Some(existing) = existing {
+                let events = match self
+                    .store
+                    .list_server_run_events(&run_id, 0, 100)
+                    .await
+                {
+                    Ok(events) => events,
+                    Err(_) => {
+                        return effect_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "KOGWISTAR_STORAGE_UNAVAILABLE",
+                            "could not verify idempotent conversation admission",
+                        );
+                    }
+                };
+                return match conversation_idempotency_replay_result(
+                    &existing,
+                    &events,
+                    ConversationIdempotencyExpectation {
+                        run_id: &run_id,
+                        conversation_id,
+                        owner_id: &owner_id,
+                        workflow_id,
+                        turn_id: &turn_id,
+                        request_fingerprint: expected_fingerprint,
+                    },
+                ) {
+                    Ok(result) => json_effect(StatusCode::OK, result),
+                    Err(error) => effect_error(
+                        StatusCode::CONFLICT,
+                        "KOGWISTAR_IDEMPOTENCY_CONFLICT",
+                        error,
+                    ),
+                };
+            }
+        }
+
         let Some(provider) = self.embedding_provider.as_ref() else {
             return effect_error(
                 StatusCode::BAD_GATEWAY,
@@ -1524,8 +1611,6 @@ impl PostgresRunApplicationService {
                 error.to_string(),
             );
         }
-        let turn_id = uuid::Uuid::new_v4().to_string();
-        let run_id = uuid::Uuid::new_v4().to_string();
         let mut tail = conversation_nodes
             .iter()
             .filter(|record| {
@@ -1833,6 +1918,7 @@ impl PostgresRunApplicationService {
         let prepared = PreparedConversationAdmission {
             conversation_id: conversation_id.to_owned(),
             owner_id: owner_id.clone(),
+            request_fingerprint: request_fingerprint.clone(),
             expected_tail_id: previous.map(|record| record.id.clone()),
             scope: scope.clone(),
             acl_principal,
@@ -1854,17 +1940,68 @@ impl PostgresRunApplicationService {
             method: "POST".to_owned(),
             path_and_query: "/api/workflow/runs".to_owned(),
             body: serde_json::to_vec(&json!({
-                "run_id": run_id,
+                "run_id": run_id.clone(),
                 "workflow_id": workflow_id,
                 "conversation_id": conversation_id,
-                "turn_node_id": turn_id,
+                "turn_node_id": turn_id.clone(),
                 "user_id": owner_id,
                 "initial_state": initial_state,
             }))
             .expect("message workflow request serializes"),
             principal: owner_principal,
         };
-        self.submit_run_with_conversation_admission(&nested, Some(prepared))
-            .await
+        let response = self
+            .submit_run_with_conversation_admission(&nested, Some(prepared))
+            .await;
+        if response.status >= 400
+            && let Some(expected_fingerprint) = request_fingerprint.as_deref()
+        {
+            let existing = match self.store.get_server_run(&run_id).await {
+                Ok(existing) => existing,
+                Err(_) => {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_STORAGE_UNAVAILABLE",
+                        "could not verify idempotent conversation admission",
+                    );
+                }
+            };
+            if let Some(existing) = existing {
+                let events = match self
+                    .store
+                    .list_server_run_events(&run_id, 0, 100)
+                    .await
+                {
+                    Ok(events) => events,
+                    Err(_) => {
+                        return effect_error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "KOGWISTAR_STORAGE_UNAVAILABLE",
+                            "could not verify idempotent conversation admission",
+                        );
+                    }
+                };
+                return match conversation_idempotency_replay_result(
+                    &existing,
+                    &events,
+                    ConversationIdempotencyExpectation {
+                        run_id: &run_id,
+                        conversation_id,
+                        owner_id: &owner_id,
+                        workflow_id,
+                        turn_id: &turn_id,
+                        request_fingerprint: expected_fingerprint,
+                    },
+                ) {
+                    Ok(result) => json_effect(StatusCode::OK, result),
+                    Err(error) => effect_error(
+                        StatusCode::CONFLICT,
+                        "KOGWISTAR_IDEMPOTENCY_CONFLICT",
+                        error,
+                    ),
+                };
+            }
+        }
+        response
     }
 }

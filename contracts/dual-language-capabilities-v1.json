@@ -10,7 +10,7 @@
   },
   "interpretation": {
     "python_coverage": "The legacy Python implementation is the current authoritative writer in rust-port-v1; this does not claim every consumer combination is verified.",
-    "rust_coverage": "Derived only from rust-port-v1 rust_cutover_ready. A false value means partial or not cutover-ready, not necessarily no implementation.",
+    "rust_coverage": "ADR-015 release readiness is derived from named test oracles, current-source phase evidence, and same-candidate Docker UAT. rust-port-v1 rust_cutover_ready remains an explicit implementation-selection control; it is not test evidence.",
     "mixed_coverage": "Not inferred from the availability of a facade, extension, or worker. Only explicitly evidenced seams are listed.",
     "native_paths": "All full request-path claims remain unverified until ingress-to-persistence conformance and resource-matched benchmarks pass."
   },
@@ -87,7 +87,7 @@
       "rust_port_manifest_id": "postgres-sequence-event-log",
       "conformance_profile": "postgres-sequence-event-log",
       "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; Rust-owned transaction facade exists, full capability parity open",
+      "mixed_coverage": "partial; Rust-owned transaction facade exists; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 4 sequence/event-log tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Local interoperability evidence only; capability parity, staged canary, rollback evidence, and cutover remain open",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified"
     },
@@ -96,7 +96,7 @@
       "rust_port_manifest_id": "projections-snapshots-run-registry",
       "conformance_profile": "projections-snapshots-run-registry",
       "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "not-inventoried",
+      "mixed_coverage": "partial; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 6 projection, run-registry, workflow-history, and recovery interoperability tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Local evidence only; mixed selection remains disabled and capability parity, staged canary, rollback evidence, and cutover remain open",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified"
     },
@@ -105,7 +105,7 @@
       "rust_port_manifest_id": "queues-leases-lanes",
       "conformance_profile": "queues-leases-lanes",
       "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; Rust-owned scheduler to Python sync/async worker is implemented, full parity open",
+      "mixed_coverage": "partial; Rust-owned scheduler to Python sync/async worker is implemented; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 3 queue/lease/lane interoperability tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Local evidence only; full parity, staged canary, rollback evidence, and cutover remain open",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified"
     },
@@ -114,7 +114,7 @@
       "rust_port_manifest_id": "graph-pgvector",
       "conformance_profile": "graph-pgvector",
       "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; Python payloads round-trip through typed Rust graph/document contracts, and authenticated internal Rust HTTP graph-mutation and normalized-text document-projection slices persist to PostgreSQL; full ACL, indexing, recovery, OCR/source-map, and public-route parity remain open",
+      "mixed_coverage": "partial; Python payloads round-trip through typed Rust graph/document contracts, and authenticated internal Rust HTTP graph-mutation and normalized-text document-projection slices persist to PostgreSQL; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 47 graph/transaction interoperability tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Full ACL, indexing, recovery, OCR/source-map, public-route parity, staged canary, rollback evidence, and cutover remain open",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified",
       "evidence_note": "Internal pre-indexed graph mutation and normalized-text document projection only; public ingestion, OCR/source-map handling, indexing, recovery, and full ACL parity remain open"
@@ -149,9 +149,7 @@
   ],
   "rust_server_gaps": {
     "status": "intentionally-deferred",
-    "pending_routes": [
-      ["DELETE", "/admin/doc/{doc_id}"]
-    ],
+    "pending_routes": [],
     "pending_syscalls": [
       "send_message",
       "receive_message",

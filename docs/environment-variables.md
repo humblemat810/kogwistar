@@ -32,6 +32,7 @@ tests, and optional integrations.
 | `JWT_ALG` | `kogwistar.server.auth_middleware` | JWT algorithm, usually `HS256` or `RS256`. |
 | `JWT_ISS` | `kogwistar.server.auth_middleware` | Optional JWT issuer check. |
 | `JWT_AUD` | `kogwistar.server.auth_middleware` | Optional JWT audience check. |
+| `KOGWISTAR_API_TOKEN` | `kogwistar.cli` | Optional bearer token sent by `kogwistar api` HTTP requests; keep secret and provide through the environment, not command-line arguments. |
 
 ## Native Rust API Server
 

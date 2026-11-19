@@ -935,6 +935,13 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "limit",
             "for_update",
         ][..],
+        "delete_document_projections_by_source_id" => &[
+            "kind",
+            "namespace",
+            "workspace_id",
+            "graph_space",
+            "source_document_id",
+        ][..],
         "graph_incident_edges" => &[
             "kind",
             "namespace",

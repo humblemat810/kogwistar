@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,8 +18,9 @@ from kogwistar.engine_core.postgres_backend import (
 pytestmark = pytest.mark.ci_full
 
 
-def _dummy_grounding() -> models.Grounding:
+def _dummy_grounding(doc_id: str) -> models.Grounding:
     sp = models.Span.from_dummy_for_document()
+    sp.doc_id = doc_id
     return models.Grounding(spans=[sp])
 
 
@@ -29,7 +31,7 @@ def _make_node(*, summary: str, label: str, doc_id: str) -> models.Node:
         summary=summary,
         domain_id=None,
         canonical_entity_id=None,
-        mentions=[_dummy_grounding()],
+        mentions=[_dummy_grounding(doc_id)],
         doc_id=doc_id,
         metadata={},
         embedding=None,
@@ -43,7 +45,7 @@ def _make_edge(*, src: str, tgt: str, relation: str, doc_id: str) -> models.Edge
         summary=f"{src} {relation} {tgt}",
         domain_id=None,
         canonical_entity_id=None,
-        mentions=[_dummy_grounding()],
+        mentions=[_dummy_grounding(doc_id)],
         doc_id=doc_id,
         metadata={},
         embedding=None,
@@ -95,6 +97,293 @@ def test_phase3_e2e_engine_edges_by_doc_pg(
 
     got = eng.edges_by_doc(doc_id)
     assert e.safe_get_id() in set(got)
+
+
+def test_rust_postgres_vector_filters_match_python_backend(
+    sa_engine, pg_schema, pg_dsn, monkeypatch
+) -> None:
+    if sa_engine is None or pg_schema is None or pg_dsn is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
+
+    fixture = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/postgres-vector-filter-parity-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
+    backend.ensure_schema()
+    records = fixture["records"]
+    backend.node_upsert(
+        ids=[record["id"] for record in records],
+        documents=[record["document"] for record in records],
+        metadatas=[record["metadata"] for record in records],
+        embeddings=[record["embedding"] for record in records],
+    )
+    python_result = backend.node_query(
+        query_embeddings=[fixture["query_embedding"]],
+        n_results=4,
+        where=fixture["where"],
+        include=["distances"],
+    )
+    native_filter = ReadSubsystem._native_vector_filter(fixture["where"])
+    assert native_filter is not None
+    metadata, metadata_not_equals = native_filter
+
+    monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+    rust_store = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+    try:
+        rust_result = rust_store.graph_projection_vector_query_excluding_metadata(
+            namespace="default",
+            workspace_id=None,
+            graph_space=None,
+            table="gke_nodes",
+            embedding=fixture["query_embedding"],
+            embedding_dim=2,
+            metadata=metadata,
+            metadata_not_equals=metadata_not_equals,
+            metric="cosine",
+            limit=4,
+        )
+    finally:
+        rust_store.close()
+
+    python_ids = python_result["ids"][0]
+    rust_ids = [match["record"]["id"] for match in rust_result]
+    assert rust_ids == python_ids == fixture["expected_ids"]
+    assert [match["distance"] for match in rust_result] == pytest.approx(
+        python_result["distances"][0]
+    )
+
+
+def test_rust_postgres_reference_filters_match_python_backend(
+    sa_engine, pg_schema, pg_dsn, monkeypatch
+) -> None:
+    if sa_engine is None or pg_schema is None or pg_dsn is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.engine_core.subsystems.extract import ExtractSubsystem
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
+    from pydantic_extension.model_slicing import use_mode
+    from tests._helpers.graph_builders import build_entity_node, build_relationship_edge
+
+    fixture = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/postgres-derived-reference-parity-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert fixture["contract"] == "postgres-derived-reference-parity-v1"
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
+    backend.ensure_schema()
+    namespace = fixture["namespace"]
+    doc_id = fixture["doc_id"]
+    insertion_method = fixture["insertion_method"]
+    for entity_kind, records in (("node", fixture["nodes"]), ("edge", fixture["edges"])):
+        entity_key = f"{entity_kind}_id"
+        for record in records:
+            entity_id = record["id"]
+            if entity_kind == "node":
+                entity = build_entity_node(node_id=entity_id, doc_id=doc_id)
+            else:
+                entity = build_relationship_edge(
+                    edge_id=entity_id,
+                    src="source-node",
+                    tgt="target-node",
+                    doc_id=doc_id,
+                )
+            with use_mode("backend"):
+                payload = json.loads(entity.model_dump_json())
+            payload["mentions"][0]["spans"][0]["insertion_method"] = insertion_method
+            document = json.dumps(payload)
+            metadata = {
+                "namespace": record["namespace"],
+                "doc_id": doc_id,
+                "entity_type": entity_kind,
+            }
+            getattr(backend, f"{entity_kind}_upsert")(
+                ids=[entity_id],
+                documents=[document],
+                metadatas=[metadata],
+                embeddings=None,
+            )
+            reference_metadata = {
+                **metadata,
+                "insertion_method": record["insertion_method"],
+                entity_key: entity_id,
+            }
+            getattr(backend, f"{entity_kind}_refs_upsert")(
+                ids=[f"{entity_id}::reference"],
+                documents=[json.dumps({entity_key: entity_id})],
+                metadatas=[reference_metadata],
+                embeddings=None,
+            )
+
+    document_node_ids = [
+        record["id"]
+        for record in fixture["nodes"]
+        if record["namespace"] == namespace
+    ]
+    backend.node_docs_upsert(
+        ids=[f"{node_id}::document-reference" for node_id in document_node_ids],
+        documents=[json.dumps({"node_id": node_id}) for node_id in document_node_ids],
+        metadatas=[
+            {"namespace": namespace, "doc_id": doc_id, "node_id": node_id}
+            for node_id in document_node_ids
+        ],
+        embeddings=None,
+    )
+    document_edge_ids = [
+        record["id"]
+        for record in fixture["edges"]
+        if record["namespace"] == namespace
+    ]
+    backend.edge_endpoints_upsert(
+        ids=[f"{edge_id}::src::node::source-node" for edge_id in document_edge_ids],
+        documents=[json.dumps({"edge_id": edge_id}) for edge_id in document_edge_ids],
+        metadatas=[
+            {"namespace": namespace, "doc_id": doc_id, "edge_id": edge_id}
+            for edge_id in document_edge_ids
+        ],
+        embeddings=None,
+    )
+    backend.document_upsert(
+        ids=[doc_id],
+        documents=[fixture["source_text"]],
+        metadatas=[{"namespace": namespace, "doc_id": doc_id}],
+        embeddings=None,
+    )
+
+    rust_store = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+    try:
+        rust_store.ensure_initialized()
+        python_engine = SimpleNamespace(
+            backend=backend,
+            metadata=None,
+            namespace=namespace,
+            kg_graph_type="knowledge",
+            node_docs_collection=object(),
+        )
+        python_reader = ReadSubsystem(python_engine)
+        python_engine.read = python_reader
+        python_engine.extract = ExtractSubsystem(python_engine)
+        monkeypatch.setattr(python_reader, "_rust_postgres_projection_selected", lambda: False)
+        python_results = {
+            "node": python_reader.list_nodes_with_ref_filter(
+                doc_id,
+                where={"namespace": namespace, "insertion_method": insertion_method},
+            ),
+            "edge": python_reader.list_edges_with_ref_filter(
+                doc_id,
+                where={"namespace": namespace, "insertion_method": insertion_method},
+            ),
+        }
+        python_fallback_ids = {
+            "node": python_reader.ids_with_insertion_method(
+                kind="node",
+                insertion_method=insertion_method,
+                ids=["node-other-method"],
+                doc_id=doc_id,
+            ),
+            "edge": python_reader.ids_with_insertion_method(
+                kind="edge",
+                insertion_method=insertion_method,
+                ids=["edge-other-method"],
+                doc_id=doc_id,
+            ),
+        }
+        python_document_ids = {
+            "node": python_reader.node_ids_by_doc(doc_id),
+            "edge": python_reader.edge_ids_by_doc(doc_id),
+        }
+        source_node = build_entity_node(node_id="context-node", doc_id=doc_id)
+        source_span = source_node.mentions[0].spans[0]
+        source_span.insertion_method = insertion_method
+        source_span.page_number = 1
+        source_span.start_char = 4
+        source_span.end_char = 8
+        source_span.excerpt = fixture["expected_context"]
+        python_contexts = python_reader.extract_reference_contexts(
+            source_node, window_chars=fixture["context_window_chars"]
+        )
+
+        rust_engine = SimpleNamespace(
+            backend=backend,
+            metadata=rust_store,
+            namespace=namespace,
+            kg_graph_type="knowledge",
+        )
+        rust_reader = ReadSubsystem(rust_engine)
+        rust_engine.read = rust_reader
+        rust_engine.extract = ExtractSubsystem(rust_engine)
+        monkeypatch.setattr(rust_reader, "_rust_postgres_projection_selected", lambda: True)
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+
+        def reject_python_backend(**_kwargs: object) -> None:
+            raise AssertionError("Rust-selected reference read called Python backend")
+
+        for method in (
+            "node_refs_get",
+            "edge_refs_get",
+            "node_get",
+            "edge_get",
+            "document_get",
+        ):
+            monkeypatch.setattr(backend, method, reject_python_backend)
+
+        rust_results = {
+            "node": rust_reader.list_nodes_with_ref_filter(
+                doc_id,
+                where={"namespace": namespace, "insertion_method": insertion_method},
+            ),
+            "edge": rust_reader.list_edges_with_ref_filter(
+                doc_id,
+                where={"namespace": namespace, "insertion_method": insertion_method},
+            ),
+        }
+        rust_fallback_ids = {
+            "node": rust_reader.ids_with_insertion_method(
+                kind="node",
+                insertion_method=insertion_method,
+                ids=["node-other-method"],
+                doc_id=doc_id,
+            ),
+            "edge": rust_reader.ids_with_insertion_method(
+                kind="edge",
+                insertion_method=insertion_method,
+                ids=["edge-other-method"],
+                doc_id=doc_id,
+            ),
+        }
+        rust_document_ids = {
+            "node": rust_reader.node_ids_by_doc(doc_id),
+            "edge": rust_reader.edge_ids_by_doc(doc_id),
+        }
+        rust_contexts = rust_reader.extract_reference_contexts(
+            source_node, window_chars=fixture["context_window_chars"]
+        )
+
+        for entity_kind, expected_ids in fixture["expected_ids"].items():
+            python_entities = python_results[entity_kind]
+            rust_entities = rust_results[entity_kind]
+            assert [item.id for item in python_entities] == expected_ids
+            assert [item.id for item in rust_entities] == expected_ids
+            for python_entity, rust_entity in zip(python_entities, rust_entities, strict=True):
+                assert python_entity == rust_entity
+                span = rust_entity.mentions[0].spans[0]
+                assert span.doc_id == doc_id
+                assert span.insertion_method == insertion_method
+        assert python_fallback_ids == rust_fallback_ids == {
+            "node": ["node-other-method"],
+            "edge": ["edge-other-method"],
+        }
+        assert python_document_ids == rust_document_ids == fixture["expected_document_ids"]
+        assert rust_contexts == python_contexts
+        assert rust_contexts[0]["context"] == fixture["expected_context"]
+    finally:
+        rust_store.close()
 
 
 def test_incident_edge_lookup_is_canonical_and_joins_postgres_transaction(

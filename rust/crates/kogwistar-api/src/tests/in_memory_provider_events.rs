@@ -21,7 +21,7 @@ async fn in_memory_native_provider_request_persists_semantic_events_and_keeps_de
     .unwrap();
     drop(auth);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = bind_reachable_loopback_listener().await;
     let address = listener.local_addr().unwrap();
     let provider_task = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.unwrap();
@@ -586,12 +586,23 @@ async fn in_memory_inline_native_counter_matches_shared_effect_atomically() {
 
 #[tokio::test]
 async fn in_memory_inline_native_result_is_persisted_and_completes_run() {
-    let service = InMemoryGraphApplicationService::default();
     let result_fixture: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../../../contracts/golden/runtime-native-emit-result-v1.json"
     )))
     .unwrap();
+    let expected_result = result_fixture["result"].clone();
+    let mut native_operations = kogwistar_runtime::NativeOperationRegistry::default();
+    native_operations
+        .register("app/memory-result", "v1", move |_| {
+            Ok(kogwistar_runtime::NativeOperationOutput {
+                state_update: Vec::new(),
+                result: Some(expected_result.clone()),
+            })
+        })
+        .unwrap();
+    let service = InMemoryGraphApplicationService::default()
+        .with_native_operations(native_operations);
     let start: RecordedRuntimeTransition = serde_json::from_value(json!({
         "contract_version": 1,
         "transition_id": "memory-result-start",
@@ -646,7 +657,7 @@ async fn in_memory_inline_native_result_is_persisted_and_completes_run() {
                     "workflow_id": "memory-result-workflow",
                     "conversation_id": "memory-result-conversation",
                     "node_id": "result",
-                    "op": "emit-result",
+                    "op": "app/memory-result",
                     "executor_target": "rust-native",
                     "join_mask": 0,
                     "token_id": "token-1",
@@ -704,6 +715,184 @@ async fn in_memory_inline_native_result_is_persisted_and_completes_run() {
         "runtime.native.step.completed"
     );
     assert!(!service.execute_inline_native_work_once().await.unwrap());
+}
+
+#[tokio::test]
+async fn in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together() {
+    use kogwistar_store::IndexJobReadStore;
+
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-memory-inline-graph-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "alice".to_owned(),
+        email: "alice@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "alice".to_owned(),
+        default_role: "rw".to_owned(),
+        default_ns: "alpha".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+
+    let mut native_operations = kogwistar_runtime::NativeOperationRegistry::default();
+    native_operations
+        .register_graph_v2("app/memory-inline-graph", "v1", |request| {
+            let entity_id = format!("memory-inline-node-{}", request.run_id);
+            let batch = serde_json::from_value(json!({
+                "contract_version": 2,
+                "atomic": true,
+                "mutations": [{
+                    "scope": {"namespace": "alpha"},
+                    "table": "gke_nodes",
+                    "entity_kind": "node",
+                    "event_id": format!("memory-inline-event-{}", request.run_id),
+                    "op": "ADD",
+                    "payload": {
+                        "id": entity_id,
+                        "label": "in-memory inline graph",
+                        "type": "entity",
+                        "summary": "in-memory inline graph",
+                        "doc_id": "memory-inline-doc",
+                        "mentions": [],
+                        "metadata": {},
+                        "properties": {},
+                        "embedding": null
+                    },
+                    "record": {"id": entity_id, "document": "in-memory inline graph"},
+                    "embedding_dim": 0
+                }],
+                "index_jobs": [{
+                    "job_id": format!("memory-inline-index-{}", request.run_id),
+                    "namespace": "alpha",
+                    "entity_kind": "node",
+                    "entity_id": entity_id,
+                    "index_kind": "node_embedding",
+                    "op": "UPSERT"
+                }],
+                "default_acl": {"truth_graph": "knowledge"}
+            }))
+            .unwrap();
+            Ok((
+                kogwistar_runtime::NativeOperationOutput {
+                    state_update: Vec::new(),
+                    result: Some(json!({"memory_graph": true})),
+                },
+                Some(batch),
+            ))
+        })
+        .unwrap();
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = InMemoryGraphApplicationService::default()
+        .with_native_operations(native_operations)
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let run_id = "memory-inline-graph-v2";
+    let admitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id": run_id,
+                "workflow_id": "memory-inline-graph-workflow",
+                "conversation_id": "memory-inline-graph-conversation",
+                "start_node_id": "entry",
+                "node_ops": {"entry": "rust-native/app/memory-inline-graph"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "user_id": "alice",
+                "sub": "alice",
+                "role": "rw",
+                "ns": ["workflow", "alpha"],
+                "storage_ns": "alpha",
+                "capabilities": ["spawn_process", "workflow.run.write", "workflow.run.read", "write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(
+        admitted.status,
+        StatusCode::ACCEPTED.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&admitted.body)
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+    assert!(service.execute_inline_native_work_once().await.unwrap());
+
+    let scope = GraphScope {
+        namespace: "alpha".to_owned(),
+        workspace_id: None,
+        graph_space: None,
+    };
+    let node_id = format!("memory-inline-node-{run_id}");
+    let nodes = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(vec![node_id.clone()]),
+            metadata: MetadataFilter::default(),
+            limit: 10,
+        })
+        .await
+        .unwrap();
+    assert_eq!(nodes.len(), 1);
+    let acl_records = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter {
+                equals: [
+                    ("entity_type".to_owned(), json!("acl_record")),
+                    ("acl_truth_graph".to_owned(), json!("knowledge")),
+                    ("acl_target_entity_id".to_owned(), json!(node_id)),
+                ]
+                .into_iter()
+                .collect(),
+            },
+            limit: 10,
+        })
+        .await
+        .unwrap();
+    assert_eq!(acl_records.len(), 1);
+    assert_eq!(acl_records[0].metadata.get("acl_mode"), Some(&json!("private")));
+    assert_eq!(
+        acl_records[0].metadata.get("owner_id"),
+        Some(&json!("alice@example.test"))
+    );
+    let index_jobs = service
+        .store
+        .index_jobs(Some("alpha"), Some("PENDING"), Some("node"), Some(&node_id), None, 10)
+        .await
+        .unwrap();
+    assert!(index_jobs.iter().any(|job| job.entity_id == node_id));
+    assert_eq!(
+        kogwistar_store::LaneMessageReadStore::projected_lane_messages(
+            &service.store,
+            LaneMessageFilter {
+                correlation_id: Some(run_id.to_owned()),
+                limit: 10,
+                ..LaneMessageFilter::default()
+            }
+        )
+        .await
+        .unwrap()[0]
+            .status,
+        "completed"
+    );
+    drop(service);
+    let _ = std::fs::remove_file(auth_path);
 }
 
 #[tokio::test]
@@ -1252,7 +1441,10 @@ async fn in_memory_inline_native_worker_dead_letters_unsupported_operation() {
                     "node_id": "unsupported",
                     "op": "unregistered-operation",
                     "executor_target": "rust-native",
-                    "token_id": "token-1"
+                    "join_mask": 0,
+                    "token_id": "token-1",
+                    "step_seq": 0,
+                    "expected_event_seq": 0
                 })
                 .to_string(),
             ),

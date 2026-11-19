@@ -2,11 +2,37 @@ from __future__ import annotations
 
 import importlib.util
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "rust_port_build_wheel.py"
+
+
+def test_demo_package_import_does_not_require_tests_package() -> None:
+    code = "\n".join(
+        [
+            "import builtins",
+            "original_import = builtins.__import__",
+            "def reject_tests_package(name, *args, **kwargs):",
+            "    if name == 'tests._helpers' or name.startswith('tests._helpers.'):",
+            "        raise ModuleNotFoundError('tests package unavailable')",
+            "    return original_import(name, *args, **kwargs)",
+            "builtins.__import__ = reject_tests_package",
+            "import kogwistar.demo",
+        ]
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def _load() -> ModuleType:
@@ -35,6 +61,10 @@ def test_wheel_builder_uses_persisted_inspectable_entrypoints() -> None:
     assert "--release" in worker and "--locked" in worker
     assert "bash -c" not in source
     assert "python -c" not in source
+    assert 'CARGO_CACHE_VOLUME = "kogwistar-adr015-cargo-cache"' in source
+    assert 'RUST_TARGET_VOLUME = "kogwistar-adr015-rust-target"' in source
+    assert "source={CARGO_CACHE_VOLUME},target=/cargo" in source
+    assert "source={RUST_TARGET_VOLUME},target=/target" in source
 
 
 def test_wheel_builder_report_fingerprints_persisted_build_logic(tmp_path: Path) -> None:
@@ -90,9 +120,11 @@ def test_wheel_builder_source_fingerprint_tracks_dirty_and_untracked_inputs(
 def test_host_native_builder_and_smoke_are_persisted_and_abi_exact() -> None:
     host_builder = ROOT / "scripts" / "host_native_wheel_builder.py"
     smoke = ROOT / "scripts" / "native_extension_abi_smoke.py"
+    server_smoke = ROOT / "scripts" / "rust_server_wheel_smoke.py"
 
     source = host_builder.read_text(encoding="utf-8")
     smoke_source = smoke.read_text(encoding="utf-8")
+    server_smoke_source = server_smoke.read_text(encoding="utf-8")
 
     assert "--interpreter" in source
     assert "--locked" in source
@@ -101,3 +133,19 @@ def test_host_native_builder_and_smoke_are_persisted_and_abi_exact() -> None:
     assert "candidate_source_fingerprint" in source
     assert "--expected-extension" in smoke_source
     assert '"transaction_id": None' in smoke_source
+    assert '"KOGWISTAR_API_TOKEN": token' in server_smoke_source
+    assert '"workflow.visibility_snapshot"' in server_smoke_source
+
+
+def test_rust_native_smoke_checks_no_python_runtime_or_child_process() -> None:
+    smoke = ROOT / "scripts" / "rust_native_no_python_smoke.sh"
+    source = smoke.read_text(encoding="utf-8")
+
+    assert "cargo build --release --locked" in source
+    assert "--bin kogwistar-server" in source
+    assert "cargo tree --locked" in source
+    assert "kogwistar-python|pyo3" in source
+    assert "ldd \"$SERVER\"" in source
+    assert '"/proc/$server_pid/exe"' in source
+    assert '"/proc/$server_pid/task/$server_pid/children"' in source
+    assert "HTTP/1.1 200" in source

@@ -574,6 +574,10 @@ def _main(argv: list[str]) -> int:
         "--repair-scan-interval-s", type=float, default=0.0,
         help="Enable bounded repair on one designated worker per namespace; 0 disables it",
     )
+    parser.add_argument(
+        "--reconcile-scan-interval-s", type=float, default=0.0,
+        help="Enable periodic projection reconciliation; 0 disables it",
+    )
     args = parser.parse_args(argv)
 
     from kogwistar.engine_core.engine import GraphKnowledgeEngine
@@ -598,6 +602,7 @@ def _main(argv: list[str]) -> int:
         max_inflight=args.max_inflight,
         lease_seconds=args.lease_seconds,
         repair_scan_interval_s=args.repair_scan_interval_s,
+        reconcile_scan_interval_s=args.reconcile_scan_interval_s,
     )
 
     stop = {"flag": False}

@@ -18,12 +18,23 @@ use kogwistar_store::{
 };
 
 pub type GraphNodeEdgeVectorSnapshot = (Vec<GraphRecord>, Vec<GraphRecord>, Vec<Vec<VectorMatch>>);
+
+/// Optimistic guard for ACL records read before building a worker graph batch.
+/// The guarded records are compared again under the store write lock.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GraphAclSnapshot {
+    pub scope: GraphScope,
+    pub truth_graph: String,
+    pub target_entity_ids: Vec<String>,
+    pub records: Vec<GraphRecord>,
+}
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+mod documents;
 mod recorded_runtime;
-pub use recorded_runtime::ProviderEventPublicationCommit;
+pub use recorded_runtime::{GraphProjectionExpectation, ProviderEventPublicationCommit};
 
 /// Cloned handles share one process-local writer lock and volatile state. A new
 /// store starts empty; state is not persisted across process or store lifetimes.
@@ -533,6 +544,41 @@ impl LaneMessageWriteStore for InMemoryStore {
             row.lease_until = None;
         }
         Ok(())
+    }
+    async fn renew_projected_lane_message_claim(
+        &self,
+        message_id: &str,
+        claimed_by: &str,
+        lease_seconds: i64,
+    ) -> StoreResult<bool> {
+        if lease_seconds <= 0 {
+            return Err(StoreError::Backend {
+                backend: "in-memory lane message".to_owned(),
+                message: "lease duration must be positive".to_owned(),
+            });
+        }
+        let now = now_seconds();
+        let until = now
+            .checked_add(lease_seconds)
+            .ok_or_else(|| StoreError::Backend {
+                backend: "in-memory lane message".to_owned(),
+                message: "lease duration overflows timestamp".to_owned(),
+            })?;
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let Some(row) = state.lane_messages.get_mut(message_id) else {
+            return Ok(false);
+        };
+        if row.status != "claimed"
+            || row.claimed_by.as_deref() != Some(claimed_by)
+            || !row
+                .lease_until
+                .as_ref()
+                .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+        {
+            return Ok(false);
+        }
+        row.lease_until = Some(integer_timestamp(until));
+        Ok(true)
     }
     async fn requeue_projected_lane_message(
         &self,
@@ -3479,6 +3525,66 @@ mod tests {
             record: record(id, "red", embedding),
             embedding_dim: embedding.len(),
         }
+    }
+
+    #[test]
+    fn lane_claim_renewal_requires_current_live_owner() {
+        let store = InMemoryStore::new();
+        block_on(store.project_lane_message(NewProjectedLaneMessage {
+            message_id: "renew-live".to_owned(),
+            namespace: "runtime".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "python-workers".to_owned(),
+            conversation_id: "conversation".to_owned(),
+            recipient_id: "python-worker".to_owned(),
+            sender_id: "scheduler".to_owned(),
+            msg_type: "workflow.worker.request.v1".to_owned(),
+            status: "pending".to_owned(),
+            created_at: now_seconds(),
+            available_at: 0,
+            run_id: Some("run-target".to_owned()),
+            step_id: Some("step".to_owned()),
+            correlation_id: Some("run-target".to_owned()),
+            payload_json: Some("{}".to_owned()),
+            error_json: None,
+        }))
+        .unwrap();
+        let claimed = block_on(store.claim_projected_lane_messages_filtered(
+            LaneMessageClaimFilter {
+                namespace: "runtime".to_owned(),
+                inbox_id: "python-workers".to_owned(),
+                claimed_by: "attempt-1".to_owned(),
+                message_ids: Some(vec!["renew-live".to_owned()]),
+                run_id: Some("run-target".to_owned()),
+                msg_type: Some("workflow.worker.request.v1".to_owned()),
+                recipient_id: Some("python-worker".to_owned()),
+                limit: 1,
+                lease_seconds: 60,
+            },
+        ))
+        .unwrap();
+        let old_deadline = timestamp_i64(claimed[0].lease_until.as_ref().unwrap());
+        assert!(
+            !block_on(store.renew_projected_lane_message_claim("renew-live", "other-worker", 120))
+                .unwrap()
+        );
+        assert!(
+            block_on(store.renew_projected_lane_message_claim("renew-live", "attempt-1", 120))
+                .unwrap()
+        );
+        let renewed = block_on(store.projected_lane_message("renew-live"))
+            .unwrap()
+            .unwrap();
+        assert!(timestamp_i64(renewed.lease_until.as_ref().unwrap()) > old_deadline);
+        assert!(block_on(store.ack_projected_lane_message("renew-live", "attempt-1")).is_ok());
+        assert!(
+            !block_on(store.renew_projected_lane_message_claim("renew-live", "attempt-1", 120))
+                .unwrap()
+        );
+        assert!(
+            block_on(store.renew_projected_lane_message_claim("renew-live", "attempt-1", 0))
+                .is_err()
+        );
     }
 
     #[test]

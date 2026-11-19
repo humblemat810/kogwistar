@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +37,7 @@ from mixed_workload import (
     write_trace,
 )
 
-BENCHMARK_VERSION = 3
+BENCHMARK_VERSION = 5
 DATASET = "kogwistar-mixed-rewrite-workload-v2"
 WORKLOADS = (
     "event_append",
@@ -45,6 +46,10 @@ WORKLOADS = (
     "projection_list",
     "mixed_interleaved",
 )
+MIXED_COMPONENTS = ("write_record", "read_event", "read_projection")
+MAX_P95_LATENCY_RATIO = 1.10
+MIN_THROUGHPUT_RATIO = 0.95
+MAX_PEAK_RSS_RATIO = 1.10
 
 
 def _peak_rss_bytes() -> int:
@@ -136,7 +141,7 @@ def _sample_variation(values: list[float]) -> dict[str, float]:
     }
 
 
-def _measure(operation: Callable[[], int]) -> dict[str, float | int]:
+def _measure(operation: Callable[[], int]) -> dict[str, Any]:
     started = time.perf_counter_ns()
     cpu_started = time.process_time_ns()
     count = operation()
@@ -147,6 +152,19 @@ def _measure(operation: Callable[[], int]) -> dict[str, float | int]:
         "cpu_elapsed_ms": cpu_elapsed_ns / 1_000_000,
         "operations": count,
         "throughput_ops_per_sec": count * 1_000_000_000 / elapsed_ns,
+    }
+
+
+def _operation_latency_summary(samples_ns: list[int]) -> dict[str, float | int]:
+    if not samples_ns:
+        raise RuntimeError("workload produced no operation latency samples")
+    samples_ms = [value / 1_000_000 for value in samples_ns]
+    return {
+        "operation_count": len(samples_ms),
+        "p50_ms": _percentile(samples_ms, 0.50),
+        "p95_ms": _percentile(samples_ms, 0.95),
+        "p99_ms": _percentile(samples_ms, 0.99),
+        "max_ms": max(samples_ms),
     }
 
 
@@ -168,7 +186,7 @@ def _run_mode(
     read_cycles: int,
     trace: list[WorkloadOperation],
 ) -> dict[str, Any]:
-    if mode == "rust_cached":
+    if mode in {"rust_cached", "rust_batched"}:
         EngineSQLite(path.parent, filename=path.name).ensure_initialized()
         with sqlite_execution_context("rust"):
             return _run_mode_bound(
@@ -195,51 +213,85 @@ def _run_mode_bound(
     if initialize_python_store:
         python_store.ensure_initialized()
     baseline_peak_rss_bytes = _peak_rss_bytes()
+    operation_latencies_ns: dict[str, list[int]] = {
+        workload: [] for workload in WORKLOADS
+    }
+    mixed_component_latencies_ns = {
+        operation: [] for operation in MIXED_COMPONENTS
+    }
+
+    def timed_operation(workload: str, operation: Callable[[], Any]) -> Any:
+        started = time.perf_counter_ns()
+        result = operation()
+        operation_latencies_ns[workload].append(time.perf_counter_ns() - started)
+        return result
 
     def call(operation: dict[str, Any]) -> Any:
         return store_sqlite(
             path=path,
             operation=operation,
-            reuse_session=mode == "rust_cached",
+            reuse_session=mode in {"rust_cached", "rust_batched"},
         )
 
     if mode == "python":
         def append_events() -> int:
             for index in range(items):
-                python_store.append_entity_event(
-                    namespace=namespace,
-                    event_id=f"event-{index:05d}",
-                    entity_kind="node",
-                    entity_id=f"node-{index:05d}",
-                    op="UPSERT",
-                    payload_json=_canonical({"replacement": {"id": f"node-{index:05d}"}}),
+                timed_operation(
+                    "event_append",
+                    lambda: python_store.append_entity_event(
+                        namespace=namespace,
+                        event_id=f"event-{index:05d}",
+                        entity_kind="node",
+                        entity_id=f"node-{index:05d}",
+                        op="UPSERT",
+                        payload_json=_canonical(
+                            {"replacement": {"id": f"node-{index:05d}"}}
+                        ),
+                    ),
                 )
             return items
 
         def replay_events() -> int:
             count = 0
             for _ in range(read_cycles):
-                count += len(list(python_store.iter_entity_events(
-                    namespace=namespace, from_seq=1, batch_size=items + 1
-                )))
+                rows = timed_operation(
+                    "event_replay",
+                    lambda: list(
+                        python_store.iter_entity_events(
+                            namespace=namespace, from_seq=1, batch_size=items + 1
+                        )
+                    ),
+                )
+                count += len(rows)
             return count
 
         def replace_projections() -> int:
             for index in range(items):
-                python_store.replace_named_projection(
-                    projection_namespace, f"key-{index:05d}", **_projection(index)
+                timed_operation(
+                    "projection_replace",
+                    lambda: python_store.replace_named_projection(
+                        projection_namespace, f"key-{index:05d}", **_projection(index)
+                    ),
                 )
             return items
 
         def list_projections() -> int:
             return sum(
-                len(python_store.list_named_projections(projection_namespace))
+                len(
+                    timed_operation(
+                        "projection_list",
+                        lambda: python_store.list_named_projections(
+                            projection_namespace
+                        ),
+                    )
+                )
                 for _ in range(read_cycles)
             )
 
         def mixed_interleaved() -> int:
             operations = 0
             for step in trace:
+                operation_started = time.perf_counter_ns()
                 index = step["index"]
                 entity_id = step["expected_entity_id"]
                 projection_key = f"mixed-key-{index:05d}"
@@ -274,98 +326,173 @@ def _run_mode_bound(
                     if not isinstance(payload, dict) or payload.get("index") != index:
                         raise RuntimeError("interleaved projection read did not observe its write")
                 operations += 1
+                elapsed_ns = time.perf_counter_ns() - operation_started
+                operation_latencies_ns["mixed_interleaved"].append(elapsed_ns)
+                mixed_component_latencies_ns[step["operation"]].append(elapsed_ns)
             return operations
     else:
         def append_events() -> int:
             for index in range(items):
-                call({
-                    "kind": "raw_append",
-                    "namespace": namespace,
-                    "event_id": f"event-{index:05d}",
-                    "entity_kind": "node",
-                    "entity_id": f"node-{index:05d}",
-                    "op": "UPSERT",
-                    "payload_json": _canonical({"replacement": {"id": f"node-{index:05d}"}}),
-                })
+                timed_operation(
+                    "event_append",
+                    lambda: call(
+                        {
+                            "kind": "raw_append",
+                            "namespace": namespace,
+                            "event_id": f"event-{index:05d}",
+                            "entity_kind": "node",
+                            "entity_id": f"node-{index:05d}",
+                            "op": "UPSERT",
+                            "payload_json": _canonical(
+                                {"replacement": {"id": f"node-{index:05d}"}}
+                            ),
+                        }
+                    ),
+                )
             return items
 
         def replay_events() -> int:
-            return sum(len(call({
-                "kind": "exclusive_raw_replay",
-                "namespace": namespace,
-                "after_seq": 0,
-                "limit": items + 1,
-            })) for _ in range(read_cycles))
+            count = 0
+            for _ in range(read_cycles):
+                rows = timed_operation(
+                    "event_replay",
+                    lambda: call(
+                        {
+                            "kind": "exclusive_raw_replay",
+                            "namespace": namespace,
+                            "after_seq": 0,
+                            "limit": items + 1,
+                        }
+                    ),
+                )
+                count += len(rows)
+            return count
 
         def replace_projections() -> int:
             for index in range(items):
-                call({
-                    "kind": "replace_named_projection",
-                    "namespace": projection_namespace,
-                    "key": f"key-{index:05d}",
-                    **_projection(index),
-                })
+                timed_operation(
+                    "projection_replace",
+                    lambda: call(
+                        {
+                            "kind": "replace_named_projection",
+                            "namespace": projection_namespace,
+                            "key": f"key-{index:05d}",
+                            **_projection(index),
+                        }
+                    ),
+                )
             return items
 
         def list_projections() -> int:
-            return sum(len(call({
-                "kind": "list_named_projections",
-                "namespace": projection_namespace,
-            })) for _ in range(read_cycles))
+            total = 0
+            for _ in range(read_cycles):
+                rows = timed_operation(
+                    "projection_list",
+                    lambda: call(
+                        {
+                            "kind": "list_named_projections",
+                            "namespace": projection_namespace,
+                        }
+                    ),
+                )
+                total += len(rows)
+            return total
 
         def mixed_interleaved() -> int:
-            if mode == "rust_cached":
+            if mode in {"rust_cached", "rust_batched"}:
                 # The cached operation session and the transactional facade
                 # intentionally cannot own one SQLite execution context at the
-                # same time. Close the raw session before opening UoWs; this
-                # workload measures the supported atomic transaction path.
+                # same time. Close the raw session before opening the facade;
+                # rust_batched then owns one explicit facade session.
                 call({"kind": "close"})
             rust_store = RustEngineSQLite(path.parent, filename=path.name)
             operations = 0
-            for step in trace:
-                index = step["index"]
-                entity_id = step["expected_entity_id"]
-                projection_key = f"mixed-key-{index:05d}"
-                if step["operation"] == "write_record":
-                    with rust_store.transaction():
-                        rust_store.append_entity_event(
+            # Only batched mode holds one facade session across this trace;
+            # each write_record still keeps its own transaction boundary.
+            session = rust_store.session() if mode == "rust_batched" else nullcontext()
+            with session:
+                for step in trace:
+                    operation_started = time.perf_counter_ns()
+                    index = step["index"]
+                    entity_id = step["expected_entity_id"]
+                    projection_key = f"mixed-key-{index:05d}"
+                    if step["operation"] == "write_record":
+                        if mode == "rust_batched":
+                            rust_store.execute_batch(
+                                [
+                                    {
+                                        "kind": "raw_append",
+                                        "namespace": "mixed_interleaved",
+                                        "event_id": f"mixed-event-{index:05d}",
+                                        "entity_kind": "node",
+                                        "entity_id": entity_id,
+                                        "op": "UPSERT",
+                                        "payload_json": _canonical(
+                                            {"id": entity_id, "revision": 1}
+                                        ),
+                                    },
+                                    {
+                                        "kind": "replace_named_projection",
+                                        "namespace": "mixed_interleaved_projection",
+                                        "key": projection_key,
+                                        **_projection(index),
+                                    },
+                                ]
+                            )
+                        else:
+                            with rust_store.transaction():
+                                rust_store.append_entity_event(
+                                    namespace="mixed_interleaved",
+                                    event_id=f"mixed-event-{index:05d}",
+                                    entity_kind="node",
+                                    entity_id=entity_id,
+                                    op="UPSERT",
+                                    payload_json=_canonical(
+                                        {"id": entity_id, "revision": 1}
+                                    ),
+                                )
+                                rust_store.replace_named_projection(
+                                    "mixed_interleaved_projection",
+                                    projection_key,
+                                    **_projection(index),
+                                )
+                    elif step["operation"] == "read_event":
+                        rows = list(rust_store.iter_entity_events(
                             namespace="mixed_interleaved",
-                            event_id=f"mixed-event-{index:05d}",
-                            entity_kind="node",
-                            entity_id=entity_id,
-                            op="UPSERT",
-                            payload_json=_canonical({"id": entity_id, "revision": 1}),
-                        )
-                        rust_store.replace_named_projection(
+                            from_seq=index + 1,
+                            batch_size=1,
+                        ))
+                        if not rows or rows[0][2] != entity_id:
+                            raise RuntimeError("interleaved Rust event read did not observe its write")
+                    elif step["operation"] == "read_projection":
+                        projection = rust_store.get_named_projection(
                             "mixed_interleaved_projection",
                             projection_key,
-                            **_projection(index),
                         )
-                elif step["operation"] == "read_event":
-                    rows = list(rust_store.iter_entity_events(
-                        namespace="mixed_interleaved",
-                        from_seq=index + 1,
-                        batch_size=1,
-                    ))
-                    if not rows or rows[0][2] != entity_id:
-                        raise RuntimeError("interleaved Rust event read did not observe its write")
-                elif step["operation"] == "read_projection":
-                    projection = rust_store.get_named_projection(
-                        "mixed_interleaved_projection",
-                        projection_key,
-                    )
-                    payload = projection.get("payload") if projection is not None else None
-                    if not isinstance(payload, dict) or payload.get("index") != index:
-                        raise RuntimeError("interleaved Rust projection read did not observe its write")
-                operations += 1
+                        payload = projection.get("payload") if projection is not None else None
+                        if not isinstance(payload, dict) or payload.get("index") != index:
+                            raise RuntimeError("interleaved Rust projection read did not observe its write")
+                    operations += 1
+                    elapsed_ns = time.perf_counter_ns() - operation_started
+                    operation_latencies_ns["mixed_interleaved"].append(elapsed_ns)
+                    mixed_component_latencies_ns[step["operation"]].append(elapsed_ns)
             return operations
 
+    def measure_workload(name: str, operation: Callable[[], int]) -> dict[str, Any]:
+        result = _measure(operation)
+        result["operation_latency_ns"] = operation_latencies_ns[name]
+        return result
+
     metrics = {
-        "event_append": _measure(append_events),
-        "event_replay": _measure(replay_events),
-        "projection_replace": _measure(replace_projections),
-        "projection_list": _measure(list_projections),
-        "mixed_interleaved": _measure(mixed_interleaved),
+        "event_append": measure_workload("event_append", append_events),
+        "event_replay": measure_workload("event_replay", replay_events),
+        "projection_replace": measure_workload("projection_replace", replace_projections),
+        "projection_list": measure_workload("projection_list", list_projections),
+        "mixed_interleaved": measure_workload("mixed_interleaved", mixed_interleaved),
+    }
+    metrics["mixed_interleaved_components"] = {
+        operation: {"operation_latency_ns": latencies}
+        for operation, latencies in mixed_component_latencies_ns.items()
     }
     if mode == "python":
         events = [
@@ -489,8 +616,10 @@ def _child(
             "event_count": len(python_state["events"]),
             "projection_count": len(python_state["projections"]),
             "database_bytes": result["database_bytes"],
-            "peak_rss_bytes": None,
-            "workload_peak_rss_delta_bytes": None,
+            "peak_rss_bytes": result.get("peak_rss_bytes"),
+            "workload_peak_rss_delta_bytes": result.get(
+                "workload_peak_rss_delta_bytes"
+            ),
         }
     command = [
         sys.executable, str(Path(__file__).resolve()), "--child", "--mode", mode,
@@ -509,17 +638,36 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     if len(state_digests) != 1:
         raise RuntimeError("persistent benchmark state drifted between samples")
     metrics: dict[str, Any] = {}
+    mixed_component_samples: dict[str, list[int]] = {
+        operation: [] for operation in MIXED_COMPONENTS
+    }
     for workload in WORKLOADS:
         elapsed = [float(sample["metrics"][workload]["elapsed_ms"]) for sample in samples]
         cpu_values = [sample["metrics"][workload].get("cpu_elapsed_ms") for sample in samples]
         cpu_elapsed = [float(value) for value in cpu_values if value is not None]
         throughput = [float(sample["metrics"][workload]["throughput_ops_per_sec"])
                       for sample in samples]
+        all_operation_latencies_ns: list[int] = []
+        for sample in samples:
+            sample_metrics = sample["metrics"][workload]
+            latency_samples = sample_metrics.pop("operation_latency_ns", None)
+            if not isinstance(latency_samples, list) or not latency_samples:
+                raise RuntimeError(f"{workload} sample lacks operation latency evidence")
+            if any(not isinstance(value, int) or value <= 0 for value in latency_samples):
+                raise RuntimeError(f"{workload} sample has invalid operation latencies")
+            all_operation_latencies_ns.extend(latency_samples)
+            sample_metrics["operation_latency_ms"] = _operation_latency_summary(
+                latency_samples
+            )
         metrics[workload] = {
             "median_elapsed_ms": statistics.median(elapsed),
             "elapsed_sample_variation": _sample_variation(elapsed),
+            # These are per-sample whole-workload durations, not individual calls.
             "p95_elapsed_ms": _percentile(elapsed, 0.95),
             "p99_elapsed_ms": _percentile(elapsed, 0.99),
+            "operation_latency_ms": _operation_latency_summary(
+                all_operation_latencies_ns
+            ),
             "median_cpu_elapsed_ms": (
                 statistics.median(cpu_elapsed)
                 if len(cpu_elapsed) == len(samples)
@@ -528,6 +676,26 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "median_throughput_ops_per_sec": statistics.median(throughput),
             "throughput_sample_variation": _sample_variation(throughput),
         }
+        if workload == "mixed_interleaved":
+            for sample in samples:
+                component_metrics = sample["metrics"].pop(
+                    "mixed_interleaved_components", None
+                )
+                if not isinstance(component_metrics, dict):
+                    raise RuntimeError("mixed workload lacks operation-class latency data")
+                if set(component_metrics) != set(MIXED_COMPONENTS):
+                    raise RuntimeError("mixed workload operation classes are incomplete")
+                for operation in MIXED_COMPONENTS:
+                    latencies = component_metrics[operation].get("operation_latency_ns")
+                    if not isinstance(latencies, list) or not latencies:
+                        raise RuntimeError(
+                            f"mixed workload has no {operation} latency samples"
+                        )
+                    if any(not isinstance(value, int) or value <= 0 for value in latencies):
+                        raise RuntimeError(
+                            f"mixed workload has invalid {operation} latency samples"
+                        )
+                    mixed_component_samples[operation].extend(latencies)
     peak_rss_values = [sample["peak_rss_bytes"] for sample in samples]
     workload_rss_values = [sample["workload_peak_rss_delta_bytes"] for sample in samples]
     has_rss = all(value is not None for value in peak_rss_values)
@@ -535,6 +703,10 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "sample_count": len(samples),
         "state_digest": state_digests.pop(),
         "metrics": metrics,
+        "mixed_interleaved_components": {
+            operation: _operation_latency_summary(latencies)
+            for operation, latencies in mixed_component_samples.items()
+        },
         "peak_rss_bytes": (
             statistics.median(int(value) for value in peak_rss_values) if has_rss else None
         ),
@@ -550,21 +722,102 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
-                  samples: int) -> dict[str, Any]:
+def evaluate_persistent_performance_gate(
+    ratios: dict[str, dict[str, dict[str, float]]],
+    rss_ratio: float | None,
+    *,
+    rust_mode: str = "rust",
+) -> dict[str, Any]:
+    """Evaluate one selected Rust-vs-Python mode without timed execution."""
+    rust_workloads = ratios.get(rust_mode, {})
+    if not rust_workloads:
+        return {
+            "checks": {},
+            "mode": rust_mode,
+            "reason": "selected Rust mode was not benchmarked",
+            "status": "not_evaluated",
+        }
+    if rss_ratio is None:
+        return {
+            "checks": {},
+            "mode": rust_mode,
+            "reason": "RSS measurement is unavailable on this platform",
+            "status": "not_evaluated",
+        }
+
+    def valid_ratio(value: object) -> bool:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value > 0
+        )
+
+    latency_values = [
+        value["p95_latency_over_python"] for value in rust_workloads.values()
+    ]
+    throughput_values = [
+        value["throughput_over_python"] for value in rust_workloads.values()
+    ]
+    checks = {
+        "p95_latency_no_worse_than_110_percent": all(
+            valid_ratio(value)
+            and value <= MAX_P95_LATENCY_RATIO
+            for value in latency_values
+        ),
+        "throughput_at_least_95_percent": all(
+            valid_ratio(value) and value >= MIN_THROUGHPUT_RATIO
+            for value in throughput_values
+        ),
+        "peak_rss_no_worse_than_110_percent": (
+            valid_ratio(rss_ratio)
+            and rss_ratio <= MAX_PEAK_RSS_RATIO
+        ),
+    }
+    return {
+        "checks": checks,
+        "mode": rust_mode,
+        "status": "passed" if all(checks.values()) else "failed",
+    }
+
+
+def run_benchmark(
+    output_root: Path,
+    *,
+    items: int,
+    read_cycles: int,
+    samples: int,
+    selected_modes: tuple[str, ...] = (
+        "python",
+        "rust",
+        "rust_cached",
+        "rust_batched",
+        "rust_native",
+    ),
+) -> dict[str, Any]:
+    supported_modes = {"python", "rust", "rust_cached", "rust_native", "rust_batched"}
+    rust_modes = supported_modes - {"python"}
+    if (
+        len(set(selected_modes)) != len(selected_modes)
+        or "python" not in selected_modes
+        or not rust_modes.intersection(selected_modes)
+        or not set(selected_modes).issubset(supported_modes)
+    ):
+        raise ValueError("benchmark modes must include Python and at least one Rust mode")
     output_root.mkdir(parents=True, exist_ok=True)
     trace_path = output_root / "read_after_write_trace.v1.json"
     trace = write_trace(trace_path, items)
-    subprocess.run(
-        [
-            "cargo", "build", "--release", "-p", "kogwistar-store-sqlite",
-            "--example", "sqlite_native_authority_benchmark",
-        ],
-        cwd=RUST_ROOT,
-        check=True,
-    )
+    if "rust_native" in selected_modes:
+        subprocess.run(
+            [
+                "cargo", "build", "--release", "-p", "kogwistar-store-sqlite",
+                "--example", "sqlite_native_authority_benchmark",
+            ],
+            cwd=RUST_ROOT,
+            check=True,
+        )
     modes: dict[str, Any] = {}
-    for mode in ("python", "rust", "rust_cached", "rust_native"):
+    for mode in selected_modes:
         warmup_path = output_root / f"{mode}-warmup.sqlite3"
         for suffix in ("", "-wal", "-shm"):
             Path(f"{warmup_path}{suffix}").unlink(missing_ok=True)
@@ -590,6 +843,10 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
                     / modes["python"]["metrics"][workload]["median_throughput_ops_per_sec"]
                 ),
                 "p95_latency_over_python": (
+                    mode["metrics"][workload]["operation_latency_ms"]["p95_ms"]
+                    / modes["python"]["metrics"][workload]["operation_latency_ms"]["p95_ms"]
+                ),
+                "trace_elapsed_p95_over_python": (
                     mode["metrics"][workload]["p95_elapsed_ms"]
                     / modes["python"]["metrics"][workload]["p95_elapsed_ms"]
                 ),
@@ -599,21 +856,27 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
         for mode_name, mode in modes.items()
         if mode_name != "python"
     }
-    rss_ratio = (
-        modes["rust"]["p95_peak_rss_bytes"]
-        / modes["python"]["p95_peak_rss_bytes"]
-    )
-    gate_checks = {
-        "p95_latency_no_worse_than_110_percent": all(
-            value["p95_latency_over_python"] <= 1.10
-            for value in ratios["rust"].values()
-        ),
-        "throughput_at_least_95_percent": all(
-            value["throughput_over_python"] >= 0.95
-            for value in ratios["rust"].values()
-        ),
-        "peak_rss_no_worse_than_110_percent": rss_ratio <= 1.10,
+    mixed_component_p95_ratios = {
+        mode_name: {
+            operation: (
+                mode["mixed_interleaved_components"][operation]["p95_ms"]
+                / modes["python"]["mixed_interleaved_components"][operation]["p95_ms"]
+            )
+            for operation in MIXED_COMPONENTS
+        }
+        for mode_name, mode in modes.items()
+        if mode_name != "python"
     }
+    performance_mode = "rust_native"
+    rss_ratio = None
+    if performance_mode in modes:
+        rust_rss = modes[performance_mode]["p95_peak_rss_bytes"]
+        python_rss = modes["python"]["p95_peak_rss_bytes"]
+        if rust_rss is not None and python_rss:
+            rss_ratio = rust_rss / python_rss
+    gate = evaluate_persistent_performance_gate(
+        ratios, rss_ratio, rust_mode=performance_mode
+    )
     return {
         "benchmark_version": BENCHMARK_VERSION,
         "dataset": DATASET,
@@ -630,17 +893,20 @@ def run_benchmark(output_root: Path, *, items: int, read_cycles: int,
         "python": sys.version,
         "modes": modes,
         "ratios": ratios,
-        "peak_rss_rust_over_python": rss_ratio,
-        "gate": {
-            "checks": gate_checks,
-            "status": "passed" if all(gate_checks.values()) else "failed",
-        },
+        "mixed_interleaved_component_p95_over_python": mixed_component_p95_ratios,
+        "performance_gate_mode": performance_mode,
+        "peak_rss_rust_native_over_python": rss_ratio,
+        "gate": gate,
         "interpretation": (
             "rust_native calls SqliteStore directly in one Rust process; Python only "
             "launches the executable and verifies its final state after it exits. "
-            "Each native write still uses its own store transaction/commit. rust_cached "
-            "keeps the PyO3/JSON boundary per operation but reuses one scoped session. "
-            "The regular rust gate compares the existing per-call Rust facade with Python."
+            "Each native and batched write still commits one write_record at a time. "
+            "rust_cached retains per-operation PyO3/JSON crossings while reusing a "
+            "scoped session; rust_batched combines each write_record's two mutations "
+            "into one bridge call without combining commit boundaries. Mixed operation "
+            "latencies are split by write, event-read, and projection-read. The CI "
+            "performance gate compares pure Python with pure Rust-native execution; "
+            "PyO3 hybrid modes remain diagnostic and correctness-only."
         ),
     }
 
@@ -653,9 +919,18 @@ def _args() -> argparse.Namespace:
     parser.add_argument("--read-cycles", type=int, default=20)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--smoke", action="store_true")
+    parser.add_argument(
+        "--modes",
+        nargs="+",
+        choices=("python", "rust", "rust_cached", "rust_batched", "rust_native"),
+        default=("python", "rust", "rust_cached", "rust_batched", "rust_native"),
+        help="benchmark modes; defaults preserve the standard comparison",
+    )
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
-        "--mode", choices=("python", "rust", "rust_cached"), help=argparse.SUPPRESS
+        "--mode",
+        choices=("python", "rust", "rust_cached", "rust_batched"),
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--path", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--trace", type=Path, help=argparse.SUPPRESS)
@@ -678,10 +953,11 @@ def main() -> int:
     if args.output_root is None:
         raise SystemExit("--output-root is required")
     report = run_benchmark(args.output_root.resolve(), items=args.items,
-                           read_cycles=args.read_cycles, samples=args.samples)
+                           read_cycles=args.read_cycles, samples=args.samples,
+                           selected_modes=tuple(args.modes))
     payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     print(payload, end="")
-    report_path = args.report or (args.output_root.resolve() / "report.v3.json")
+    report_path = args.report or (args.output_root.resolve() / "report.v5.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(payload, encoding="utf-8")
     return 0

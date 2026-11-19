@@ -106,6 +106,22 @@ impl PostgresStore {
         })
         .await
     }
+    pub async fn renew_projected_lane_message_claim(
+        &self,
+        id: &str,
+        owner: &str,
+        lease_seconds: i64,
+    ) -> PostgresStoreResult<bool> {
+        let id = id.to_owned();
+        let owner = owner.to_owned();
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.renew_projected_lane_message_claim(&id, &owner, lease_seconds)
+                    .await
+            })
+        })
+        .await
+    }
     pub async fn requeue_projected_lane_message(
         &self,
         id: &str,

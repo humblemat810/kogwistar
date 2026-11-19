@@ -86,9 +86,10 @@ All criteria apply to one identified candidate wheel.
   `rust_cutover_ready: true`;
 - automatic Git commit, push, GitHub CI dispatch, or PyPI publication.
 
-Those are separate downstream deployment or maintainer operations. The
-`rust_cutover_ready` flags stay false until an adopter supplies its own canary
-evidence; this is a safe default, not an unchecked library-release item.
+Those are outside the library acceptance scope. `rust_cutover_ready` flags stay
+false until the matching capability-specific tests and isolated Docker UAT pass;
+no adopter traffic canary is required. A readiness flag never changes the default
+or removes the independently supported Python implementation.
 
 ## Release Workflow and Maintainer Handoff
 
