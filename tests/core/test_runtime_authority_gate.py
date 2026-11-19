@@ -29,6 +29,8 @@ def test_phase4_gate_is_persisted_and_declares_async_rust_boundary() -> None:
     assert "live_postgres_required" in source
     assert 'counts["skipped"] == 0' in source
     assert "not slow and not manual" in source
+    assert "no:cacheprovider" in source
+    assert "GROUP_TIMEOUT_SECONDS = 600" in source
 
 
 def test_phase4_junit_counts_handles_suite_root_and_nested_suites(tmp_path: Path) -> None:
@@ -49,12 +51,14 @@ def test_phase4_junit_counts_handles_suite_root_and_nested_suites(tmp_path: Path
         "failures": 0,
         "errors": 0,
         "skipped": 1,
+        "passed": 1,
     }
     assert gate._junit_counts(nested) == {
         "tests": 3,
         "failures": 1,
         "errors": 0,
         "skipped": 1,
+        "passed": 1,
     }
 
 
@@ -91,3 +95,32 @@ def test_phase4_postgres_group_rejects_skip_but_non_live_group_allows_it(
 
     assert postgres["status"] == "failed"
     assert worker["status"] == "passed"
+
+
+def test_phase4_group_timeout_is_recorded_as_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = _gate()
+
+    def fake_run(command, **kwargs):
+        assert "no:cacheprovider" in command
+        assert kwargs["timeout"] == gate.GROUP_TIMEOUT_SECONDS
+        raise gate.subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"partial")
+
+    monkeypatch.setattr(gate.subprocess, "run", fake_run)
+    result = gate._run_group(
+        python=ROOT / ".venv" / "Scripts" / "python.exe",
+        name="durable-worker",
+        tests=gate.GROUPS["durable-worker"][0],
+        output_root=tmp_path,
+        live_postgres=False,
+    )
+
+    assert result["status"] == "failed"
+    assert result["returncode"] == 124
+    assert result["timed_out"] is True
+    assert result["timeout_seconds"] == 600
+    assert "partial" in (tmp_path / "durable-worker.out.txt").read_text(encoding="utf-8")
+    assert "exceeded 600-second timeout" in (
+        tmp_path / "durable-worker.err.txt"
+    ).read_text(encoding="utf-8")

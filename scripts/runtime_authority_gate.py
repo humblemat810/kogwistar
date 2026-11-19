@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_NATIVE_REPORT = ROOT / ".codex" / "adr015-host-native-report.json"
 DEFAULT_REPORT = ROOT / ".codex" / "adr015-phase4-runtime-gate.json"
 NON_SLOW_MARKERS = "not slow and not manual and not llm_real and not requires_ollama"
+GROUP_TIMEOUT_SECONDS = 600
 
 GROUPS: dict[str, tuple[tuple[str, ...], bool]] = {
     "durable-worker": (
@@ -121,24 +122,43 @@ def _run_group(
         "-q",
         "-m",
         NON_SLOW_MARKERS,
+        "-p",
+        "no:cacheprovider",
         f"--junitxml={junit}",
         *tests,
     ]
-    completed = subprocess.run(
-        command,
-        cwd=ROOT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
-        check=False,
-    )
-    (output_root / f"{name}.out.txt").write_text(completed.stdout, encoding="utf-8")
-    (output_root / f"{name}.err.txt").write_text(completed.stderr, encoding="utf-8")
+    timed_out = False
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+            timeout=GROUP_TIMEOUT_SECONDS,
+        )
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+    except subprocess.TimeoutExpired as error:
+        timed_out = True
+        returncode = 124
+        stdout = error.stdout or ""
+        stderr = error.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", errors="replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", errors="replace")
+        stderr += f"\nPhase-4 group exceeded {GROUP_TIMEOUT_SECONDS}-second timeout\n"
+    (output_root / f"{name}.out.txt").write_text(stdout, encoding="utf-8")
+    (output_root / f"{name}.err.txt").write_text(stderr, encoding="utf-8")
     counts = _junit_counts(junit) if junit.is_file() else None
     test_results = read_junit_test_results(junit)
     passed = (
-        completed.returncode == 0
+        returncode == 0
+        and not timed_out
         and counts is not None
         and counts["tests"] > 0
         and counts["failures"] == 0
@@ -150,7 +170,9 @@ def _run_group(
         "tests": list(tests),
         "live_postgres_required": live_postgres,
         "command": command,
-        "returncode": completed.returncode,
+        "returncode": returncode,
+        "timed_out": timed_out,
+        "timeout_seconds": GROUP_TIMEOUT_SECONDS,
         "junit": str(junit),
         "counts": counts,
         "test_results": test_results,
