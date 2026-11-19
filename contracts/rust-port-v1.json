@@ -90,10 +90,10 @@
   "current_persistent_evidence": {
     "benchmark_report": "contracts/benchmarks/rust-persistent-sqlite-current-linux.json",
     "benchmark_command": ".venv/Scripts/python.exe scripts/rust_port_persistent_benchmark.py --items 100 --read-cycles 20 --samples 5 --output-root <runtime-dir> --report contracts/benchmarks/rust-persistent-sqlite-current-windows.json",
-    "scope": "persistent authoritative SQLite event and named-projection capabilities through the shipped Python and PyO3 facades",
-    "gate_status": "passed",
+    "scope": "historical diagnostic of persistent SQLite event and named-projection calls through the Python/PyO3 hybrid facade; timings are not a CI performance guarantee",
+    "gate_status": "diagnostic_only",
     "cutover_use": "sqlite-meta-authority-verified",
-    "result": "Persistent Rust handle removed per-call SQLite open/WAL churn. All p95 latency, throughput, peak RSS, and state-digest checks pass. KOGWISTAR_IMPL_META_STORE=rust routes the public SQLite meta facade to one Rust writer; clean-wheel core feature compatibility passed with Python rollback readability verified."
+    "result": "Historical measurements remain available for comparison, and persisted state parity was checked. CI performance acceptance now measures Python directly against the standalone Rust-native worker; hybrid timings are non-gating."
   },
   "runtime_serving_evidence": {
     "benchmark_report": "contracts/benchmarks/rust-runtime-serving-current-windows.json",

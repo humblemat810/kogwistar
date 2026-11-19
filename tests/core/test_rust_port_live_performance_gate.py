@@ -22,10 +22,10 @@ def test_live_persistent_python_rust_performance_gate(tmp_path: Path) -> None:
         read_cycles=20,
         # More fresh databases stabilize tail-latency estimates on hosted runners.
         samples=10,
-        selected_modes=("python", "rust"),
+        selected_modes=("python", "rust_native"),
     )
     report_path = Path(
-        os.environ.get("KOGWISTAR_PERFORMANCE_REPORT", output_root / "report.v4.json")
+        os.environ.get("KOGWISTAR_PERFORMANCE_REPORT", output_root / "report.v5.json")
     )
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(
@@ -36,14 +36,21 @@ def test_live_persistent_python_rust_performance_gate(tmp_path: Path) -> None:
     assert report["gate"]["status"] == "passed", json.dumps(
         {
             "gate": report["gate"],
-            "ratios": report["ratios"].get("rust"),
-            "peak_rss_rust_over_python": report["peak_rss_rust_over_python"],
+            "ratios": report["ratios"].get("rust_native"),
+            "mixed_interleaved_component_p95_over_python": report[
+                "mixed_interleaved_component_p95_over_python"
+            ],
+            "peak_rss_rust_native_over_python": report[
+                "peak_rss_rust_native_over_python"
+            ],
             "report": str(report_path),
         },
         indent=2,
         sort_keys=True,
     )
-    assert report["modes"]["python"]["state_digest"] == report["modes"]["rust"][
+    assert report["modes"]["python"]["state_digest"] == report["modes"]["rust_native"][
         "state_digest"
     ]
-    assert set(report["modes"]) == {"python", "rust"}
+    assert set(report["modes"]) == {"python", "rust_native"}
+    assert report["gate"]["mode"] == "rust_native"
+    assert report["gate"]["status"] == "passed"

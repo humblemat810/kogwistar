@@ -560,7 +560,7 @@ def test_rust_port_manifest_has_required_authority_and_suite_gates() -> None:
     )
 
 
-def test_passing_performance_and_public_routing_unlock_sqlite_meta_store() -> None:
+def test_legacy_hybrid_benchmark_is_diagnostic_while_public_routing_remains_enabled() -> None:
     manifest = _manifest()
     persistent = manifest["current_persistent_evidence"]
     runtime = manifest["runtime_serving_evidence"]
@@ -568,7 +568,8 @@ def test_passing_performance_and_public_routing_unlock_sqlite_meta_store() -> No
     persistent_report = json.loads(
         (ROOT / persistent["benchmark_report"]).read_text(encoding="utf-8")
     )
-    assert persistent["gate_status"] == "passed"
+    assert persistent["gate_status"] == "diagnostic_only"
+    assert "not a CI performance guarantee" in persistent["scope"]
     assert persistent["cutover_use"] == "sqlite-meta-authority-verified"
     assert persistent_report["gate"]["status"] == "passed"
     sqlite_owner = next(

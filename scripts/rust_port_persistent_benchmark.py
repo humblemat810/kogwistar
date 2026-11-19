@@ -37,7 +37,7 @@ from mixed_workload import (
     write_trace,
 )
 
-BENCHMARK_VERSION = 4
+BENCHMARK_VERSION = 5
 DATASET = "kogwistar-mixed-rewrite-workload-v2"
 WORKLOADS = (
     "event_append",
@@ -46,6 +46,7 @@ WORKLOADS = (
     "projection_list",
     "mixed_interleaved",
 )
+MIXED_COMPONENTS = ("write_record", "read_event", "read_projection")
 MAX_P95_LATENCY_RATIO = 1.10
 MIN_THROUGHPUT_RATIO = 0.95
 MAX_PEAK_RSS_RATIO = 1.10
@@ -163,6 +164,7 @@ def _operation_latency_summary(samples_ns: list[int]) -> dict[str, float | int]:
         "p50_ms": _percentile(samples_ms, 0.50),
         "p95_ms": _percentile(samples_ms, 0.95),
         "p99_ms": _percentile(samples_ms, 0.99),
+        "max_ms": max(samples_ms),
     }
 
 
@@ -213,6 +215,9 @@ def _run_mode_bound(
     baseline_peak_rss_bytes = _peak_rss_bytes()
     operation_latencies_ns: dict[str, list[int]] = {
         workload: [] for workload in WORKLOADS
+    }
+    mixed_component_latencies_ns = {
+        operation: [] for operation in MIXED_COMPONENTS
     }
 
     def timed_operation(workload: str, operation: Callable[[], Any]) -> Any:
@@ -321,9 +326,9 @@ def _run_mode_bound(
                     if not isinstance(payload, dict) or payload.get("index") != index:
                         raise RuntimeError("interleaved projection read did not observe its write")
                 operations += 1
-                operation_latencies_ns["mixed_interleaved"].append(
-                    time.perf_counter_ns() - operation_started
-                )
+                elapsed_ns = time.perf_counter_ns() - operation_started
+                operation_latencies_ns["mixed_interleaved"].append(elapsed_ns)
+                mixed_component_latencies_ns[step["operation"]].append(elapsed_ns)
             return operations
     else:
         def append_events() -> int:
@@ -402,9 +407,9 @@ def _run_mode_bound(
                 call({"kind": "close"})
             rust_store = RustEngineSQLite(path.parent, filename=path.name)
             operations = 0
-            session = (
-                rust_store.session() if mode == "rust_batched" else nullcontext()
-            )
+            # Only batched mode holds one facade session across this trace;
+            # each write_record still keeps its own transaction boundary.
+            session = rust_store.session() if mode == "rust_batched" else nullcontext()
             with session:
                 for step in trace:
                     operation_started = time.perf_counter_ns()
@@ -468,9 +473,9 @@ def _run_mode_bound(
                         if not isinstance(payload, dict) or payload.get("index") != index:
                             raise RuntimeError("interleaved Rust projection read did not observe its write")
                     operations += 1
-                    operation_latencies_ns["mixed_interleaved"].append(
-                        time.perf_counter_ns() - operation_started
-                    )
+                    elapsed_ns = time.perf_counter_ns() - operation_started
+                    operation_latencies_ns["mixed_interleaved"].append(elapsed_ns)
+                    mixed_component_latencies_ns[step["operation"]].append(elapsed_ns)
             return operations
 
     def measure_workload(name: str, operation: Callable[[], int]) -> dict[str, Any]:
@@ -484,6 +489,10 @@ def _run_mode_bound(
         "projection_replace": measure_workload("projection_replace", replace_projections),
         "projection_list": measure_workload("projection_list", list_projections),
         "mixed_interleaved": measure_workload("mixed_interleaved", mixed_interleaved),
+    }
+    metrics["mixed_interleaved_components"] = {
+        operation: {"operation_latency_ns": latencies}
+        for operation, latencies in mixed_component_latencies_ns.items()
     }
     if mode == "python":
         events = [
@@ -607,8 +616,10 @@ def _child(
             "event_count": len(python_state["events"]),
             "projection_count": len(python_state["projections"]),
             "database_bytes": result["database_bytes"],
-            "peak_rss_bytes": None,
-            "workload_peak_rss_delta_bytes": None,
+            "peak_rss_bytes": result.get("peak_rss_bytes"),
+            "workload_peak_rss_delta_bytes": result.get(
+                "workload_peak_rss_delta_bytes"
+            ),
         }
     command = [
         sys.executable, str(Path(__file__).resolve()), "--child", "--mode", mode,
@@ -627,6 +638,9 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
     if len(state_digests) != 1:
         raise RuntimeError("persistent benchmark state drifted between samples")
     metrics: dict[str, Any] = {}
+    mixed_component_samples: dict[str, list[int]] = {
+        operation: [] for operation in MIXED_COMPONENTS
+    }
     for workload in WORKLOADS:
         elapsed = [float(sample["metrics"][workload]["elapsed_ms"]) for sample in samples]
         cpu_values = [sample["metrics"][workload].get("cpu_elapsed_ms") for sample in samples]
@@ -662,6 +676,26 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
             "median_throughput_ops_per_sec": statistics.median(throughput),
             "throughput_sample_variation": _sample_variation(throughput),
         }
+        if workload == "mixed_interleaved":
+            for sample in samples:
+                component_metrics = sample["metrics"].pop(
+                    "mixed_interleaved_components", None
+                )
+                if not isinstance(component_metrics, dict):
+                    raise RuntimeError("mixed workload lacks operation-class latency data")
+                if set(component_metrics) != set(MIXED_COMPONENTS):
+                    raise RuntimeError("mixed workload operation classes are incomplete")
+                for operation in MIXED_COMPONENTS:
+                    latencies = component_metrics[operation].get("operation_latency_ns")
+                    if not isinstance(latencies, list) or not latencies:
+                        raise RuntimeError(
+                            f"mixed workload has no {operation} latency samples"
+                        )
+                    if any(not isinstance(value, int) or value <= 0 for value in latencies):
+                        raise RuntimeError(
+                            f"mixed workload has invalid {operation} latency samples"
+                        )
+                    mixed_component_samples[operation].extend(latencies)
     peak_rss_values = [sample["peak_rss_bytes"] for sample in samples]
     workload_rss_values = [sample["workload_peak_rss_delta_bytes"] for sample in samples]
     has_rss = all(value is not None for value in peak_rss_values)
@@ -669,6 +703,10 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
         "sample_count": len(samples),
         "state_digest": state_digests.pop(),
         "metrics": metrics,
+        "mixed_interleaved_components": {
+            operation: _operation_latency_summary(latencies)
+            for operation, latencies in mixed_component_samples.items()
+        },
         "peak_rss_bytes": (
             statistics.median(int(value) for value in peak_rss_values) if has_rss else None
         ),
@@ -685,12 +723,27 @@ def _summary(samples: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def evaluate_persistent_performance_gate(
-    ratios: dict[str, dict[str, dict[str, float]]], rss_ratio: float
+    ratios: dict[str, dict[str, dict[str, float]]],
+    rss_ratio: float | None,
+    *,
+    rust_mode: str = "rust",
 ) -> dict[str, Any]:
-    """Evaluate Rust-vs-Python thresholds without running a timed benchmark."""
-    rust_workloads = ratios.get("rust", {})
+    """Evaluate one selected Rust-vs-Python mode without timed execution."""
+    rust_workloads = ratios.get(rust_mode, {})
     if not rust_workloads:
-        raise ValueError("Rust workload ratios are required")
+        return {
+            "checks": {},
+            "mode": rust_mode,
+            "reason": "selected Rust mode was not benchmarked",
+            "status": "not_evaluated",
+        }
+    if rss_ratio is None:
+        return {
+            "checks": {},
+            "mode": rust_mode,
+            "reason": "RSS measurement is unavailable on this platform",
+            "status": "not_evaluated",
+        }
 
     def valid_ratio(value: object) -> bool:
         return (
@@ -723,6 +776,7 @@ def evaluate_persistent_performance_gate(
     }
     return {
         "checks": checks,
+        "mode": rust_mode,
         "status": "passed" if all(checks.values()) else "failed",
     }
 
@@ -733,15 +787,23 @@ def run_benchmark(
     items: int,
     read_cycles: int,
     samples: int,
-    selected_modes: tuple[str, ...] = ("python", "rust", "rust_cached", "rust_native"),
+    selected_modes: tuple[str, ...] = (
+        "python",
+        "rust",
+        "rust_cached",
+        "rust_batched",
+        "rust_native",
+    ),
 ) -> dict[str, Any]:
     supported_modes = {"python", "rust", "rust_cached", "rust_native", "rust_batched"}
+    rust_modes = supported_modes - {"python"}
     if (
         len(set(selected_modes)) != len(selected_modes)
-        or not {"python", "rust"}.issubset(selected_modes)
+        or "python" not in selected_modes
+        or not rust_modes.intersection(selected_modes)
         or not set(selected_modes).issubset(supported_modes)
     ):
-        raise ValueError("benchmark modes must include python and rust exactly once")
+        raise ValueError("benchmark modes must include Python and at least one Rust mode")
     output_root.mkdir(parents=True, exist_ok=True)
     trace_path = output_root / "read_after_write_trace.v1.json"
     trace = write_trace(trace_path, items)
@@ -794,11 +856,27 @@ def run_benchmark(
         for mode_name, mode in modes.items()
         if mode_name != "python"
     }
-    rss_ratio = (
-        modes["rust"]["p95_peak_rss_bytes"]
-        / modes["python"]["p95_peak_rss_bytes"]
+    mixed_component_p95_ratios = {
+        mode_name: {
+            operation: (
+                mode["mixed_interleaved_components"][operation]["p95_ms"]
+                / modes["python"]["mixed_interleaved_components"][operation]["p95_ms"]
+            )
+            for operation in MIXED_COMPONENTS
+        }
+        for mode_name, mode in modes.items()
+        if mode_name != "python"
+    }
+    performance_mode = "rust_native"
+    rss_ratio = None
+    if performance_mode in modes:
+        rust_rss = modes[performance_mode]["p95_peak_rss_bytes"]
+        python_rss = modes["python"]["p95_peak_rss_bytes"]
+        if rust_rss is not None and python_rss:
+            rss_ratio = rust_rss / python_rss
+    gate = evaluate_persistent_performance_gate(
+        ratios, rss_ratio, rust_mode=performance_mode
     )
-    gate = evaluate_persistent_performance_gate(ratios, rss_ratio)
     return {
         "benchmark_version": BENCHMARK_VERSION,
         "dataset": DATASET,
@@ -815,14 +893,20 @@ def run_benchmark(
         "python": sys.version,
         "modes": modes,
         "ratios": ratios,
-        "peak_rss_rust_over_python": rss_ratio,
+        "mixed_interleaved_component_p95_over_python": mixed_component_p95_ratios,
+        "performance_gate_mode": performance_mode,
+        "peak_rss_rust_native_over_python": rss_ratio,
         "gate": gate,
         "interpretation": (
             "rust_native calls SqliteStore directly in one Rust process; Python only "
             "launches the executable and verifies its final state after it exits. "
-            "Each native write still uses its own store transaction/commit. rust_cached "
-            "keeps the PyO3/JSON boundary per operation but reuses one scoped session. "
-            "The regular rust gate compares the existing per-call Rust facade with Python."
+            "Each native and batched write still commits one write_record at a time. "
+            "rust_cached retains per-operation PyO3/JSON crossings while reusing a "
+            "scoped session; rust_batched combines each write_record's two mutations "
+            "into one bridge call without combining commit boundaries. Mixed operation "
+            "latencies are split by write, event-read, and projection-read. The CI "
+            "performance gate compares pure Python with pure Rust-native execution; "
+            "PyO3 hybrid modes remain diagnostic and correctness-only."
         ),
     }
 
@@ -839,7 +923,7 @@ def _args() -> argparse.Namespace:
         "--modes",
         nargs="+",
         choices=("python", "rust", "rust_cached", "rust_batched", "rust_native"),
-        default=("python", "rust", "rust_cached", "rust_native"),
+        default=("python", "rust", "rust_cached", "rust_batched", "rust_native"),
         help="benchmark modes; defaults preserve the standard comparison",
     )
     parser.add_argument("--child", action="store_true", help=argparse.SUPPRESS)
@@ -873,7 +957,7 @@ def main() -> int:
                            selected_modes=tuple(args.modes))
     payload = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     print(payload, end="")
-    report_path = args.report or (args.output_root.resolve() / "report.v3.json")
+    report_path = args.report or (args.output_root.resolve() / "report.v5.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(payload, encoding="utf-8")
     return 0

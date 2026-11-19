@@ -135,8 +135,12 @@ def _validate_runtime_performance(report: dict[str, Any]) -> list[str]:
 
 def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
     version = report.get("benchmark_version", 1)
-    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 3, 4}:
+    if not isinstance(version, int) or isinstance(version, bool) or version not in {1, 3, 4, 5}:
         return ["persistent-store benchmark version is unsupported"]
+    if version < 5:
+        # Historical Python/PyO3 measurements remain useful diagnostics, but
+        # only the v5 standalone Rust worker participates in the perf gate.
+        return []
     gate = report.get("gate")
     if not isinstance(gate, dict) or gate.get("status") != "passed":
         return ["generic persistent public-store performance gate remains failed"]
@@ -145,7 +149,15 @@ def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
         return ["persistent-store performance checks are incomplete"]
 
     ratios = report.get("ratios")
-    rss_ratio = report.get("peak_rss_rust_over_python")
+    mode_key = "rust_native" if version >= 5 else "rust"
+    rss_ratio_key = (
+        "peak_rss_rust_native_over_python"
+        if version >= 5
+        else "peak_rss_rust_over_python"
+    )
+    rss_ratio = report.get(rss_ratio_key)
+    if version >= 5 and report.get("performance_gate_mode") != mode_key:
+        return ["persistent-store performance gate must target pure Rust-native mode"]
     if version >= 4:
         items = report.get("items")
         read_cycles = report.get("read_cycles")
@@ -166,9 +178,25 @@ def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
         if not isinstance(modes, dict):
             return ["persistent-store Python/Rust mode summaries are missing"]
         python_mode = modes.get("python")
-        rust_mode = modes.get("rust")
+        rust_mode = modes.get(mode_key)
         if not isinstance(python_mode, dict) or not isinstance(rust_mode, dict):
             return ["persistent-store Python/Rust mode summaries are missing"]
+        if version >= 5 and python_mode.get("state_digest") != rust_mode.get("state_digest"):
+            return ["persistent-store Python/Rust-native state digests differ"]
+        if version >= 5:
+            try:
+                measured_rss_ratio = (
+                    rust_mode["p95_peak_rss_bytes"]
+                    / python_mode["p95_peak_rss_bytes"]
+                )
+            except (KeyError, TypeError, ZeroDivisionError):
+                return ["persistent-store Rust-native peak RSS measurements are missing"]
+            if (
+                not _is_finite_number(measured_rss_ratio)
+                or not _is_finite_number(rss_ratio)
+                or not math.isclose(measured_rss_ratio, rss_ratio, rel_tol=1e-9, abs_tol=1e-12)
+            ):
+                return ["persistent-store Rust-native peak RSS ratio does not match measurements"]
         python_metrics = python_mode.get("metrics")
         rust_metrics = rust_mode.get("metrics")
         if not isinstance(python_metrics, dict) or not isinstance(rust_metrics, dict):
@@ -214,7 +242,7 @@ def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
                 "p95_latency_over_python": rust_p95 / py_p95,
                 "throughput_over_python": rust_throughput / py_throughput,
             }
-        recorded_rust_ratios = ratios.get("rust") if isinstance(ratios, dict) else None
+        recorded_rust_ratios = ratios.get(mode_key) if isinstance(ratios, dict) else None
         if not isinstance(recorded_rust_ratios, dict):
             return ["persistent-store Rust performance ratios are missing"]
         for workload, derived in derived_ratios.items():
@@ -226,8 +254,8 @@ def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
             ):
                 return [f"persistent-store performance ratios do not match measurements: {workload}"]
         rust_ratios = derived_ratios
-    elif isinstance(ratios, dict) and isinstance(ratios.get("rust"), dict):
-        rust_ratios = ratios["rust"]
+    elif isinstance(ratios, dict) and isinstance(ratios.get(mode_key), dict):
+        rust_ratios = ratios[mode_key]
     else:
         # Version-1 reports predate explicit ratio fields; derive them from the
         # recorded Python/Rust summaries instead of trusting their status flag.
@@ -235,7 +263,7 @@ def _validate_persistent_performance(report: dict[str, Any]) -> list[str]:
         if not isinstance(modes, dict):
             return ["persistent-store Rust performance ratios are missing"]
         python_mode = modes.get("python")
-        rust_mode = modes.get("rust")
+        rust_mode = modes.get(mode_key)
         if not isinstance(python_mode, dict) or not isinstance(rust_mode, dict):
             return ["persistent-store Python/Rust mode summaries are missing"]
         if python_mode.get("state_digest") != rust_mode.get("state_digest"):
@@ -1013,7 +1041,10 @@ def evaluate_release_gate(
             persistent_report = _load_json(candidate_path)
         except (OSError, ValueError):
             persistent_report = None
-    if persistent.get("gate_status") != "passed" or persistent_report is None:
+    if persistent.get("gate_status") == "diagnostic_only":
+        # Historical Python/PyO3 timing is retained, but cannot gate CI or release.
+        pass
+    elif persistent.get("gate_status") != "passed" or persistent_report is None:
         blockers.append(
             {"gate": "performance", "detail": "persistent-store benchmark evidence is missing or failed"}
         )

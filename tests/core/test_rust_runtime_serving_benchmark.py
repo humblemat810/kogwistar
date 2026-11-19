@@ -85,8 +85,28 @@ def test_persistent_performance_gate_enforces_thresholds_without_benchmark(
 
 @pytest.mark.ci
 def test_persistent_performance_gate_requires_rust_workload_data() -> None:
-    with pytest.raises(ValueError, match="Rust workload ratios"):
-        _persistent_benchmark().evaluate_persistent_performance_gate({}, 1.0)
+    result = _persistent_benchmark().evaluate_persistent_performance_gate({}, 1.0)
+
+    assert result["status"] == "not_evaluated"
+
+
+@pytest.mark.ci
+def test_persistent_performance_gate_does_not_claim_pass_without_rss() -> None:
+    result = _persistent_benchmark().evaluate_persistent_performance_gate(
+        {
+            "rust_native": {
+                "mixed_interleaved": {
+                    "p95_latency_over_python": 1.0,
+                    "throughput_over_python": 1.0,
+                }
+            }
+        },
+        None,
+        rust_mode="rust_native",
+    )
+
+    assert result["status"] == "not_evaluated"
+    assert result["mode"] == "rust_native"
 
 
 @pytest.mark.ci

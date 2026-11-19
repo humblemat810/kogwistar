@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -112,6 +113,19 @@ def _persistent_v4_report() -> dict:
     return report
 
 
+def _persistent_v5_report() -> dict:
+    report = _persistent_v4_report()
+    report["benchmark_version"] = 5
+    report["performance_gate_mode"] = "rust_native"
+    report["modes"]["rust_native"] = copy.deepcopy(report["modes"]["rust"])
+    report["ratios"]["rust_native"] = report["ratios"].pop("rust")
+    report["peak_rss_rust_native_over_python"] = report.pop(
+        "peak_rss_rust_over_python"
+    )
+    report["gate"]["mode"] = "rust_native"
+    return report
+
+
 def test_release_gate_rejects_duplicate_layer_report() -> None:
     reports = _compatibility("a" * 64)
     reports[0]["layers"].append(dict(reports[0]["layers"][0]))
@@ -215,7 +229,7 @@ def test_persistent_performance_gate_rejects_invalid_ratios(
 @pytest.mark.parametrize(
     ("metric", "expected_error"),
     [
-        ("latency", "persistent-store latency threshold failed: event_append"),
+        ("latency", "persistent-store operation measurements are invalid: event_append"),
         ("rss", "persistent-store peak RSS threshold failed"),
     ],
 )
@@ -223,26 +237,29 @@ def test_persistent_release_validator_rejects_zero_measurements_even_if_marked_p
     metric: str, expected_error: str
 ) -> None:
     gate = _gate()
-    report = json.loads(
-        (ROOT / "contracts" / "benchmarks" / "rust-persistent-sqlite-current-linux.json")
-        .read_text(encoding="utf-8")
-    )
-    report["gate"]["status"] = "passed"
+    report = _persistent_v5_report()
     if metric == "latency":
-        report["modes"]["rust"]["metrics"]["event_append"]["p95_elapsed_ms"] = 0
+        report["modes"]["rust_native"]["metrics"]["event_append"][
+            "operation_latency_ms"
+        ]["p95_ms"] = 0
     else:
-        report["modes"]["rust"]["p95_peak_rss_bytes"] = 0
+        report["modes"]["rust_native"]["p95_peak_rss_bytes"] *= 2
+        report["peak_rss_rust_native_over_python"] *= 2
 
     assert expected_error in gate._validate_persistent_performance(report)
 
 
 def test_persistent_performance_validator_recomputes_numeric_thresholds() -> None:
     gate = _gate()
-    report_path = ROOT / "contracts" / "benchmarks" / "rust-persistent-sqlite-current-linux.json"
-    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report = _persistent_v5_report()
     assert gate._validate_persistent_performance(report) == []
 
-    report["modes"]["rust"]["metrics"]["event_append"]["p95_elapsed_ms"] = 99.0
+    report["modes"]["rust_native"]["metrics"]["event_append"][
+        "operation_latency_ms"
+    ]["p95_ms"] = 99.0
+    report["ratios"]["rust_native"]["event_append"][
+        "p95_latency_over_python"
+    ] = 99.0
     report["gate"]["status"] = "passed"
     report["gate"]["checks"]["p95_latency_no_worse_than_110_percent"] = True
     errors = gate._validate_persistent_performance(report)
@@ -250,7 +267,7 @@ def test_persistent_performance_validator_recomputes_numeric_thresholds() -> Non
     assert "persistent-store latency threshold failed: event_append" in errors
 
 
-def test_persistent_v4_release_gate_uses_measured_operation_latency() -> None:
+def test_legacy_hybrid_report_is_diagnostic_not_a_performance_gate() -> None:
     gate = _gate()
     report = _persistent_v4_report()
     assert gate._validate_persistent_performance(report) == []
@@ -258,13 +275,11 @@ def test_persistent_v4_release_gate_uses_measured_operation_latency() -> None:
     report["modes"]["rust"]["metrics"]["event_append"]["operation_latency_ms"][
         "p95_ms"
     ] = 2.0
-    report["ratios"]["rust"]["event_append"]["p95_latency_over_python"] = 1.0
-    assert "persistent-store performance ratios do not match measurements: event_append" in (
-        gate._validate_persistent_performance(report)
-    )
+    report["gate"]["status"] = "failed"
+    assert gate._validate_persistent_performance(report) == []
 
 
-def test_persistent_v4_release_gate_rejects_slow_operations_despite_pass_flags() -> None:
+def test_legacy_hybrid_threshold_regression_does_not_block_release_gate() -> None:
     gate = _gate()
     report = _persistent_v4_report()
     report["modes"]["rust"]["metrics"]["event_append"]["operation_latency_ms"][
@@ -273,20 +288,48 @@ def test_persistent_v4_release_gate_rejects_slow_operations_despite_pass_flags()
     report["ratios"]["rust"]["event_append"]["p95_latency_over_python"] = 1.2
     report["gate"]["checks"]["p95_latency_no_worse_than_110_percent"] = True
 
-    assert "persistent-store latency threshold failed: event_append" in (
-        gate._validate_persistent_performance(report)
-    )
+    assert gate._validate_persistent_performance(report) == []
 
 
-def test_persistent_v4_release_gate_rejects_incomplete_operation_samples() -> None:
+def test_legacy_hybrid_report_is_not_reinterpreted_as_gate_evidence() -> None:
     gate = _gate()
     report = _persistent_v4_report()
     report["modes"]["rust"]["metrics"]["projection_list"]["operation_latency_ms"][
         "operation_count"
     ] -= 1
 
+    assert gate._validate_persistent_performance(report) == []
+
+
+def test_persistent_v5_release_gate_uses_pure_rust_native_mode() -> None:
+    gate = _gate()
+    report = _persistent_v5_report()
+
+    assert gate._validate_persistent_performance(report) == []
+
+    report["modes"]["rust"]["metrics"]["event_append"]["operation_latency_ms"][
+        "p95_ms"
+    ] = 99.0
+    assert gate._validate_persistent_performance(report) == []
+
+    report["modes"]["rust_native"]["metrics"]["event_append"][
+        "operation_latency_ms"
+    ]["p95_ms"] = 99.0
+    report["ratios"]["rust_native"]["event_append"][
+        "p95_latency_over_python"
+    ] = 99.0
+    assert "persistent-store latency threshold failed: event_append" in (
+        gate._validate_persistent_performance(report)
+    )
+
+
+def test_persistent_v5_release_gate_rejects_hybrid_performance_target() -> None:
+    gate = _gate()
+    report = _persistent_v5_report()
+    report["performance_gate_mode"] = "rust"
+
     assert gate._validate_persistent_performance(report) == [
-        "persistent-store operation measurements are invalid: projection_list"
+        "persistent-store performance gate must target pure Rust-native mode"
     ]
 
 
