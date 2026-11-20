@@ -849,6 +849,30 @@ def test_capability_test_gate_rejects_evidence_when_all_reports_are_stale() -> N
     assert errors
 
 
+def test_rust_named_test_may_be_repeated_across_current_reports() -> None:
+    gate = _gate()
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    rust_result = next(
+        result
+        for group in phase5["groups"]
+        for result in group["test_results"]
+        if result.get("source") == "rust"
+    )
+    phase3["groups"][0]["test_results"].append(copy.deepcopy(rust_result))
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+
+    assert all(row["status"] == "passed" for row in results)
+    assert errors == []
+
+
 def test_current_release_gate_reports_real_blockers() -> None:
     manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
     performance = json.loads(

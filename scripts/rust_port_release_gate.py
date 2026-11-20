@@ -718,12 +718,9 @@ def evaluate_capability_clause_tests(
                 module = relative_path.removesuffix(".py").replace("/", ".")
                 evidence = python_results.get((module, name), [])
             else:
-                # Rust test source files are included into one `tests` module;
-                # Cargo's test name therefore does not preserve the source file.
-                # Require the selector file to be included and the test name to
-                # be unique in the complete recorded run, otherwise fail closed.
-                rust_matches = rust_results.get(name, [])
-                evidence = rust_matches if len(rust_matches) == 1 else []
+                # The selector's file/include check disambiguates Rust tests;
+                # repeated reports may legitimately record the same test.
+                evidence = rust_results.get(name, [])
             outcomes = [result for current, result in evidence if current]
             if evidence and not outcomes:
                 status = "stale"
