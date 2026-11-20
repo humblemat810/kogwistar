@@ -1384,8 +1384,8 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         (parts[0].strip().strip("`"), parts[1].strip().strip("`")): parts[2].strip()
         for parts in closure_rows
     }
-    assert sum(status == "PASS" for status in closure_status.values()) == 11
-    assert sum(status == "OPEN" for status in closure_status.values()) == 11
+    assert sum(status == "PASS" for status in closure_status.values()) == 18
+    assert sum(status == "OPEN" for status in closure_status.values()) == 4
     assert all(
         status == "PASS"
         for (capability, _clause), status in closure_status.items()
@@ -1402,12 +1402,19 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         if capability == "queues-leases-lanes"
     )
     assert all(
+        status == "PASS"
+        for (capability, _clause), status in closure_status.items()
+        if capability in {"graph-pgvector", "workflow-runtime"}
+    )
+    assert all(
         status == "OPEN"
         for (capability, _clause), status in closure_status.items()
         if capability not in {
             "postgres-sequence-event-log",
             "projections-snapshots-run-registry",
             "queues-leases-lanes",
+            "graph-pgvector",
+            "workflow-runtime",
         }
     )
     expected_progress = (
