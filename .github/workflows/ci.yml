@@ -474,7 +474,7 @@ jobs:
         ports:
           - 8000:8000
     env:
-      GKE_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
+      GKE_PG_DSN: postgresql+psycopg://postgres:kogwistar@localhost:5432/kogwistar
       KOGWISTAR_TEST_PG_DSN: postgresql://postgres:kogwistar@localhost:5432/kogwistar
       KOGWISTAR_TEST_CHROMA_URL: http://localhost:8000
       KOGWISTAR_IMPL_MODE: python
