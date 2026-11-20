@@ -269,12 +269,13 @@
             .unwrap();
         assert_eq!(submit.status(), StatusCode::ACCEPTED);
 
+        // This test covers replay semantics, not lease expiry; keep retries valid under parallel load.
         let claim = client
             .post(format!("{base_url}/internal/runtime/claim"))
             .header("x-kogwistar-roles", "reader")
             .header("content-type", "application/json")
             .body(
-                r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
+                r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":600,"recipient_ids":["rust-native-worker"]}"#,
             )
             .send()
             .await
@@ -404,7 +405,7 @@
             .header("x-kogwistar-roles", "reader")
             .header("content-type", "application/json")
             .body(
-                r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":60,"recipient_ids":["rust-native-worker"]}"#,
+                r#"{"claimed_by":"rust-native-worker","limit":1,"lease_seconds":600,"recipient_ids":["rust-native-worker"]}"#,
             )
             .send()
             .await

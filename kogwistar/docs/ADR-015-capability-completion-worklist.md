@@ -4,10 +4,12 @@
 capabilities in `contracts/rust-port-v1.json`. Passing this set closes only
 these listed checks; it does not by itself close capability conformance.
 **Tasklet progress:** **68/68 PASS (100.0%)**; **0 IN PROGRESS**; **0 NOT STARTED**.
-**Current-candidate capability test gates:** **5/6 PASS**; **1/6 OPEN**.
-**Gate-clause progress:** **18/22 PASS (81.8%)**; **4/22 OPEN**.
+**Current-candidate capability test gates:** **6/6 PASS**; **0/6 OPEN**.
+**Gate-clause progress:** **22/22 PASS (100.0%)**; **0/22 OPEN**.
 **Overall capability readiness:** **2/8 ready**; this broader status includes
-shared acceptance and deferred-operation requirements, not just test results.
+shared acceptance requirements on the final PR candidate, not just capability
+test results. The six capability gates are complete; library acceptance is not
+complete until shared REL evidence is refreshed for the merged candidate.
 The authoritative remaining requirements are the capability conformance
 profiles in `contracts/dual-language-capabilities-v1.json` and deferrals in
 `contracts/rust-port-v1.json`.
@@ -64,9 +66,10 @@ the closed ADR-022 evidence inventories.
 
 ## Verification State
 
-All listed tasklets pass. Six capability gates remain not ready; their
-unclosed conformance requirements remain authoritative and must not be inferred
-as complete from this tasklet count. For remaining slices, keep the same
+All listed tasklets and all 22 capability clauses pass on the current local
+candidate. Capability gates are complete; shared release acceptance remains
+separate and must not be inferred complete from these tests. For remaining
+slices, keep the same
 cost-saving cadence: run each focused unit/contract check first, reuse built
 artifacts and Cargo cache, batch Rust tests once per crate/parent, then run
 Docker/native release builds only once for the affected major parent closeout.
@@ -86,19 +89,16 @@ phase report cannot hide a passing exact test, but can still block overall
 cutover readiness. Tasklet status is separate and never substitutes for the
 clause's named tests.
 
-Current candidate `bacd0a828ad86698113580c8c8f90e22fec7cfa6b6515c1312d658179f99b228`
-has 6/6 live PostgreSQL tests in `.tmp/adr015-current-slice-pgs.json` and 9/9
-projection/run-registry/recovery tests in
-`.tmp/adr015-current-slice-projections.json`; both reports cover current-source
-named tests with zero skips. Queue/lane gate has 4/4 Python/PostgreSQL tests in
-`.tmp/adr015-current-slice-queues.json`; its Rust worker lost-ACK case passed
-1/1 and is recorded in `.tmp/adr015-current-slice-queues-rust.json`. These
-reports close all four PostgreSQL, three projection, and four queue/lane
-capability clauses. The graph-pgvector gate also passed all 50 tests with zero
-skips on this source; report `.tmp/adr015-current-slice-graph.json` closes its
-three clauses. Workflow-runtime gate passed 321 tests with zero skips on the
-same source; report `.tmp/adr015-current-slice-runtime.json` closes its four
-clauses. The remaining four clauses are the server REST/SSE/MCP/CLI gate.
+Current candidate source SHA-256
+`f0b03cf8a7f313d176685433b26ab8ed1a6aa43b116890cd49ea95921a331b0b` passed
+all six capability gates with zero skips. Fresh aggregate evidence:
+`.tmp/adr015-current-slice-phase3.json` (69/69 across PostgreSQL events,
+projections, queues, and graph/pgvector),
+`.tmp/adr015-current-slice-runtime.json` (321/321), and
+`.tmp/adr015-current-slice-server.json` (654/654). These reports supersede
+older per-clause candidate hashes below for current gate status. They prove
+local capability gates only; shared REL acceptance still requires evidence for
+the merged PR candidate.
 
 | Capability gate | Conformance clause | State | Evidence / closure check |
 | --- | --- | --- | --- |
@@ -120,16 +120,17 @@ clauses. The remaining four clauses are the server REST/SSE/MCP/CLI gate.
 | `workflow-runtime` | `transition-route-and-checkpoint-parity` | PASS | Same current-candidate report, zero skips. Includes `tests/runtime/test_rust_runtime_postgres.py::test_postgres_mixed_python_rust_restart_preserves_sequence_and_projections` and `tests/runtime/test_workflow_terminal_status.py::test_runtime_resume_from_latest_checkpoint_reuses_state_and_sequence`; live restart, resume, and checkpoint behavior passed. |
 | `workflow-runtime` | `worker-version-environment-and-replay-contract` | PASS | Same current-candidate report, zero skips. Durable-worker group verifies versioned worker wire, environment admission, replay, and restart; selector `tests/runtime/test_rust_runtime_authority.py::test_freeze_runtime_plan_carries_registered_operation_version` passed. |
 | `workflow-runtime` | `trace-provenance-and-cancellation` | PASS | Same current-candidate report, zero skips. Runtime authority/worker plus suspend-terminal and PostgreSQL groups cover trace parentage, cancellation, persisted results, and reopen; selectors `tests/runtime/test_rust_runtime_authority.py::test_rust_trace_context_payload_preserves_parent_span_identity` and `::test_authority_propagates_cancellation_without_running_other_work` passed. |
-| `server-rest-sse-mcp-cli` | `openapi-and-mcp-contract-parity` | OPEN | Rust gate: `cargo test --release -p kogwistar-api --lib -- --quiet --include-ignored` passed 456/456 with PostgreSQL and Chroma configured; includes `auth_sse_mcp_and_cli_contracts_are_versioned_shapes`, `frozen_mcp_tools_are_unique_and_versioned`, and MCP session tests. Phase-5 `frozen-contracts` also passed 3/3 on candidate `bf52ef5e16733bff3b3f75aa06df97cef14e409a10a7ea683e98cf8c9e051b4b`. Rust test selectors: `rust/crates/kogwistar-api/src/tests/server_transport.rs::frozen_route_registry_covers_committed_openapi`; `rust/crates/kogwistar-api/src/tests/mcp.rs::frozen_mcp_tools_are_unique_and_versioned`. |
-| `server-rest-sse-mcp-cli` | `authentication-acl-namespace-and-capability-parity` | OPEN | Same Rust API run: 456 passed, 0 failed/ignored; live Postgres/Chroma enabled. Exercises authenticated route admission, ACL/namespace scoping, capability denial, and backend ordering. Phase-5 `auth-syscall` baseline additionally passed 56/56. Rust test selectors: `rust/crates/kogwistar-api/src/tests/server_transport.rs::router_serves_health_auth_sse_and_mcp`; `rust/crates/kogwistar-api/src/tests/mcp.rs::mcp_session_owner_is_bound_to_configured_oidc_principal_components`. |
-| `server-rest-sse-mcp-cli` | `sse-ordering-and-resume` | OPEN | Same Rust API run includes `mcp_outbound_session_events_are_scoped_bounded_and_resumable`; Phase-5 `rest-sse` 4/4 and `async-sse` 6/6 passed on same source candidate. Rust test selector: `rust/crates/kogwistar-api/src/tests/mcp.rs::mcp_outbound_session_events_are_scoped_bounded_and_resumable`; async Python selectors: `tests/server/test_chat_server_async_events.py::test_chat_rest_events_poll_sees_live_updates_for_async_backends`, `::test_mcp_run_events_sees_live_updates_for_async_backends`, `::test_workflow_runtime_sse_cancel_after_sleep_ticks_for_async_backends`. |
-| `server-rest-sse-mcp-cli` | `cli-operation-and-error-parity` | OPEN | Rust API `auth_sse_mcp_and_cli_contracts_are_versioned_shapes` passed; built `kogwistar-cli` smoke: `health pg` exits 0 with `ok backend=pg`; unsupported backend exits 2 with the expected frozen-backend error. Rust test selector: `rust/crates/kogwistar-api/src/tests/mcp.rs::auth_sse_mcp_and_cli_contracts_are_versioned_shapes`. |
+| `server-rest-sse-mcp-cli` | `openapi-and-mcp-contract-parity` | PASS | Current candidate Phase-5 report `.tmp/adr015-current-slice-server.json`: `frozen-contracts` 3/3 and full Rust API 455/455; 0 failures/errors/skips. Includes frozen OpenAPI route registry and MCP tool/session contracts. Candidate `f0b03cf8a7f313d176685433b26ab8ed1a6aa43b116890cd49ea95921a331b0b`. |
+| `server-rest-sse-mcp-cli` | `authentication-acl-namespace-and-capability-parity` | PASS | Same current-candidate report: `auth-syscall` 56/56 plus full Rust API 455/455; 0 failures/errors/skips. Covers route auth, ACL/namespace scoping, denied capability behavior and backend ordering. |
+| `server-rest-sse-mcp-cli` | `sse-ordering-and-resume` | PASS | Same current-candidate report: `rest-sse` 4/4, `async-sse` 6/6, MCP 130/130 and full Rust API 455/455; 0 failures/errors/skips. Covers event ordering, resumable cursors, scoped streams and cancellation. |
+| `server-rest-sse-mcp-cli` | `cli-operation-and-error-parity` | PASS | Same current-candidate `frozen-contracts` and Rust API groups passed with zero skips; contract selector `auth_sse_mcp_and_cli_contracts_are_versioned_shapes` passed. CLI success/error smoke remains documented above. |
 
-Gate closure requires every listed profile clause to have current-candidate
-evidence, all capability-specific required backend/runtime checks to pass, and
-the shared candidate acceptance gates to pass. Update the Rust readiness
-manifest only after that evidence exists; do not infer closure from the tasklet
-percentage.
+All 22 listed profile clauses and six capability gates now have current-local-
+candidate test evidence. Full library readiness additionally requires shared
+REL acceptance on the merged candidate; that is a distinct test/CI/UAT gate,
+not a reason to leave these capability clauses open. Update the Rust readiness
+manifest only after shared acceptance passes too; do not infer it from either
+percentage alone.
 
 ## Tasklets
 
