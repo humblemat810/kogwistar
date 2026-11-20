@@ -607,6 +607,7 @@ def test_capability_readiness_is_derived_from_test_evidence_not_manifest_flags()
 
     assert len(ready) == 6
     assert all(item["status"] == "passed" for item in ready)
+    assert all(item["cutover_readiness"] == "ready" for item in ready)
     results[0]["status"] = "blocked"
     blocked = gate.derive_capability_test_readiness(
         clause_results=results,
@@ -615,6 +616,144 @@ def test_capability_readiness_is_derived_from_test_evidence_not_manifest_flags()
         deferred_capabilities=set(),
     )
     assert blocked[0]["status"] == "blocked"
+
+
+def test_capability_test_gate_pass_is_not_hidden_by_shared_cutover_blockers() -> None:
+    gate = _gate()
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=_phase3_capability_evidence(),
+        phase4=_phase4_runtime_evidence(),
+        phase5=_phase5_evidence(),
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+    assert errors == []
+
+    reports = gate.derive_capability_test_readiness(
+        clause_results=results,
+        phase_statuses={"phase3": "blocked", "phase4": "blocked", "phase5": "blocked"},
+        library_uat_passed=False,
+        deferred_capabilities={"postgres-sequence-event-log", "workflow-runtime"},
+    )
+    by_capability = {item["capability"]: item for item in reports}
+
+    postgres = by_capability["postgres-sequence-event-log"]
+    assert postgres["status"] == "passed"
+    assert postgres["passed_clauses"] == postgres["required_clauses"]
+    assert postgres["blockers"] == []
+    assert postgres["cutover_readiness"] == "blocked"
+    assert "phase3 evidence blocked" in postgres["cutover_blockers"]
+    assert "same-candidate Docker library UAT not passed" in postgres["cutover_blockers"]
+    assert "required operations remain intentionally deferred" in postgres[
+        "cutover_blockers"
+    ]
+
+    workflow = by_capability["workflow-runtime"]
+    assert workflow["status"] == "passed"
+    assert workflow["cutover_readiness"] == "blocked"
+
+
+def test_capability_specific_current_report_closes_named_test_gate() -> None:
+    gate = _gate()
+    current_source = gate.candidate_source_fingerprint(ROOT)[0]
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    selectors_by_clause = json.loads(
+        (ROOT / "contracts/adr015-capability-test-oracles-v1.json").read_text()
+    )["capabilities"]["projections-snapshots-run-registry"]
+    target_names = {
+        selector.rsplit("::", 1)[1]
+        for selectors in selectors_by_clause.values()
+        for selector in selectors
+    }
+    for report in (phase3, phase4, phase5):
+        for group in report["groups"]:
+            group["test_results"] = [
+                result
+                for result in group["test_results"]
+                if result.get("function") not in target_names
+            ]
+
+    test_results = []
+    for clause_selectors in selectors_by_clause.values():
+        for selector in clause_selectors:
+            _, location = selector.split(":", 1)
+            test_path, function = location.rsplit("::", 1)
+            test_results.append(
+                {
+                    "source": "pytest",
+                    "classname": test_path.removesuffix(".py").replace("/", "."),
+                    "function": function,
+                    "status": "passed",
+                }
+            )
+    supplemental = {
+        "schema": "adr015-phase3-capability-gate/v2",
+        "candidate_source_sha256": current_source,
+        "status": "passed",
+        "groups": [
+            {
+                "name": "projections-snapshots-run-registry",
+                "status": "passed",
+                "counts": {
+                    "tests": len(test_results),
+                    "passed": len(test_results),
+                    "failures": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                },
+                "test_results": test_results,
+            }
+        ],
+    }
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=current_source,
+        capability_test_evidence=[supplemental],
+    )
+
+    projection = [
+        row for row in results
+        if row["capability"] == "projections-snapshots-run-registry"
+    ]
+    assert len(projection) == 3
+    assert all(row["status"] == "passed" for row in projection)
+    assert errors == []
+
+    manifest = json.loads(
+        (ROOT / "contracts/rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    release = gate.evaluate_release_gate(
+        manifest=manifest,
+        compatibility_reports=_compatibility("a" * 64, current_source),
+        runtime_performance=_runtime_performance(),
+        phase3_capability_evidence=phase3,
+        phase4_runtime_evidence=phase4,
+        phase5_server_evidence=phase5,
+        capability_test_evidence=[supplemental],
+    )
+    release_by_capability = {
+        item["capability"]: item for item in release["capability_test_readiness"]
+    }
+    assert release_by_capability["projections-snapshots-run-registry"]["status"] == "passed"
+
+    supplemental["groups"][0]["counts"]["skipped"] = 1
+    rejected, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=current_source,
+        capability_test_evidence=[supplemental],
+    )
+    assert all(
+        row["status"] == "blocked"
+        for row in rejected
+        if row["capability"] == "projections-snapshots-run-registry"
+    )
+    assert "supplemental capability test report is stale, skipped, or failed" in errors
 
 
 def test_capability_readiness_fails_closed_on_duplicate_or_missing_clause_results() -> None:
@@ -649,7 +788,7 @@ def test_capability_readiness_fails_closed_on_duplicate_or_missing_clause_result
     assert all(item["status"] == "blocked" for item in missing)
 
 
-def test_capability_clause_results_reject_stale_candidate_test_evidence() -> None:
+def test_stale_phase_report_does_not_override_current_named_test_results() -> None:
     gate = _gate()
     phase3 = _phase3_capability_evidence()
     phase4 = _phase4_runtime_evidence()
@@ -664,12 +803,74 @@ def test_capability_clause_results_reject_stale_candidate_test_evidence() -> Non
     )
 
     assert len(results) == 22
+    # Each selector also appears in a current-candidate test report. The stale
+    # aggregate phase report remains a separate global cutover blocker.
+    assert all(row["status"] == "passed" for row in results)
+    assert errors == []
+
+
+def test_stale_phase3_report_does_not_override_current_named_test_results() -> None:
+    gate = _gate()
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    phase3["candidate_source_sha256"] = "0" * 64
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+
+    assert all(row["status"] == "passed" for row in results)
+    assert errors == []
+
+
+def test_capability_test_gate_rejects_evidence_when_all_reports_are_stale() -> None:
+    gate = _gate()
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    for report in (phase3, phase4, phase5):
+        report["candidate_source_sha256"] = "0" * 64
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+
     assert all(row["status"] == "blocked" for row in results)
     assert all(
-        all(test["status"] == "stale" for test in row["tests"])
-        for row in results
+        test["status"] == "stale" for row in results for test in row["tests"]
     )
-    assert errors == ["capability test evidence does not match current candidate source"]
+    assert errors
+
+
+def test_rust_named_test_may_be_repeated_across_current_reports() -> None:
+    gate = _gate()
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    rust_result = next(
+        result
+        for group in phase5["groups"]
+        for result in group["test_results"]
+        if result.get("source") == "rust"
+    )
+    phase3["groups"][0]["test_results"].append(copy.deepcopy(rust_result))
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+
+    assert all(row["status"] == "passed" for row in results)
+    assert errors == []
 
 
 def test_current_release_gate_reports_real_blockers() -> None:
@@ -696,9 +897,17 @@ def test_current_release_gate_reports_real_blockers() -> None:
     assert readiness["postgres-sequence-event-log"]["status"] == "passed"
     assert readiness["projections-snapshots-run-registry"]["status"] == "passed"
     assert readiness["queues-leases-lanes"]["status"] == "passed"
-    assert readiness["graph-pgvector"]["status"] == "blocked"
-    assert readiness["workflow-runtime"]["status"] == "blocked"
-    assert readiness["server-rest-sse-mcp-cli"]["status"] == "blocked"
+    assert readiness["graph-pgvector"]["status"] == "passed"
+    assert readiness["workflow-runtime"]["status"] == "passed"
+    assert readiness["server-rest-sse-mcp-cli"]["status"] == "passed"
+    assert readiness["postgres-sequence-event-log"]["cutover_readiness"] == "ready"
+    assert readiness["graph-pgvector"]["cutover_readiness"] == "blocked"
+    assert readiness["workflow-runtime"]["cutover_readiness"] == "blocked"
+    assert readiness["server-rest-sse-mcp-cli"]["cutover_readiness"] == "blocked"
+    assert not any(row["gate"] == "capability-test-gate" for row in result["blockers"])
+    assert any(
+        row["gate"] == "capability-cutover-readiness" for row in result["blockers"]
+    )
     assert not any(row["gate"] == "authority" for row in result["blockers"])
     assert result["library_uat"]["status"] == "passed"
 
@@ -726,9 +935,12 @@ def test_gate_does_not_treat_manifest_flags_as_test_evidence() -> None:
     assert readiness["postgres-sequence-event-log"]["status"] == "passed"
     assert readiness["projections-snapshots-run-registry"]["status"] == "passed"
     assert readiness["queues-leases-lanes"]["status"] == "passed"
-    assert readiness["graph-pgvector"]["status"] == "blocked"
-    assert readiness["workflow-runtime"]["status"] == "blocked"
-    assert readiness["server-rest-sse-mcp-cli"]["status"] == "blocked"
+    assert readiness["graph-pgvector"]["status"] == "passed"
+    assert readiness["workflow-runtime"]["status"] == "passed"
+    assert readiness["server-rest-sse-mcp-cli"]["status"] == "passed"
+    assert readiness["graph-pgvector"]["cutover_readiness"] == "blocked"
+    assert readiness["workflow-runtime"]["cutover_readiness"] == "blocked"
+    assert readiness["server-rest-sse-mcp-cli"]["cutover_readiness"] == "blocked"
 
 
 def test_gate_accepts_one_candidate_report_containing_all_compatibility_layers() -> None:

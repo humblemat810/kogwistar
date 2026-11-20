@@ -1374,18 +1374,6 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     assert actual_clauses == expected_clauses
     assert len(closure_rows) == 22
     assert all(parts[2].strip() in {"OPEN", "PASS"} for parts in closure_rows)
-    open_rows = [parts for parts in closure_rows if parts[2].strip() == "OPEN"]
-    for parts in open_rows:
-        evidence = parts[3].strip()
-        assert any(label in evidence for label in ("Required pytest:", "Executable pytest:")), parts
-        assert re.search(r"`tests/.+::test_[a-z0-9_]+`", evidence), parts
-        assert "Assert" in evidence, parts
-        assert "Map current-candidate" not in evidence, parts
-        if "Executable pytest:" in evidence:
-            node_match = re.search(r"`(tests/.+\.py)::(test_[a-z0-9_]+)`", evidence)
-            assert node_match is not None, parts
-            test_source = (ROOT / node_match.group(1)).read_text(encoding="utf-8")
-            assert f"def {node_match.group(2)}(" in test_source, parts
     closed_clauses = sum(parts[2].strip() == "PASS" for parts in closure_rows)
     open_clauses = len(closure_rows) - closed_clauses
     assert (
@@ -1396,49 +1384,32 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         (parts[0].strip().strip("`"), parts[1].strip().strip("`")): parts[2].strip()
         for parts in closure_rows
     }
-    assert closure_status[
-        ("postgres-sequence-event-log", "cross-language-valid-invalid-golden-fixtures")
-    ] == "PASS"
-    assert closure_status[
-        ("postgres-sequence-event-log", "transaction-owner-and-rollback")
-    ] == "PASS"
-    assert closure_status[
-        ("postgres-sequence-event-log", "commit-acknowledgement-failure-and-recovery")
-    ] == "PASS"
-    assert closure_status[
-        ("postgres-sequence-event-log", "reopen-and-schema-compatibility")
-    ] == "PASS"
-    assert closure_status[("queues-leases-lanes", "claim-lease-reclaim-and-idempotency")] == "PASS"
-    assert closure_status[
-        ("queues-leases-lanes", "crash-before-after-effect-and-acknowledgement")
-    ] == "PASS"
-    assert closure_status[("queues-leases-lanes", "trace-and-correlation-parity")] == "PASS"
-    assert closure_status[
-        ("projections-snapshots-run-registry", "projection-rebuild-and-snapshot-parity")
-    ] == "PASS"
-    assert closure_status[
-        ("projections-snapshots-run-registry", "restart-resume-and-stale-state")
-    ] == "PASS"
-    assert closure_status[
-        ("queues-leases-lanes", "cross-language-valid-invalid-golden-fixtures")
-    ] == "PASS"
+    assert sum(status == "PASS" for status in closure_status.values()) == 22
+    assert sum(status == "OPEN" for status in closure_status.values()) == 0
     assert all(
-        closure_status[("workflow-runtime", clause)] == "PASS"
-        for clause in (
-            "cross-language-valid-invalid-golden-fixtures",
-            "transition-route-and-checkpoint-parity",
-            "worker-version-environment-and-replay-contract",
-            "trace-provenance-and-cancellation",
-        )
+        status == "PASS"
+        for (capability, _clause), status in closure_status.items()
+        if capability == "postgres-sequence-event-log"
     )
     assert all(
-        closure_status[("server-rest-sse-mcp-cli", clause)] == "PASS"
-        for clause in (
-            "openapi-and-mcp-contract-parity",
-            "authentication-acl-namespace-and-capability-parity",
-            "sse-ordering-and-resume",
-            "cli-operation-and-error-parity",
-        )
+        status == "PASS"
+        for (capability, _clause), status in closure_status.items()
+        if capability == "projections-snapshots-run-registry"
+    )
+    assert all(
+        status == "PASS"
+        for (capability, _clause), status in closure_status.items()
+        if capability == "queues-leases-lanes"
+    )
+    assert all(
+        status == "PASS"
+        for (capability, _clause), status in closure_status.items()
+        if capability in {"graph-pgvector", "workflow-runtime"}
+    )
+    assert all(
+        status == "PASS"
+        for (capability, _clause), status in closure_status.items()
+        if capability == "server-rest-sse-mcp-cli"
     )
     expected_progress = (
         f"**Tasklet progress:** **{pass_count}/68 PASS ({100 * pass_count / 68:.1f}%)**; "

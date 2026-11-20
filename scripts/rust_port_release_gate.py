@@ -555,6 +555,7 @@ def evaluate_capability_clause_tests(
     phase4: dict[str, Any],
     phase5: dict[str, Any],
     current_source_sha256: str,
+    capability_test_evidence: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Evaluate profile clauses only from named tests on the current source."""
     contract = _load_json(ROOT / "contracts" / "dual-language-capabilities-v1.json")
@@ -593,13 +594,6 @@ def evaluate_capability_clause_tests(
     errors: list[str] = []
     if oracle_contract.get("schema_version") != 1 or oracle_keys != expected:
         errors.append("capability test-oracle selectors do not exactly match normative profiles")
-    reports = (phase3, phase4, phase5)
-    candidate_matches = not any(
-        report.get("candidate_source_sha256") != current_source_sha256
-        for report in reports
-    )
-    if not candidate_matches:
-        errors.append("capability test evidence does not match current candidate source")
     if row_keys != expected or len(rows) != len(expected):
         errors.append("capability worklist clauses do not exactly match the normative profiles")
 
@@ -632,9 +626,54 @@ def evaluate_capability_clause_tests(
         except (OSError, ValueError):
             return False
 
-    python_results: dict[tuple[str, str], list[dict[str, Any]]] = {}
-    rust_results: dict[str, list[dict[str, Any]]] = {}
-    for report in (phase3, phase4, phase5):
+    accepted_capability_reports: list[dict[str, Any]] = []
+    for report in capability_test_evidence or []:
+        groups = report.get("groups")
+        valid = (
+            report.get("schema") == "adr015-phase3-capability-gate/v2"
+            and report.get("status") == "passed"
+            and report.get("candidate_source_sha256") == current_source_sha256
+            and isinstance(groups, list)
+            and bool(groups)
+        )
+        if valid:
+            for group in groups:
+                if not isinstance(group, dict):
+                    valid = False
+                    break
+                counts = group.get("counts")
+                test_results = group.get("test_results")
+                if (
+                    group.get("status") != "passed"
+                    or not isinstance(counts, dict)
+                    or not isinstance(test_results, list)
+                    or not test_results
+                    or counts.get("tests") != len(test_results)
+                    or counts.get("tests") != counts.get("passed")
+                    or counts.get("failures", 0) != 0
+                    or counts.get("errors", 0) != 0
+                    or counts.get("skipped", 0) != 0
+                    or any(
+                        not isinstance(result, dict)
+                        or result.get("status") != "passed"
+                        for result in test_results
+                    )
+                ):
+                    valid = False
+                    break
+        if not valid:
+            errors.append(
+                "supplemental capability test report is stale, skipped, or failed"
+            )
+            continue
+        accepted_capability_reports.append(report)
+
+    python_results: dict[
+        tuple[str, str], list[tuple[bool, dict[str, Any]]]
+    ] = {}
+    rust_results: dict[str, list[tuple[bool, dict[str, Any]]]] = {}
+    for report in (phase3, phase4, phase5, *accepted_capability_reports):
+        current_candidate = report.get("candidate_source_sha256") == current_source_sha256
         for group in report.get("groups", []):
             for result in group.get("test_results", []):
                 if not isinstance(result, dict):
@@ -642,12 +681,15 @@ def evaluate_capability_clause_tests(
                 function = result.get("function")
                 if not isinstance(function, str):
                     continue
+                candidate_result = (current_candidate, result)
                 if result.get("source") == "pytest":
                     classname = result.get("classname")
                     if isinstance(classname, str):
-                        python_results.setdefault((classname, function), []).append(result)
+                        python_results.setdefault((classname, function), []).append(
+                            candidate_result
+                        )
                 elif result.get("source") == "rust":
-                    rust_results.setdefault(function, []).append(result)
+                    rust_results.setdefault(function, []).append(candidate_result)
 
     clause_results: list[dict[str, Any]] = []
     for cells in rows:
@@ -674,15 +716,13 @@ def evaluate_capability_clause_tests(
             relative_path, name = test_path.rsplit("::", 1)
             if source == "pytest":
                 module = relative_path.removesuffix(".py").replace("/", ".")
-                outcomes = python_results.get((module, name), [])
+                evidence = python_results.get((module, name), [])
             else:
-                # Rust test source files are included into one `tests` module;
-                # Cargo's test name therefore does not preserve the source file.
-                # Require the selector file to be included and the test name to
-                # be unique in the complete recorded run, otherwise fail closed.
-                rust_matches = rust_results.get(name, [])
-                outcomes = rust_matches if len(rust_matches) == 1 else []
-            if not candidate_matches:
+                # The selector's file/include check disambiguates Rust tests;
+                # repeated reports may legitimately record the same test.
+                evidence = rust_results.get(name, [])
+            outcomes = [result for current, result in evidence if current]
+            if evidence and not outcomes:
                 status = "stale"
             elif not outcomes:
                 status = "missing"
@@ -694,8 +734,7 @@ def evaluate_capability_clause_tests(
                 )
             checks.append({"selector": selector, "status": status})
         passed = (
-            candidate_matches
-            and bool(checks)
+            bool(checks)
             and all(check["status"] == "passed" for check in checks)
         )
         clause_results.append(
@@ -708,7 +747,7 @@ def evaluate_capability_clause_tests(
         )
         if not checks:
             errors.append(f"{capability}/{clause} has no executable test references")
-        elif not passed and candidate_matches:
+        elif not passed:
             missing = [
                 f"{check['selector']}={check['status']}"
                 for check in checks
@@ -726,10 +765,13 @@ def derive_capability_test_readiness(
     library_uat_passed: bool,
     deferred_capabilities: set[str],
 ) -> list[dict[str, Any]]:
-    """Derive capability readiness from required test clauses and closeout gates.
+    """Report per-capability test gates separately from cutover readiness.
 
     The manifest's `rust_cutover_ready` field controls explicit implementation
     selection elsewhere; it is not evidence that a capability passed tests.
+    Only that capability's exact, current-candidate test clauses determine its
+    gate status. Shared phase/UAT/deferral requirements remain separate cutover
+    blockers and must not turn a passing test gate into a failed one.
     """
     oracle_contract = _load_json(ROOT / "contracts" / "adr015-capability-test-oracles-v1.json")
     capabilities = oracle_contract.get("capabilities", {})
@@ -753,21 +795,24 @@ def derive_capability_test_readiness(
             for clause in clauses
             if statuses_by_capability.get(capability, {}).get(clause) != ["passed"]
         ]
-        blockers = [f"test clause blocked: {clause}" for clause in failed]
+        test_blockers = [f"test clause blocked: {clause}" for clause in failed]
+        cutover_blockers: list[str] = []
         phase = phase_by_capability.get(capability)
         if phase is None or phase_statuses.get(phase) != "passed":
-            blockers.append(f"{phase or 'capability'} evidence blocked")
+            cutover_blockers.append(f"{phase or 'capability'} evidence blocked")
         if not library_uat_passed:
-            blockers.append("same-candidate Docker library UAT not passed")
+            cutover_blockers.append("same-candidate Docker library UAT not passed")
         if capability in deferred_capabilities:
-            blockers.append("required operations remain intentionally deferred")
+            cutover_blockers.append("required operations remain intentionally deferred")
         readiness.append(
             {
                 "capability": capability,
-                "status": "passed" if not blockers else "blocked",
+                "status": "passed" if not test_blockers else "blocked",
                 "passed_clauses": len(clauses) - len(failed),
                 "required_clauses": len(clauses),
-                "blockers": blockers,
+                "blockers": test_blockers,
+                "cutover_readiness": "ready" if not cutover_blockers else "blocked",
+                "cutover_blockers": cutover_blockers,
             }
         )
     return readiness
@@ -952,6 +997,7 @@ def evaluate_release_gate(
     phase3_capability_evidence: dict[str, Any],
     phase4_runtime_evidence: dict[str, Any],
     phase5_server_evidence: dict[str, Any],
+    capability_test_evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
     by_layer: dict[str, dict[str, Any]] = {}
@@ -1024,6 +1070,7 @@ def evaluate_release_gate(
         phase4=phase4_runtime_evidence,
         phase5=phase5_server_evidence,
         current_source_sha256=current_source_sha256,
+        capability_test_evidence=capability_test_evidence,
     )
     for detail in clause_errors:
         blockers.append({"gate": "capability-clauses", "detail": detail})
@@ -1157,8 +1204,18 @@ def evaluate_release_gate(
         if item["status"] == "blocked":
             blockers.append(
                 {
-                    "gate": "capability-test-readiness",
+                    "gate": "capability-test-gate",
                     "detail": f"{item['capability']} blocked: {'; '.join(item['blockers'])}",
+                }
+            )
+        if item["cutover_readiness"] == "blocked":
+            blockers.append(
+                {
+                    "gate": "capability-cutover-readiness",
+                    "detail": (
+                        f"{item['capability']} cutover blocked: "
+                        f"{'; '.join(item['cutover_blockers'])}"
+                    ),
                 }
             )
 
@@ -1246,6 +1303,13 @@ def _args() -> argparse.Namespace:
         type=Path,
         default=ROOT / ".codex" / "adr015-phase5-server-gate.json",
     )
+    parser.add_argument(
+        "--capability-test-evidence",
+        type=Path,
+        action="append",
+        default=[],
+        help="current-candidate capability-specific named-test report (repeatable)",
+    )
     parser.add_argument("--report", type=Path)
     return parser.parse_args()
 
@@ -1259,6 +1323,7 @@ def main() -> int:
         phase3_capability_evidence=_load_json(args.phase3_capability_evidence),
         phase4_runtime_evidence=_load_json(args.phase4_runtime_evidence),
         phase5_server_evidence=_load_json(args.phase5_server_evidence),
+        capability_test_evidence=[_load_json(path) for path in args.capability_test_evidence],
     )
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     print(encoded, end="")

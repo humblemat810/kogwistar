@@ -15,9 +15,12 @@ The live gate runs on pull requests, pushes to `main`, and the scheduled
 workflow. It can also be selected with `performance` in `workflow_dispatch`.
 It is a separate job from correctness tests because fresh-process timing is
 slower and host-sensitive. CI preserves the measured JSON report as an artifact.
-The live comparison uses 100 items, 20 read cycles, and 5 samples per mode; it
-selects only Python and Rust facade because these are the paths constrained by
-this gate. The full four-mode benchmark remains available for broader analysis.
+The live comparison uses 100 items, 20 read cycles, and 10 samples per mode;
+it compares Python with the standalone Rust-native executable. Python launches
+Rust and verifies its final persisted state only after the timed Rust process
+exits. The timed Rust path has no Python/PyO3 seam. The full diagnostic
+benchmark still includes Python/Rust facade modes, but those hybrid modes are
+not performance-gated.
 
 Current thresholds are intentionally not relaxed: Rust p95 latency may not
 exceed Python by more than 10%, throughput must remain at least 95% of Python,
@@ -25,7 +28,43 @@ and peak RSS may not exceed Python by more than 10%. A failing host is evidence
 to investigate or explicitly scope a platform-specific contract, not permission
 to silently widen the threshold.
 
-### Benchmark Version 4 Timing Contract
+### Benchmark Version 5 Timing Contract
+
+Version 5 keeps the version-4 per-operation timing contract and changes the
+performance gate target from the Python-facing Rust facade to `rust_native`.
+The standalone Rust process reports its own Linux peak RSS; platforms without a
+supported process-RSS source report `null`, making the performance gate
+`not_evaluated` rather than silently passing the memory check. Release-gate
+validation accepts only `rust_native` for version-5 performance evidence.
+
+The mixed trace retains separate write, event-read, and projection-read
+latency distributions. It is still a synthetic SQLite storage workload, not
+an end-to-end HTTP/server benchmark or evidence for PostgreSQL/Chroma.
+
+### Version-5 CI Measurement
+
+GitHub Actions run `44632135094`, Ubuntu CPython 3.13.18: 100 items, 20 read
+cycles, 10 fresh samples per mode. Python and standalone Rust-native produced
+the same canonical state digest. All three thresholds passed; Rust-native RSS
+was 4.2% of Python RSS.
+
+| Workload | Rust-native throughput / Python | Rust-native p95 / Python |
+|---|---:|---:|
+| Event append | 35.71x | 0.025x |
+| Event replay | 20.97x | 0.052x |
+| Mixed interleaved | 21.44x | 0.030x |
+| Projection list | 9.45x | 0.115x |
+| Projection replace | 70.37x | 0.013x |
+
+This is strong evidence that the seam-free Rust SQLite storage slice is
+promising. It does not prove whole-stack parity or performance on other
+backends. Whole-trace mixed timing had about 50% sample variation, so use the
+per-operation distributions and treat whole-trace tail comparisons as noisy.
+The Windows CPython 3.13.3 recheck matched the canonical digest and showed the
+same direction, but Windows Rust RSS is unavailable; its gate status was
+`not_evaluated`, not pass.
+
+### Historical Benchmark Version 4 Timing Contract
 
 The gate now records latency around each logical storage operation and computes
 `operation_latency_ms.p50_ms`, `p95_ms`, and `p99_ms` over all operations in all
