@@ -1384,17 +1384,23 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
         (parts[0].strip().strip("`"), parts[1].strip().strip("`")): parts[2].strip()
         for parts in closure_rows
     }
-    assert sum(status == "PASS" for status in closure_status.values()) == 4
-    assert sum(status == "OPEN" for status in closure_status.values()) == 18
+    assert sum(status == "PASS" for status in closure_status.values()) == 7
+    assert sum(status == "OPEN" for status in closure_status.values()) == 15
     assert all(
         status == "PASS"
         for (capability, _clause), status in closure_status.items()
         if capability == "postgres-sequence-event-log"
     )
     assert all(
+        status == "PASS"
+        for (capability, _clause), status in closure_status.items()
+        if capability == "projections-snapshots-run-registry"
+    )
+    assert all(
         status == "OPEN"
         for (capability, _clause), status in closure_status.items()
-        if capability != "postgres-sequence-event-log"
+        if capability
+        not in {"postgres-sequence-event-log", "projections-snapshots-run-registry"}
     )
     expected_progress = (
         f"**Tasklet progress:** **{pass_count}/68 PASS ({100 * pass_count / 68:.1f}%)**; "

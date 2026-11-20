@@ -555,6 +555,7 @@ def evaluate_capability_clause_tests(
     phase4: dict[str, Any],
     phase5: dict[str, Any],
     current_source_sha256: str,
+    capability_test_evidence: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[str]]:
     """Evaluate profile clauses only from named tests on the current source."""
     contract = _load_json(ROOT / "contracts" / "dual-language-capabilities-v1.json")
@@ -625,11 +626,53 @@ def evaluate_capability_clause_tests(
         except (OSError, ValueError):
             return False
 
+    accepted_capability_reports: list[dict[str, Any]] = []
+    for report in capability_test_evidence or []:
+        groups = report.get("groups")
+        valid = (
+            report.get("schema") == "adr015-phase3-capability-gate/v2"
+            and report.get("status") == "passed"
+            and report.get("candidate_source_sha256") == current_source_sha256
+            and isinstance(groups, list)
+            and bool(groups)
+        )
+        if valid:
+            for group in groups:
+                if not isinstance(group, dict):
+                    valid = False
+                    break
+                counts = group.get("counts")
+                test_results = group.get("test_results")
+                if (
+                    group.get("status") != "passed"
+                    or not isinstance(counts, dict)
+                    or not isinstance(test_results, list)
+                    or not test_results
+                    or counts.get("tests") != len(test_results)
+                    or counts.get("tests") != counts.get("passed")
+                    or counts.get("failures", 0) != 0
+                    or counts.get("errors", 0) != 0
+                    or counts.get("skipped", 0) != 0
+                    or any(
+                        not isinstance(result, dict)
+                        or result.get("status") != "passed"
+                        for result in test_results
+                    )
+                ):
+                    valid = False
+                    break
+        if not valid:
+            errors.append(
+                "supplemental capability test report is stale, skipped, or failed"
+            )
+            continue
+        accepted_capability_reports.append(report)
+
     python_results: dict[
         tuple[str, str], list[tuple[bool, dict[str, Any]]]
     ] = {}
     rust_results: dict[str, list[tuple[bool, dict[str, Any]]]] = {}
-    for report in (phase3, phase4, phase5):
+    for report in (phase3, phase4, phase5, *accepted_capability_reports):
         current_candidate = report.get("candidate_source_sha256") == current_source_sha256
         for group in report.get("groups", []):
             for result in group.get("test_results", []):
@@ -957,6 +1000,7 @@ def evaluate_release_gate(
     phase3_capability_evidence: dict[str, Any],
     phase4_runtime_evidence: dict[str, Any],
     phase5_server_evidence: dict[str, Any],
+    capability_test_evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     blockers: list[dict[str, str]] = []
     by_layer: dict[str, dict[str, Any]] = {}
@@ -1029,6 +1073,7 @@ def evaluate_release_gate(
         phase4=phase4_runtime_evidence,
         phase5=phase5_server_evidence,
         current_source_sha256=current_source_sha256,
+        capability_test_evidence=capability_test_evidence,
     )
     for detail in clause_errors:
         blockers.append({"gate": "capability-clauses", "detail": detail})
@@ -1261,6 +1306,13 @@ def _args() -> argparse.Namespace:
         type=Path,
         default=ROOT / ".codex" / "adr015-phase5-server-gate.json",
     )
+    parser.add_argument(
+        "--capability-test-evidence",
+        type=Path,
+        action="append",
+        default=[],
+        help="current-candidate capability-specific named-test report (repeatable)",
+    )
     parser.add_argument("--report", type=Path)
     return parser.parse_args()
 
@@ -1274,6 +1326,7 @@ def main() -> int:
         phase3_capability_evidence=_load_json(args.phase3_capability_evidence),
         phase4_runtime_evidence=_load_json(args.phase4_runtime_evidence),
         phase5_server_evidence=_load_json(args.phase5_server_evidence),
+        capability_test_evidence=[_load_json(path) for path in args.capability_test_evidence],
     )
     encoded = json.dumps(result, indent=2, sort_keys=True) + "\n"
     print(encoded, end="")

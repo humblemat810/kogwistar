@@ -4,8 +4,8 @@
 capabilities in `contracts/rust-port-v1.json`. Passing this set closes only
 these listed checks; it does not by itself close capability conformance.
 **Tasklet progress:** **68/68 PASS (100.0%)**; **0 IN PROGRESS**; **0 NOT STARTED**.
-**Current-candidate capability test gates:** **1/6 PASS**; **5/6 OPEN**.
-**Gate-clause progress:** **4/22 PASS (18.2%)**; **18/22 OPEN**.
+**Current-candidate capability test gates:** **2/6 PASS**; **4/6 OPEN**.
+**Gate-clause progress:** **7/22 PASS (31.8%)**; **15/22 OPEN**.
 **Overall capability readiness:** **2/8 ready**; this broader status includes
 shared acceptance and deferred-operation requirements, not just test results.
 The authoritative remaining requirements are the capability conformance
@@ -87,9 +87,12 @@ cutover readiness. Tasklet status is separate and never substitutes for the
 clause's named tests.
 
 Current candidate `bacd0a828ad86698113580c8c8f90e22fec7cfa6b6515c1312d658179f99b228`
-has 6/6 live PostgreSQL tests in `.tmp/adr015-current-slice-pgs.json`, covering
-all four PostgreSQL clauses. The other 18 clauses remain OPEN: their recorded
-phase reports use source `d77dfa3a1cf63464bd044e2779b98705cacb0c01b3de518d01ada21200ff39a4`.
+has 6/6 live PostgreSQL tests in `.tmp/adr015-current-slice-pgs.json` and 9/9
+projection/run-registry/recovery tests in
+`.tmp/adr015-current-slice-projections.json`; both reports cover current-source
+named tests with zero skips. These close all four PostgreSQL and all three
+projection capability clauses. The remaining 15 clauses use older or missing
+named-test evidence.
 
 | Capability gate | Conformance clause | State | Evidence / closure check |
 | --- | --- | --- | --- |
@@ -97,9 +100,9 @@ phase reports use source `d77dfa3a1cf63464bd044e2779b98705cacb0c01b3de518d01ada2
 | `postgres-sequence-event-log` | `transaction-owner-and-rollback` | PASS | Current-source live gate: `test_rust_postgres_concurrent_idempotency_collision_and_atomic_rollback`; one Rust-owned batch rolls back event and cursor atomically. Report: `.codex/adr015-phase3-current-20261119/summary.json` (candidate `75edf59d953dace98d3b4c074338c98aa15bb3c8c1b05f8f12ff207a8314b413`). |
 | `postgres-sequence-event-log` | `commit-acknowledgement-failure-and-recovery` | PASS | Current-source live gate: `test_rust_postgres_lost_ack_replays_committed_event_after_reopen`; fresh Python and Rust processes observe one committed event after lost ACK. Same report/candidate. |
 | `postgres-sequence-event-log` | `reopen-and-schema-compatibility` | PASS | Current-source live gate: `test_python_created_schema_rust_reads_writes_and_replay_maps_exclusive`, `test_rust_created_schema_python_reads_writes_and_cursor_contracts`, and `test_rust_postgres_schema_isolation_and_rejects_unknown_fields`. Same report/candidate. |
-| `projections-snapshots-run-registry` | `cross-language-valid-invalid-golden-fixtures` | OPEN | Executable pytest: `tests/core/test_rust_store_projection_differential.py::test_postgres_projection_valid_invalid_fixture_matches_python_rust` plus six existing projection/run-registry/history/recovery tests (**7 passed**, live disposable pgvector:pg16, `-p no:cacheprovider`). Golden fixture asserts Python-write/Rust-read and Rust-write/Python-read equality; malformed operation returns `KOGWISTAR_STORE_INVALID_PAYLOAD` and creates no projection. Candidate source hash `5ed14e9feed4d627130efbb6e46e1560ace14e2de5d031f4940dcfdb42d94119`. |
-| `projections-snapshots-run-registry` | `projection-rebuild-and-snapshot-parity` | OPEN | `tests/core/test_rust_store_recovery_differential.py::test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop` and `::test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop` (**2 passed**, live disposable `pgvector:pg16`). Assert Rust rebuild canonical payload/digest stable across repeated rebuilds; Python and Rust projection reads match byte-for-byte; projection and cursor advance atomically, rollback preserves both. |
-| `projections-snapshots-run-registry` | `restart-resume-and-stale-state` | OPEN | Executable pytest: `tests/core/test_rust_store_recovery_differential.py::test_postgres_projection_resume_rejects_stale_checkpoint_after_restart`. Live disposable pgvector:pg16: **1 passed**. Python advances checkpoint and cursor; a fresh Rust subprocess attempts stale CAS, is rejected, and reads generation 2 with cursor 2. |
+| `projections-snapshots-run-registry` | `cross-language-valid-invalid-golden-fixtures` | PASS | Current candidate `bacd0a828ad86698113580c8c8f90e22fec7cfa6b6515c1312d658179f99b228`; live gate report `.tmp/adr015-current-slice-projections.json`: 9 passed, 0 failed/error/skipped. Selector: `tests/core/test_rust_store_projection_differential.py::test_postgres_projection_valid_invalid_fixture_matches_python_rust`. Golden fixture proves Python-write/Rust-read and Rust-write/Python-read plus invalid payload rejection with no projection mutation. |
+| `projections-snapshots-run-registry` | `projection-rebuild-and-snapshot-parity` | PASS | Same current-source gate report. Selectors: `tests/core/test_rust_store_recovery_differential.py::test_sqlite_atomic_bounded_recovery_rebuild_and_python_rust_interop` and `tests/core/test_rust_store_recovery_differential.py::test_postgres_atomic_bounded_recovery_rebuild_and_python_rust_interop`. Canonical rebuild digest stable, cross-language reads equal, cursor/projection atomicity and rollback verified. |
+| `projections-snapshots-run-registry` | `restart-resume-and-stale-state` | PASS | Same current-source gate report runs `tests/core/test_rust_store_recovery_differential.py::test_postgres_projection_resume_rejects_stale_checkpoint_after_restart`; stale CAS after reopen is rejected, generation 2/cursor 2 remains authoritative. |
 | `queues-leases-lanes` | `cross-language-valid-invalid-golden-fixtures` | OPEN | `tests/core/test_rust_store_lane_messages_differential.py::test_postgres_queue_lane_valid_invalid_fixture_matches_python_rust` runs `contracts/golden/postgres-queue-lane-parity-v1.json`; current candidate `f72af9716e4d90bb8342a5af5307f71ffb84a69e3428464d5d62063dd4d77b8f`. Phase-3 QLL gate includes this case: 4 passed, 0 failed/error/skipped. Assert valid queue/lane rows round-trip both directions; invalid fixture operations return `KOGWISTAR_STORE_INVALID_PAYLOAD` with no row effects. Report: `.codex/adr015-phase3-qll-golden-20261119.json`. |
 | `queues-leases-lanes` | `claim-lease-reclaim-and-idempotency` | OPEN | Current-source live gate: `test_postgres_queue_concurrency_reclaim_and_terminal_retry_live`; competing claims, reclaim, and terminal retry/idempotency. Same Phase-3 report/candidate. |
 | `queues-leases-lanes` | `crash-before-after-effect-and-acknowledgement` | OPEN | Rust live test `tests::postgres_worker_graph_effect_rechecks_durable_run_owner_in_transaction` passed (`cargo test --release -p kogwistar-api ... --include-ignored`): committed effect survives lost response; retry after reclaim/reopen does not duplicate event/effect. Test selector: `rust/crates/kogwistar-api/src/tests/postgres_worker_authority.rs::postgres_worker_graph_effect_rechecks_durable_run_owner_in_transaction`. Candidate `bf52ef5e16733bff3b3f75aa06df97cef14e409a10a7ea683e98cf8c9e051b4b`; Phase-3 current-source report has 62/62 live tests, zero skips. |

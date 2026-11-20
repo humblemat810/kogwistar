@@ -652,6 +652,110 @@ def test_capability_test_gate_pass_is_not_hidden_by_shared_cutover_blockers() ->
     assert workflow["cutover_readiness"] == "blocked"
 
 
+def test_capability_specific_current_report_closes_named_test_gate() -> None:
+    gate = _gate()
+    current_source = gate.candidate_source_fingerprint(ROOT)[0]
+    phase3 = _phase3_capability_evidence()
+    phase4 = _phase4_runtime_evidence()
+    phase5 = _phase5_evidence()
+    selectors_by_clause = json.loads(
+        (ROOT / "contracts/adr015-capability-test-oracles-v1.json").read_text()
+    )["capabilities"]["projections-snapshots-run-registry"]
+    target_names = {
+        selector.rsplit("::", 1)[1]
+        for selectors in selectors_by_clause.values()
+        for selector in selectors
+    }
+    for report in (phase3, phase4, phase5):
+        for group in report["groups"]:
+            group["test_results"] = [
+                result
+                for result in group["test_results"]
+                if result.get("function") not in target_names
+            ]
+
+    test_results = []
+    for clause_selectors in selectors_by_clause.values():
+        for selector in clause_selectors:
+            _, location = selector.split(":", 1)
+            test_path, function = location.rsplit("::", 1)
+            test_results.append(
+                {
+                    "source": "pytest",
+                    "classname": test_path.removesuffix(".py").replace("/", "."),
+                    "function": function,
+                    "status": "passed",
+                }
+            )
+    supplemental = {
+        "schema": "adr015-phase3-capability-gate/v2",
+        "candidate_source_sha256": current_source,
+        "status": "passed",
+        "groups": [
+            {
+                "name": "projections-snapshots-run-registry",
+                "status": "passed",
+                "counts": {
+                    "tests": len(test_results),
+                    "passed": len(test_results),
+                    "failures": 0,
+                    "errors": 0,
+                    "skipped": 0,
+                },
+                "test_results": test_results,
+            }
+        ],
+    }
+
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=current_source,
+        capability_test_evidence=[supplemental],
+    )
+
+    projection = [
+        row for row in results
+        if row["capability"] == "projections-snapshots-run-registry"
+    ]
+    assert len(projection) == 3
+    assert all(row["status"] == "passed" for row in projection)
+    assert errors == []
+
+    manifest = json.loads(
+        (ROOT / "contracts/rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    release = gate.evaluate_release_gate(
+        manifest=manifest,
+        compatibility_reports=_compatibility("a" * 64, current_source),
+        runtime_performance=_runtime_performance(),
+        phase3_capability_evidence=phase3,
+        phase4_runtime_evidence=phase4,
+        phase5_server_evidence=phase5,
+        capability_test_evidence=[supplemental],
+    )
+    release_by_capability = {
+        item["capability"]: item for item in release["capability_test_readiness"]
+    }
+    assert release_by_capability["projections-snapshots-run-registry"]["status"] == "passed"
+
+    supplemental["groups"][0]["counts"]["skipped"] = 1
+    rejected, errors = gate.evaluate_capability_clause_tests(
+        phase3=phase3,
+        phase4=phase4,
+        phase5=phase5,
+        current_source_sha256=current_source,
+        capability_test_evidence=[supplemental],
+    )
+    assert all(
+        row["status"] == "blocked"
+        for row in rejected
+        if row["capability"] == "projections-snapshots-run-registry"
+    )
+    assert "supplemental capability test report is stale, skipped, or failed" in errors
+
+
 def test_capability_readiness_fails_closed_on_duplicate_or_missing_clause_results() -> None:
     gate = _gate()
     results, errors = gate.evaluate_capability_clause_tests(
