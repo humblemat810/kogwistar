@@ -555,3 +555,4 @@ class AsyncChromaBackend(ChromaBackend):
 
     async def async_edge_delete(self, **kwargs: object) -> object:
         return await self.async_call("edge", "delete", **kwargs)
+

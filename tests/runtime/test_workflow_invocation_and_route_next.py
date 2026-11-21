@@ -37,7 +37,7 @@ def _node(
     start: bool = False,
     terminal: bool = False,
     fanout: bool = False,
-    version: str = "v_test",
+    version: str = "v1",
 ) -> WorkflowNode:
     return WorkflowNode(
         id=node_id,
@@ -118,7 +118,7 @@ def _edge(
             "wf_priority": priority,
             "wf_is_default": bool(is_default),
             "wf_multiplicity": multiplicity,
-            "wf_version": "v_test",
+            "wf_version": "v1",
         },
         mentions=[
             Grounding(
@@ -451,7 +451,7 @@ def test_nested_workflow_synthesized_design_is_persisted_and_used(engine_pair):
     ]
     child_design = WorkflowDesignArtifact(
         workflow_id=child_id,
-        workflow_version="v_test",
+        workflow_version="v1",
         start_node_id=f"wf|{child_id}|start",
         nodes=child_nodes,
         edges=child_edges,
@@ -665,7 +665,7 @@ def test_nested_workflow_failure_short_circuits_parent_routing(engine_pair):
     ]
     child_design = WorkflowDesignArtifact(
         workflow_id=child_id,
-        workflow_version="v_test",
+        workflow_version="v1",
         start_node_id=f"wf|{child_id}|start",
         nodes=child_nodes,
         edges=child_edges,

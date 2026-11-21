@@ -87,7 +87,7 @@ class RuntimeTracePersistenceMixin:
             if key not in metadata and value is not None:
                 metadata[str(key)] = value
         metadata["implementation_selection"] = implementation_selection_metadata(
-            self._implementation_selection_snapshot
+            getattr(self, "_implementation_selection_snapshot", {})
         )
         if metadata.get("parent_run_id"):
             metadata.setdefault(
