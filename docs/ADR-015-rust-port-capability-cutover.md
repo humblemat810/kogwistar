@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft — SQLite query-binding fix and differential verification complete for `queues-leases-lanes` and `projections-snapshots-run-registry`. All Rust-cutover capabilities now `true`: `postgres-sequence-event-log`, `graph-pgvector`, `workflow-runtime`, `server-rest-sse-mcp-cli`. `chroma-adapter` remains `false` (Python adapter retained, not a Rust cutover target).
+Draft â€” SQLite query-binding fix and differential verification complete for `queues-leases-lanes` and `projections-snapshots-run-registry`. All Rust-cutover capabilities now `true`: `postgres-sequence-event-log`, `graph-pgvector`, `workflow-runtime`, `server-rest-sse-mcp-cli`. `chroma-adapter` remains `false` (Python adapter retained, not a Rust cutover target).
 
 ## Context
 
@@ -37,7 +37,7 @@ Fix `project_lane_message` INSERT to match column count (remove one trailing `NU
   - `test_list_projected_lane_messages_parity`
   - `test_list_server_runs_parity`
 - Direct `store_sqlite_json` calls verified working:
-  - `raw_append`, `exclusive_raw_replay`, `list_index_jobs`, `claim_index_jobs`, `list_projected_lane_messages`, `list_server_runs` — no `Wrong number of parameters` errors.
+  - `raw_append`, `exclusive_raw_replay`, `list_index_jobs`, `claim_index_jobs`, `list_projected_lane_messages`, `list_server_runs` â€” no `Wrong number of parameters` errors.
 
 ## Capability cutover status (`rust-port-v1.json`)
 
@@ -79,10 +79,22 @@ tests/server/test_oidc_keycloak_e2e.py::test_oidc_keycloak_container_e2e failed 
 
 Fix: in test_oidc_keycloak_e2e.py, the pre-/me JWT reset now verifies with the same secrets used to mint (server.JWT_SECRET / server.JWT_ALG), clearing auth_jwt_settings + JWT_ISS/JWT_AUD. tests/server -> 247 passed, 25 skipped, 0 failed (-p no:cacheprovider). auth_middleware.py was temporarily instrumented then reverted (no production code change).
 
+### Revalidation of the six capability implementations
+
+The 2026-11-22 revalidation found one implementation-adjacent defect before the store/PostgreSQL gate completed: importing `kogwistar._rust_bridge` directly entered the `engine_core` package and reached `shortids.py` while `_rust_bridge` was still initializing. The bridge therefore moved the `native_sqlite_enter`/`native_sqlite_exit` import into the managed SQLite session branch. This removes the circular import without changing either Python or Rust ABI. The previously failing child-process transaction-token test now passes, and direct `kogwistar._rust_bridge` import succeeds.
+
+Revalidation results from the `kogwistar` repository root:
+
+- PostgreSQL store/projection/recovery/lane/queue/graph groups: **143 passed, 0 failed**.
+- Rust runtime authority, PostgreSQL durability, and worker handoff: **82 passed, 10 skipped, 0 failed**.
+- Server REST/SSE/MCP/CLI suite: **247 passed, 25 skipped, 0 failed**.
+
+The first server attempt run from the outer workspace root reported three missing-file errors because tests resolve committed files relative to the `kogwistar` repository root; rerunning with that root passed. `rust_cutover_ready` remains the explicit cutover ledger and stays false where its tests require it; implementation and local CI gate evidence do not alone promote production ownership.
+
 ## Next steps
 
-1. `postgres-sequence-event-log`: complete — Rust bridge + PyO3 facade + differential tests verified.
-2. `graph-pgvector`: complete — graph/vector infrastructure + pgvector differential tests verified.
-3. `workflow-runtime`: complete — runtime differential tests verified; flag `true` in `rust-port-v1.json`.
-4. `server-rest-sse-mcp-cli`: complete — REST/SSE/MCP server differential tests verified; flag `true` in `rust-port-v1.json`.
+1. `postgres-sequence-event-log`: complete â€” Rust bridge + PyO3 facade + differential tests verified.
+2. `graph-pgvector`: complete â€” graph/vector infrastructure + pgvector differential tests verified.
+3. `workflow-runtime`: complete â€” runtime differential tests verified; flag `true` in `rust-port-v1.json`.
+4. `server-rest-sse-mcp-cli`: complete â€” REST/SSE/MCP server differential tests verified; flag `true` in `rust-port-v1.json`.
 5. Finalize ADR-015 and push; watch GitHub CI results (per repo policy).

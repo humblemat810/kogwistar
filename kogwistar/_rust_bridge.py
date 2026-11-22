@@ -13,10 +13,6 @@ from importlib import import_module
 from typing import Any, Protocol, TypeVar, cast
 
 from kogwistar.json_types import JsonObject, JsonValue
-from kogwistar.engine_core.sqlite_context import (
-    native_sqlite_enter,
-    native_sqlite_exit,
-)
 from kogwistar.implementation_selection import (
     assert_transaction_entry_allowed,
     implementation_env,
@@ -309,6 +305,11 @@ def store_sqlite(
     lease = None
     try:
         if session_key_managed:
+            from kogwistar.engine_core.sqlite_context import (
+                native_sqlite_enter,
+                native_sqlite_exit,
+            )
+
             context_id, lease = native_sqlite_enter(os.fspath(path), kind, bool(reuse_session))
         extension = _load_extension()
         result = json.loads(
