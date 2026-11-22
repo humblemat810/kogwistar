@@ -114,6 +114,19 @@ fn profile_binding_validation_fails_closed() {
     );
 }
 
+#[test]
+fn profile_rejects_empty_identity_and_disabled_acl() {
+    let empty = AgentProfile::new(" ");
+    assert!(matches!(empty.validate(), Err(AgentError::Validation(_))));
+
+    let mut unprotected = AgentProfile::new("agent");
+    unprotected.acl_required = false;
+    assert!(matches!(
+        unprotected.validate_bindings(None, None, None, None, &[]),
+        Err(AgentError::Permission(_))
+    ));
+}
+
 #[tokio::test]
 async fn harness_delegates_to_runtime_with_authority_context() {
     let runtime = Arc::new(FakeRuntime {
@@ -155,6 +168,57 @@ async fn harness_rejects_runtime_workflow_override_outside_allowlist() {
     assert!(matches!(error, AgentError::Validation(_)));
 }
 
+#[tokio::test]
+async fn harness_overwrites_untrusted_state_authority_claims() {
+    let runtime = Arc::new(FakeRuntime {
+        result: Value::Null,
+    });
+    let harness = AgentHarness::new(profile(), runtime, options()).unwrap();
+    let mut state = serde_json::Map::new();
+    state.insert("effective_capabilities".to_owned(), json!(["tool.admin"]));
+    state.insert("step_budget".to_owned(), json!(99));
+    state.insert("step_used".to_owned(), json!(99));
+
+    let result = harness
+        .run(state, "conversation", None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result["initial_state"]["effective_capabilities"],
+        json!(["tool.a"])
+    );
+    assert_eq!(result["initial_state"]["step_budget"].as_i64(), Some(2));
+}
+
+#[tokio::test]
+async fn harness_resume_carries_runtime_authority() {
+    let runtime = Arc::new(FakeRuntime {
+        result: Value::Null,
+    });
+    let harness = AgentHarness::new(profile(), runtime, options()).unwrap();
+    let result = harness.resume_from_latest_checkpoint(None).await.unwrap();
+    assert_eq!(result["authority_context"]["principal_id"], "agent");
+    assert_eq!(
+        result["authority_context"]["effective_capabilities"],
+        json!(["tool.a"])
+    );
+}
+
+#[tokio::test]
+async fn harness_requires_workflow_id_from_profile_or_call() {
+    let runtime = Arc::new(FakeRuntime {
+        result: Value::Null,
+    });
+    let mut no_workflow = profile();
+    no_workflow.workflow_id = None;
+    let harness = AgentHarness::new(no_workflow, runtime, options()).unwrap();
+    let error = harness
+        .run(serde_json::Map::new(), "conversation", None, None)
+        .await
+        .unwrap_err();
+    assert!(matches!(error, AgentError::Validation(_)));
+}
+
 #[test]
 fn budget_policy_seeds_and_reports_non_authoritative_hints() {
     let policy = AgentBudgetPolicy::from_map(
@@ -168,6 +232,36 @@ fn budget_policy_seeds_and_reports_non_authoritative_hints() {
     let hints = kogwistar_agent::refresh_budget_hints(&mut state);
     assert_eq!(hints["steps_remaining"].as_f64(), Some(3.0));
     assert_eq!(hints["authoritative"], false);
+}
+
+#[test]
+fn budget_policy_rejects_unknown_and_nonpositive_limits() {
+    assert!(matches!(
+        AgentBudgetPolicy::from_map(&serde_json::from_value(json!({"unknown": 1})).unwrap(),),
+        Err(AgentError::Validation(_))
+    ));
+    for key in ["max_steps", "max_model_calls", "max_tokens", "max_time_ms"] {
+        let policy = AgentBudgetPolicy::from_map(&serde_json::from_value(json!({key: 0})).unwrap());
+        assert!(matches!(policy, Err(AgentError::Validation(_))));
+    }
+    assert!(matches!(
+        AgentBudgetPolicy::from_map(&serde_json::from_value(json!({"max_cost": 0.0})).unwrap(),),
+        Err(AgentError::Validation(_))
+    ));
+}
+
+#[test]
+fn context_policy_rejects_zero_bounds() {
+    let zero_items = kogwistar_agent::ContextPolicy {
+        max_items: 0,
+        ..Default::default()
+    };
+    assert!(zero_items.validate().is_err());
+    let zero_chars = kogwistar_agent::ContextPolicy {
+        max_chars: 0,
+        ..Default::default()
+    };
+    assert!(zero_chars.validate().is_err());
 }
 
 #[test]
@@ -243,6 +337,24 @@ fn provider_registry_enforces_identity_and_lifecycle() {
 }
 
 #[test]
+fn provider_registry_rejects_empty_identity() {
+    let registry = ProviderRegistry::new();
+    assert!(matches!(
+        registry.register(Arc::new(NoopProvider { id: " ".to_owned() }), "v1",),
+        Err(AgentError::Validation(_))
+    ));
+    assert!(matches!(
+        registry.register(
+            Arc::new(NoopProvider {
+                id: "provider".to_owned()
+            }),
+            " ",
+        ),
+        Err(AgentError::Validation(_))
+    ));
+}
+
+#[test]
 fn hook_registry_gates_capabilities_and_propagates_fail_closed() {
     let registry = HookRegistry::new();
     registry
@@ -274,4 +386,47 @@ fn hook_registry_gates_capabilities_and_propagates_fail_closed() {
         })
         .unwrap();
     assert!(failing.run(&json!({}), &[]).is_err());
+}
+
+#[test]
+fn hook_registry_rejects_invalid_and_duplicate_specs() {
+    let registry = HookRegistry::new();
+    let spec = |hook_id: &str, timeout_ms: u64| HookSpec {
+        hook_id: hook_id.to_owned(),
+        callback: Arc::new(|_| Ok(json!({}))),
+        order: 1,
+        timeout_ms,
+        failure_mode: HookFailureMode::FailOpen,
+        effect: kogwistar_agent::HookEffect::Observe,
+        required_capabilities: Vec::new(),
+    };
+    assert!(registry.register(spec("", 1)).is_err());
+    assert!(registry.register(spec("hook", 0)).is_err());
+    registry.register(spec("hook", 1)).unwrap();
+    assert!(registry.register(spec("hook", 1)).is_err());
+}
+
+#[test]
+fn control_point_spec_rejects_invalid_bounds() {
+    let spec = |control: ControlPointSpec| {
+        control.validate().unwrap_err();
+        control
+    };
+    spec(ControlPointSpec {
+        inbox_id: " ".to_owned(),
+        ..Default::default()
+    });
+    let bad_types = ControlPointSpec {
+        accepted_message_types: Vec::new(),
+        ..ControlPointSpec::default()
+    };
+    spec(ControlPointSpec {
+        inbox_id: "inbox".to_owned(),
+        ..bad_types
+    });
+
+    spec(ControlPointSpec {
+        lease_seconds: 0,
+        ..Default::default()
+    });
 }
