@@ -44,8 +44,8 @@ extra. The PyPy 3.11 dependency markers intentionally omit `mcp` and
 
 ## Verified downstream paths
 
-The current downstream parser evidence uses `graph-knowledge-doc-parser==0.2.17`
-and the published `kogwistar==0.6.15` package. These are scoped consumer checks,
+The current downstream parser evidence uses `graph-knowledge-doc-parser==0.2.21`
+and the published `kogwistar==0.7.2` package. These are scoped consumer checks,
 not a claim of complete parser or backend parity:
 
 | Path | Verified cell | Evidence boundary |
@@ -67,4 +67,8 @@ PyPI `kogwistar==0.7.1` declares `Requires-Python >=3.11` and preserves the
 Python-authority profile and PyPy compatibility constraints from `0.7.0`.
 Kogwistar 0.7.1 was published from tag `v0.7.1` and adds the ADR-015
 six-capability gate fixes.
+
+PyPI `kogwistar==0.7.2` preserves the same runtime profiles and updates the
+published downstream compatibility pin used by the current parser evidence.
+Kogwistar 0.7.2 was published from tag `v0.7.2`.
 
