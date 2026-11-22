@@ -78,6 +78,17 @@ per leaf. Rust test binaries can compile when cache or inputs are stale;
 “no-build” means no repeated Docker/native release build, not zero Cargo
 compilation.
 
+### Latest current-candidate Phase-3 revalidation
+
+Current source SHA `044e05b5c3175f2debcc3a1a083f3f4cd74b66301d926e21dddb5ba3c693b707`
+and native extension SHA `eec297a27045882eff4ff46bc25447ddaae5a1ff3bb6c211b2689ece09a78fd5`.
+With live `pgvector:pg16`, all four Phase-3 store groups passed with zero
+skips: event log **6**, projections/snapshots/run registry **9**, queues/leases/
+lanes **4**, and graph/pgvector **50**. Reports are local evidence under
+`.codex/adr015-phase3-capability-gate/`; this refresh does not by itself close
+Phase-4/Phase-5 candidate UAT, deferred syscall authority, or the overall
+cutover ledger.
+
 ## Capability Gate Closure
 
 This matrix tracks each of the 22 normative profile clauses separately from the
