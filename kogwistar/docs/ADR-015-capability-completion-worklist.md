@@ -100,6 +100,18 @@ This proves current runtime test-gate evidence only. It does not authorize the
 manifest's `rust_cutover_ready` transition: Phase-5 server/UAT evidence,
 deferred syscall ownership, and shared release acceptance remain separate.
 
+### Latest current-candidate Phase-5 server revalidation
+
+With the same source SHA and live services, using separate native PostgreSQL
+DSN (`postgres://...`) and Python SQLAlchemy DSN (`postgresql+psycopg://...`),
+the complete server gate passed: REST/SSE **4**, auth/syscall **56**, MCP
+**130**, frozen contracts **3**, async SSE **6**, and Rust API **455**; total
+**654 passed, 0 failed, 0 skipped**. Report:
+`.codex/adr015-phase5-server-044e05-correct-dsn.json`.
+This closes current local Phase-5 test-gate evidence, not the manifest cutover
+flags: deferred syscall ownership and shared release acceptance remain explicit
+contract requirements.
+
 ## Capability Gate Closure
 
 This matrix tracks each of the 22 normative profile clauses separately from the
