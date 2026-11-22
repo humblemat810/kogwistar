@@ -33,7 +33,7 @@ from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.in_memory_meta import InMemoryMetaStore
 from kogwistar.wisdom.proposals import ProposalEvaluation, WisdomRevisionProposal
 
-pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit]
+pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.unit, pytest.mark.python_authority]
 
 
 def _artifact(version: str, revision: int):

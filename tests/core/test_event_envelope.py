@@ -5,7 +5,7 @@ import pytest
 from kogwistar.engine_core.engine_sqlite import EngineSQLite
 from kogwistar.engine_core.event_envelope import EntityEventEnvelope
 
-pytestmark = [pytest.mark.ci, pytest.mark.core]
+pytestmark = [pytest.mark.ci, pytest.mark.core, pytest.mark.python_authority]
 
 
 def test_sqlite_event_envelope_round_trip_preserves_identity_and_timestamp(tmp_path) -> None:
