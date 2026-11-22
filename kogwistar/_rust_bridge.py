@@ -299,9 +299,21 @@ def store_sqlite(
             code="KOGWISTAR_STORE_ACTIVE_PYTHON_TRANSACTION",
         )
         raise error
+    raw_kind = operation.get("kind") if isinstance(operation, dict) else ""
+    kind = raw_kind if isinstance(raw_kind, str) else ""
+    session_key_managed = kind == "open_init"
+    context_id = None
+    lease = None
+    native_enter: Callable[[str, str, bool], tuple[str, object | None]] | None = None
+    native_exit: Callable[[str, str, str, bool, bool], None] | None = None
     try:
+        if session_key_managed:
+            from kogwistar.engine_core.sqlite_context import native_sqlite_enter as native_enter
+            from kogwistar.engine_core.sqlite_context import native_sqlite_exit as native_exit
+
+            context_id, lease = native_enter(os.fspath(path), kind, bool(reuse_session))
         extension = _load_extension()
-        return json.loads(
+        result = json.loads(
             extension.store_sqlite_json(
                 _rust_json_payload(
                     {
@@ -315,6 +327,7 @@ def store_sqlite(
                 )
             )
         )
+        return result
     except RustParityError:
         raise
     except Exception as exc:
@@ -323,6 +336,9 @@ def store_sqlite(
             code=_exception_code(exc),
         )
         raise error from exc
+    finally:
+        if native_exit is not None and context_id is not None:
+            native_exit(os.fspath(path), context_id, kind, bool(reuse_session), True)
 
 
 def _postgres_dsn_for_rust(dsn: str | None) -> str:

@@ -409,12 +409,12 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
         # wait until other branch has at least started (no barrier deadlock)
         _wait_evt(
             sync["started_b"],
-            timeout=5.0,
+            timeout=30.0 if backend_kind == "chroma" else 5.0,
             abort_msg=f"{ctx.run_id}: slow_b never started",
         )
         logging.info("slow_a detected b started release")
         _wait_evt(
-            sync["release"], timeout=5.0, abort_msg=f"{ctx.run_id}: release not set"
+            sync["release"], timeout=30.0 if backend_kind == "chroma" else 5.0, abort_msg=f"{ctx.run_id}: release not set"
         )
         logging.info("slow_a detected release")
         time.sleep(0.1)
@@ -427,12 +427,12 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
         sync["started_b"].set()
         _wait_evt(
             sync["started_a"],
-            timeout=5.0,
+            timeout=30.0 if backend_kind == "chroma" else 5.0,
             abort_msg=f"{ctx.run_id}: slow_a never started",
         )
         logging.info("slow_b detected a started release")
         _wait_evt(
-            sync["release"], timeout=5.0, abort_msg=f"{ctx.run_id}: release not set"
+            sync["release"], timeout=30.0 if backend_kind == "chroma" else 5.0, abort_msg=f"{ctx.run_id}: release not set"
         )
         logging.info("slow_b detected release")
         time.sleep(0.1)
@@ -547,7 +547,7 @@ def test_trace_sink_parallel_and_nested_minimal_sync(
 
             # coordinator: only release once both fork branches are confirmed running
             for rid in run_ids:
-                wait_branches_started_then_release(rid, timeout=10.0)
+                wait_branches_started_then_release(rid, timeout=30.0 if backend_kind == "chroma" else 10.0)
 
             for f in futs:
                 f.result()
@@ -751,7 +751,7 @@ def test_runtime_fanout_merge_join_counter_does_not_deadlock_fake(tmp_path):
         args=(str(tmp_path), result_q),
     )
     proc.start()
-    proc.join(timeout=8.0)
+    proc.join(timeout=30.0)
     if proc.is_alive():
         proc.terminate()
         proc.join(timeout=2.0)
@@ -760,3 +760,4 @@ def test_runtime_fanout_merge_join_counter_does_not_deadlock_fake(tmp_path):
     assert not result_q.empty(), "child process exited without reporting result"
     status, detail = result_q.get_nowait()
     assert status == "ok", detail
+

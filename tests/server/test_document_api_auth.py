@@ -84,6 +84,14 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(
         server.app.router, "lifespan_context", noop_lifespan, raising=False
     )
+    # ???? server ????? JWT ??,???? TEST_JWT_SECRET / iss="local"
+    # ??????? env ??,?? stale ? state.auth_jwt_settings?
+    _saved_jwt_settings = getattr(server.app.state, "auth_jwt_settings", None)
+    server.app.state.auth_jwt_settings = None
+    monkeypatch.setenv("JWT_SECRET", TEST_JWT_SECRET)
+    monkeypatch.setenv("JWT_ALG", TEST_JWT_ALG)
+    monkeypatch.delenv("JWT_ISS", raising=False)
+    monkeypatch.delenv("JWT_AUD", raising=False)
     now = int(time.time())
     token = jwt.encode(
         {
@@ -108,3 +116,4 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
     assert response.json() == {"status": "ok"}
     assert len(written) == 2
     assert written[1].id == fixture["doc_id"]
+    server.app.state.auth_jwt_settings = _saved_jwt_settings

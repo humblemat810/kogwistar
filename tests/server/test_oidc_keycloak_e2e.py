@@ -116,7 +116,9 @@ def oidc_test_client(monkeypatch, keycloak_container: dict[str, str], oidc_test_
         server.seed_auth_data = saved_seed_auth_data
 
 
-def test_oidc_keycloak_container_e2e(oidc_test_client, oidc_test_identity):
+def test_oidc_keycloak_container_e2e(
+    monkeypatch: pytest.MonkeyPatch, oidc_test_client, oidc_test_identity
+):
     client, auth_db, keycloak_base_url, issuer = oidc_test_client
 
     login_resp = client.get("/api/auth/login", follow_redirects=False)
@@ -162,6 +164,17 @@ def test_oidc_keycloak_container_e2e(oidc_test_client, oidc_test_identity):
     assert ui_location.startswith("http://ui.local/")
     assert "?token=" in ui_location
 
+    # The token is minted by server.app.state.auth_service using
+    # server.JWT_SECRET/server.JWT_ALG (captured at import time).  Verify with
+    # the same secrets so the result is deterministic regardless of which
+    # earlier server test imported the app first or what the OS JWT env holds.
+    _saved_jwt_settings = getattr(server.app.state, "auth_jwt_settings", None)
+    server.app.state.auth_jwt_settings = None
+    monkeypatch.setenv("JWT_SECRET", server.JWT_SECRET)
+    monkeypatch.setenv("JWT_ALG", server.JWT_ALG)
+    monkeypatch.delenv("JWT_ISS", raising=False)
+    monkeypatch.delenv("JWT_AUD", raising=False)
+
     token = parse_qs(urlparse(ui_location).query)["token"][0]
     me_resp = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert me_resp.status_code == 200
@@ -181,3 +194,4 @@ def test_oidc_keycloak_container_e2e(oidc_test_client, oidc_test_identity):
     )
     assert identity is not None
     assert identity.email == oidc_test_identity["email"]
+    server.app.state.auth_jwt_settings = _saved_jwt_settings

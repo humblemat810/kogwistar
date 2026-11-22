@@ -5,7 +5,9 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from kogwistar.server_mcp_with_admin import app
+import kogwistar.server_mcp_with_admin as server_mod
+
+from starlette.routing import Mount
 from tests._helpers.server_http_helpers import token_header
 
 _FIXTURE = (
@@ -29,7 +31,14 @@ def test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture() -> Non
     fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     expected = fixture["expected"]
 
-    with TestClient(app) as client:
+    _saved_mcp_app = server_mod.mcp_app
+    _fresh_mcp_app = server_mod.mcp.http_app(path="/mcp")
+    server_mod.mcp_app = _fresh_mcp_app
+    for _r in server_mod.app.router.routes:
+        if isinstance(_r, Mount) and getattr(_r, "app", None) is _saved_mcp_app:
+            _r.app = _fresh_mcp_app
+            break
+    with TestClient(server_mod.app) as client:
         headers = token_header(client, role="ro", ns="conversation")
         headers["Accept"] = "application/json, text/event-stream"
         initialized = client.post(
@@ -67,6 +76,11 @@ def test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture() -> Non
             },
         )
 
+    server_mod.mcp_app = _saved_mcp_app
+    for _r in server_mod.app.router.routes:
+        if isinstance(_r, Mount) and getattr(_r, "app", None) is _fresh_mcp_app:
+            _r.app = _saved_mcp_app
+            break
     message = _sse_message(response.text)
     result = message["result"]
     assert response.status_code == expected["http_status"]
