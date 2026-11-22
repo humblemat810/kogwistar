@@ -11,6 +11,7 @@ members = [
     "crates/kogwistar-store-graph",
     "crates/kogwistar-store-postgres",
     "crates/kogwistar-store-chroma",
+    "crates/kogwistar-agent",
 ]
 resolver = "2"
 

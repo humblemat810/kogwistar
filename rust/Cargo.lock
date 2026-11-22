@@ -821,6 +821,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kogwistar-agent"
+version = "0.2.0"
+dependencies = [
+ "kogwistar-runtime",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "kogwistar-api"
 version = "0.2.0"
 dependencies = [
