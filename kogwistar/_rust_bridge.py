@@ -301,7 +301,7 @@ def store_sqlite(
         raise error
     raw_kind = operation.get("kind") if isinstance(operation, dict) else ""
     kind = raw_kind if isinstance(raw_kind, str) else ""
-    session_key_managed = bool(reuse_session) or kind == "open_init"
+    session_key_managed = kind == "open_init"
     context_id = None
     lease = None
     native_enter: Callable[[str, str, bool], tuple[str, object | None]] | None = None

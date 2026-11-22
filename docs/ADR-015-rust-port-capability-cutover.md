@@ -85,6 +85,8 @@ The 2026-11-22 revalidation found one implementation-adjacent defect before the 
 
 The same revalidation exposed two SQLite transaction-ownership defects: a duplicate native `begin_transaction` did not fail closed, and a rejected nested begin released the live session. The context registry now rejects the duplicate and preserves the active session until `commit_transaction`/`rollback_transaction`. Focused verification: SQLite context invariants **37 passed, 2 skipped**; Rust SQLite differential **12 passed**.
 
+The Python bridge now delegates the complete transaction lifecycle to the native extension instead of double-entering the same transaction; the extension owns the native registry entries for `begin_transaction`, `commit_transaction`, and `rollback_transaction`. Rust SQLite authority suite: **21 passed**.
+
 Revalidation results from the `kogwistar` repository root:
 
 - PostgreSQL store/projection/recovery/lane/queue/graph groups: **143 passed, 0 failed**.
