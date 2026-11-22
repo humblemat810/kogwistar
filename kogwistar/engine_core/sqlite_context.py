@@ -612,9 +612,6 @@ def native_sqlite_enter(
 
         if operation == "begin_transaction":
             if session_key in _native_active_transactions:
-                # Defensive: stale entry from a previous uncleared native exit.
-                _native_active_transactions.discard(session_key)
-            if session_key in _native_active_transactions:
                 raise SQLiteContextError(
                     "this SQLite execution context already owns a native transaction",
                     "KOGWISTAR_SQLITE_TRANSACTION_ALREADY_ACTIVE",
@@ -659,10 +656,9 @@ def native_sqlite_exit(
     session_key = (os.path.normcase(os.path.abspath(database)), context_id)
 
     if operation == "begin_transaction":
-        with _registry_lock:
-            _native_active_transactions.discard(session_key)
-            if succeeded and session_key not in _native_reusable_sessions:
-                _release_native_session(session_key)
+        if not succeeded:
+            with _registry_lock:
+                _native_active_transactions.discard(session_key)
         return
 
     if operation in {"commit_transaction", "rollback_transaction"}:

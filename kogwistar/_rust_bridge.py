@@ -299,18 +299,19 @@ def store_sqlite(
             code="KOGWISTAR_STORE_ACTIVE_PYTHON_TRANSACTION",
         )
         raise error
-    kind = operation.get("kind") if isinstance(operation, dict) else ""
+    raw_kind = operation.get("kind") if isinstance(operation, dict) else ""
+    kind = raw_kind if isinstance(raw_kind, str) else ""
     session_key_managed = bool(reuse_session) or kind == "open_init"
     context_id = None
     lease = None
+    native_enter: Callable[[str, str, bool], tuple[str, object | None]] | None = None
+    native_exit: Callable[[str, str, str, bool, bool], None] | None = None
     try:
         if session_key_managed:
-            from kogwistar.engine_core.sqlite_context import (
-                native_sqlite_enter,
-                native_sqlite_exit,
-            )
+            from kogwistar.engine_core.sqlite_context import native_sqlite_enter as native_enter
+            from kogwistar.engine_core.sqlite_context import native_sqlite_exit as native_exit
 
-            context_id, lease = native_sqlite_enter(os.fspath(path), kind, bool(reuse_session))
+            context_id, lease = native_enter(os.fspath(path), kind, bool(reuse_session))
         extension = _load_extension()
         result = json.loads(
             extension.store_sqlite_json(
@@ -336,8 +337,8 @@ def store_sqlite(
         )
         raise error from exc
     finally:
-        if session_key_managed:
-            native_sqlite_exit(os.fspath(path), context_id, kind, bool(reuse_session), True)
+        if native_exit is not None and context_id is not None:
+            native_exit(os.fspath(path), context_id, kind, bool(reuse_session), True)
 
 
 def _postgres_dsn_for_rust(dsn: str | None) -> str:

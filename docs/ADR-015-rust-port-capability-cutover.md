@@ -83,6 +83,8 @@ Fix: in test_oidc_keycloak_e2e.py, the pre-/me JWT reset now verifies with the s
 
 The 2026-11-22 revalidation found one implementation-adjacent defect before the store/PostgreSQL gate completed: importing `kogwistar._rust_bridge` directly entered the `engine_core` package and reached `shortids.py` while `_rust_bridge` was still initializing. The bridge therefore moved the `native_sqlite_enter`/`native_sqlite_exit` import into the managed SQLite session branch. This removes the circular import without changing either Python or Rust ABI. The previously failing child-process transaction-token test now passes, and direct `kogwistar._rust_bridge` import succeeds.
 
+The same revalidation exposed two SQLite transaction-ownership defects: a duplicate native `begin_transaction` did not fail closed, and a rejected nested begin released the live session. The context registry now rejects the duplicate and preserves the active session until `commit_transaction`/`rollback_transaction`. Focused verification: SQLite context invariants **37 passed, 2 skipped**; Rust SQLite differential **12 passed**.
+
 Revalidation results from the `kogwistar` repository root:
 
 - PostgreSQL store/projection/recovery/lane/queue/graph groups: **143 passed, 0 failed**.
