@@ -63,3 +63,8 @@ installed module path, version, and `Node` import. This verifies package
 metadata and the Python-authority compatibility profile only, not whole-stack
 Rust/Python parity or the optional features excluded above.
 
+PyPI `kogwistar==0.7.1` declares `Requires-Python >=3.11` and preserves the
+Python-authority profile and PyPy compatibility constraints from `0.7.0`.
+Kogwistar 0.7.1 was published from tag `v0.7.1` and adds the ADR-015
+six-capability gate fixes.
+
