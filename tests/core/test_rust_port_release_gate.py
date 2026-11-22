@@ -618,6 +618,26 @@ def test_capability_readiness_is_derived_from_test_evidence_not_manifest_flags()
     assert blocked[0]["status"] == "blocked"
 
 
+def test_cutover_ledger_must_match_executable_readiness() -> None:
+    gate = _gate()
+    ready = [
+        {"capability": "queues-leases-lanes", "cutover_readiness": "ready"},
+        {"capability": "workflow-runtime", "cutover_readiness": "blocked"},
+    ]
+    ownership = [
+        {"capability": "queues-leases-lanes", "rust_cutover_ready": True},
+        {"capability": "workflow-runtime", "rust_cutover_ready": False},
+    ]
+    assert gate.validate_manifest_cutover_readiness_alignment(ready, ownership) == []
+
+    ownership[0]["rust_cutover_ready"] = False
+    errors = gate.validate_manifest_cutover_readiness_alignment(ready, ownership)
+    assert errors == [
+        "queues-leases-lanes: manifest rust_cutover_ready=False does not match "
+        "executable cutover_readiness=ready"
+    ]
+
+
 def test_capability_test_gate_pass_is_not_hidden_by_shared_cutover_blockers() -> None:
     gate = _gate()
     results, errors = gate.evaluate_capability_clause_tests(
