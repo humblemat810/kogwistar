@@ -89,6 +89,17 @@ lanes **4**, and graph/pgvector **50**. Reports are local evidence under
 Phase-4/Phase-5 candidate UAT, deferred syscall authority, or the overall
 cutover ledger.
 
+### Latest current-candidate Phase-4 runtime revalidation
+
+Using the same source SHA and native extension SHA above, with live
+`pgvector:pg16` over `postgresql+psycopg`, the Phase-4 runtime gate passed with
+zero skips: durable-worker **186** and PostgreSQL runtime **10**; total
+**196 passed, 0 failed, 0 skipped**. Report:
+`.codex/adr015-phase4-runtime-044e05.json`.
+This proves current runtime test-gate evidence only. It does not authorize the
+manifest's `rust_cutover_ready` transition: Phase-5 server/UAT evidence,
+deferred syscall ownership, and shared release acceptance remain separate.
+
 ## Capability Gate Closure
 
 This matrix tracks each of the 22 normative profile clauses separately from the
