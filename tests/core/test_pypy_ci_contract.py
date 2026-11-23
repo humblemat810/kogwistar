@@ -88,8 +88,12 @@ def test_ci_keeps_automatic_nonblocking_pypy_native_probe() -> None:
     assert "--extension" in workflow
     assert "scripts/pypy_native_extension_dlopen.py" in workflow
     assert 'cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3' in workflow
-    assert 'old = \'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }\'' in workflow
-    assert 'new = \'pyo3 = { version = "0.28.3", features = ["extension-module"] }\'' in workflow
+    assert 'Path("rust/Cargo.toml")' in workflow
+    assert 'Path("rust/crates/kogwistar-store-graph/Cargo.toml")' in workflow
+    assert 'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }' in workflow
+    assert "pyo3 = { version = '0.29', features = ['abi3', 'auto-initialize'] }" in workflow
+    assert 'pyo3 = { version = "0.28.3", features = ["extension-module"] }' in workflow
+    assert "pyo3 = { version = '0.28.3', features = ['abi3', 'auto-initialize'] }" in workflow
     assert 'Production and normal' in workflow
     assert 'python -m maturin build --release --locked' in workflow
     assert '--interpreter "$(command -v python)"' in workflow
