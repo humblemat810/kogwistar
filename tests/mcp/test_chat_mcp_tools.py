@@ -4025,6 +4025,79 @@ async def test_mcp_conversation_get_transcript_matches_shared_contract(
 
     assert _structured(result) == contract["result"]
 
+    from fastapi.testclient import TestClient
+    from starlette.routing import Mount
+    from tests._helpers.server_http_helpers import token_header
+
+    saved_mcp_app = server.mcp_app
+    streamable_mcp_app = server.mcp.http_app(path="/mcp")
+    server.mcp_app = streamable_mcp_app
+    for route in server.app.router.routes:
+        if isinstance(route, Mount) and getattr(route, "app", None) is saved_mcp_app:
+            route.app = streamable_mcp_app
+            break
+    try:
+        with TestClient(server.app) as client:
+            headers = token_header(
+                client,
+                role="ro",
+                ns="conversation",
+                username=owner,
+                capabilities="read_graph",
+            )
+            headers["Accept"] = "application/json, text/event-stream"
+            initialized = client.post(
+                "/mcp",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-03-26",
+                        "capabilities": {},
+                        "clientInfo": {"name": "contract-test", "version": "1"},
+                    },
+                },
+            )
+            assert initialized.status_code == 200, initialized.text
+            headers["Mcp-Session-Id"] = initialized.headers["mcp-session-id"]
+            client.post(
+                "/mcp",
+                headers=headers,
+                json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+            )
+            response = client.post(
+                "/mcp",
+                headers=headers,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": contract["tool"],
+                        "arguments": contract["arguments"],
+                    },
+                },
+            )
+            assert response.status_code == 200, response.text
+            wire_message = json.loads(
+                next(
+                    line.removeprefix("data: ")
+                    for line in response.text.splitlines()
+                    if line.startswith("data: ")
+                )
+            )
+            tool_result = wire_message["result"]
+            assert tool_result["isError"] is False
+            assert tool_result["structuredContent"] == contract["result"]
+    finally:
+        server.mcp_app = saved_mcp_app
+        for route in server.app.router.routes:
+            if isinstance(route, Mount) and getattr(route, "app", None) is streamable_mcp_app:
+                route.app = saved_mcp_app
+                break
+
 
 @pytest.mark.asyncio
 async def test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace(
