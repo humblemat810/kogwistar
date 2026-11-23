@@ -728,6 +728,9 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
     gaps = crosswalk["rust_server_gaps"]
     assert {tuple(route) for route in gaps["pending_routes"]} == expected_routes
     assert set(gaps["pending_syscalls"]) == expected_syscalls
+    assert deferrals["syscall_group"]["required_authority"] == [
+        "server-rest-sse-mcp-cli"
+    ]
 
 
 def test_capability_evidence_links_reject_missing_stale_duplicate_and_route_refs(
@@ -1107,8 +1110,6 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
                     assert ownership[capability["id"]][
                         "current_authoritative_writer"
                     ] == "python"
-                else:
-                    assert ownership[capability["id"]]["rust_cutover_ready"] is True
 
 
 def test_mixed_opt_in_evidence_rejects_unstarted_or_unproven_gates() -> None:
@@ -1252,6 +1253,9 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
     manifest = json.loads(
         (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
     )
+    adr015 = (ROOT / "docs" / "ADR-015-rust-port-capability-cutover.md").read_text(
+        encoding="utf-8"
+    )
     rust_targets = [
         item
         for item in manifest["capability_ownership"]
@@ -1264,7 +1268,7 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         item["capability"] for item in rust_targets if not item["rust_cutover_ready"]
     ]
 
-    assert len(ready) == 8
+    assert len(ready) == 7
     assert set(ready) == {
         "deterministic-contracts",
         "sqlite-meta",
@@ -1273,13 +1277,37 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         "queues-leases-lanes",
         "graph-pgvector",
         "workflow-runtime",
-        "server-rest-sse-mcp-cli",
     }
-    assert not_ready == []
-    assert "does not claim universal behavioral parity" in checklist
-    assert "**8/8 Rust-targeted capabilities ready**" in checklist
+    assert not_ready == ["server-rest-sse-mcp-cli"]
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    server_support = next(
+        item for item in support_matrix["capabilities"]
+        if item["id"] == "server-rest-sse-mcp-cli"
+    )
+    assert server_support["rust"]["status"] == "enabled"
+    assert "Full dual-language objective remains **NOT COMPLETE**" in checklist
+    assert "Of eight Rust-targeted manifest flags, **7/8** are true" in checklist
+    assert "release gate independently derives `graph-pgvector` and `workflow-runtime` ready" in checklist
+    assert "server cutover blocked" in checklist
     assert "not unfinished implementation or overall migration progress" in worklist
-    assert "**Overall Rust cutover:** **8/8 Rust-targeted capabilities ready**" in worklist
+    assert "**Declared Rust capability flags:** **7/8 Rust-targeted `rust_cutover_ready` flags are true**" in worklist
+    assert "four deferred syscall operations block only `server-rest-sse-mcp-cli`" in worklist
+
+    adr015_flags = {
+        capability: value == "true"
+        for capability, value in re.findall(
+            r"(?m)^\| ([a-z0-9-]+) \| (true|false) \|", adr015
+        )
+    }
+    assert adr015_flags == {
+        item["capability"]: item["rust_cutover_ready"]
+        for item in manifest["capability_ownership"]
+    }
+    assert "remains blocked by four versioned syscall deferrals" in adr015
+    assert "nor this status claims universal Python/Rust parity" in adr015
+    assert "**Overall status:** **NOT COMPLETE**" in (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:

@@ -618,6 +618,28 @@ def test_capability_readiness_is_derived_from_test_evidence_not_manifest_flags()
     assert blocked[0]["status"] == "blocked"
 
 
+def test_server_syscall_deferrals_do_not_block_graph_or_runtime_capability_readiness() -> None:
+    gate = _gate()
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=_phase3_capability_evidence(),
+        phase4=_phase4_runtime_evidence(),
+        phase5=_phase5_evidence(),
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+    assert errors == []
+
+    reports = gate.derive_capability_test_readiness(
+        clause_results=results,
+        phase_statuses={"phase3": "passed", "phase4": "passed", "phase5": "passed"},
+        library_uat_passed=True,
+        deferred_capabilities={"server-rest-sse-mcp-cli"},
+    )
+    by_capability = {item["capability"]: item for item in reports}
+    assert by_capability["graph-pgvector"]["cutover_readiness"] == "ready"
+    assert by_capability["workflow-runtime"]["cutover_readiness"] == "ready"
+    assert by_capability["server-rest-sse-mcp-cli"]["cutover_readiness"] == "blocked"
+
+
 def test_cutover_ledger_must_match_executable_readiness() -> None:
     gate = _gate()
     ready = [
@@ -921,8 +943,8 @@ def test_current_release_gate_reports_real_blockers() -> None:
     assert readiness["workflow-runtime"]["status"] == "passed"
     assert readiness["server-rest-sse-mcp-cli"]["status"] == "passed"
     assert readiness["postgres-sequence-event-log"]["cutover_readiness"] == "ready"
-    assert readiness["graph-pgvector"]["cutover_readiness"] == "blocked"
-    assert readiness["workflow-runtime"]["cutover_readiness"] == "blocked"
+    assert readiness["graph-pgvector"]["cutover_readiness"] == "ready"
+    assert readiness["workflow-runtime"]["cutover_readiness"] == "ready"
     assert readiness["server-rest-sse-mcp-cli"]["cutover_readiness"] == "blocked"
     assert not any(row["gate"] == "capability-test-gate" for row in result["blockers"])
     assert any(
@@ -958,8 +980,8 @@ def test_gate_does_not_treat_manifest_flags_as_test_evidence() -> None:
     assert readiness["graph-pgvector"]["status"] == "passed"
     assert readiness["workflow-runtime"]["status"] == "passed"
     assert readiness["server-rest-sse-mcp-cli"]["status"] == "passed"
-    assert readiness["graph-pgvector"]["cutover_readiness"] == "blocked"
-    assert readiness["workflow-runtime"]["cutover_readiness"] == "blocked"
+    assert readiness["graph-pgvector"]["cutover_readiness"] == "ready"
+    assert readiness["workflow-runtime"]["cutover_readiness"] == "ready"
     assert readiness["server-rest-sse-mcp-cli"]["cutover_readiness"] == "blocked"
 
 

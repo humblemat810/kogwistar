@@ -141,8 +141,8 @@
       "id": "server-rest-sse-mcp-cli",
       "rust_port_manifest_id": "server-rest-sse-mcp-cli",
       "conformance_profile": "server-rest-sse-mcp-cli",
-      "rust_coverage": "cutover-ready",
-      "mixed_coverage": "merged-candidate CI #859 passed Rust REST/SSE/MCP/CLI contract, authentication, authorization, interoperability, and performance checks",
+      "rust_coverage": "not-cutover-ready",
+      "mixed_coverage": "Merged-candidate CI #859 passed bounded Rust REST/SSE/MCP/CLI contract, authentication, authorization, interoperability, and performance checks; four versioned syscalls remain intentionally deferred and block server cutover.",
       "native_python_path": "not-verified",
       "native_rust_path": "verified-by-CI-859"
     }
