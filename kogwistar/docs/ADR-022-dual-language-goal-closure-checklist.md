@@ -4,6 +4,8 @@
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
 **Status summary:** **6 bounded criteria PASS; 1 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
+**Fine execution tracking:** Remaining GOAL-06/08/09 work is tracked in [ADR-022 dual-language goal fine checklist](ADR-022-dual-language-goal-fine-checklist.md). Its denominator is independent from ADR-015 and the closed 177/911 evidence inventory.
+
 ## Closure Criteria
 
 | ID | Criterion | Status | Evidence and exact remaining condition |

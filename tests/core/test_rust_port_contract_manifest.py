@@ -1104,18 +1104,53 @@ def test_public_http_and_mcp_tasklets_name_executable_tests() -> None:
         )
 
     missing_rows = sorted(expected_tasklets - tasklet_rows.keys())
-    missing_tests = []
-    for tasklet_id in sorted(expected_tasklets & tasklet_rows.keys()):
+    missing_python_tests = []
+    missing_rust_tests = []
+    for operation in route_map["operations"]:
+        tasklet_id = operation["tasklet_id"]
         tokens = set(
-            re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", tasklet_rows[tasklet_id])
+            re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", tasklet_rows.get(tasklet_id, ""))
         )
-        if not tokens.intersection(python_test_names | rust_test_names):
-            missing_tests.append(tasklet_id)
+        if not tokens.intersection(python_test_names):
+            missing_python_tests.append(tasklet_id)
+        if not tokens.intersection(rust_test_names):
+            missing_rust_tests.append(tasklet_id)
+
+    missing_mcp_python_tests = []
+    missing_mcp_rust_tests = []
+    for operation in inventory["mcp_operations"]:
+        suffix = operation["name"].upper().replace(".", "-").replace("_", "-")
+        tasklet_ids = (
+            f"FW-03-04A-MCP-{suffix}",
+            f"FW-03-04B-MCP-{suffix}",
+        )
+        tokens = set(
+            re.findall(
+                r"\b[A-Za-z_][A-Za-z0-9_]*\b",
+                " ".join(tasklet_rows.get(tasklet_id, "") for tasklet_id in tasklet_ids),
+            )
+        )
+        if not tokens.intersection(python_test_names):
+            missing_mcp_python_tests.append(operation["name"])
+        if not tokens.intersection(rust_test_names):
+            missing_mcp_rust_tests.append(operation["name"])
 
     assert not missing_rows, f"public operation tasklets missing: {missing_rows}"
-    assert not missing_tests, (
-        "public operation tasklets lack executable test selectors: "
-        f"{missing_tests}"
+    assert not missing_python_tests, (
+        "HTTP tasklets lack executable Python test selectors: "
+        f"{missing_python_tests}"
+    )
+    assert not missing_rust_tests, (
+        "HTTP tasklets lack executable Rust test selectors: "
+        f"{missing_rust_tests}"
+    )
+    assert not missing_mcp_python_tests, (
+        "MCP operations lack executable Python test selectors: "
+        f"{missing_mcp_python_tests}"
+    )
+    assert not missing_mcp_rust_tests, (
+        "MCP operations lack executable Rust test selectors: "
+        f"{missing_mcp_rust_tests}"
     )
 
 
