@@ -68,8 +68,8 @@ run registry, queues/leases/lanes, PostgreSQL graph/vector operations, workflow
 runtime, and REST/SSE/MCP/CLI boundaries. Evidence is CI #859 on commit
 `2b53eab1`; these checks cover the named serialization, authority, recovery,
 ACL/scope, and backend contracts, not universal behavioral parity.
-The opt-in local Chroma interop suite passed on the current checkout:
-`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**, 100.82s).
+The opt-in local Chroma interop suite passed on the current checkout; latest
+test commands and detailed evidence are kept in the completion worklist below.
 It covers Python Chroma projection read/reconciliation by Rust, Rust-authenticated
 graph mutation projected to Chroma and read after Python engine reopen, idempotent
 retry of that mutation batch, Python readback of the three canonical SQLite events,
@@ -77,6 +77,17 @@ Python Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1
 promotion by the Python worker. The four-test suite is now recorded as verified
 Rust↔Python interop evidence, while Chroma remains a non-authoritative eventual
 projection and therefore remains outside Rust cutover readiness.
+The bounded Chroma completion/verification tasklets are tracked in
+[`chroma_rust_interop_worklist.md`](chroma_rust_interop_worklist.md). They may
+close on existing test evidence without code changes; closure does not change
+Chroma's SQLite-canonical/eventual-projection authority model.
+Chroma interop tasklets are closed; their sole progress count and exact
+current-checkout evidence are in that worklist. This completes the documented
+cutover/interoperability gates when combined with CI #859/#860 evidence for
+the six named non-Chroma capabilities. It does not prove every runtime/platform
+combination: `sqlite-meta` still records partial mixed-runtime coverage in the
+capability contract. Nor does it make Chroma Rust's canonical writer or couple
+Chroma transactionally to SQLite.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
