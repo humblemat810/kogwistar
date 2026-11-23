@@ -2036,6 +2036,88 @@ def test_project_view_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
+def test_create_conversation_syscall_uses_python_in_memory_backend(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "create-conversation-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        now = int(time.time())
+        token = jwt.encode(
+            {
+                "sub": "memory-owner",
+                "user_id": "memory-owner",
+                "role": "rw",
+                "ns": ["conversation"],
+                "capabilities": ["spawn_process"],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        headers = {"Authorization": f"Bearer {token}"}
+        expected = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/conversation-create-syscall-result-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        expected.update(
+            conversation_id="memory-conversation",
+            user_id="memory-owner",
+            start_node_id="memory-conversation-start",
+            tail_node_id="memory-conversation-start",
+        )
+        with TestClient(server.app) as client:
+            request = {
+                "version": "v1",
+                "op": "create_conversation",
+                "args": {
+                    "user_id": "impostor",
+                    "conversation_id": "memory-conversation",
+                    "start_node_id": "memory-conversation-start",
+                },
+            }
+            denied = client.post(
+                "/api/syscall/v1/create_conversation", json=request, headers=headers
+            )
+            assert denied.status_code == 403
+
+            request["args"]["user_id"] = "memory-owner"
+            created = client.post(
+                "/api/syscall/v1/create_conversation", json=request, headers=headers
+            )
+            assert created.status_code == 200, created.text
+            payload = created.json()
+            assert payload["version"] == "v1"
+            assert payload["op"] == "create_conversation"
+            assert payload["status"] == "ok"
+            assert payload["result"] == expected
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
