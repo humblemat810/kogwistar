@@ -619,61 +619,34 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         assert_eq!(denied_mutation.status, StatusCode::FORBIDDEN.as_u16());
     }
 
-    let approved = service.execute(ApiEffectRequest {
-        contract_version: 1,
-        method: "POST".to_owned(),
-        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
-        body: serde_json::to_vec(&json!({
-            "version":"syscall-v1",
-            "args":{
-                "action":"grant", "approval_action":"request_approval",
-                "subject":"syscall-target", "capability":"workflow.run.read"
-            }
-        })).unwrap(),
-        principal: json!({
-            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
-            "capabilities":["approve_action", "project_view", "read_security_scope"]
-        }),
-    }).await;
-    assert_eq!(approved.status, StatusCode::OK.as_u16());
-    let approved: Value = serde_json::from_slice(&approved.body).unwrap();
-    assert_eq!(approved["result"]["status"], "approved");
-    assert!(!approved["result"]["approval"]["approvals"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|approval| approval["subject"] == "unauthorized-target"));
-    assert!(approved["result"]["approval"]["approvals"].as_array().unwrap().iter().any(
-        |approval| approval["subject"] == "syscall-target"
-            && approval["action"] == "request_approval"
-            && approval["capabilities"] == json!(["workflow.run.read"])
-    ));
-
-    let revoked = service.execute(ApiEffectRequest {
-        contract_version: 1,
-        method: "POST".to_owned(),
-        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
-        body: serde_json::to_vec(&json!({
-            "version":"syscall-v1",
-            "args":{"action":"revoke", "subject":"syscall-target", "capability":"workflow.run.read"}
-        })).unwrap(),
-        principal: json!({
-            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
-            "capabilities":["approve_action", "project_view", "read_security_scope"]
-        }),
-    }).await;
-    assert_eq!(revoked.status, StatusCode::OK.as_u16());
-    let revoked: Value = serde_json::from_slice(&revoked.body).unwrap();
-    assert_eq!(revoked["result"]["status"], "revoked");
-    assert!(!revoked["result"]["revocation"]["revoked"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|entry| entry["subject"] == "unauthorized-target"));
-    assert!(revoked["result"]["revocation"]["revoked"].as_array().unwrap().iter().any(
-        |entry| entry["subject"] == "syscall-target"
-            && entry["capabilities"] == json!(["workflow.run.read"])
-    ));
+    let success_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-request-approval-success-v1.json"
+    ))
+    .unwrap();
+    for case in success_contract["cases"].as_array().unwrap() {
+        let response = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+            body: serde_json::to_vec(&case["request"]).unwrap(),
+            principal: json!({
+                "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+                "capabilities":["approve_action", "project_view", "read_security_scope"]
+            }),
+        }).await;
+        assert_eq!(response.status, case["http_status"].as_u64().unwrap() as u16);
+        let envelope: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(envelope["version"], case["request"]["version"]);
+        assert_eq!(envelope["op"], case["request"]["op"]);
+        assert_eq!(envelope["status"], "ok");
+        let result = &envelope["result"];
+        assert_eq!(result["status"], case["result_status"]);
+        let entries = result[case["snapshot_field"].as_str().unwrap()]
+            [case["entries_field"].as_str().unwrap()]
+            .as_array()
+            .unwrap();
+        assert!(entries.contains(&case["expected_entry"]), "{}", case["name"]);
+    }
 
     let approval = service.execute(ApiEffectRequest {
         contract_version: 1,

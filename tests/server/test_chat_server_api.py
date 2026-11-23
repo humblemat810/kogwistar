@@ -2200,6 +2200,12 @@ def test_receive_message_syscall_uses_python_in_memory_backend(
 def test_request_approval_syscall_uses_python_in_memory_backend(
     monkeypatch, tmp_path
 ):
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/syscall-request-approval-success-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -2228,37 +2234,31 @@ def test_request_approval_syscall_uses_python_in_memory_backend(
                 ns="workflow",
                 capabilities="approve_action,project_view,read_security_scope",
             )
-            request = {
-                "version": "v1",
-                "op": "request_approval",
-                "args": {
-                    "action": "grant",
-                    "approval_action": "request_approval",
-                    "subject": "memory-target",
-                    "capability": "workflow.run.read",
-                },
-            }
-            granted = client.post(
-                "/api/syscall/v1/request_approval", json=request, headers=headers
-            )
-            assert granted.status_code == 200, granted.text
-            assert granted.json()["result"]["status"] == "approved"
+            for case in contract["cases"]:
+                response = client.post(
+                    "/api/syscall/v1/request_approval",
+                    json=case["request"],
+                    headers=headers,
+                )
+                assert response.status_code == case["http_status"], response.text
+                payload = response.json()
+                assert payload["version"] == case["request"]["version"]
+                assert payload["op"] == case["request"]["op"]
+                assert payload["status"] == "ok"
+                result = payload["result"]
+                assert result["status"] == case["result_status"], case["name"]
+                entries = result[case["snapshot_field"]][case["entries_field"]]
+                assert case["expected_entry"] in entries, case["name"]
 
             denied = client.post(
                 "/api/syscall/v1/request_approval",
-                json=request,
+                json=contract["cases"][0]["request"],
                 headers=_token_header(
                     client, role="rw", ns="workflow", capabilities="project_view"
                 ),
             )
             assert denied.status_code == 403
 
-            request["args"]["action"] = "revoke"
-            revoked = client.post(
-                "/api/syscall/v1/request_approval", json=request, headers=headers
-            )
-            assert revoked.status_code == 200, revoked.text
-            assert revoked.json()["result"]["status"] == "revoked"
     finally:
         for engine in engines:
             engine.close()

@@ -1,0 +1,47 @@
+{
+  "contract_version": 1,
+  "cases": [
+    {
+      "name": "grant",
+      "request": {
+        "version": "v1",
+        "op": "request_approval",
+        "args": {
+          "action": "grant",
+          "approval_action": "request_approval",
+          "subject": "shared-approval-target",
+          "capability": "workflow.run.read"
+        }
+      },
+      "http_status": 200,
+      "result_status": "approved",
+      "snapshot_field": "approval",
+      "entries_field": "approvals",
+      "expected_entry": {
+        "subject": "shared-approval-target",
+        "action": "request_approval",
+        "capabilities": ["workflow.run.read"]
+      }
+    },
+    {
+      "name": "revoke",
+      "request": {
+        "version": "v1",
+        "op": "request_approval",
+        "args": {
+          "action": "revoke",
+          "subject": "shared-approval-target",
+          "capability": "workflow.run.read"
+        }
+      },
+      "http_status": 200,
+      "result_status": "revoked",
+      "snapshot_field": "revocation",
+      "entries_field": "revoked",
+      "expected_entry": {
+        "subject": "shared-approval-target",
+        "capabilities": ["workflow.run.read"]
+      }
+    }
+  ]
+}
