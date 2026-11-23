@@ -1719,6 +1719,51 @@ mod graph_upsert_tests {
     }
 }
 
+fn request_approval_mutates_capabilities(input: &SyscallInput) -> bool {
+    match input
+        .args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "grant" | "revoke" => true,
+        _ => false,
+    }
+}
+
+fn request_approval_syscall_effect(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+    input: &SyscallInput,
+) -> ApiEffectResponse {
+    let required = if request_approval_mutates_capabilities(input) {
+        &["approve_action"][..]
+    } else {
+        &[][..]
+    };
+    if !syscall_allowed(request, shared, &input.op, true, required) {
+        return syscall_forbidden(&input.op);
+    }
+    if request_approval_mutates_capabilities(input)
+        && !capability_allowed(
+            request,
+            shared,
+            "project_view",
+            &["project_view", "read_security_scope"],
+        )
+    {
+        return effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Inspecting capabilities requires project_view and read_security_scope capabilities",
+        );
+    }
+    request_approval_syscall(request, shared, input)
+}
+
 fn request_approval_syscall(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
@@ -1800,7 +1845,7 @@ fn request_approval_syscall(
             .insert(capability.clone());
         json!({
             "status":"approved",
-            "approval": {"subject":subject,"action":approval_action,"capabilities":[capability]},
+            "approval": capability_snapshot(&request.principal, &state),
         })
     } else {
         state
@@ -1810,7 +1855,7 @@ fn request_approval_syscall(
             .insert(capability.clone());
         json!({
             "status":"revoked",
-            "revocation": {"subject":subject,"capability":capability},
+            "revocation": capability_snapshot(&request.principal, &state),
         })
     };
     json_effect(

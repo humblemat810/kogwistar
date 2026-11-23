@@ -254,11 +254,7 @@ impl SqliteRunApplicationService {
                 }
             }
             "request_approval" => {
-                if !syscall_allowed(request, &self.capabilities, op, true, &["approve_action"]) {
-                    syscall_forbidden(op)
-                } else {
-                    request_approval_syscall(request, &self.capabilities, &input)
-                }
+                request_approval_syscall_effect(request, &self.capabilities, &input)
             }
             _ => unavailable_effect(request.clone()),
         };

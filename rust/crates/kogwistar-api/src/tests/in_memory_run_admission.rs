@@ -570,6 +570,88 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     }).await;
     assert_eq!(denied_project_view.status, StatusCode::FORBIDDEN.as_u16());
 
+    for (action, capabilities) in [
+        ("grant", vec!["approve_action", "project_view"]),
+        ("grant", vec!["approve_action", "read_security_scope"]),
+        ("revoke", vec!["approve_action", "project_view"]),
+        ("revoke", vec!["approve_action", "read_security_scope"]),
+    ] {
+        let denied_mutation = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"syscall-v1",
+                "args":{
+                    "action":action,
+                    "subject":"unauthorized-target",
+                    "capability":"workflow.run.write"
+                }
+            })).unwrap(),
+            principal: json!({
+                "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+                "capabilities":capabilities
+            }),
+        }).await;
+        assert_eq!(denied_mutation.status, StatusCode::FORBIDDEN.as_u16());
+    }
+
+    let approved = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{
+                "action":"grant", "approval_action":"request_approval",
+                "subject":"syscall-target", "capability":"workflow.run.read"
+            }
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+            "capabilities":["approve_action", "project_view", "read_security_scope"]
+        }),
+    }).await;
+    assert_eq!(approved.status, StatusCode::OK.as_u16());
+    let approved: Value = serde_json::from_slice(&approved.body).unwrap();
+    assert_eq!(approved["result"]["status"], "approved");
+    assert!(!approved["result"]["approval"]["approvals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|approval| approval["subject"] == "unauthorized-target"));
+    assert!(approved["result"]["approval"]["approvals"].as_array().unwrap().iter().any(
+        |approval| approval["subject"] == "syscall-target"
+            && approval["action"] == "request_approval"
+            && approval["capabilities"] == json!(["workflow.run.read"])
+    ));
+
+    let revoked = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{"action":"revoke", "subject":"syscall-target", "capability":"workflow.run.read"}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+            "capabilities":["approve_action", "project_view", "read_security_scope"]
+        }),
+    }).await;
+    assert_eq!(revoked.status, StatusCode::OK.as_u16());
+    let revoked: Value = serde_json::from_slice(&revoked.body).unwrap();
+    assert_eq!(revoked["result"]["status"], "revoked");
+    assert!(!revoked["result"]["revocation"]["revoked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|entry| entry["subject"] == "unauthorized-target"));
+    assert!(revoked["result"]["revocation"]["revoked"].as_array().unwrap().iter().any(
+        |entry| entry["subject"] == "syscall-target"
+            && entry["capabilities"] == json!(["workflow.run.read"])
+    ));
+
     let approval = service.execute(ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
@@ -579,7 +661,7 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         })).unwrap(),
         principal: json!({
             "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
-            "capabilities":["approve_action"]
+            "capabilities":[]
         }),
     }).await;
     assert_eq!(approval.status, StatusCode::OK.as_u16());
@@ -596,7 +678,7 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         })).unwrap(),
         principal: json!({
             "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
-            "capabilities":["approve_action"]
+            "capabilities":[]
         }),
     }).await;
     assert_eq!(requested_approval.status, StatusCode::OK.as_u16());
@@ -611,7 +693,7 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         body: serde_json::to_vec(&json!({"version":"syscall-v1", "args":{}})).unwrap(),
         principal: json!({
             "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
-            "capabilities":["approve_action"]
+            "capabilities":[]
         }),
     }).await;
     assert_eq!(missing_action_approval.status, StatusCode::BAD_REQUEST.as_u16());

@@ -630,6 +630,53 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
         granted_payload = granted.json()
         assert granted_payload["status"] == "ok"
         assert granted_payload["result"]["status"] == "approved"
+        assert any(
+            approval["subject"] == "tester"
+            and approval["action"] == "request_approval"
+            and "workflow.run.read" in approval["capabilities"]
+            for approval in granted_payload["result"]["approval"]["approvals"]
+        )
+
+        for action, missing_capability in (
+            ("grant", "project_view"),
+            ("grant", "read_security_scope"),
+            ("revoke", "project_view"),
+            ("revoke", "read_security_scope"),
+        ):
+            capabilities = {"approve_action", "project_view", "read_security_scope"}
+            capabilities.remove(missing_capability)
+            denied_mutation = client.post(
+                "/api/syscall/v1/request_approval",
+                json={
+                    "version": "v1",
+                    "op": "request_approval",
+                    "args": {
+                        "action": action,
+                        "subject": "unauthorized-target",
+                        "capability": "workflow.run.write",
+                    },
+                },
+                headers=_token_header(
+                    client,
+                    role="rw",
+                    ns="workflow",
+                    capabilities=",".join(sorted(capabilities)),
+                ),
+            )
+            assert denied_mutation.status_code == 403
+
+        capability_snapshot = client.get(
+            "/api/workflow/capabilities", headers=headers
+        )
+        capability_snapshot.raise_for_status()
+        assert not any(
+            approval["subject"] == "unauthorized-target"
+            for approval in capability_snapshot.json()["approvals"]
+        )
+        assert not any(
+            revoked["subject"] == "unauthorized-target"
+            for revoked in capability_snapshot.json()["revoked"]
+        )
 
         denied = client.post(
             "/api/syscall/v1/request_approval",
@@ -638,7 +685,7 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
                 "op": "request_approval",
                 "args": {"action": "deny", "reason": "manual deny"},
             },
-            headers=headers,
+            headers=_token_header(client, role="rw", ns="workflow", capabilities=""),
         )
         denied.raise_for_status()
         denied_payload = denied.json()
@@ -652,7 +699,7 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
                 "op": "request_approval",
                 "args": {"action": "unrecognized"},
             },
-            headers=headers,
+            headers=_token_header(client, role="rw", ns="workflow", capabilities=""),
         )
         assert requested.status_code == 200, requested.text
         assert requested.json()["status"] == "ok"
@@ -664,7 +711,7 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
         missing_action = client.post(
             "/api/syscall/v1/request_approval",
             json={"version": "v1", "op": "request_approval", "args": {}},
-            headers=headers,
+            headers=_token_header(client, role="rw", ns="workflow", capabilities=""),
         )
         assert missing_action.status_code == 400
         assert missing_action.json()["detail"] == "action is required"

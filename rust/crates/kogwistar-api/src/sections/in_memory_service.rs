@@ -4643,15 +4643,17 @@ impl InMemoryGraphApplicationService {
         request: &ApiEffectRequest,
         input: &SyscallInput,
     ) -> ApiEffectResponse {
+        if input.op == "request_approval" {
+            return request_approval_syscall_effect(request, &self.capabilities, input);
+        }
         let required = match input.op.as_str() {
             "spawn_process" => &["spawn_process", "workflow.run.write"][..],
             "terminate_process" | "resume" => &["workflow.run.write"][..],
             "checkpoint" => &["workflow.run.read"][..],
             "project_view" => &["read_security_scope", "project_view"][..],
-            "request_approval" => &["approve_action"][..],
             _ => return unavailable_effect(request.clone()),
         };
-        let write = matches!(input.op.as_str(), "spawn_process" | "terminate_process" | "resume" | "request_approval");
+        let write = matches!(input.op.as_str(), "spawn_process" | "terminate_process" | "resume");
         if !syscall_allowed(request, &self.capabilities, &input.op, write, required) {
             return syscall_forbidden(&input.op);
         }
