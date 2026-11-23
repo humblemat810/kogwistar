@@ -293,6 +293,123 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
 }
 
 #[tokio::test]
+async fn in_memory_run_cancel_matches_shared_contract_and_authority() {
+    let service = InMemoryGraphApplicationService::default();
+    let route = "/api/workflow/runs/memory-cancel-run/cancel";
+    assert!(service.supports_http_operation("POST", route));
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_cancel",
+        &json!({"role":"rw", "ns":["workflow"], "capabilities":[]})
+    ));
+    assert!(!service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_cancel",
+        &json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.write"]})
+    ));
+    assert!(!service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_cancel",
+        &json!({"role":"rw", "ns":["conversation"], "capabilities":["workflow.run.write"]})
+    ));
+
+    let submit = |principal: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/workflow/runs".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "run_id":"memory-cancel-run",
+            "workflow_id":"memory-cancel-workflow",
+            "conversation_id":"memory-cancel-conversation",
+            "expected_run_owner_id":"alice",
+            "initial_state":{"seed":1},
+            "node_ops":{"start":"noop"},
+            "node_executor_targets":{"start":"rust-native"}
+        }))
+        .unwrap(),
+        principal,
+    };
+    let principal = json!({
+        "sub":"alice",
+        "role":"rw",
+        "ns":["workflow"],
+        "capabilities":["spawn_process", "workflow.run.write", "workflow.run.read"]
+    });
+    assert_eq!(
+        service.execute(submit(principal.clone())).await.status,
+        StatusCode::ACCEPTED.as_u16()
+    );
+
+    let cancel = |principal: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: route.to_owned(),
+        body: Vec::new(),
+        principal,
+    };
+    let denied = service
+        .execute(cancel(json!({
+            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["workflow.run.read"]
+        })))
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(
+        kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-cancel-run")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running",
+        "denied cancellation must not mutate the run"
+    );
+
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-cancel-v1.json"
+    ))
+    .unwrap();
+    let accepted = service.execute(cancel(principal)).await;
+    assert_eq!(
+        accepted.status,
+        contract["accepted_status"].as_u64().unwrap() as u16
+    );
+    let body: Value = serde_json::from_slice(&accepted.body).unwrap();
+    for field in contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(body.get(field).is_some(), "missing {field}");
+    }
+    assert!(contract["accepted_run_statuses"].as_array().unwrap().contains(&body["status"]));
+    assert_eq!(body["cancel_requested"], true);
+    assert_eq!(body["status"], "cancelled");
+
+    let events_after_cancel = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-cancel-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+    let terminal_repeat = service
+        .execute(cancel(json!({"sub":"alice", "role":"rw", "ns":["workflow"], "capabilities":[]})))
+        .await;
+    assert_eq!(terminal_repeat.status, StatusCode::ACCEPTED.as_u16());
+    assert_eq!(
+        kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            "memory-cancel-run",
+            0,
+            100,
+        )
+        .await
+        .unwrap()
+        .len(),
+        events_after_cancel.len(),
+        "terminal repeat must not append another transition"
+    );
+}
+
+#[tokio::test]
 async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     use kogwistar_store::{
         LaneMessageClaimFilter, LaneMessageReadStore, LaneMessageWriteStore,

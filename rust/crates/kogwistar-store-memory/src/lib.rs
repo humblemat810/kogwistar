@@ -1554,15 +1554,7 @@ impl ServerRunWriteStore for InMemoryStore {
     }
 
     async fn request_server_run_cancel(&self, run_id: &str) -> StoreResult<()> {
-        let mut state = self.state.write().expect("in-memory store lock poisoned");
-        if let Some(row) = state.server_runs.get_mut(run_id) {
-            row.cancel_requested = true;
-            if !matches!(row.status.as_str(), "cancelled" | "failed" | "succeeded") {
-                row.status = "cancelling".to_owned();
-            }
-            row.updated_at_ms = now_ms();
-        }
-        Ok(())
+        self.cancel_recorded_runtime_run(run_id)
     }
 }
 fn namespace(ns: &str) -> StoreResult<()> {

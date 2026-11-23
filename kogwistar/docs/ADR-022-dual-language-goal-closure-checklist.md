@@ -61,3 +61,7 @@ contract. A passing tasklet cannot imply untested matrix families.
 2. Use the operation inventory to select a bounded GOAL-06/08 behavior cell. Add or strengthen an executable parity oracle, run both implementations on the same fixture, and change production code only for a reproduced contract gap.
 3. Extend performance evidence only for representative high-value request families/backends; keep current benchmark claims scoped to their measured traces.
 
+## Latest Bounded Slice Evidence
+
+In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/scope and active-run capability checks, shared cancel response fields, terminal-repeat idempotency, and atomic recorded-transition/lane cleanup pass `in_memory_run_cancel_matches_shared_contract_and_authority` and `cancel_commits_runtime_transition_and_lane_cleanup_atomically`. Python MCP and in-memory-store comparison tests also pass. This closes only the named memory cancellation cell; GOAL-06 and GOAL-08 remain OPEN pending the full operation/backend matrix.
+

@@ -2387,7 +2387,10 @@ impl ApplicationService for InMemoryGraphApplicationService {
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         if surface == "workflow"
-            && matches!(name, "workflow.run_events" | "workflow.run_resume")
+            && matches!(
+                name,
+                "workflow.run_events" | "workflow.run_resume" | "workflow.run_cancel"
+            )
         {
             return true;
         }
@@ -2437,6 +2440,14 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && (effective.contains("workflow.run.write")
                     || effective.contains("approve_action"))
+                && self.supports_mcp_tool(surface, name);
+        }
+        if name == "workflow.run_cancel" {
+            return surface == "workflow"
+                && principal_role(principal) == "rw"
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
         if name == "wisdom.semantic_seed_then_expand" {
@@ -2492,6 +2503,12 @@ impl ApplicationService for InMemoryGraphApplicationService {
         if method == "POST"
             && runtime_run_route(path)
                 .is_some_and(|(_, tail)| tail.as_slice() == ["resume"])
+        {
+            return true;
+        }
+        if method == "POST"
+            && runtime_run_route(path)
+                .is_some_and(|(_, tail)| tail.as_slice() == ["cancel"])
         {
             return true;
         }
@@ -2555,6 +2572,12 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["resume"]
             {
                 return self.resume_runtime_run_effect(&request, &run_id).await;
+            }
+            if request.method == "POST"
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["cancel"]
+            {
+                return self.cancel_runtime_run_effect(&request, &run_id).await;
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next()
@@ -4577,6 +4600,82 @@ impl InMemoryGraphApplicationService {
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_RUNTIME_ADMISSION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
+    // PYTHON_PARITY_NOTE_V1: Rust mirrors the workflow-scoped REST/MCP cancel contract; terminal runs return unchanged, active runs require workflow.run.write, and the volatile store atomically records cancellation plus lane cleanup. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#cancel_runtime_run_effect; python=kogwistar/server/chat_service.py#cancel_run,kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_cancel; fixture=contracts/golden/run-cancel-v1.json,contracts/golden/workflow-run-cancel-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_run_cancel_matches_shared_contract_and_authority; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract,tests/core/test_in_memory_meta_store.py#test_in_memory_meta_retry_and_run_cancel_contract
+    async fn cancel_runtime_run_effect(
+        &self,
+        request: &ApiEffectRequest,
+        run_id: &str,
+    ) -> ApiEffectResponse {
+        if principal_role(&request.principal) != "rw"
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "*" || namespace == "workflow")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Cancelling workflow runs requires workflow namespace and write role",
+            );
+        }
+        let run = match kogwistar_store::ServerRunReadStore::server_run(&self.store, run_id).await
+        {
+            Ok(Some(run)) => run,
+            Ok(None) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_RUN_NOT_FOUND",
+                    format!("Unknown run_id: {run_id}"),
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        if matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled") {
+            return json_effect(StatusCode::ACCEPTED, server_run_value(run));
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "workflow.run.write",
+            &["workflow.run.write"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Cancelling workflow runs requires workflow.run.write capability",
+            );
+        }
+        match kogwistar_store::ServerRunWriteStore::request_server_run_cancel(&self.store, run_id)
+            .await
+        {
+            Ok(()) => match kogwistar_store::ServerRunReadStore::server_run(&self.store, run_id)
+                .await
+            {
+                Ok(Some(run)) => json_effect(StatusCode::ACCEPTED, server_run_value(run)),
+                Ok(None) => effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_RUN_NOT_FOUND",
+                    format!("Unknown run_id: {run_id}"),
+                ),
+                Err(error) => effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                ),
+            },
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
                 error.to_string(),
             ),
         }

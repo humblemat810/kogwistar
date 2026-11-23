@@ -640,6 +640,71 @@ impl InMemoryStore {
         Ok(result)
     }
 
+    /// Atomically cancels recorded runtime state and all outstanding run lanes.
+    pub fn cancel_recorded_runtime_run(&self, run_id: &str) -> StoreResult<()> {
+        let mut committed = self.state.write().expect("in-memory store lock poisoned");
+        let mut staged = committed.clone();
+        let Some(run) = staged.server_runs.get(run_id).cloned() else {
+            return Ok(());
+        };
+        let current = recorded_state_for(&staged, run_id, &run.workflow_id, &run.conversation_id)?;
+        if let Some(runtime) = current.filter(|state| !state.status.is_terminal()) {
+            let expected_event_seq = staged
+                .server_run_events
+                .get(run_id)
+                .and_then(|events| events.last())
+                .map_or(0, |event| event.seq);
+            apply_transition(
+                &mut staged,
+                RecordedRuntimeTransition {
+                    contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                    transition_id: format!("cancel-{run_id}-{expected_event_seq}"),
+                    expected_event_seq,
+                    kind: RecordedTransitionKind::Cancel,
+                    run_id: run_id.to_owned(),
+                    workflow_id: run.workflow_id,
+                    conversation_id: run.conversation_id,
+                    user_id: None,
+                    user_turn_node_id: None,
+                    step_seq: runtime.last_step_seq.max(0),
+                    node_id: runtime.last_node_id,
+                    token_id: runtime.last_token_id,
+                    parent_token_id: runtime.last_parent_token_id,
+                    initial_state: None,
+                    state_update: Vec::new(),
+                    update: None,
+                    state_schema: Map::new(),
+                    frontier: None,
+                    result: None,
+                    wait_reason: None,
+                    resume_payload: None,
+                    errors: Vec::new(),
+                },
+                None,
+                false,
+            )?;
+        } else if let Some(run) = staged.server_runs.get_mut(run_id) {
+            run.cancel_requested = true;
+            if !matches!(run.status.as_str(), "cancelled" | "failed" | "succeeded") {
+                run.status = "cancelling".to_owned();
+            }
+            run.updated_at_ms = now_ms();
+        }
+        for lane in staged.lane_messages.values_mut().filter(|lane| {
+            lane.run_id.as_deref() == Some(run_id)
+                && !matches!(
+                    lane.status.as_str(),
+                    "completed" | "failed" | "cancelled" | "dead-letter"
+                )
+        }) {
+            lane.status = "cancelled".to_owned();
+            lane.claimed_by = None;
+            lane.lease_until = None;
+        }
+        *committed = staged;
+        Ok(())
+    }
+
     // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#apply_claimed_recorded_worker_effect; python=kogwistar/agent/event_journal.py#acknowledge,kogwistar/messaging/service.py#ack; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=claim identity, successful state transition, run handled event, and lane completion commit under one in-memory writer lock.
     /// Applies one claimed worker effect and acknowledges its lane in the same
     /// write-lock transaction. Retries require the original handoff and digest.
@@ -2249,6 +2314,56 @@ mod tests {
                 .len(),
             4,
             "run creation, start, suspend, and resume are durably ordered"
+        );
+    }
+
+    #[test]
+    fn cancel_commits_runtime_transition_and_lane_cleanup_atomically() {
+        let store = admitted_store();
+        let events_before = block_on(store.server_run_events("memory-run", 0, 20))
+            .unwrap()
+            .len();
+
+        block_on(
+            kogwistar_store::ServerRunWriteStore::request_server_run_cancel(&store, "memory-run"),
+        )
+        .unwrap();
+
+        let run = block_on(store.server_run("memory-run"))
+            .unwrap()
+            .expect("admitted run remains inspectable");
+        assert_eq!(run.status, "cancelled");
+        assert!(run.cancel_requested);
+        let state = block_on(store.named_projection(RUNTIME_CURRENT_STATE_NAMESPACE, "memory-run"))
+            .unwrap()
+            .unwrap();
+        let runtime: RecordedRuntimeState =
+            serde_json::from_value(Value::Object(state.payload)).unwrap();
+        assert_eq!(runtime.status, RecordedRunStatus::Cancelled);
+        assert!(runtime.frontier.pending.is_empty());
+        assert!(runtime.frontier.suspended.is_empty());
+        let lane = block_on(store.projected_lane_message("lane-noop-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(lane.status, "cancelled");
+        assert!(lane.claimed_by.is_none());
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 20))
+                .unwrap()
+                .len(),
+            events_before + 1
+        );
+
+        block_on(
+            kogwistar_store::ServerRunWriteStore::request_server_run_cancel(&store, "memory-run"),
+        )
+        .unwrap();
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 20))
+                .unwrap()
+                .len(),
+            events_before + 1,
+            "repeated cancel must not append another transition"
         );
     }
 
