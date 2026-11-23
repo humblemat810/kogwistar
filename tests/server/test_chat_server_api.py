@@ -2347,7 +2347,7 @@ def test_send_message_syscall_uses_python_backend(monkeypatch, tmp_path, backend
             engine.close()
 
 
-def test_send_message_syscall_uses_python_postgres_backend(
+def test_conversation_syscalls_use_python_postgres_backend(
     monkeypatch, tmp_path, pg_dsn, pg_schema
 ):
     if not pg_dsn or not pg_schema:
@@ -2389,21 +2389,42 @@ def test_send_message_syscall_uses_python_postgres_backend(
             monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
         )
         monkeypatch.setattr(service._run_execution, "_run_answer", lambda _request: None)
+        now = int(time.time())
+        token = jwt.encode(
+            {
+                "sub": "alice",
+                "user_id": "alice",
+                "role": "rw",
+                "ns": ["conversation"],
+                "capabilities": ["send_message", "spawn_process", "read_graph"],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        headers = {"Authorization": f"Bearer {token}"}
         with TestClient(server.app) as client:
-            headers = _token_header(
-                client,
-                role="rw",
-                ns="conversation",
-                username="postgres-send-owner",
-                capabilities="send_message,spawn_process,read_graph",
-            )
             created = client.post(
-                "/api/conversations",
-                json={"user_id": "postgres-send-owner"},
+                "/api/syscall/v1/create_conversation",
+                json={
+                    "version": "v1",
+                    "op": "create_conversation",
+                    "args": {
+                        "conversation_id": "conv-create-test",
+                        "user_id": "alice",
+                        "start_node_id": "conv-create-start",
+                    },
+                },
                 headers=headers,
             )
             assert created.status_code == 200, created.text
-            conversation_id = created.json()["conversation_id"]
+            create_fixture = json.loads(
+                (Path(__file__).resolve().parents[2] / "contracts/golden/conversation-create-syscall-result-v1.json").read_text(encoding="utf-8")
+            )
+            assert created.json()["result"] == create_fixture
+            conversation_id = created.json()["result"]["conversation_id"]
             request = {
                 "version": "v1",
                 "op": "send_message",
