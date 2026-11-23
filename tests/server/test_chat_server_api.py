@@ -2520,6 +2520,83 @@ def test_checkpoint_syscall_reads_python_in_memory_backend(monkeypatch, tmp_path
             engine.close()
 
 
+def test_invoke_tool_syscall_uses_python_in_memory_backend(monkeypatch, tmp_path):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "invoke-tool-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        service, _registry = _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        identity = claims_ctx.set(
+            {
+                "ns": "conversation",
+                "role": "rw",
+                "capabilities": [
+                    "spawn_process",
+                    "send_message",
+                    "invoke_tool",
+                    "read_graph",
+                    "project_view",
+                    "read_security_scope",
+                    "workflow.run.write",
+                    "workflow.run.read",
+                ],
+                "sub": "memory-tool-owner",
+            }
+        )
+        try:
+            conversation = service.create_conversation(user_id="memory-tool-owner")
+        finally:
+            claims_ctx.reset(identity)
+
+        with TestClient(server.app) as client:
+            headers = _token_header(
+                client,
+                role="rw",
+                ns="conversation",
+                username="memory-tool-owner",
+                capabilities=(
+                    "invoke_tool,read_graph,send_message,project_view,"
+                    "read_security_scope,spawn_process,workflow.run.write,workflow.run.read"
+                ),
+            )
+            response = client.post(
+                "/api/syscall/v1/invoke_tool",
+                json={
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {
+                        "tool_name": "list_transcript",
+                        "conversation_id": conversation["conversation_id"],
+                    },
+                },
+                headers=headers,
+            )
+        assert response.status_code == 200, response.text
+        result = response.json()["result"]
+        assert result["tool_name"] == "list_transcript"
+        assert result["conversation_id"] == conversation["conversation_id"]
+        assert result["messages"] == []
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
