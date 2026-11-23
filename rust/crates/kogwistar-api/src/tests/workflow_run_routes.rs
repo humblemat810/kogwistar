@@ -667,6 +667,72 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     }
     assert!(contract["accepted_run_statuses"].as_array().unwrap().contains(&body["status"]));
     assert_eq!(body["cancel_requested"], true);
+
+    let syscall_principal = json!({
+        "sub":"alice",
+        "role":"rw",
+        "ns":["workflow"],
+        "capabilities":["spawn_process", "workflow.run.write"]
+    });
+    let spawned = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/spawn_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"spawn_process",
+                "args":{
+                    "workflow_id":"postgres-syscall-lifecycle",
+                    "conversation_id":"postgres-syscall-conversation",
+                    "user_id":"alice",
+                    "initial_state":{"source":"postgres-syscall"}
+                }
+            }))
+            .unwrap(),
+            principal: syscall_principal.clone(),
+        })
+        .await;
+    assert_eq!(spawned.status, StatusCode::OK.as_u16());
+    let spawned: Value = serde_json::from_slice(&spawned.body).unwrap();
+    assert_eq!(spawned["version"], "v1");
+    assert_eq!(spawned["op"], "spawn_process");
+    assert_eq!(spawned["status"], "ok");
+    let syscall_run_id = spawned["result"]["run_id"].as_str().unwrap();
+    assert!(service
+        .store
+        .get_server_run(syscall_run_id)
+        .await
+        .unwrap()
+        .is_some());
+
+    let terminated = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":syscall_run_id}
+            }))
+            .unwrap(),
+            principal: syscall_principal,
+        })
+        .await;
+    assert_eq!(terminated.status, StatusCode::OK.as_u16());
+    let terminated: Value = serde_json::from_slice(&terminated.body).unwrap();
+    assert_eq!(terminated["version"], "v1");
+    assert_eq!(terminated["op"], "terminate_process");
+    assert_eq!(terminated["status"], "ok");
+    assert_eq!(terminated["result"]["cancel_requested"], true);
+    assert!(service
+        .store
+        .get_server_run(syscall_run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .cancel_requested);
 }
 
 #[tokio::test]

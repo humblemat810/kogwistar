@@ -2404,6 +2404,10 @@ def test_conversation_syscalls_use_python_postgres_backend(
                     "project_view",
                     "approve_action",
                     "read_security_scope",
+                    "workflow.run.write",
+                    "workflow.run.read",
+                    "workflow.design.write",
+                    "write_graph",
                 ],
                 "iat": now,
                 "exp": now + 3600,
@@ -2413,6 +2417,49 @@ def test_conversation_syscalls_use_python_postgres_backend(
             algorithm=TEST_JWT_ALG,
         )
         headers = {"Authorization": f"Bearer {token}"}
+        workflow_id = "wf.postgres-syscall-lifecycle"
+        identity = claims_ctx.set(
+            {
+                "ns": "workflow",
+                "role": "rw",
+                "capabilities": [
+                    "spawn_process",
+                    "workflow.run.write",
+                    "workflow.run.read",
+                    "workflow.design.write",
+                    "write_graph",
+                ],
+                "sub": "alice",
+            }
+        )
+        try:
+            service.workflow_design_upsert_node(
+                workflow_id=workflow_id,
+                designer_id="alice",
+                node_id="start",
+                label="Start",
+                op="start",
+                start=True,
+            )
+            service.workflow_design_upsert_node(
+                workflow_id=workflow_id,
+                designer_id="alice",
+                node_id="end",
+                label="End",
+                op="end",
+                terminal=True,
+            )
+            service.workflow_design_upsert_edge(
+                workflow_id=workflow_id,
+                designer_id="alice",
+                edge_id="edge-start-end",
+                src="start",
+                dst="end",
+                relation="wf_next",
+                is_default=True,
+            )
+        finally:
+            claims_ctx.reset(identity)
         with TestClient(server.app) as client:
             created = client.post(
                 "/api/syscall/v1/create_conversation",
@@ -2578,6 +2625,37 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 assert case["expected_entry"] in result[case["snapshot_field"]][
                     case["entries_field"]
                 ]
+
+            spawned = client.post(
+                "/api/syscall/v1/spawn_process",
+                json={
+                    "version": "v1",
+                    "op": "spawn_process",
+                    "args": {
+                        "workflow_id": workflow_id,
+                        "conversation_id": conversation_id,
+                        "user_id": "alice",
+                        "initial_state": {"source": "postgres-syscall"},
+                    },
+                },
+                headers=headers,
+            )
+            assert spawned.status_code == 200, spawned.text
+            run_id = spawned.json()["result"]["run_id"]
+            assert registry.get_run(run_id) is not None
+
+            terminated = client.post(
+                "/api/syscall/v1/terminate_process",
+                json={
+                    "version": "v1",
+                    "op": "terminate_process",
+                    "args": {"run_id": run_id},
+                },
+                headers=headers,
+            )
+            assert terminated.status_code == 200, terminated.text
+            assert terminated.json()["result"]["cancel_requested"] is True
+            assert registry.get_run(run_id)["cancel_requested"] is True
 
         result = first.json()["result"]
         assert result["status"] == "queued"
