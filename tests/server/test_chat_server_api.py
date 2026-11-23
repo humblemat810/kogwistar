@@ -2548,6 +2548,85 @@ def test_checkpoint_syscall_uses_python_postgres_backend(
             cleanup_engine.dispose()
 
 
+def test_project_view_syscall_uses_python_postgres_backend(
+    monkeypatch, tmp_path, pg_dsn, pg_schema
+):
+    if not pg_dsn or not pg_schema:
+        pytest.skip("PostgreSQL fixture is unavailable")
+
+    import sqlalchemy as sa
+
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+    schema_names = [f"{pg_schema}_{graph_type}" for graph_type in ("knowledge", "conversation", "workflow")]
+    postgres_engine = sa.create_engine(pg_dsn, future=True, pool_pre_ping=True)
+
+    def backend_factory(engine):
+        return PgVectorBackend(
+            engine=postgres_engine,
+            embedding_dim=384,
+            schema=f"{pg_schema}_{engine.kg_graph_type}",
+        )
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "project-view-postgres",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=backend_factory,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        contract = json.loads(
+            (Path(__file__).resolve().parents[2] / "contracts/golden/workflow-resources-http-v1.json").read_text(encoding="utf-8")
+        )
+        with TestClient(server.app) as client:
+            denied = client.post(
+                "/api/syscall/v1/project_view",
+                json={"version": "v1", "op": "project_view", "args": {}},
+                headers=_token_header(client, role="ro", ns="workflow", capabilities="not-a-required-capability"),
+            )
+            allowed = client.post(
+                "/api/syscall/v1/project_view",
+                json={"version": "v1", "op": "project_view", "args": {}},
+                headers=_token_header(
+                    client,
+                    role="ro",
+                    ns="workflow",
+                    capabilities=",".join(contract["required_capabilities"]),
+                ),
+            )
+        assert denied.status_code == 403
+        assert allowed.status_code == 200, allowed.text
+        result = allowed.json()["result"]
+        assert all(field in result for field in contract["required_fields"])
+        for key, fields in contract["required_object_fields"].items():
+            assert all(field in result[key] for field in fields), key
+    finally:
+        for item in engines:
+            item.close()
+        postgres_engine.dispose()
+        cleanup_engine = sa.create_engine(pg_dsn, future=True, pool_pre_ping=True)
+        try:
+            with cleanup_engine.begin() as connection:
+                for schema in schema_names:
+                    connection.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        finally:
+            cleanup_engine.dispose()
+
+
 @pytest.mark.parametrize("backend", ["in_memory", "chroma"])
 def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backend):
     for selector in (

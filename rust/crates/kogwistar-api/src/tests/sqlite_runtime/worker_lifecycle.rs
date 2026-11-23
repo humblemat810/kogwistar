@@ -1046,6 +1046,57 @@
         );
     }
 
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_project_view_syscall_matches_resource_contract_and_authority() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_project_view_syscall_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-resources-http-v1.json"
+        ))
+        .unwrap();
+        let request = |capabilities: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/project_view".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"project_view",
+                "args":{}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"project-view-reader",
+                "role":"ro",
+                "ns":"workflow",
+                "capabilities":capabilities
+            }),
+        };
+
+        let denied = service.execute(request(json!([]))).await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        let allowed = service
+            .execute(request(json!(contract["required_capabilities"])))
+            .await;
+        assert_eq!(allowed.status, StatusCode::OK.as_u16());
+        let body: Value = serde_json::from_slice(&allowed.body).unwrap();
+        let result = &body["result"];
+        for field in contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(result.get(field).is_some(), "missing {field}");
+        }
+        for (key, fields) in contract["required_object_fields"].as_object().unwrap() {
+            for field in fields.as_array().unwrap() {
+                let field = field.as_str().unwrap();
+                assert!(result[key].get(field).is_some(), "missing {key}.{field}");
+            }
+        }
+    }
+
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_project_view_matches_resource_fixture_and_authority; python_test=tests/server/test_chat_server_api.py#test_project_view_syscall_uses_python_backend
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
