@@ -293,6 +293,136 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
 }
 
 #[tokio::test]
+async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
+    use kogwistar_store::{
+        LaneMessageClaimFilter, LaneMessageReadStore, LaneMessageWriteStore,
+        ProjectionReadStore, RUNTIME_CURRENT_STATE_NAMESPACE,
+    };
+
+    let service = InMemoryGraphApplicationService::default();
+    let principal = json!({
+        "sub":"resume-owner",
+        "role":"rw",
+        "ns":["workflow"],
+        "capabilities":["spawn_process", "workflow.run.write"]
+    });
+    let submitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":"memory-resume-run",
+                "workflow_id":"memory-resume-workflow",
+                "conversation_id":"memory-resume-conversation",
+                "initial_state":{"started":true},
+                "node_ops":{"start":"noop"},
+                "node_executor_targets":{"start":"rust-native"}
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(submitted.status, StatusCode::ACCEPTED.as_u16());
+
+    let start_lane = LaneMessageReadStore::projected_lane_message(
+        &service.store,
+        "lane|runtime-start|memory-resume-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let claimed = LaneMessageWriteStore::claim_projected_lane_messages_filtered(
+        &service.store,
+        LaneMessageClaimFilter {
+            namespace: "workflow".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            claimed_by: "test-suspender".to_owned(),
+            message_ids: Some(vec![start_lane.message_id]),
+            run_id: Some("memory-resume-run".to_owned()),
+            msg_type: Some("workflow.step.execute".to_owned()),
+            recipient_id: Some("rust-native-worker".to_owned()),
+            limit: 1,
+            lease_seconds: 60,
+        },
+    )
+    .await
+    .unwrap()
+    .pop()
+    .unwrap();
+    let handoff = kogwistar_runtime::RecordedWorkerHandoff {
+        message_id: claimed.message_id,
+        claimed_by: claimed.claimed_by.unwrap(),
+        run_id: "memory-resume-run".to_owned(),
+        step_id: claimed.step_id.unwrap(),
+        correlation_id: claimed.correlation_id.unwrap(),
+    };
+    let effect: kogwistar_runtime::RecordedWorkerSuccessEffect = serde_json::from_value(json!({
+        "contract_version":1,
+        "effect_id":"suspend-memory-resume-run",
+        "status":"suspended",
+        "wait_reason":"approval",
+        "resume_payload":{"question":"continue?"}
+    }))
+    .unwrap();
+    service
+        .store
+        .apply_claimed_recorded_worker_effect(handoff, effect)
+        .unwrap();
+
+    let recorded = ProjectionReadStore::named_projection(
+        &service.store,
+        RUNTIME_CURRENT_STATE_NAMESPACE,
+        "memory-resume-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let state: kogwistar_runtime::RecordedRuntimeState =
+        serde_json::from_value(Value::Object(recorded.payload)).unwrap();
+    let (node_id, _, token_id, _) = state.frontier.suspended[0].clone();
+
+    let resumed = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs/memory-resume-run/resume?wait_for_completion=true"
+                .to_owned(),
+            body: serde_json::to_vec(&json!({
+                "suspended_node_id":node_id,
+                "suspended_token_id":token_id,
+                "client_result":{"approved":true},
+                "workflow_id":"memory-resume-workflow",
+                "conversation_id":"memory-resume-conversation"
+            }))
+            .unwrap(),
+            principal,
+        })
+        .await;
+    assert_eq!(resumed.status, StatusCode::OK.as_u16());
+    let result: Value = serde_json::from_slice(&resumed.body).unwrap();
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+    ))
+    .unwrap();
+    let expected_fields = contract["required_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_fields = result
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_fields, expected_fields);
+    assert_eq!(result["workflow_status"], "succeeded");
+    assert_eq!(result["final_state"]["started"], true);
+}
+
+#[tokio::test]
 async fn in_memory_native_admission_uses_authoritative_design_and_rejects_conflicts() {
     use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
 
