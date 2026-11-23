@@ -968,7 +968,17 @@ def test_gate_does_not_treat_manifest_flags_as_test_evidence() -> None:
     )
 
     assert result["status"] == "blocked"
-    assert result["server_operation_deferrals"] == {"status": "passed"}
+    assert result["server_operation_deferrals"] == {
+        "validation_status": "passed",
+        "cutover_status": "blocked",
+        "pending_routes": [],
+        "pending_syscalls": [
+            "send_message",
+            "receive_message",
+            "mount_memory",
+            "invoke_tool",
+        ],
+    }
     assert result["phase3_capability_evidence"] == {"status": "passed"}
     assert result["phase4_runtime_evidence"] == {"status": "passed"}
     assert result["phase5_server_evidence"] == {"status": "passed"}
@@ -1094,7 +1104,8 @@ def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
     )
 
     assert result["status"] == "blocked"
-    assert result["server_operation_deferrals"] == {"status": "blocked"}
+    assert result["server_operation_deferrals"]["validation_status"] == "blocked"
+    assert result["server_operation_deferrals"]["cutover_status"] == "blocked"
     details = {row["detail"] for row in result["blockers"]}
     assert "syscall_group.operations must not contain duplicates" in details
 

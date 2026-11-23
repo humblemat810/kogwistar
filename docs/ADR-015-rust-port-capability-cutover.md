@@ -4,6 +4,8 @@
 
 Status — ADR-015's six named capability test groups and its bounded CI/UAT gates passed for the recorded candidate. The manifest declares 7/8 Rust-targeted capability flags true. The executable release gate derives `graph-pgvector` and `workflow-runtime` ready; `server-rest-sse-mcp-cli` remains blocked by four versioned syscall deferrals. The broader public-surface parity goal remains open; neither the capability gate suite nor this status claims universal Python/Rust parity.
 
+The release-gate report separates deferral-manifest validation from cutover effect: a structurally valid deferral list reports `validation_status=passed`, while non-empty pending operations report `cutover_status=blocked` with their names. A green schema check must never be read as cutover approval.
+
 ## Context
 
 The Rust->Python port of `kogwistar-python` store operations uses `rusqlite`. Several store functions bound parameters via `bind_params(&mut stmt, &params)` followed by `stmt.query_map((), ...)`. The `raw_bind_parameter` bindings are cleared when `query_map` is invoked with an empty `()` params tuple, producing `Wrong number of parameters passed to query. Got 0, needed 10` (observed in `claim_index_jobs`).

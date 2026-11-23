@@ -1202,6 +1202,8 @@ def evaluate_release_gate(
         "reports": len(uat_candidates),
     }
     deferred_capabilities: set[str] = set()
+    deferred_route_operations: list[str] = []
+    deferred_syscall_operations: list[str] = []
     deferrals = manifest.get("server_operation_deferrals", {})
     if isinstance(deferrals, dict):
         deferred_groups = [*deferrals.get("route_groups", [])]
@@ -1211,6 +1213,22 @@ def evaluate_release_gate(
         for group in deferred_groups:
             if not isinstance(group, dict) or not group.get("operations"):
                 continue
+            operations = group.get("operations")
+            if isinstance(operations, list):
+                if group is syscall_group:
+                    deferred_syscall_operations.extend(
+                        operation
+                        for operation in operations
+                        if isinstance(operation, str)
+                    )
+                else:
+                    deferred_route_operations.extend(
+                        f"{operation['method']} {operation['path']}"
+                        for operation in operations
+                        if isinstance(operation, dict)
+                        and isinstance(operation.get("method"), str)
+                        and isinstance(operation.get("path"), str)
+                    )
             authority = group.get("required_authority", [])
             if isinstance(authority, list):
                 deferred_capabilities.update(
@@ -1266,7 +1284,14 @@ def evaluate_release_gate(
         ),
         "dual_language_support": {"status": "passed" if not support_errors else "blocked"},
         "server_operation_deferrals": {
-            "status": "passed" if not validate_server_operation_deferrals(manifest) else "blocked"
+            "validation_status": "passed" if not server_deferral_errors else "blocked",
+            "cutover_status": (
+                "blocked"
+                if deferred_route_operations or deferred_syscall_operations
+                else "clear"
+            ),
+            "pending_routes": deferred_route_operations,
+            "pending_syscalls": deferred_syscall_operations,
         },
         "phase5_server_evidence": {
             "status": (
