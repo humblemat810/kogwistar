@@ -91,6 +91,15 @@ capabilities, blocked/requested outcomes, and invalid-input fixture cases. This
 closes applicability only; dynamic approval snapshots are not compared exactly
 between implementations, so DLFC-11 remains open.
 
+SQLite metadata `spawn_process` and `terminate_process` are now `PASS: supported
+(live)`: Rust `sqlite_runtime/worker_lifecycle.rs::sqlite_syscall_spawn_and_terminate_use_authoritative_run_service`
+and Python `tests/server/test_syscall_api.py::test_syscall_spawn_process_returns_ok_contract`
+both passed on 2026-11-24. The Python route starts a run through the authenticated
+syscall and terminates it; the Rust test exercises the authoritative SQLite
+run service for both operations. This closes only backend applicability. The
+tests do not compare identical dynamic syscall payloads or all authorization,
+retry, and failure cases, so DLFC-11 remains open.
+
 | Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |
 | --- | --- | --- | --- | --- |
 | `checkpoint` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
@@ -102,14 +111,14 @@ between implementations, so DLFC-11 remains open.
 | `request_approval` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
 | `resume` | PASS: supported (live) | PASS: supported (live) | NOT STARTED | PARTIAL |
 | `send_message` | PARTIAL | PASS: fail closed | PARTIAL | PARTIAL |
-| `spawn_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
-| `terminate_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
+| `spawn_process` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
+| `terminate_process` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
 
 Evidence pointers for current `PARTIAL` cells (focused evidence only; not gate
 closure):
 
 - PostgreSQL: `conversation_admission.rs::postgres_send_message_checks_actor_and_request_before_storage`, `conversation_admission.rs::postgres_send_message_admission_is_one_graph_run_event_lane_transaction`, and `conversation_mcp.rs::mcp_conversation_create_uses_native_postgres_syscall`. `workflow_run_routes.rs::postgres_resume_syscall_resumes_persisted_suspended_token` closes PostgreSQL resume applicability using the live DB and shared result fixture.
-- SQLite metadata: `sqlite_runtime/worker_lifecycle.rs::sqlite_syscall_spawn_and_terminate_use_authoritative_run_service` (**1 passed**, 2026-11-23) covers `project_view` authorization and a bounded successful response shape alongside spawn/terminate; Python `tests/server/test_syscall_api.py::test_syscall_project_view_matches_resource_snapshot_contract` (**1 passed**, same date) checks required resource fields. These remain `PARTIAL`: Python uses a contract fixture, but values are not compared exactly across both backend services. `sqlite_request_approval_mutations_require_scope_and_return_snapshot` and Python `tests/server/test_syscall_api.py::test_syscall_request_approval_branches` verify approval support; exact dynamic snapshot parity remains open. Worker suspend/resume and operator-dashboard tests remain adjacent runtime/HTTP evidence, not syscall parity evidence.
+- SQLite metadata `project_view`: `sqlite_runtime/worker_lifecycle.rs::sqlite_syscall_spawn_and_terminate_use_authoritative_run_service` (**1 passed**, 2026-11-23) covers authorization and bounded success shape; Python `tests/server/test_syscall_api.py::test_syscall_project_view_matches_resource_snapshot_contract` (**1 passed**, same date) checks required resource fields. These remain `PARTIAL`: response values are not compared exactly across backend services. `sqlite_request_approval_mutations_require_scope_and_return_snapshot` and Python `tests/server/test_syscall_api.py::test_syscall_request_approval_branches` verify approval support; exact dynamic snapshot parity remains open. Spawn/terminate applicability is separately PASS as recorded above. Worker suspend/resume and operator-dashboard tests remain adjacent runtime/HTTP evidence, not syscall parity evidence.
 - SQLite + Chroma: Python `tests/server/test_syscall_api.py::test_syscall_receive_message_reads_chroma_graph_and_matches_shared_fixture` (**1 passed**, 2026-11-23) seeds the fixture into the embedded Chroma-backed conversation graph and compares the authenticated syscall response exactly. Rust `sqlite_transcript_reads.rs::sqlite_chroma_receive_message_reads_live_chroma_and_matches_shared_fixture` (**1 passed**, same date) uses unique collections on the configured live Chroma service and verifies the same result through SQLite canonical ACL events; the fake-endpoint companion `::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` covers denied capability/namespace and missing-ID behavior. This closes only the supported-applicability success cell; other error/retry/persistence parity remains open.
 - In-memory: `in_memory_conversations.rs` tests `in_memory_create_conversation_is_atomic_and_matches_shared_contract`, `in_memory_mount_memory_matches_shared_contract_and_authority`, `in_memory_send_message_admits_turn_and_run_atomically`, `in_memory_receive_message_matches_shared_python_contract`, and `in_memory_invoke_builtin_tools_match_shared_contract_and_authority`; `in_memory_run_admission.rs` tests `in_memory_workflow_syscalls_use_native_run_handlers`, `in_memory_project_view_syscall_is_reachable_through_authenticated_http`, and `in_memory_resume_syscall_preserves_resume_envelope_and_result`.
 - SQLite metadata unsupported cells: `sqlite_runtime/worker_lifecycle.rs::sqlite_metadata_conversation_syscalls_fail_closed` covers `create_conversation`, `invoke_tool`, `mount_memory`, `receive_message`, and `send_message`; it asserts HTTP 501, the capability error code/path, and no admitted runs.
