@@ -1211,6 +1211,13 @@ fn syscall_input(
     Ok(input)
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#resume_syscall_args; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_metadata_resume_syscall_resumes_persisted_suspended_token; python_test=tests/server/test_syscall_api.py#test_syscall_resume_returns_completed_result_contract
+fn resume_syscall_args(args: &Map<String, Value>) -> Vec<u8> {
+    let mut body = args.clone();
+    body.remove("run_id");
+    serde_json::to_vec(&body).expect("syscall resume args serialize")
+}
+
 fn syscall_result(version: &str, op: &str, response: ApiEffectResponse) -> ApiEffectResponse {
     if !(200..300).contains(&response.status) {
         return response;

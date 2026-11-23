@@ -268,6 +268,203 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    async fn sqlite_metadata_resume_syscall_resumes_persisted_suspended_token() {
+        use kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let resume_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+        ))
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-resume-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let run_id = "sqlite-resume-syscall-run";
+        let workflow_id = "sqlite-resume-syscall-workflow";
+        let conversation_id = "sqlite-resume-syscall-conversation";
+        let principal = json!({
+            "sub":"sqlite-resume-owner",
+            "role":"rw",
+            "ns":["workflow"],
+            "capabilities":["spawn_process", "workflow.run.write"]
+        });
+        let submitted = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":run_id,
+                "workflow_id":workflow_id,
+                "conversation_id":conversation_id,
+                "turn_node_id":"sqlite-resume-turn"
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        }).await;
+        assert_eq!(submitted.status, StatusCode::ACCEPTED.as_u16());
+
+        let claimed = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/claim".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "claimed_by":"sqlite-test-suspender",
+                "limit":1,
+                "lease_seconds":60
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        }).await;
+        assert_eq!(claimed.status, StatusCode::OK.as_u16());
+        let claimed: Value = serde_json::from_slice(&claimed.body).unwrap();
+        let work = &claimed["work"][0];
+        let suspended = service.execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "handoff": {
+                    "message_id":work["message_id"],
+                    "claimed_by":work["claimed_by"],
+                    "run_id":work["run_id"],
+                    "step_id":work["step_id"],
+                    "correlation_id":work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version":1,
+                    "effect_id":"sqlite-suspend-for-syscall-resume",
+                    "status":"suspended",
+                    "state_update":[["u", {"before_suspend":true}]],
+                    "successors":[],
+                    "wait_reason":"approval",
+                    "resume_payload":{"question":"continue?"}
+                }
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        }).await;
+        assert_eq!(
+            suspended.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&suspended.body)
+        );
+        let projection = service
+            .store
+            .get_named_projection(RUNTIME_CURRENT_STATE_NAMESPACE, run_id)
+            .unwrap()
+            .unwrap();
+        let state: RecordedRuntimeState =
+            serde_json::from_value(Value::Object(projection.payload)).unwrap();
+        let (node_id, _, token_id, _) = state.frontier.suspended[0].clone();
+
+        let resume_service = service.clone();
+        let resume_future = tokio::spawn(async move {
+            resume_service
+                .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/resume".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"resume",
+                "args":{
+                    "run_id":run_id,
+                    "workflow_id":workflow_id,
+                    "conversation_id":conversation_id,
+                    "turn_node_id":"sqlite-resume-turn",
+                    "suspended_node_id":node_id,
+                    "suspended_token_id":token_id,
+                    "client_result":{"approved":true}
+                }
+            }))
+            .unwrap(),
+                    principal,
+                })
+                .await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let claimed = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/runtime/claim".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "claimed_by":"sqlite-test-finisher",
+                    "limit":1,
+                    "lease_seconds":60
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"sqlite-resume-owner",
+                    "role":"rw",
+                    "ns":["workflow"],
+                    "capabilities":["workflow.run.write"]
+                }),
+            })
+            .await;
+        assert_eq!(claimed.status, StatusCode::OK.as_u16());
+        let claimed: Value = serde_json::from_slice(&claimed.body).unwrap();
+        let work = &claimed["work"][0];
+        assert_eq!(work["run_id"], run_id);
+        let finished = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/runtime/results".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "handoff": {
+                        "message_id":work["message_id"],
+                        "claimed_by":work["claimed_by"],
+                        "run_id":work["run_id"],
+                        "step_id":work["step_id"],
+                        "correlation_id":work["correlation_id"]
+                    },
+                    "effect": {
+                        "contract_version":1,
+                        "effect_id":"sqlite-finish-after-syscall-resume",
+                        "state_update":[["u", {"after_resume":true}]],
+                        "successors":[],
+                        "result":{"done":true}
+                    }
+                }))
+                .unwrap(),
+                principal: json!({"role":"rw", "ns":["workflow"]}),
+            })
+            .await;
+        assert_eq!(finished.status, StatusCode::OK.as_u16());
+        let resumed = resume_future.await.unwrap();
+        assert_eq!(
+            resumed.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&resumed.body)
+        );
+        let envelope: Value = serde_json::from_slice(&resumed.body).unwrap();
+        assert_eq!(envelope["version"], "v1");
+        assert_eq!(envelope["op"], "resume");
+        assert_eq!(envelope["status"], "ok");
+        for field in resume_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(envelope["result"].get(field).is_some(), "missing {field}");
+        }
+        assert!(resume_contract["completed_statuses"]
+            .as_array()
+            .unwrap()
+            .contains(&envelope["result"]["workflow_status"]));
+        assert_eq!(envelope["result"]["workflow_status"], "succeeded");
+        assert_eq!(envelope["result"]["final_state"]["after_resume"], true);
+        assert_eq!(envelope["result"]["budget"], json!({}));
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn sqlite_metadata_conversation_syscalls_fail_closed() {
         use std::time::{SystemTime, UNIX_EPOCH};

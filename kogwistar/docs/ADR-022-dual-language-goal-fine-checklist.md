@@ -30,7 +30,7 @@
 | DLFC-09 | GOAL-06 | NOT STARTED | MCP authorization cells: every operation with an authority boundary denies the same principal/scope cases before backend reads/writes; assert unchanged state. |
 | DLFC-10 | GOAL-06 | NOT STARTED | MCP effect/retry cells: authorized calls reach the same backend effect, durable state, event/trace, and duplicate/replay outcome; no tool execution from mere catalog presence. |
 | DLFC-11 | GOAL-06 | IN PROGRESS | Syscall success/error cells: all 11 catalogued operations have Python/Rust result and error-shape parity for supported backend cells; unsupported paths fail closed. Partial evidence: Python `tests/server/test_syscall_api.py::test_syscall_request_approval_branches` and Rust `in_memory_workflow_syscalls_use_native_run_handlers` pass grant/revoke authorization, response snapshots, and exact shared-fixture parity for missing action and missing grant/revoke capability (`contracts/golden/syscall-request-approval-invalid-v1.json`; 1 Python test and 1 Rust test passed, 2026-11-23; approval slice commit `caba7a07`). Checkpoint string `step_seq` normalization uses `contracts/golden/syscall-checkpoint-step-seq-v1.json`; Python `test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq` and Rust `in_memory_workflow_syscalls_use_native_run_handlers` each passed on 2026-11-23, confirming string `"0"` normalizes to integer `0` (commit `3b523603`). Project-view syscall checks shared resource snapshot required and nested fields via `contracts/golden/workflow-resources-http-v1.json`; Python `test_syscall_project_view_matches_resource_snapshot_contract` and Rust `in_memory_project_view_syscall_is_reachable_through_authenticated_http` passed on 2026-11-23. This asserts required shape, not exact dynamic values; Rust HTTP test also verifies missing capability denial (commit `8e3b8ca4`). Invoke-tool missing/blank name and unknown tool have exact shared-fixture HTTP status/body parity (`contracts/golden/syscall-invoke-tool-errors-v1.json`); Python `test_syscall_invoke_tool_list_transcript_returns_messages` and Rust `in_memory_invoke_builtin_tools_match_shared_contract_and_authority` passed (commit `c6ca243c`). Terminate-process result shape uses `contracts/golden/run-cancel-v1.json`; Python `test_syscall_spawn_process_returns_ok_contract` and Rust `in_memory_workflow_syscalls_use_native_run_handlers` passed on 2026-11-23, asserting required run fields and accepted status only (no exact dynamic-value parity; commit `ec781a02`). Send-message blank-text and non-string idempotency-key errors now match exact status/body via `contracts/golden/syscall-send-message-invalid-v1.json`; Python `test_syscall_send_message_invalid_inputs_match_shared_contract` and Rust `in_memory_send_message_admits_turn_and_run_atomically` passed on 2026-11-23; Rust also verifies no run was created. `sqlite_request_approval_mutations_require_scope_and_return_snapshot` covers SQLite authorization/result. Remaining: other syscall operations, PostgreSQL/SQLite+Chroma cells, and MCP path. |
-| DLFC-12 | GOAL-06 | IN PROGRESS | Backend applicability cells: each operation/backend pair is explicitly supported or explicitly rejected; prove no hidden fallback. Preserve SQLite metadata + eventual Chroma projection, PostgreSQL, and memory semantics distinctly. Current syscall cell ledger follows; it is subordinate detail, not added to the 18-tasklet completion denominator. SQLite metadata has five fail-closed cells verified by `sqlite_metadata_conversation_syscalls_fail_closed`; five supported cells remain partial/unverified. `checkpoint` and SQLite+Chroma `receive_message` have passing supported-path oracles; other matrix cells remain open. |
+| DLFC-12 | GOAL-06 | IN PROGRESS | Backend applicability cells: each operation/backend pair is explicitly supported or explicitly rejected; prove no hidden fallback. Preserve SQLite metadata + eventual Chroma projection, PostgreSQL, and memory semantics distinctly. Current syscall cell ledger follows; it is subordinate detail, not added to the 18-tasklet completion denominator. SQLite metadata has five fail-closed cells verified by `sqlite_metadata_conversation_syscalls_fail_closed`; four supported cells remain partial/unverified. `checkpoint`, `resume`, and SQLite+Chroma `receive_message` have passing supported-path oracles; other matrix cells remain open. |
 | DLFC-13 | GOAL-08 | NOT STARTED | Durable lifecycle cells: close/reopen, read-after-write, replay/recovery, sequence/version, and Python-write→Rust-read plus Rust-write→Python-read for every applicable durable operation/backend. |
 | DLFC-14 | GOAL-08 | NOT STARTED | Runtime trace cells: same fixed-ID workflow traces compare routing, deltas, step/event order, retry, cancel, suspend/resume, terminal frontier, trace parentage, and restart/replay. |
 | DLFC-15 | GOAL-08 | NOT STARTED | Transaction/authority seam cells: instrument transaction ownership and failure injection at each declared interop seam; prove no cross-stack partial commit, authority weakening, or unsafe retry. Backend-specific guarantees only. |
@@ -62,6 +62,17 @@ fixture result (`contracts/golden/syscall-checkpoint-persisted-v1.json`). The se
 still verifies Python wire normalization. This closes backend applicability for
 this cell only; it does not close DLFC-11's complete syscall behavior families.
 
+SQLite metadata `resume` is now `PASS: supported (live)`: Rust
+`sqlite_metadata_resume_syscall_resumes_persisted_suspended_token` creates a
+durable run, records a suspended worker result, resumes through the syscall,
+finishes the queued continuation, and checks the public result against
+`contracts/golden/workflow-run-resume-result-v1.json`. Python
+`test_syscall_resume_returns_completed_result_contract` checks the same
+versioned envelope and result shape. The adapter strips path-only `run_id`
+before decoding the strict resume body and waits through the existing runtime
+route for the completed result. This closes SQLite metadata applicability only;
+cross-backend parity and DLFC-11's full syscall error/retry behavior remain open.
+
 | Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |
 | --- | --- | --- | --- | --- |
 | `checkpoint` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
@@ -71,7 +82,7 @@ this cell only; it does not close DLFC-11's complete syscall behavior families.
 | `project_view` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
 | `receive_message` | NOT STARTED | PASS: fail closed | PASS: supported (live) | PARTIAL |
 | `request_approval` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
-| `resume` | NOT STARTED | NOT STARTED | NOT STARTED | PARTIAL |
+| `resume` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
 | `send_message` | PARTIAL | PASS: fail closed | PARTIAL | PARTIAL |
 | `spawn_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
 | `terminate_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |

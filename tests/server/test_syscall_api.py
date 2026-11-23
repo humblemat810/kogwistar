@@ -171,6 +171,60 @@ def test_syscall_checkpoint_reads_persisted_python_checkpoint(monkeypatch, engin
     assert payload["result"] == contract["expected_result"]
 
 
+def test_syscall_resume_returns_completed_result_contract(monkeypatch, engine_triplet):
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-resume-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
+    )
+    monkeypatch.setattr(
+        service._run_execution,
+        "_default_resume_runner",
+        lambda request: {
+            "workflow_status": "succeeded",
+            "final_state": {"after_resume": request.client_result["approved"]},
+            "budget": {},
+        },
+    )
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/syscall/v1/resume",
+            json={
+                "version": "v1",
+                "op": "resume",
+                "args": {
+                    "run_id": "syscall-resume-run",
+                    "suspended_node_id": "approval-step",
+                    "suspended_token_id": "approval-token",
+                    "client_result": {"approved": True},
+                    "workflow_id": "syscall-resume-workflow",
+                    "conversation_id": "syscall-resume-conversation",
+                    "turn_node_id": "syscall-resume-turn",
+                },
+            },
+            headers=_token_header(client, role="rw", ns="workflow"),
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["version"] == "v1"
+    assert payload["op"] == "resume"
+    assert payload["status"] == "ok"
+    assert set(contract["required_fields"]).issubset(payload["result"])
+    assert payload["result"]["workflow_status"] in contract["completed_statuses"]
+    assert payload["result"] == {
+        "workflow_status": "succeeded",
+        "final_state": {"after_resume": True},
+        "budget": {},
+    }
+
+
 def test_syscall_project_view_matches_resource_snapshot_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(

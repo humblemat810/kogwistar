@@ -941,6 +941,12 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "POST"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/syscall/v1/resume")
+            {
+                return self.syscall_resume_effect(&request).await;
+            }
             if request.method == "DELETE"
                 && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
             {

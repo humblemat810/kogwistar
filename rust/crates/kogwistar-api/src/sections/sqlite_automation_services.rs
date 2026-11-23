@@ -2,6 +2,45 @@
 // Python counterparts: ServiceSupervisor in server/service_daemon.py and
 // runtime_api service operations.
 impl SqliteRunApplicationService {
+    async fn syscall_resume_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let input = match syscall_input(request, "resume") {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let response = if !syscall_allowed(
+            request,
+            &self.capabilities,
+            "resume",
+            true,
+            &["workflow.run.write"],
+        ) {
+            syscall_forbidden("resume")
+        } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
+            let nested = ApiEffectRequest {
+                contract_version: request.contract_version,
+                method: "POST".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/resume?wait_for_completion=true"),
+                body: resume_syscall_args(&input.args),
+                principal: request.principal.clone(),
+            };
+            let resumed = ApplicationService::execute(self, nested).await;
+            syscall_result(&input.version, "resume", resumed)
+        } else {
+            effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "run_id is required",
+            )
+        };
+        syscall_audit(
+            &self.capabilities,
+            &input.version,
+            "resume",
+            syscall_audit_status(&response),
+        );
+        response
+    }
+
     fn syscall_effect(&self, request: &ApiEffectRequest, op: &str) -> ApiEffectResponse {
         let input = match syscall_input(request, op) {
             Ok(input) => input,
@@ -241,7 +280,7 @@ impl SqliteRunApplicationService {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
                         path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
-                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        body: resume_syscall_args(&input.args),
                         principal: request.principal.clone(),
                     };
                     syscall_result(&input.version, op, self.resume_runtime_run(run_id, &nested))

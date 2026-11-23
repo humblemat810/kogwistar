@@ -3437,7 +3437,7 @@ impl PostgresRunApplicationService {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
                         path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
-                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        body: resume_syscall_args(&input.args),
                         principal: request.principal.clone(),
                     };
                     syscall_result(
