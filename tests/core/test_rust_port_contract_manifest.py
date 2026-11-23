@@ -1106,33 +1106,34 @@ def test_public_http_and_mcp_tasklets_name_executable_tests() -> None:
     )
 
 
-def test_conversation_list_parity_tasklet_uses_list_specific_rust_test() -> None:
+def test_conversation_list_parity_tasklet_references_rust_route_assertions() -> None:
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
     tasklet_id = "FW-03-03A-HTTP-GET-e0dc6609"
     row = next(
         line for line in worklist.splitlines() if line.startswith(f"| {tasklet_id} |")
     )
-    rust_test_name = (
+    rust_test_names = (
+        "sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript",
         "postgres_conversation_routes_project_authorized_summary_and_"
-        "transcript_when_dsn_available"
+        "transcript_when_dsn_available",
     )
-    source = (
-        ROOT
-        / "rust"
-        / "crates"
-        / "kogwistar-api"
-        / "src"
-        / "tests"
-        / "postgres_conversation_reads.rs"
+    sqlite_source = (ROOT / "rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs").read_text(
+        encoding="utf-8"
+    )
+    postgres_source = (
+        ROOT / "rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs"
     ).read_text(encoding="utf-8")
 
     assert "test_conversation_list_is_user_scoped_and_has_stable_response_shape" in row
-    assert rust_test_name in row
-    assert "sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript" not in row
+    assert all(test_name in row for test_name in rust_test_names)
+    assert 'read_request("/api/conversations"' in sqlite_source
+    assert 'path_and_query: "/api/conversations".to_owned()' in postgres_source
+    assert '"conversations": [{' in postgres_source
     assert (
-        f"rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#{rust_test_name}"
-        in source
-    )
+        "rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#"
+        "postgres_conversation_routes_project_authorized_summary_and_"
+        "transcript_when_dsn_available"
+    ) in postgres_source
 
 
 def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
