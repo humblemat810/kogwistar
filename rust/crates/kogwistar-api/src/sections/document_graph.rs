@@ -1724,8 +1724,10 @@ fn request_approval_syscall(
     shared: &SharedCapabilityState,
     input: &SyscallInput,
 ) -> ApiEffectResponse {
-    let action = input.args["action"]
-        .as_str()
+    let action = input
+        .args
+        .get("action")
+        .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
@@ -1744,7 +1746,7 @@ fn request_approval_syscall(
                 "op": input.op,
                 "status": "blocked",
                 "result": {},
-                "error": {"reason": input.args["reason"].as_str().unwrap_or("request denied")},
+                "error": {"reason": input.args.get("reason").and_then(Value::as_str).unwrap_or("request denied")},
             }),
         );
     }
@@ -1755,12 +1757,14 @@ fn request_approval_syscall(
                 "version": input.version,
                 "op": input.op,
                 "status": "ok",
-                "result": {"status":"requested", "reason": input.args["reason"].as_str().unwrap_or("approval pending")},
+                "result": {"status":"requested", "reason": input.args.get("reason").and_then(Value::as_str).unwrap_or("approval pending")},
             }),
         );
     }
-    let capability = input.args["capability"]
-        .as_str()
+    let capability = input
+        .args
+        .get("capability")
+        .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
@@ -1771,8 +1775,10 @@ fn request_approval_syscall(
             format!("capability is required for {action}"),
         );
     }
-    let subject = input.args["subject"]
-        .as_str()
+    let subject = input
+        .args
+        .get("subject")
+        .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase)
@@ -1781,8 +1787,10 @@ fn request_approval_syscall(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let payload = if action == "grant" {
-        let approval_action = input.args["approval_action"]
-            .as_str()
+        let approval_action = input
+            .args
+            .get("approval_action")
+            .and_then(Value::as_str)
             .unwrap_or("request_approval")
             .to_ascii_lowercase();
         state

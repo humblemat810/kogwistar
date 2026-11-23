@@ -587,6 +587,34 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(approval["op"], "request_approval");
     assert_eq!(approval["status"], "blocked");
     assert_eq!(approval["error"]["reason"], "test");
+    let requested_approval = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1", "args":{"action":"unrecognized"}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+            "capabilities":["approve_action"]
+        }),
+    }).await;
+    assert_eq!(requested_approval.status, StatusCode::OK.as_u16());
+    let requested_approval: Value = serde_json::from_slice(&requested_approval.body).unwrap();
+    assert_eq!(requested_approval["status"], "ok");
+    assert_eq!(requested_approval["result"]["status"], "requested");
+    assert_eq!(requested_approval["result"]["reason"], "approval pending");
+    let missing_action_approval = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+        body: serde_json::to_vec(&json!({"version":"syscall-v1", "args":{}})).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+            "capabilities":["approve_action"]
+        }),
+    }).await;
+    assert_eq!(missing_action_approval.status, StatusCode::BAD_REQUEST.as_u16());
     let denied_approval = service.execute(ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),

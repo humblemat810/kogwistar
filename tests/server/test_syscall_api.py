@@ -645,6 +645,30 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
         assert denied_payload["status"] == "blocked"
         assert denied_payload["error"]["reason"] == "manual deny"
 
+        requested = client.post(
+            "/api/syscall/v1/request_approval",
+            json={
+                "version": "v1",
+                "op": "request_approval",
+                "args": {"action": "unrecognized"},
+            },
+            headers=headers,
+        )
+        assert requested.status_code == 200, requested.text
+        assert requested.json()["status"] == "ok"
+        assert requested.json()["result"] == {
+            "status": "requested",
+            "reason": "approval pending",
+        }
+
+        missing_action = client.post(
+            "/api/syscall/v1/request_approval",
+            json={"version": "v1", "op": "request_approval", "args": {}},
+            headers=headers,
+        )
+        assert missing_action.status_code == 400
+        assert missing_action.json()["detail"] == "action is required"
+
         revoked = client.post(
             "/api/syscall/v1/request_approval",
             json={
