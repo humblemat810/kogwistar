@@ -667,6 +667,25 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
         .execute(send_message("memory-send-ok", "hello from memory", "same-request"))
         .await;
     assert_eq!(replay.status, StatusCode::OK.as_u16());
+    let replay: Value = serde_json::from_slice(&replay.body).unwrap();
+    for field in ["version", "op", "status"] {
+        assert_eq!(replay[field], first[field], "retry changed envelope field {field}");
+    }
+    for field in [
+        "run_id",
+        "conversation_id",
+        "workflow_id",
+        "status",
+        "user_turn_node_id",
+    ] {
+        assert_eq!(
+            replay["result"][field], first["result"][field],
+            "retry changed stable send_message field {field}"
+        );
+    }
+    assert_eq!(
+        replay["result"]["turn_node_id"], replay["result"]["user_turn_node_id"]
+    );
     assert_eq!(
         kogwistar_store::ServerRunReadStore::server_run_events(&service.store, run_id, 0, 10)
             .await
