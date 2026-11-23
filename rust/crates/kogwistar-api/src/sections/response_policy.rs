@@ -8,6 +8,12 @@ fn json_effect(status: StatusCode, value: Value) -> ApiEffectResponse {
     }
 }
 
+fn syscall_step_seq(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<i64>().ok()))
+}
+
 fn public_context_snapshot_value(snapshot: ContextSnapshotV1) -> Value {
     let mut payload = serde_json::to_value(snapshot).expect("snapshot serializes");
     payload

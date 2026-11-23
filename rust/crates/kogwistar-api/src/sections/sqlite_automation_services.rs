@@ -96,7 +96,7 @@ impl SqliteRunApplicationService {
                     syscall_forbidden(op)
                 } else if let (Some(run_id), Some(step_seq)) = (
                     input.args["run_id"].as_str(),
-                    input.args["step_seq"].as_i64(),
+                    syscall_step_seq(&input.args["step_seq"]),
                 ) {
                     match self.store.list_server_run_events(run_id, 0, 100_000) {
                         Ok(events) => syscall_result(

@@ -4637,7 +4637,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-    // PYTHON_PARITY_NOTE_V1: Rust maps Python workflow syscalls to existing in-memory run, checkpoint, resource, and approval handlers; authorization and mutation semantics stay centralized. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_workflow_syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/workflow-run-resume-result-v1.json,contracts/golden/run-cancel-v1.json,contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_syscalls_use_native_run_handlers+in_memory_resume_syscall_preserves_resume_envelope_and_result+in_memory_project_view_syscall_is_reachable_through_authenticated_http; python_test=tests/server/test_syscall_api.py#test_syscall_spawn_process_returns_ok_contract+test_syscall_request_approval_is_blocked_contract+test_syscall_checkpoint_accepts_numeric_string_step_seq,tests/server/test_chat_server_api.py#test_resume_route_uses_python_defaults_and_checks_namespace+test_checkpoint_detail_uses_python_defaults_and_checks_namespace+test_runtime_resource_snapshot_reports_pressure
+    // PYTHON_PARITY_NOTE_V1: Rust maps Python workflow syscalls to existing in-memory run, checkpoint, resource, and approval handlers; authorization and mutation semantics stay centralized. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_workflow_syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/workflow-run-resume-result-v1.json,contracts/golden/run-cancel-v1.json,contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_syscalls_use_native_run_handlers+in_memory_resume_syscall_preserves_resume_envelope_and_result+in_memory_project_view_syscall_is_reachable_through_authenticated_http; python_test=tests/server/test_syscall_api.py#test_syscall_spawn_process_returns_ok_contract+test_syscall_request_approval_is_blocked_contract+test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq,tests/server/test_chat_server_api.py#test_resume_route_uses_python_defaults_and_checks_namespace+test_checkpoint_detail_uses_python_defaults_and_checks_namespace+test_runtime_resource_snapshot_reports_pressure
     async fn in_memory_workflow_syscall_effect(
         &self,
         request: &ApiEffectRequest,
@@ -4730,11 +4730,7 @@ impl InMemoryGraphApplicationService {
                 )
             }
             "checkpoint" => {
-                let step_seq = input.args.get("step_seq").and_then(|value| {
-                    value
-                        .as_i64()
-                        .or_else(|| value.as_str().and_then(|raw| raw.parse::<i64>().ok()))
-                });
+                let step_seq = input.args.get("step_seq").and_then(syscall_step_seq);
                 let (Some(run_id), Some(step_seq)) = (
                     input.args.get("run_id").and_then(Value::as_str),
                     step_seq,
