@@ -1,0 +1,16 @@
+{
+  "cases": [
+    {
+      "name": "blank-text",
+      "request": {"version":"v1","op":"send_message","args":{"conversation_id":"syscall-send-invalid","user_id":"syscall-send-owner","text":" ","idempotency_key":"blank-text"}},
+      "http_status": 400,
+      "response": {"detail":"text must be non-empty"}
+    },
+    {
+      "name": "non-string-idempotency-key",
+      "request": {"version":"v1","op":"send_message","args":{"conversation_id":"syscall-send-invalid","user_id":"syscall-send-owner","text":"hello","idempotency_key":17}},
+      "http_status": 400,
+      "response": {"detail":"idempotency_key must be a string"}
+    }
+  ]
+}

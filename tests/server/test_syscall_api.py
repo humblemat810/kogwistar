@@ -162,6 +162,56 @@ def test_syscall_project_view_matches_resource_snapshot_contract(monkeypatch, en
         assert all(field in payload[key] for field in required_fields), key
 
 
+def test_syscall_send_message_invalid_inputs_match_shared_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
+    )
+    identity = claims_ctx.set(
+        {
+            "ns": "conversation",
+            "role": "rw",
+            "capabilities": ["create_conversation", "spawn_process"],
+            "sub": "syscall-send-owner",
+        }
+    )
+    try:
+        service.create_conversation(
+            user_id="syscall-send-owner", conversation_id="syscall-send-invalid"
+        )
+    finally:
+        claims_ctx.reset(identity)
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/syscall-send-message-invalid-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    before = registry.meta_store.list_server_runs(
+        conversation_id="syscall-send-invalid", limit=100
+    )
+
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="conversation",
+            capabilities="send_message,spawn_process,read_graph",
+        )
+        for case in contract["cases"]:
+            response = client.post(
+                "/api/syscall/v1/send_message",
+                json=case["request"],
+                headers=headers,
+            )
+            assert response.status_code == case["http_status"], case["name"]
+            assert response.json() == case["response"], case["name"]
+
+    assert registry.meta_store.list_server_runs(
+        conversation_id="syscall-send-invalid", limit=100
+    ) == before
+
+
 def test_syscall_create_conversation_uses_authenticated_owner(
     monkeypatch, engine_triplet
 ):

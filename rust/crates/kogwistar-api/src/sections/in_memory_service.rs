@@ -3220,10 +3220,9 @@ impl InMemoryGraphApplicationService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
         else {
-            return effect_error(
+            return json_effect(
                 StatusCode::BAD_REQUEST,
-                "KOGWISTAR_INVALID_REQUEST",
-                "text must be non-empty",
+                json!({"detail":"text must be non-empty"}),
             );
         };
         let workflow_id = input
@@ -3236,10 +3235,9 @@ impl InMemoryGraphApplicationService {
         let idempotency_key = match conversation_idempotency_key(&input.args) {
             Ok(key) => key,
             Err(error) => {
-                return effect_error(
+                return json_effect(
                     StatusCode::BAD_REQUEST,
-                    "KOGWISTAR_INVALID_REQUEST",
-                    error,
+                    json!({"detail":error}),
                 );
             }
         };

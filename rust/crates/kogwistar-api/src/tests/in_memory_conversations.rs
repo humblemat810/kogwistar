@@ -401,6 +401,35 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
         assert_eq!(response.status, StatusCode::OK.as_u16());
     }
 
+    let invalid_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-send-message-invalid-v1.json"
+    ))
+    .unwrap();
+    for case in invalid_contract["cases"].as_array().unwrap() {
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/send_message".to_owned(),
+                body: serde_json::to_vec(&case["request"]).unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(response.status, case["http_status"].as_u64().unwrap() as u16);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body, case["response"], "{}", case["name"]);
+    }
+    assert!(kogwistar_store::ServerRunReadStore::server_runs(
+        &service.store,
+        None,
+        None,
+        Some("syscall-send-invalid"),
+        100,
+    )
+    .await
+    .unwrap()
+    .is_empty());
+
     let provider = Arc::new(InMemoryConversationEmbeddingProvider {
         profile: kogwistar_engine::embedding::EmbeddingProfile {
             provider: "test".to_owned(),
