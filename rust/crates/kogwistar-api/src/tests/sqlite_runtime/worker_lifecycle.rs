@@ -947,6 +947,105 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
+        use kogwistar_store::ServerRunCreate;
+
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_checkpoint_syscall_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-checkpoint-persisted-v1.json"
+        ))
+        .unwrap();
+        let run_id = contract["run_id"].as_str().unwrap();
+        service
+            .store
+            .create_server_run(ServerRunCreate {
+                run_id: run_id.to_owned(),
+                conversation_id: "checkpoint-conversation".to_owned(),
+                workflow_id: contract["workflow_id"].as_str().unwrap().to_owned(),
+                user_id: Some("checkpoint-owner".to_owned()),
+                user_turn_node_id: "turn-1".to_owned(),
+                status: "running".to_owned(),
+            })
+            .await
+            .unwrap();
+        service
+            .store
+            .append_server_run_event(
+                run_id,
+                "workflow.recorded_transition.v1",
+                serde_json::to_string(&json!({
+                    "transition_id":"transition-1",
+                    "reduced":{
+                        "kind":"recorded_step_success",
+                        "state":{
+                            "last_step_seq":0,
+                            "workflow_id":contract["workflow_id"],
+                            "last_node_id":"node-1",
+                            "state":contract["state"],
+                            "frontier":{"pending":[]}
+                        },
+                        "state_update":[],
+                        "update":null,
+                        "result":null,
+                        "errors":[],
+                        "server_status":"running"
+                    }
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let request = |capabilities: Value, step_seq: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":contract["version"],
+                "op":contract["op"],
+                "args":{"run_id":run_id,"step_seq":step_seq}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"checkpoint-owner",
+                "role":"ro",
+                "ns":"workflow",
+                "capabilities":capabilities
+            }),
+        };
+
+        let denied = service
+            .execute(request(json!([]), contract["step_seq_input"].clone()))
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        let found = service
+            .execute(request(
+                json!(["workflow.run.read"]),
+                contract["step_seq_input"].clone(),
+            ))
+            .await;
+        assert_eq!(found.status, StatusCode::OK.as_u16());
+        let found: Value = serde_json::from_slice(&found.body).unwrap();
+        assert_eq!(found["result"], contract["expected_result"]);
+        let missing = service
+            .execute(request(
+                json!(["workflow.run.read"]),
+                json!(contract["step_seq_expected"].as_i64().unwrap() + 1),
+            ))
+            .await;
+        assert_eq!(missing.status, StatusCode::NOT_FOUND.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&missing.body).unwrap()["code"],
+            "KOGWISTAR_CHECKPOINT_NOT_FOUND"
+        );
+    }
+
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_project_view_matches_resource_fixture_and_authority; python_test=tests/server/test_chat_server_api.py#test_project_view_syscall_uses_python_backend
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
