@@ -331,9 +331,7 @@
             .unwrap();
         assert_eq!(denied_resume.status(), StatusCode::FORBIDDEN);
         let resume_app = app.clone();
-        let resume_uri = format!(
-            "/api/workflow/runs/{run_id}/resume"
-        );
+        let resume_uri = format!("/api/runs/{run_id}/resume");
         let resume_future = tokio::spawn(async move {
             call(resume_app, "POST", resume_uri, resume_body).await
         });
