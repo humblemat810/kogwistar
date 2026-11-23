@@ -701,8 +701,9 @@ not authorize a broad authority-flag promotion or replace production canaries.
   resume mutates durable state. Current focused authority/worker coverage passes
   29/29, sync and
   async bijection pass 32/32 each, bridge parity passes 17/17, and focused mypy
-  reports no issues. Runtime readiness remains false until native candidate and
-  full Phase 4 exit evidence pass.
+ reports no issues. At that historical checkpoint, runtime readiness remained
+ false until the native candidate and full Phase 4 exit evidence passed; the
+ current merged-candidate ledger is authoritative above.
 - Current-source native Windows gates now pass after loading the MSVC/Windows SDK
   environment: the Rust workspace executes 96 tests with one explicit manual
   scale probe ignored, the API crate passes 33/33, and workspace Clippy passes
