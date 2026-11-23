@@ -2395,13 +2395,15 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 "sub": "alice",
                 "user_id": "alice",
                 "role": "rw",
-                "ns": ["conversation"],
+                "ns": ["conversation", "workflow"],
                 "capabilities": [
                     "send_message",
                     "spawn_process",
                     "read_graph",
                     "invoke_tool",
                     "project_view",
+                    "approve_action",
+                    "read_security_scope",
                 ],
                 "iat": now,
                 "exp": now + 3600,
@@ -2550,6 +2552,32 @@ def test_conversation_syscalls_use_python_postgres_backend(
             assert outsider.status_code == 404
             assert snapshot_id not in outsider.text
             assert "postgres snapshot" not in outsider.text
+
+            approval_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-request-approval-success-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            approval_headers = _token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username="alice",
+                capabilities="approve_action,project_view,read_security_scope",
+            )
+            for case in approval_contract["cases"]:
+                response = client.post(
+                    "/api/syscall/v1/request_approval",
+                    json=case["request"],
+                    headers=approval_headers,
+                )
+                assert response.status_code == case["http_status"], response.text
+                result = response.json()["result"]
+                assert result["status"] == case["result_status"]
+                assert case["expected_entry"] in result[case["snapshot_field"]][
+                    case["entries_field"]
+                ]
 
         result = first.json()["result"]
         assert result["status"] == "queued"

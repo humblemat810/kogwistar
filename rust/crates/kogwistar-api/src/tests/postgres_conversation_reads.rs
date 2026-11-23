@@ -299,6 +299,46 @@
                 "snapshot": expected
             })
         );
+        let approval_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-request-approval-success-v1.json"
+        ))
+        .unwrap();
+        for case in approval_contract["cases"].as_array().unwrap() {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                    body: serde_json::to_vec(&case["request"]).unwrap(),
+                    principal: json!({
+                        "sub": "alice",
+                        "role": "rw",
+                        "ns": "workflow",
+                        "storage_ns": "conversation",
+                        "capabilities": [
+                            "approve_action",
+                            "project_view",
+                            "read_security_scope"
+                        ]
+                    }),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                case["http_status"].as_u64().unwrap() as u16
+            );
+            let payload: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(payload["version"], case["request"]["version"]);
+            assert_eq!(payload["op"], case["request"]["op"]);
+            assert_eq!(payload["status"], "ok");
+            let result = &payload["result"];
+            assert_eq!(result["status"], case["result_status"]);
+            assert!(result[case["snapshot_field"].as_str().unwrap()]
+                [case["entries_field"].as_str().unwrap()]
+                .as_array()
+                .unwrap()
+                .contains(&case["expected_entry"]));
+        }
         let denied_model_tool = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
