@@ -30,6 +30,7 @@ import kogwistar.server_mcp_with_admin as server
 from kogwistar.conversation.agentic_answering_design import DEBUG_RAG_WORKFLOW_ID
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
@@ -1881,6 +1882,104 @@ def test_mount_memory_acl_and_payload_survive_python_engine_reopen(
             assert "persisted private snapshot" not in denied.text
     finally:
         for engine in reopened_engines:
+            engine.close()
+
+
+def test_mount_memory_syscall_uses_python_in_memory_backend(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "mount-memory-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        with TestClient(server.app) as client:
+            owner_headers = _token_header(
+                client, role="rw", ns="conversation", username="memory-owner"
+            )
+            created = client.post(
+                "/api/conversations",
+                json={"user_id": "memory-owner"},
+                headers=owner_headers,
+            )
+            created.raise_for_status()
+            conversation_id = created.json()["conversation_id"]
+            service = ConversationService.from_engine(
+                conversation_engine,
+                knowledge_engine=engine,
+                workflow_engine=workflow_engine,
+            )
+            snapshot_id = service.persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id="memory-run",
+                run_step_seq=0,
+                stage="draft_answer",
+                view=SimpleNamespace(
+                    messages=[{"role": "user", "content": "memory snapshot"}],
+                    items=[],
+                    cost=None,
+                    token_budget=32,
+                ),
+                model_name="fake-model",
+                budget_tokens=32,
+            )
+            conversation_engine.acl.record_acl(
+                grain="node",
+                truth_graph="conversation",
+                entity_id=snapshot_id,
+                version=2,
+                mode="private",
+                owner_id="memory-owner",
+                supersedes_version=1,
+            )
+            request = {
+                "version": "v1",
+                "op": "mount_memory",
+                "args": {
+                    "conversation_id": conversation_id,
+                    "run_id": "memory-run",
+                    "stage": "draft_answer",
+                },
+            }
+            mounted = client.post(
+                "/api/syscall/v1/mount_memory",
+                json=request,
+                headers=owner_headers,
+            )
+            assert mounted.status_code == 200, mounted.text
+            assert mounted.json()["result"]["snapshot_node_id"] == snapshot_id
+
+            outsider = client.post(
+                "/api/syscall/v1/mount_memory",
+                json=request,
+                headers=_token_header(
+                    client,
+                    role="ro",
+                    ns="conversation",
+                    username="unrelated-reader",
+                ),
+            )
+            assert outsider.status_code == 404
+            assert snapshot_id not in outsider.text
+            assert "memory snapshot" not in outsider.text
+    finally:
+        for engine in engines:
             engine.close()
 
 
