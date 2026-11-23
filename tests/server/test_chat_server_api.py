@@ -2200,9 +2200,8 @@ def test_receive_message_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
-def test_request_approval_syscall_uses_python_in_memory_backend(
-    monkeypatch, tmp_path
-):
+@pytest.mark.parametrize("backend", ["in_memory", "chroma"])
+def test_request_approval_syscall_uses_python_backend(monkeypatch, tmp_path, backend):
     contract = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -2221,9 +2220,11 @@ def test_request_approval_syscall_uses_python_in_memory_backend(
         monkeypatch.delenv(selector, raising=False)
 
     engines = build_engine_triplet(
-        root=tmp_path / "request-approval-in-memory",
+        root=tmp_path / f"request-approval-{backend}",
         embedding_function=FakeEmbeddingFunction(),
-        backend_factory=build_in_memory_backend,
+        backend_factory=(
+            build_in_memory_backend if backend == "in_memory" else None
+        ),
     )
     try:
         engine, conversation_engine, workflow_engine = engines

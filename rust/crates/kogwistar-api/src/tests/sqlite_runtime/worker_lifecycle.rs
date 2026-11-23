@@ -259,6 +259,81 @@
         std::fs::remove_file(path).unwrap();
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#request_approval_syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/syscall-request-approval-success-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_request_approval_matches_shared_fixture; python_test=tests/server/test_chat_server_api.py#test_request_approval_syscall_uses_python_backend
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_request_approval_matches_shared_fixture() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let config = |kind: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: format!("approval-{kind}-{suffix}"),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            config("nodes"),
+            config("edges"),
+        )
+        .await
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-approval-chroma-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_chroma_graph(graph);
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-request-approval-success-v1.json"
+        ))
+        .unwrap();
+        for case in fixture["cases"].as_array().unwrap() {
+            let response = service.execute_sync(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                body: serde_json::to_vec(&case["request"]).unwrap(),
+                principal: json!({
+                    "sub":"shared-approval-owner",
+                    "role":"rw",
+                    "ns":"workflow",
+                    "capabilities":["approve_action", "project_view", "read_security_scope"]
+                }),
+            });
+            assert_eq!(response.status, case["http_status"].as_u64().unwrap() as u16);
+            let payload: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(payload["version"], case["request"]["version"]);
+            assert_eq!(payload["op"], case["request"]["op"]);
+            assert_eq!(payload["status"], "ok");
+            let result = &payload["result"];
+            assert_eq!(result["status"], case["result_status"]);
+            let entries = result[case["snapshot_field"].as_str().unwrap()]
+                [case["entries_field"].as_str().unwrap()]
+                .as_array()
+                .unwrap();
+            assert!(entries.contains(&case["expected_entry"]));
+        }
+        let denied = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+            body: serde_json::to_vec(&fixture["cases"][0]["request"]).unwrap(),
+            principal: json!({
+                "sub":"shared-approval-owner",
+                "role":"rw",
+                "ns":"workflow",
+                "capabilities":["project_view", "read_security_scope"]
+            }),
+        });
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        drop(service);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
         use std::time::{SystemTime, UNIX_EPOCH};
