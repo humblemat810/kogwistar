@@ -409,6 +409,86 @@ async fn in_memory_run_cancel_matches_shared_contract_and_authority() {
     );
 }
 
+#[tokio::test]
+async fn in_memory_workflow_syscalls_use_native_run_handlers() {
+    let service = InMemoryGraphApplicationService::default();
+    let principal = json!({
+        "sub":"syscall-owner",
+        "role":"rw",
+        "ns":["workflow"],
+        "capabilities":["spawn_process", "workflow.run.write"]
+    });
+    let spawn_path = "/api/syscall/v1/spawn_process";
+    assert!(service.supports_http_operation("POST", spawn_path));
+    let spawn = |principal: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: spawn_path.to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{
+                "run_id":"memory-syscall-run",
+                "workflow_id":"memory-syscall-workflow",
+                "conversation_id":"memory-syscall-conversation",
+                "expected_run_owner_id":"syscall-owner",
+                "node_ops":{"start":"noop"},
+                "node_executor_targets":{"start":"rust-native"}
+            }
+        })).unwrap(),
+        principal,
+    };
+    let denied = service.execute(spawn(json!({
+        "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+        "capabilities":["workflow.run.write"]
+    }))).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-syscall-run")
+        .await.unwrap().is_none());
+
+    let spawned = service.execute(spawn(principal.clone())).await;
+    assert_eq!(spawned.status, StatusCode::OK.as_u16());
+    let spawned: Value = serde_json::from_slice(&spawned.body).unwrap();
+    assert_eq!(spawned["version"], "syscall-v1");
+    assert_eq!(spawned["op"], "spawn_process");
+    assert_eq!(spawned["status"], "ok");
+    assert_eq!(spawned["result"]["run_id"], "memory-syscall-run");
+
+    for op in ["terminate_process", "resume"] {
+        assert!(service.supports_http_operation("POST", &format!("/api/syscall/v1/{op}")));
+    }
+    let denied_terminate = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{"run_id":"memory-syscall-run"}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+            "capabilities":["workflow.run.read"]
+        }),
+    }).await;
+    assert_eq!(denied_terminate.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(kogwistar_store::ServerRunReadStore::server_run(
+        &service.store, "memory-syscall-run",
+    ).await.unwrap().unwrap().status, "running");
+    let terminated = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{"run_id":"memory-syscall-run"}
+        })).unwrap(),
+        principal,
+    }).await;
+    assert_eq!(terminated.status, StatusCode::OK.as_u16());
+    let terminated: Value = serde_json::from_slice(&terminated.body).unwrap();
+    assert_eq!(terminated["op"], "terminate_process");
+    assert_eq!(terminated["result"]["status"], "cancelled");
+}
+
 // PYTHON_PARITY_NOTE_V1: MCP transport authorization and dispatch reach the in-memory workflow cancel effect; denied capability preserves run state. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
 #[tokio::test]
 async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
@@ -663,6 +743,90 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     assert_eq!(actual_fields, expected_fields);
     assert_eq!(result["workflow_status"], "succeeded");
     assert_eq!(result["final_state"]["started"], true);
+}
+
+#[tokio::test]
+async fn in_memory_resume_syscall_preserves_resume_envelope_and_result() {
+    use kogwistar_store::{
+        LaneMessageClaimFilter, LaneMessageReadStore, LaneMessageWriteStore, ProjectionReadStore,
+        RUNTIME_CURRENT_STATE_NAMESPACE,
+    };
+
+    let service = InMemoryGraphApplicationService::default();
+    let principal = json!({
+        "sub":"resume-syscall-owner", "role":"rw", "ns":["workflow"],
+        "capabilities":["spawn_process", "workflow.run.write"]
+    });
+    let run_id = "memory-resume-syscall-run";
+    let workflow_id = "memory-resume-syscall-workflow";
+    let conversation_id = "memory-resume-syscall-conversation";
+    let submitted = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/workflow/runs".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "run_id":run_id, "workflow_id":workflow_id,
+            "conversation_id":conversation_id,
+            "node_ops":{"start":"noop"},
+            "node_executor_targets":{"start":"rust-native"}
+        })).unwrap(),
+        principal: principal.clone(),
+    }).await;
+    assert_eq!(submitted.status, StatusCode::ACCEPTED.as_u16());
+
+    let lane = LaneMessageReadStore::projected_lane_message(
+        &service.store, &format!("lane|runtime-start|{run_id}"),
+    ).await.unwrap().unwrap();
+    let claim = LaneMessageWriteStore::claim_projected_lane_messages_filtered(
+        &service.store,
+        LaneMessageClaimFilter {
+            namespace: "workflow".to_owned(), inbox_id: "workflow-runtime".to_owned(),
+            claimed_by: "test-suspender".to_owned(), message_ids: Some(vec![lane.message_id]),
+            run_id: Some(run_id.to_owned()), msg_type: Some("workflow.step.execute".to_owned()),
+            recipient_id: Some("rust-native-worker".to_owned()), limit: 1, lease_seconds: 60,
+        },
+    ).await.unwrap().pop().unwrap();
+    service.store.apply_claimed_recorded_worker_effect(
+        kogwistar_runtime::RecordedWorkerHandoff {
+            message_id: claim.message_id, claimed_by: claim.claimed_by.unwrap(),
+            run_id: run_id.to_owned(), step_id: claim.step_id.unwrap(),
+            correlation_id: claim.correlation_id.unwrap(),
+        },
+        serde_json::from_value(json!({
+            "contract_version":1, "effect_id":"suspend-syscall-resume",
+            "status":"suspended", "wait_reason":"approval",
+            "resume_payload":{"question":"continue?"}
+        })).unwrap(),
+    ).unwrap();
+    let projection = ProjectionReadStore::named_projection(
+        &service.store, RUNTIME_CURRENT_STATE_NAMESPACE, run_id,
+    ).await.unwrap().unwrap();
+    let state: kogwistar_runtime::RecordedRuntimeState =
+        serde_json::from_value(Value::Object(projection.payload)).unwrap();
+    let (node_id, _, token_id, _) = state.frontier.suspended[0].clone();
+
+    let resumed = service.execute(ApiEffectRequest {
+        contract_version: 1, method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/resume".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{
+                "run_id":run_id, "workflow_id":workflow_id,
+                "conversation_id":conversation_id, "suspended_node_id":node_id,
+                "suspended_token_id":token_id, "client_result":{"approved":true}
+            }
+        })).unwrap(),
+        principal,
+    }).await;
+    assert_eq!(resumed.status, StatusCode::OK.as_u16());
+    let envelope: Value = serde_json::from_slice(&resumed.body).unwrap();
+    assert_eq!(envelope["version"], "syscall-v1");
+    assert_eq!(envelope["op"], "resume");
+    assert_eq!(envelope["status"], "ok");
+    assert_eq!(envelope["result"]["workflow_status"], "succeeded");
+    for field in ["workflow_status", "final_state", "budget"] {
+        assert!(envelope["result"].get(field).is_some(), "missing {field}");
+    }
 }
 
 #[tokio::test]

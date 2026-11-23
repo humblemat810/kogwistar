@@ -1026,7 +1026,10 @@ def test_dual_language_surface_inventory_is_current() -> None:
         "invoke_tool",
         "mount_memory",
         "receive_message",
+        "resume",
         "send_message",
+        "spawn_process",
+        "terminate_process",
     ]
 
     result = subprocess.run(

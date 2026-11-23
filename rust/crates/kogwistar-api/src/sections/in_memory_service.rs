@@ -2493,6 +2493,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     | Some("/api/syscall/v1/create_conversation")
                     | Some("/api/syscall/v1/mount_memory")
                     | Some("/api/syscall/v1/invoke_tool")
+                    | Some("/api/syscall/v1/spawn_process")
+                    | Some("/api/syscall/v1/terminate_process")
+                    | Some("/api/syscall/v1/resume")
             )
         {
             return true;
@@ -2665,6 +2668,29 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     &self.capabilities,
                     &input.version,
                     "invoke_tool",
+                    syscall_audit_status(&response),
+                );
+                return response;
+            }
+            if request.method == "POST"
+                && matches!(
+                    request.path_and_query.split('?').next(),
+                    Some("/api/syscall/v1/spawn_process")
+                        | Some("/api/syscall/v1/terminate_process")
+                        | Some("/api/syscall/v1/resume")
+                )
+            {
+                let op = syscall_operation(&request.path_and_query)
+                    .expect("matched workflow syscall route has operation");
+                let input = match syscall_input(&request, &op) {
+                    Ok(input) => input,
+                    Err(response) => return response,
+                };
+                let response = self.in_memory_workflow_syscall_effect(&request, &input).await;
+                syscall_audit(
+                    &self.capabilities,
+                    &input.version,
+                    &op,
                     syscall_audit_status(&response),
                 );
                 return response;
@@ -4602,6 +4628,98 @@ impl InMemoryGraphApplicationService {
                 "KOGWISTAR_RUNTIME_ADMISSION_CONFLICT",
                 error.to_string(),
             ),
+        }
+    }
+
+    // PYTHON_PARITY_NOTE_V1: Rust maps Python workflow syscalls to existing in-memory admission/resume/cancel handlers; authority, attenuation, and mutation semantics stay centralized. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_workflow_syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/workflow-run-resume-result-v1.json,contracts/golden/run-cancel-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_syscalls_use_native_run_handlers+in_memory_resume_syscall_preserves_resume_envelope_and_result; python_test=tests/server/test_syscall_api.py#test_syscall_spawn_process_returns_ok_contract,tests/server/test_chat_server_api.py#test_resume_route_uses_python_defaults_and_checks_namespace
+    async fn in_memory_workflow_syscall_effect(
+        &self,
+        request: &ApiEffectRequest,
+        input: &SyscallInput,
+    ) -> ApiEffectResponse {
+        let required = match input.op.as_str() {
+            "spawn_process" => &["spawn_process", "workflow.run.write"][..],
+            "terminate_process" | "resume" => &["workflow.run.write"][..],
+            _ => return unavailable_effect(request.clone()),
+        };
+        if !syscall_allowed(request, &self.capabilities, &input.op, true, required) {
+            return syscall_forbidden(&input.op);
+        }
+        match input.op.as_str() {
+            "spawn_process" => {
+                let delegated_args = match prepare_delegated_run_args(
+                    &Value::Object(input.args.clone()),
+                    &request.principal,
+                    &self.capabilities,
+                ) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            "KOGWISTAR_INVALID_DELEGATION",
+                            error,
+                        );
+                    }
+                };
+                let nested = ApiEffectRequest {
+                    contract_version: request.contract_version,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/workflow/runs".to_owned(),
+                    body: serde_json::to_vec(&delegated_args)
+                        .expect("delegated syscall args serialize"),
+                    principal: delegated_child_principal(&request.principal, &delegated_args),
+                };
+                syscall_result(
+                    &input.version,
+                    &input.op,
+                    self.submit_run_effect(&nested, None).await,
+                )
+            }
+            "terminate_process" => {
+                let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) else {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id is required",
+                    );
+                };
+                let nested = ApiEffectRequest {
+                    contract_version: request.contract_version,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/runs/{run_id}/cancel"),
+                    body: Vec::new(),
+                    principal: request.principal.clone(),
+                };
+                syscall_result(
+                    &input.version,
+                    &input.op,
+                    self.cancel_runtime_run_effect(&nested, run_id).await,
+                )
+            }
+            "resume" => {
+                let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) else {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id is required",
+                    );
+                };
+                let mut resume_args = input.args.clone();
+                resume_args.remove("run_id");
+                let nested = ApiEffectRequest {
+                    contract_version: request.contract_version,
+                    method: "POST".to_owned(),
+                    path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
+                    body: serde_json::to_vec(&resume_args).expect("syscall args serialize"),
+                    principal: request.principal.clone(),
+                };
+                syscall_result(
+                    &input.version,
+                    &input.op,
+                    self.resume_runtime_run_effect(&nested, run_id).await,
+                )
+            }
+            _ => unreachable!("operation validated before dispatch"),
         }
     }
 

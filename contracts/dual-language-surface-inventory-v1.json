@@ -1004,15 +1004,15 @@
         "invoke_tool",
         "mount_memory",
         "receive_message",
-        "send_message"
+        "resume",
+        "send_message",
+        "spawn_process",
+        "terminate_process"
       ],
       "unavailable": [
         "checkpoint",
         "project_view",
-        "request_approval",
-        "resume",
-        "spawn_process",
-        "terminate_process"
+        "request_approval"
       ],
       "cutover_deferred": [],
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
