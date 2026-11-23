@@ -2347,6 +2347,107 @@ def test_send_message_syscall_uses_python_backend(monkeypatch, tmp_path, backend
             engine.close()
 
 
+def test_send_message_syscall_uses_python_postgres_backend(
+    monkeypatch, tmp_path, pg_dsn, pg_schema
+):
+    if not pg_dsn or not pg_schema:
+        pytest.skip("PostgreSQL fixture is unavailable")
+
+    import sqlalchemy as sa
+
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+    schema_names = [f"{pg_schema}_{graph_type}" for graph_type in ("knowledge", "conversation", "workflow")]
+    postgres_engine = sa.create_engine(pg_dsn, future=True, pool_pre_ping=True)
+
+    def backend_factory(engine):
+        return PgVectorBackend(
+            engine=postgres_engine,
+            embedding_dim=384,
+            schema=f"{pg_schema}_{engine.kg_graph_type}",
+        )
+
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "send-message-postgres",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=backend_factory,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        service, registry = _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        monkeypatch.setattr(service._run_execution, "_run_answer", lambda _request: None)
+        with TestClient(server.app) as client:
+            headers = _token_header(
+                client,
+                role="rw",
+                ns="conversation",
+                username="postgres-send-owner",
+                capabilities="send_message,spawn_process,read_graph",
+            )
+            created = client.post(
+                "/api/conversations",
+                json={"user_id": "postgres-send-owner"},
+                headers=headers,
+            )
+            assert created.status_code == 200, created.text
+            conversation_id = created.json()["conversation_id"]
+            request = {
+                "version": "v1",
+                "op": "send_message",
+                "args": {
+                    "conversation_id": conversation_id,
+                    "text": "hello from Python PostgreSQL backend",
+                    "idempotency_key": "postgres-send-once",
+                },
+            }
+            first = client.post(
+                "/api/syscall/v1/send_message", json=request, headers=headers
+            )
+            assert first.status_code == 200, first.text
+            replay = client.post(
+                "/api/syscall/v1/send_message", json=request, headers=headers
+            )
+            assert replay.status_code == 200, replay.text
+            assert replay.json() == first.json()
+
+            request["args"]["text"] = "changed payload"
+            conflict = client.post(
+                "/api/syscall/v1/send_message", json=request, headers=headers
+            )
+            assert conflict.status_code == 409
+
+        result = first.json()["result"]
+        assert result["status"] == "queued"
+        assert registry.get_run(result["run_id"])["user_turn_node_id"] == result[
+            "user_turn_node_id"
+        ]
+        assert len(service.list_transcript(conversation_id)) == 1
+    finally:
+        for engine in engines:
+            engine.close()
+        postgres_engine.dispose()
+        cleanup_engine = sa.create_engine(pg_dsn, future=True, pool_pre_ping=True)
+        try:
+            with cleanup_engine.begin() as connection:
+                for schema in schema_names:
+                    connection.execute(sa.text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+        finally:
+            cleanup_engine.dispose()
+
+
 @pytest.mark.parametrize("backend", ["in_memory", "chroma"])
 def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backend):
     for selector in (
