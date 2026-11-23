@@ -2340,6 +2340,131 @@ def test_send_message_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
+def test_run_lifecycle_syscalls_use_python_in_memory_backend(monkeypatch, tmp_path):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "run-lifecycle-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        service, _registry = _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        workflow_id = "wf.in-memory-syscall"
+        identity = claims_ctx.set(
+            {
+                "ns": "workflow",
+                "role": "rw",
+                "capabilities": [
+                    "spawn_process",
+                    "workflow.run.write",
+                    "workflow.run.read",
+                    "project_view",
+                    "workflow.design.write",
+                    "write_graph",
+                ],
+                "sub": "memory-workflow-owner",
+            }
+        )
+        try:
+            service.workflow_design_upsert_node(
+                workflow_id=workflow_id,
+                designer_id="memory-workflow-owner",
+                node_id="start",
+                label="Start",
+                op="start",
+                start=True,
+            )
+            service.workflow_design_upsert_node(
+                workflow_id=workflow_id,
+                designer_id="memory-workflow-owner",
+                node_id="end",
+                label="End",
+                op="end",
+                terminal=True,
+            )
+            service.workflow_design_upsert_edge(
+                workflow_id=workflow_id,
+                designer_id="memory-workflow-owner",
+                edge_id="edge-start-end",
+                src="start",
+                dst="end",
+                relation="wf_next",
+                is_default=True,
+            )
+            conversation = service.create_conversation(user_id="memory-workflow-owner")
+        finally:
+            claims_ctx.reset(identity)
+
+        with TestClient(server.app) as client:
+            headers = _token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username="memory-workflow-owner",
+                capabilities=(
+                    "spawn_process,workflow.run.write,workflow.run.read,project_view,"
+                    "workflow.design.write,write_graph"
+                ),
+            )
+            spawned = client.post(
+                "/api/syscall/v1/spawn_process",
+                json={
+                    "version": "v1",
+                    "op": "spawn_process",
+                    "args": {
+                        "workflow_id": workflow_id,
+                        "conversation_id": conversation["conversation_id"],
+                        "turn_node_id": conversation["start_node_id"],
+                        "user_id": "memory-workflow-owner",
+                        "initial_state": {
+                            "user_id": "memory-workflow-owner",
+                            "conversation_id": conversation["conversation_id"],
+                        },
+                    },
+                },
+                headers=headers,
+            )
+            assert spawned.status_code == 200, spawned.text
+            spawned_result = spawned.json()["result"]
+            assert spawned_result["workflow_id"] == workflow_id
+
+            terminated = client.post(
+                "/api/syscall/v1/terminate_process",
+                json={
+                    "version": "v1",
+                    "op": "terminate_process",
+                    "args": {"run_id": spawned_result["run_id"]},
+                },
+                headers=headers,
+            )
+            assert terminated.status_code == 200, terminated.text
+            cancel_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/run-cancel-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            terminated_result = terminated.json()["result"]
+            assert all(field in terminated_result for field in cancel_contract["required_fields"])
+            assert terminated_result["status"] in cancel_contract["accepted_run_statuses"]
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
