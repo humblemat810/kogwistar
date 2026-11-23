@@ -541,6 +541,17 @@
         let retry_value: Value = serde_json::from_slice(&retry_body).unwrap();
         assert_eq!(retry_value["result"]["run_id"], run_id);
         assert_eq!(retry_value["result"]["user_turn_node_id"], turn_id);
+        let rest_replay = app
+            .clone()
+            .oneshot(rest_send(&token))
+            .await
+            .unwrap();
+        assert_eq!(rest_replay.status(), StatusCode::OK);
+        let rest_replay_body = to_bytes(rest_replay.into_body(), 65_536).await.unwrap();
+        let rest_replay_value: Value = serde_json::from_slice(&rest_replay_body).unwrap();
+        assert_eq!(rest_replay_value["result"]["run_id"], run_id);
+        assert_eq!(rest_replay_value["result"]["turn_node_id"], turn_id);
+        assert_eq!(rest_replay_value["result"]["idempotent"], true);
         let changed = app
             .clone()
             .oneshot(mcp_ask(&token, "send-message-conflict", "Changed question"))
