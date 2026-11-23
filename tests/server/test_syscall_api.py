@@ -18,6 +18,7 @@ from tests.server.auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 from tests.server.test_chat_server_api import (
     _configure_server,
     _runtime_success_runner,
+    _seed_checkpoint,
     _token_header,
 )
 from kogwistar.server.syscall_api import _invoke_builtin_tool, create_syscall_router
@@ -129,6 +130,42 @@ def test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_st
         "state": {"cursor": "x"},
     }
     assert calls == [("run-1", contract["step_seq_expected"])]
+
+
+def test_syscall_checkpoint_reads_persisted_python_checkpoint(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
+    )
+    run_id = "syscall-persisted-checkpoint"
+    expected_state = {"counter": 7}
+    _seed_checkpoint(
+        conversation_engine,
+        run_id=run_id,
+        workflow_id="checkpoint-workflow",
+        step_seq=0,
+        state=expected_state,
+    )
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/syscall/v1/checkpoint",
+            json={
+                "version": "v1",
+                "op": "checkpoint",
+                "args": {"run_id": run_id, "step_seq": "0"},
+            },
+            headers=_token_header(client, role="ro", ns="workflow"),
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "ok"
+    assert payload["result"] == {
+        "run_id": run_id,
+        "step_seq": 0,
+        "state": expected_state,
+    }
 
 
 def test_syscall_project_view_matches_resource_snapshot_contract(monkeypatch, engine_triplet):

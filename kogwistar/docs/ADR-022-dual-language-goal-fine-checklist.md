@@ -55,9 +55,13 @@ SQLite metadata `checkpoint` is now `PARTIAL`: Rust
 `sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope`
 reads a recorded transition through the syscall, checks `workflow.run.read`,
 accepts numeric-string `step_seq`, and returns not-found for a missing step;
-Python `test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq`
-passes its wire normalization contract. Python still uses a stub service for
-that syscall test, so shared persisted-result parity is not established.
+Python `test_syscall_checkpoint_reads_persisted_python_checkpoint` exercises the
+real syscall router and persisted checkpoint node, returning the same
+`run_id`/integer `step_seq`/state result shape. The separate
+`test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq`
+still verifies Python wire normalization. Both implementations are tested
+against persisted state, but no shared fixture-driven cross-implementation
+comparison exists yet.
 
 | Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |
 | --- | --- | --- | --- | --- |
