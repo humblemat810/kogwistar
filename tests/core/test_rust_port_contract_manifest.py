@@ -470,6 +470,9 @@ def test_rust_ci_keeps_the_native_api_dependency_closure_python_free() -> None:
 
 def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    rust_test_step = workflow.split("- name: Test Rust workspace", maxsplit=1)[1].split(
+        "- name: Deny Clippy warnings", maxsplit=1
+    )[0]
 
     assert "image: chromadb/chroma:1.5.9" in workflow
     assert "KOGWISTAR_TEST_CHROMA_URL: http://localhost:8000" in workflow
@@ -491,7 +494,11 @@ def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     assert 'open("../pyproject.toml", "rb")' in workflow
     assert 'project["dependencies"]' in workflow
     assert 'project["optional-dependencies"]["pgvector"]' in workflow
+    assert 'project["optional-dependencies"]["server"]' in workflow
     assert '"-m", "pip", "install", *dependencies' in workflow
+    assert "KOGWISTAR_PYTHON: python" in rust_test_step
+    assert "--skip" not in rust_test_step
+    assert "cargo test --workspace --all-targets --locked -- --include-ignored" in rust_test_step
     assert "if tests != 3 or skipped:" in workflow
 
 

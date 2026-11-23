@@ -380,19 +380,19 @@ jobs:
 
           with open("../pyproject.toml", "rb") as project_file:
               project = tomllib.load(project_file)["project"]
-          dependencies = project["dependencies"] + project["optional-dependencies"]["pgvector"]
+          dependencies = (
+              project["dependencies"]
+              + project["optional-dependencies"]["pgvector"]
+              + project["optional-dependencies"]["server"]
+          )
           subprocess.run([sys.executable, "-m", "pip", "install", *dependencies], check=True)
           PY
 
       - name: Test Rust workspace
         env:
           KOGWISTAR_TEST_CHROMA_ENDPOINT: http://127.0.0.1:8000
-        run: >-
-          cargo test --workspace --all-targets --locked --
-          --include-ignored
-          --skip runtime_serving_lookup_scale_probe
-          --skip postgres_queue_projects_to_chroma_without_cross_store_transaction
-          --skip python_mcp_sdk_receives_rust_server_initiated_notification
+          KOGWISTAR_PYTHON: python
+        run: cargo test --workspace --all-targets --locked -- --include-ignored
 
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
