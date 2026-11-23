@@ -1122,10 +1122,29 @@ async fn in_memory_resume_syscall_preserves_resume_envelope_and_result() {
     assert_eq!(envelope["version"], "syscall-v1");
     assert_eq!(envelope["op"], "resume");
     assert_eq!(envelope["status"], "ok");
-    assert_eq!(envelope["result"]["workflow_status"], "succeeded");
-    for field in ["workflow_status", "final_state", "budget"] {
-        assert!(envelope["result"].get(field).is_some(), "missing {field}");
-    }
+    let result = &envelope["result"];
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+    ))
+    .unwrap();
+    let expected_fields = contract["required_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_fields = result
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_fields, expected_fields);
+    assert!(contract["completed_statuses"]
+        .as_array()
+        .unwrap()
+        .contains(&result["workflow_status"]));
+    assert_eq!(result["workflow_status"], "succeeded");
 }
 
 #[tokio::test]

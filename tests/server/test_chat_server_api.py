@@ -34,12 +34,15 @@ from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
 from kogwistar.engine_core.models import Document, Edge, Grounding, Node, Span
 from kogwistar.runtime.design import load_workflow_design
 from kogwistar.runtime.models import (
+    RunSuccess,
+    RunSuspended,
     WorkflowCancelledNode,
     WorkflowCheckpointNode,
     WorkflowCompletedNode,
     WorkflowStepExecNode,
 )
-from kogwistar.runtime.runtime import RunResult
+from kogwistar.runtime.resolvers import MappingStepResolver
+from kogwistar.runtime.runtime import RunResult, WorkflowRuntime
 from kogwistar.runtime.telemetry import EventEmitter, TraceContext
 from kogwistar.runtime.telemetry_otel import OpenTelemetrySink
 from kogwistar.server.chat_service import (
@@ -2993,6 +2996,207 @@ def test_resume_route_uses_python_defaults_and_checks_namespace(
         assert denied.status_code == 403
         assert "python-only-resume-run" not in denied.text
         assert len(captured_requests) == 1
+
+
+def test_python_in_memory_resume_syscall_continues_persisted_workflow(
+    monkeypatch, tmp_path
+):
+    resume_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-resume-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    def fail_if_rust_load_is_attempted() -> None:
+        raise AssertionError("Python-only resume attempted to load Rust")
+
+    monkeypatch.setattr(
+        "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
+    )
+    engines = build_engine_triplet(
+        root=tmp_path / "python-in-memory-resume",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    knowledge_engine, conversation_engine, workflow_engine = engines
+    service, _registry = _configure_server(
+        monkeypatch,
+        knowledge_engine,
+        conversation_engine,
+        workflow_engine,
+        _success_runner,
+    )
+    workflow_id = "python-in-memory-resume-workflow"
+    run_id = "python-in-memory-resume-run"
+    conversation_id = "python-in-memory-resume-conversation"
+    turn_node_id = "python-in-memory-resume-turn"
+    owner = "python-in-memory-resume-owner"
+    identity = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "role": "rw",
+            "capabilities": ["workflow.design.write", "write_graph"],
+            "sub": owner,
+        }
+    )
+    try:
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            node_id="start",
+            label="Start",
+            op="python-resume-start",
+            start=True,
+        )
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            node_id="gate",
+            label="Wait for approval",
+            op="python-resume-gate",
+        )
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            node_id="end",
+            label="Finish",
+            op="python-resume-end",
+            terminal=True,
+        )
+        service.workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            edge_id="start-gate",
+            src="start",
+            dst="gate",
+            relation="wf_next",
+            is_default=True,
+        )
+        service.workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            edge_id="gate-end",
+            src="gate",
+            dst="end",
+            relation="wf_next",
+            is_default=True,
+        )
+    finally:
+        claims_ctx.reset(identity)
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("python-resume-start")
+    def _start(_context):
+        return RunSuccess(state_update=[("u", {"started": True})])
+
+    @resolver.register("python-resume-gate")
+    def _gate(_context):
+        return RunSuspended(resume_payload={"question": "approve?"})
+
+    @resolver.register("python-resume-end")
+    def _end(context):
+        return RunSuccess(
+            state_update=[
+                ("u", {"ended": True, "approved": context.state_view.get("approved")})
+            ]
+        )
+
+    monkeypatch.setattr(
+        "kogwistar.conversation.resolvers.default_resolver", resolver
+    )
+    runtime = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+    )
+    suspended = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+        turn_node_id=turn_node_id,
+        initial_state={
+            "conversation_id": conversation_id,
+            "user_id": owner,
+            "turn_node_id": turn_node_id,
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "approve",
+            "mem_id": "memory",
+        },
+        run_id=run_id,
+    )
+    assert suspended.status == "suspended"
+    checkpoints = conversation_engine.read.get_nodes(
+        where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]}
+    )
+    assert checkpoints
+    latest_checkpoint = max(
+        checkpoints,
+        key=lambda node: int(getattr(node, "metadata", {}).get("step_seq", -1)),
+    )
+    state_json = latest_checkpoint.metadata["state_json"]
+    if isinstance(state_json, str):
+        state_json = json.loads(state_json)
+    suspended_tokens = state_json["_rt_join"]["suspended"]
+    assert len(suspended_tokens) == 1
+    suspended_node_id, _, suspended_token_id, _ = suspended_tokens[0]
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/syscall/v1/resume",
+            json={
+                "version": "v1",
+                "op": "resume",
+                "args": {
+                    "run_id": run_id,
+                    "suspended_node_id": suspended_node_id,
+                    "suspended_token_id": suspended_token_id,
+                    "client_result": {
+                        "status": "success",
+                        "state_update": [["u", {"approved": True}]],
+                    },
+                    "workflow_id": workflow_id,
+                    "conversation_id": conversation_id,
+                    "turn_node_id": turn_node_id,
+                    "user_id": owner,
+                },
+            },
+            headers=_token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username=owner,
+                capabilities="workflow.run.write,approve_action",
+            ),
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["version"] == "v1"
+    assert payload["op"] == "resume"
+    assert payload["status"] == "ok"
+    result = payload["result"]
+    assert set(resume_contract["required_fields"]).issubset(result)
+    assert result["workflow_status"] == "succeeded", json.dumps(result, sort_keys=True)
+    assert result["workflow_status"] in resume_contract["completed_statuses"]
+    assert result["final_state"]["started"] is True
+    assert result["final_state"]["approved"] is True
+    assert result["final_state"]["ended"] is True
+    for engine in engines:
+        engine.close()
 
 
 def test_resume_route_preserves_response_contract_with_rust_runtime_selection(
