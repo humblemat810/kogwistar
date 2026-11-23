@@ -223,6 +223,92 @@
         let _ = std::fs::remove_file(path);
     }
 
+    #[test]
+    fn sqlite_request_approval_mutations_require_scope_and_return_snapshot() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-approval-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let request = |action: &str, capabilities: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"request_approval",
+                "args":{
+                    "action":action,
+                    "approval_action":"request_approval",
+                    "subject":"sqlite-approval-target",
+                    "capability":"workflow.run.read"
+                }
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"sqlite-approval-owner",
+                "role":"rw",
+                "ns":"workflow",
+                "capabilities":capabilities,
+            }),
+        };
+
+        for action in ["grant", "revoke"] {
+            let denied = service.execute_sync(request(
+                action,
+                json!(["approve_action", "project_view"]),
+            ));
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16(), "{action}");
+        }
+        let owner = json!("sqlite-approval-owner");
+        let state = service
+            .capabilities
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = capability_snapshot(&owner, &state);
+        assert!(!before.to_string().contains("sqlite-approval-target"));
+        drop(state);
+
+        let grant = service.execute_sync(request(
+            "grant",
+            json!(["approve_action", "project_view", "read_security_scope"]),
+        ));
+        assert_eq!(grant.status, StatusCode::OK.as_u16());
+        let grant: Value = serde_json::from_slice(&grant.body).unwrap();
+        assert_eq!(grant["result"]["status"], "approved");
+        assert!(grant["result"]["approval"]["approvals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|approval| {
+                approval["subject"] == "sqlite-approval-target"
+                    && approval["action"] == "request_approval"
+                    && approval["capabilities"] == json!(["workflow.run.read"])
+            }));
+
+        let revoke = service.execute_sync(request(
+            "revoke",
+            json!(["approve_action", "project_view", "read_security_scope"]),
+        ));
+        assert_eq!(revoke.status, StatusCode::OK.as_u16());
+        let revoke: Value = serde_json::from_slice(&revoke.body).unwrap();
+        assert_eq!(revoke["result"]["status"], "revoked");
+        assert!(revoke["result"]["revocation"]["revoked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["subject"] == "sqlite-approval-target"
+                    && entry["capabilities"] == json!(["workflow.run.read"])
+            }));
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn sqlite_worker_suspend_resume_is_durable_and_scheduler_owned() {
         use axum::body::{Body, to_bytes};
