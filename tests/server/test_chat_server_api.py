@@ -2270,9 +2270,8 @@ def test_request_approval_syscall_uses_python_backend(monkeypatch, tmp_path, bac
             engine.close()
 
 
-def test_send_message_syscall_uses_python_in_memory_backend(
-    monkeypatch, tmp_path
-):
+@pytest.mark.parametrize("backend", ["in_memory", "chroma"])
+def test_send_message_syscall_uses_python_backend(monkeypatch, tmp_path, backend):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -2285,9 +2284,11 @@ def test_send_message_syscall_uses_python_in_memory_backend(
         monkeypatch.delenv(selector, raising=False)
 
     engines = build_engine_triplet(
-        root=tmp_path / "send-message-in-memory",
+        root=tmp_path / f"send-message-{backend}",
         embedding_function=FakeEmbeddingFunction(),
-        backend_factory=build_in_memory_backend,
+        backend_factory=(
+            build_in_memory_backend if backend == "in_memory" else None
+        ),
     )
     try:
         engine, conversation_engine, workflow_engine = engines

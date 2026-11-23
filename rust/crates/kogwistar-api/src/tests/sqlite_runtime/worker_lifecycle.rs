@@ -572,6 +572,249 @@
         let _ = std::fs::remove_file(path);
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_send_message_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/conversation-create-syscall-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_send_message_is_idempotent_and_durable; python_test=tests/server/test_chat_server_api.py#test_send_message_syscall_uses_python_backend
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_send_message_is_idempotent_and_durable() {
+        use kogwistar_engine::embedding::{EmbeddingFuture, EmbeddingProfile, EmbeddingProvider};
+        use kogwistar_store::{NamedProjectionWrite, WorkflowDesignSnapshotWrite};
+        use kogwistar_store_sqlite::SqliteStore;
+        use std::sync::Arc;
+
+        struct TestEmbeddingProvider {
+            profile: EmbeddingProfile,
+        }
+        impl EmbeddingProvider for TestEmbeddingProvider {
+            fn profile(&self) -> &EmbeddingProfile {
+                &self.profile
+            }
+
+            fn embed<'a>(&'a self, texts: &'a [String]) -> EmbeddingFuture<'a> {
+                Box::pin(async move { Ok(texts.iter().map(|_| vec![0.6, 0.8]).collect()) })
+            }
+        }
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let database = std::env::temp_dir().join(format!("kogwistar-send-message-{suffix}.sqlite3"));
+        let auth_database = std::env::temp_dir().join(format!("kogwistar-send-auth-{suffix}.sqlite3"));
+        let workflow_id = "agentic_answering.v2";
+        let workflow_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
+        ))
+        .unwrap();
+        let workflow = &workflow_contract["workflows"][workflow_id];
+        let nodes = workflow["required_ops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|operation| {
+                let operation = operation.as_str().unwrap();
+                json!({
+                    "id":operation,
+                    "label":operation,
+                    "metadata":{
+                        "entity_type":"workflow_node",
+                        "workflow_id":workflow_id,
+                        "wf_op":operation,
+                        "wf_version":"v1",
+                        "wf_executor_target":"rust-native",
+                        "wf_start":operation=="start"
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let edges = workflow["required_routes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(index, route)| {
+                json!({
+                    "id":format!("send-message-route-{index}"),
+                    "source_ids":[route["from"]],
+                    "target_ids":[route["to"]],
+                    "metadata":{
+                        "entity_type":"workflow_edge",
+                        "workflow_id":workflow_id,
+                        "wf_predicate":route["predicate"],
+                        "wf_priority":route["priority"],
+                        "wf_is_default":route["default"],
+                        "wf_multiplicity":route["multiplicity"]
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let store = SqliteStore::open(&database).unwrap();
+        store
+            .replace_named_projection(
+                "workflow_design",
+                workflow_id,
+                NamedProjectionWrite {
+                    payload: serde_json::Map::from_iter([
+                        ("current_version".to_owned(), json!(1)),
+                        ("snapshot_schema_version".to_owned(), json!(1)),
+                    ]),
+                    last_authoritative_seq: 1,
+                    last_materialized_seq: 1,
+                    projection_schema_version: 1,
+                    materialization_status: "ready".to_owned(),
+                },
+            )
+            .unwrap();
+        store
+            .put_workflow_design_snapshot(
+                workflow_id,
+                WorkflowDesignSnapshotWrite {
+                    version: 1,
+                    seq: 1,
+                    schema_version: 1,
+                    payload_json: serde_json::to_string(&json!({"nodes":nodes,"edges":edges}))
+                        .unwrap(),
+                },
+            )
+            .unwrap();
+        drop(store);
+        let auth_store = SqliteAuthStore::open(&auth_database).unwrap();
+        auth_store
+            .resolve_external_identity(ResolveExternalIdentity {
+                issuer: "test".to_owned(),
+                subject: "send-owner".to_owned(),
+                email: "send-owner@example.test".to_owned(),
+                display_name: None,
+                new_user_id: "send-owner".to_owned(),
+                default_role: "rw".to_owned(),
+                default_ns: "conversation".to_owned(),
+            })
+            .await
+            .unwrap();
+        drop(auth_store);
+        let auth_config = AuthConfig {
+            auth_db_url: Some(format!("sqlite:///{}", auth_database.display())),
+            ..AuthConfig::default()
+        };
+        let provider = Arc::new(TestEmbeddingProvider {
+            profile: EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "send-message-test".to_owned(),
+                dimension: 2,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: Some("single_vector".to_owned()),
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            },
+        });
+        let database_graph = open_sqlite_application_service(
+            &database,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: format!("send-message-n-{suffix}"),
+                edge_collection: format!("send-message-e-{suffix}"),
+            }),
+        )
+        .await
+        .unwrap();
+        let service = database_graph
+            .with_embedding_provider(provider)
+            .with_owner_auth_config(&auth_config)
+            .await
+            .unwrap();
+        let principal = json!({
+            "sub":"send-owner",
+            "user_id":"send-owner",
+            "role":"rw",
+            "storage_ns":"conversation",
+            "workspace_id":"workspace-a",
+            "workspace":"workspace-a",
+            "graph_space":"conversation",
+            "ns":["conversation"],
+            "capabilities":["spawn_process","send_message","read_graph","write_graph","workflow.run.write"]
+        });
+        let conversation_id = format!("send-conversation-{suffix}");
+        let create = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/create_conversation".to_owned(),
+                body: json!({
+                    "version":"v1",
+                    "op":"create_conversation",
+                    "args":{"conversation_id":conversation_id,"user_id":"send-owner"}
+                })
+                .to_string()
+                .into_bytes(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(create.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&create.body));
+
+        let make_send = |text: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/send_message".to_owned(),
+            body: json!({
+                "version":"v1",
+                "op":"send_message",
+                "args":{
+                    "conversation_id":conversation_id,
+                    "text":text,
+                    "workflow_id":"agentic_answering.v2",
+                    "idempotency_key":"send-once"
+                }
+            })
+            .to_string()
+            .into_bytes(),
+            principal: principal.clone(),
+        };
+        let first = service.execute(make_send("hello from Rust Chroma path")).await;
+        assert_eq!(first.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&first.body));
+        let first_payload: Value = serde_json::from_slice(&first.body).unwrap();
+        assert_eq!(first_payload["result"]["status"], "queued");
+        let run_id = first_payload["result"]["run_id"].as_str().unwrap();
+        let user_turn_id = first_payload["result"]["turn_node_id"].as_str().unwrap();
+        let event_count = service.store.replay_raw_events("conversation", 0, 100).unwrap().len();
+
+        let replay = service.execute(make_send("hello from Rust Chroma path")).await;
+        assert_eq!(replay.status, StatusCode::OK.as_u16());
+        let replay_payload: Value = serde_json::from_slice(&replay.body).unwrap();
+        assert_eq!(replay_payload["result"]["run_id"], run_id);
+        assert_eq!(replay_payload["result"]["turn_node_id"], user_turn_id);
+        assert_eq!(replay_payload["result"]["status"], "queued");
+        assert_eq!(replay_payload["result"]["idempotent"], true);
+        assert_eq!(service.store.replay_raw_events("conversation", 0, 100).unwrap().len(), event_count);
+
+        let conflict = service.execute(make_send("different payload")).await;
+        assert_eq!(conflict.status, StatusCode::CONFLICT.as_u16());
+        assert_eq!(service.store.replay_raw_events("conversation", 0, 100).unwrap().len(), event_count);
+        assert_eq!(
+            service
+                .store
+                .get_server_run(run_id)
+                .unwrap()
+                .unwrap()
+                .user_turn_node_id,
+            Some(user_turn_id.to_owned())
+        );
+        assert!(service.store.replay_raw_events("conversation", 0, 100).unwrap().iter().any(|event| {
+            event.entity_id == user_turn_id
+                && serde_json::from_str::<Value>(&event.payload_json)
+                    .ok()
+                    .is_some_and(|payload| payload["summary"] == "hello from Rust Chroma path")
+        }));
+
+        drop(service);
+        let _ = std::fs::remove_file(database);
+        let _ = std::fs::remove_file(auth_database);
+    }
+
     fn assert_checkpoint_syscall_reads_recorded_state_and_checks_scope(
         service: &SqliteRunApplicationService,
         contract: &Value,
