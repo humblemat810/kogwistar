@@ -2496,6 +2496,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     | Some("/api/syscall/v1/spawn_process")
                     | Some("/api/syscall/v1/terminate_process")
                     | Some("/api/syscall/v1/resume")
+                    | Some("/api/syscall/v1/checkpoint")
+                    | Some("/api/syscall/v1/project_view")
+                    | Some("/api/syscall/v1/request_approval")
             )
         {
             return true;
@@ -2678,6 +2681,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     Some("/api/syscall/v1/spawn_process")
                         | Some("/api/syscall/v1/terminate_process")
                         | Some("/api/syscall/v1/resume")
+                        | Some("/api/syscall/v1/checkpoint")
+                        | Some("/api/syscall/v1/project_view")
+                        | Some("/api/syscall/v1/request_approval")
                 )
             {
                 let op = syscall_operation(&request.path_and_query)
@@ -4631,7 +4637,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-    // PYTHON_PARITY_NOTE_V1: Rust maps Python workflow syscalls to existing in-memory admission/resume/cancel handlers; authority, attenuation, and mutation semantics stay centralized. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_workflow_syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/workflow-run-resume-result-v1.json,contracts/golden/run-cancel-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_syscalls_use_native_run_handlers+in_memory_resume_syscall_preserves_resume_envelope_and_result; python_test=tests/server/test_syscall_api.py#test_syscall_spawn_process_returns_ok_contract,tests/server/test_chat_server_api.py#test_resume_route_uses_python_defaults_and_checks_namespace
+    // PYTHON_PARITY_NOTE_V1: Rust maps Python workflow syscalls to existing in-memory run, checkpoint, resource, and approval handlers; authorization and mutation semantics stay centralized. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#in_memory_workflow_syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/workflow-run-resume-result-v1.json,contracts/golden/run-cancel-v1.json,contracts/golden/operator-dashboard-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_syscalls_use_native_run_handlers+in_memory_resume_syscall_preserves_resume_envelope_and_result; python_test=tests/server/test_syscall_api.py#test_syscall_spawn_process_returns_ok_contract+test_syscall_request_approval_is_blocked_contract,tests/server/test_chat_server_api.py#test_resume_route_uses_python_defaults_and_checks_namespace+test_checkpoint_detail_uses_python_defaults_and_checks_namespace+test_runtime_resource_snapshot_reports_pressure
     async fn in_memory_workflow_syscall_effect(
         &self,
         request: &ApiEffectRequest,
@@ -4640,9 +4646,13 @@ impl InMemoryGraphApplicationService {
         let required = match input.op.as_str() {
             "spawn_process" => &["spawn_process", "workflow.run.write"][..],
             "terminate_process" | "resume" => &["workflow.run.write"][..],
+            "checkpoint" => &["workflow.run.read"][..],
+            "project_view" => &["read_security_scope", "project_view"][..],
+            "request_approval" => &["approve_action"][..],
             _ => return unavailable_effect(request.clone()),
         };
-        if !syscall_allowed(request, &self.capabilities, &input.op, true, required) {
+        let write = matches!(input.op.as_str(), "spawn_process" | "terminate_process" | "resume" | "request_approval");
+        if !syscall_allowed(request, &self.capabilities, &input.op, write, required) {
             return syscall_forbidden(&input.op);
         }
         match input.op.as_str() {
@@ -4719,6 +4729,70 @@ impl InMemoryGraphApplicationService {
                     self.resume_runtime_run_effect(&nested, run_id).await,
                 )
             }
+            "checkpoint" => {
+                let (Some(run_id), Some(step_seq)) = (
+                    input.args.get("run_id").and_then(Value::as_str),
+                    input.args.get("step_seq").and_then(Value::as_i64),
+                ) else {
+                    return effect_error(
+                        StatusCode::BAD_REQUEST,
+                        "KOGWISTAR_INVALID_REQUEST",
+                        "run_id and integer step_seq are required",
+                    );
+                };
+                match kogwistar_store::ServerRunReadStore::server_run_events(
+                    &self.store, run_id, 0, 100_000,
+                ).await {
+                    Ok(events) => syscall_result(
+                        &input.version,
+                        &input.op,
+                        runtime_inspection_effect(
+                            request, run_id, &["checkpoints", &step_seq.to_string()], events,
+                        ),
+                    ),
+                    Err(error) => effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    ),
+                }
+            }
+            "project_view" => {
+                let runs = match kogwistar_store::ServerRunReadStore::server_runs(
+                    &self.store, None, None, None, 10_000,
+                ).await {
+                    Ok(runs) => runs,
+                    Err(error) => return effect_error(StatusCode::INTERNAL_SERVER_ERROR, "KOGWISTAR_STORE_ERROR", error.to_string()),
+                };
+                let lanes = match kogwistar_store::LaneMessageReadStore::projected_lane_messages(
+                    &self.store,
+                    LaneMessageFilter { namespace: Some("workflow".to_owned()), limit: 10_000, ..LaneMessageFilter::default() },
+                ).await {
+                    Ok(lanes) => lanes,
+                    Err(error) => return effect_error(StatusCode::INTERNAL_SERVER_ERROR, "KOGWISTAR_STORE_ERROR", error.to_string()),
+                };
+                let mut events = Vec::new();
+                for run in &runs {
+                    match kogwistar_store::ServerRunReadStore::server_run_events(
+                        &self.store, &run.run_id, 0, 200,
+                    ).await {
+                        Ok(mut run_events) => events.append(&mut run_events),
+                        Err(error) => return effect_error(StatusCode::INTERNAL_SERVER_ERROR, "KOGWISTAR_STORE_ERROR", error.to_string()),
+                    }
+                }
+                let services = match kogwistar_store::ProjectionReadStore::named_projections(
+                    &self.store, "service_registry",
+                ).await {
+                    Ok(rows) => rows.into_iter().map(|row| Value::Object(row.payload)).collect(),
+                    Err(error) => return effect_error(StatusCode::INTERNAL_SERVER_ERROR, "KOGWISTAR_STORE_ERROR", error.to_string()),
+                };
+                syscall_result(
+                    &input.version,
+                    &input.op,
+                    operational_effect(request, "/api/workflow/resources", runs, lanes, events, services, Vec::new()),
+                )
+            }
+            "request_approval" => request_approval_syscall(request, &self.capabilities, input),
             _ => unreachable!("operation validated before dispatch"),
         }
     }

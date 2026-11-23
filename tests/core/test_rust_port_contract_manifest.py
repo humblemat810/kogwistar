@@ -1022,10 +1022,13 @@ def test_dual_language_surface_inventory_is_current() -> None:
         "receive_message",
     ]
     assert backend_syscalls["in-memory"]["dispatches"] == [
+        "checkpoint",
         "create_conversation",
         "invoke_tool",
         "mount_memory",
+        "project_view",
         "receive_message",
+        "request_approval",
         "resume",
         "send_message",
         "spawn_process",

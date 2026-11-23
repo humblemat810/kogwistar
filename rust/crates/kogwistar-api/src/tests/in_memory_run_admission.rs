@@ -453,9 +453,29 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(spawned["status"], "ok");
     assert_eq!(spawned["result"]["run_id"], "memory-syscall-run");
 
-    for op in ["terminate_process", "resume"] {
+    for op in [
+        "terminate_process",
+        "resume",
+        "checkpoint",
+        "project_view",
+        "request_approval",
+    ] {
         assert!(service.supports_http_operation("POST", &format!("/api/syscall/v1/{op}")));
     }
+    let denied_checkpoint = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{"run_id":"memory-syscall-run", "step_seq":0}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"ro", "ns":["workflow"],
+            "capabilities":[]
+        }),
+    }).await;
+    assert_eq!(denied_checkpoint.status, StatusCode::FORBIDDEN.as_u16());
     let denied_terminate = service.execute(ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
@@ -487,6 +507,84 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     let terminated: Value = serde_json::from_slice(&terminated.body).unwrap();
     assert_eq!(terminated["op"], "terminate_process");
     assert_eq!(terminated["result"]["status"], "cancelled");
+
+    let checkpoint = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{"run_id":"memory-syscall-run", "step_seq":0}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"ro", "ns":["workflow"],
+            "capabilities":["workflow.run.read"]
+        }),
+    }).await;
+    assert_eq!(checkpoint.status, StatusCode::OK.as_u16());
+    let checkpoint: Value = serde_json::from_slice(&checkpoint.body).unwrap();
+    assert_eq!(checkpoint["op"], "checkpoint");
+    assert_eq!(checkpoint["status"], "ok");
+    assert_eq!(checkpoint["result"]["run_id"], "memory-syscall-run");
+    assert_eq!(checkpoint["result"]["step_seq"], 0);
+
+    let project_view = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/project_view".to_owned(),
+        body: serde_json::to_vec(&json!({"version":"syscall-v1", "args":{}})).unwrap(),
+        principal: json!({
+            "sub":"syscall-reader", "role":"ro", "ns":["workflow"],
+            "capabilities":["read_security_scope", "project_view"]
+        }),
+    }).await;
+    assert_eq!(project_view.status, StatusCode::OK.as_u16());
+    let project_view: Value = serde_json::from_slice(&project_view.body).unwrap();
+    assert_eq!(project_view["op"], "project_view");
+    assert_eq!(project_view["status"], "ok");
+    assert!(project_view["result"]["runs"]["total_runs"].as_u64().unwrap() >= 1);
+    let denied_project_view = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/project_view".to_owned(),
+        body: serde_json::to_vec(&json!({"version":"syscall-v1", "args":{}})).unwrap(),
+        principal: json!({
+            "sub":"syscall-reader", "role":"ro", "ns":["conversation"],
+            "capabilities":["read_security_scope", "project_view"]
+        }),
+    }).await;
+    assert_eq!(denied_project_view.status, StatusCode::FORBIDDEN.as_u16());
+
+    let approval = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1", "args":{"action":"deny", "reason":"test"}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+            "capabilities":["approve_action"]
+        }),
+    }).await;
+    assert_eq!(approval.status, StatusCode::OK.as_u16());
+    let approval: Value = serde_json::from_slice(&approval.body).unwrap();
+    assert_eq!(approval["op"], "request_approval");
+    assert_eq!(approval["status"], "blocked");
+    assert_eq!(approval["error"]["reason"], "test");
+    let denied_approval = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1", "args":{"action":"deny"}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"ro", "ns":["workflow"],
+            "capabilities":["approve_action"]
+        }),
+    }).await;
+    assert_eq!(denied_approval.status, StatusCode::FORBIDDEN.as_u16());
 }
 
 // PYTHON_PARITY_NOTE_V1: MCP transport authorization and dispatch reach the in-memory workflow cancel effect; denied capability preserves run state. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
