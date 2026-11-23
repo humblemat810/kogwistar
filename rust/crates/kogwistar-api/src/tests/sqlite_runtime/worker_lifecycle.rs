@@ -334,6 +334,147 @@
         std::fs::remove_file(path).unwrap();
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_conversation_reads.rs#sqlite_chroma_mount_memory_effect; python=kogwistar/server/syscall_api.py#mount_memory; fixture=contracts/golden/mount-memory-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_mount_memory_matches_shared_fixture_and_acl; python_test=tests/server/test_chat_server_api.py#test_mount_memory_syscall_uses_python_backend
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_mount_memory_matches_shared_fixture_and_acl() {
+        use kogwistar_store::{GraphEntityKind, GraphRecord, GraphWriteStore};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let namespace = format!("mount-memory-{suffix}");
+        let node_collection = format!("mount-memory-n-{suffix}");
+        let edge_collection = format!("mount-memory-e-{suffix}");
+        let path = std::env::temp_dir().join(format!("kogwistar-mount-memory-{suffix}.sqlite3"));
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/mount-memory-result-v1.json"
+        ))
+        .unwrap();
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint: endpoint.clone(),
+                metric: DistanceMetric::Cosine,
+                node_collection: node_collection.clone(),
+                edge_collection: edge_collection.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let common = kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint,
+            metric: DistanceMetric::Cosine,
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            kogwistar_store_chroma::ChromaStoreConfig {
+                collection: node_collection,
+                ..common.clone()
+            },
+            kogwistar_store_chroma::ChromaStoreConfig {
+                collection: edge_collection,
+                ..common
+            },
+        )
+        .await
+        .unwrap();
+        let snapshot_id = fixture["snapshot_node_id"].as_str().unwrap();
+        let conversation_id = fixture["conversation_id"].as_str().unwrap();
+        graph
+            .upsert_graph_record_of_kind(
+                &namespace,
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: snapshot_id.to_owned(),
+                    document: Some(fixture.to_string()),
+                    metadata: serde_json::from_value(json!({
+                        "entity_type":"context_snapshot",
+                        "conversation_id":conversation_id,
+                        "run_id":"memory-run",
+                        "stage":"draft_answer",
+                        "snapshot_seq":fixture["properties"]["snapshot_seq"],
+                        "workspace_id":"workspace-a",
+                        "graph_space":"conversation",
+                        "lifecycle_status":"active"
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+        let acl_id = format!("acl-{snapshot_id}");
+        service
+            .store
+            .append_raw_entity_event(
+                &namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: format!("event-{acl_id}"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: acl_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({
+                        "id":acl_id,
+                        "document":null,
+                        "metadata":{
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"conversation",
+                            "acl_target_grain":"node",
+                            "acl_target_entity_id":snapshot_id,
+                            "acl_version":1,
+                            "acl_mode":"private",
+                            "owner_id":"memory-owner",
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation"
+                        }
+                    })
+                    .to_string(),
+                },
+            )
+            .unwrap();
+
+        let request = |username: &str| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+            body: json!({
+                "version":"v1",
+                "op":"mount_memory",
+                "args":{
+                    "conversation_id":conversation_id,
+                    "run_id":"memory-run",
+                    "stage":"draft_answer"
+                }
+            })
+            .to_string()
+            .into_bytes(),
+            principal: json!({
+                "sub":username,
+                "role":"rw",
+                "storage_ns":namespace,
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation",
+                "ns":["conversation"],
+                "capabilities":["project_view"]
+            }),
+        };
+        let owner = service.execute(request("memory-owner")).await;
+        assert_eq!(owner.status, StatusCode::OK.as_u16());
+        let owner: Value = serde_json::from_slice(&owner.body).unwrap();
+        assert_eq!(owner["result"]["snapshot_node_id"], fixture["snapshot_node_id"]);
+        assert_eq!(owner["result"]["conversation_id"], fixture["conversation_id"]);
+        assert_eq!(owner["result"]["metadata"], fixture["metadata"]);
+        assert_eq!(owner["result"]["properties"], fixture["properties"]);
+
+        let outsider = service.execute(request("unrelated-reader")).await;
+        assert_eq!(outsider.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&outsider.body).contains(snapshot_id));
+        drop(graph);
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
         use std::time::{SystemTime, UNIX_EPOCH};
