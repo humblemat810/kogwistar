@@ -23,6 +23,212 @@ fn resume_wait_for_completion_defaults_to_sync_and_accepts_explicit_false() {
 }
 
 #[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
+    use kogwistar_store::{ProjectionReadStore, RUNTIME_CURRENT_STATE_NAMESPACE};
+
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_syscall_resume_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
+    let run_id = "postgres-resume-syscall-run";
+    let workflow_id = "postgres-resume-syscall-workflow";
+    let conversation_id = "postgres-resume-syscall-conversation";
+    let principal = json!({
+        "sub":"postgres-resume-owner", "role":"rw", "ns":["workflow"],
+        "capabilities":["spawn_process", "workflow.run.write"]
+    });
+    let submitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":run_id,
+                "workflow_id":workflow_id,
+                "conversation_id":conversation_id,
+                "turn_node_id":"postgres-resume-turn"
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(submitted.status, StatusCode::ACCEPTED.as_u16());
+
+    let claimed = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/claim".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "claimed_by":"postgres-test-suspender", "limit":1, "lease_seconds":60
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(claimed.status, StatusCode::OK.as_u16());
+    let claimed: Value = serde_json::from_slice(&claimed.body).unwrap();
+    let work = &claimed["work"][0];
+    let suspended = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "handoff": {
+                    "message_id":work["message_id"], "claimed_by":work["claimed_by"],
+                    "run_id":work["run_id"], "step_id":work["step_id"],
+                    "correlation_id":work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version":1, "effect_id":"postgres-suspend-for-syscall-resume",
+                    "status":"suspended", "state_update":[["u", {"before_suspend":true}]],
+                    "successors":[], "wait_reason":"approval",
+                    "resume_payload":{"question":"continue?"}
+                }
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        })
+        .await;
+    assert_eq!(
+        suspended.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&suspended.body)
+    );
+    let projection = ProjectionReadStore::named_projection(
+        &service.store,
+        RUNTIME_CURRENT_STATE_NAMESPACE,
+        run_id,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let state: RecordedRuntimeState =
+        serde_json::from_value(Value::Object(projection.payload)).unwrap();
+    let (node_id, _, token_id, _) = state.frontier.suspended[0].clone();
+
+    let resume_service = service.clone();
+    let resume_future = tokio::spawn(async move {
+        resume_service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/resume".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1", "op":"resume",
+                    "args": {
+                        "run_id":run_id, "workflow_id":workflow_id,
+                        "conversation_id":conversation_id, "turn_node_id":"postgres-resume-turn",
+                        "suspended_node_id":node_id, "suspended_token_id":token_id,
+                        "client_result":{"approved":true}
+                    }
+                }))
+                .unwrap(),
+                principal,
+            })
+            .await
+    });
+    let mut claimed_work = None;
+    for _ in 0..200 {
+        let claimed = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/internal/runtime/claim".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "claimed_by":"postgres-test-finisher", "limit":1,
+                    "lease_seconds":60, "run_id":run_id
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"postgres-resume-owner", "role":"rw", "ns":["workflow"],
+                    "capabilities":["workflow.run.write"]
+                }),
+            })
+            .await;
+        assert_eq!(claimed.status, StatusCode::OK.as_u16());
+        let claimed: Value = serde_json::from_slice(&claimed.body).unwrap();
+        if let Some(work) = claimed["work"].as_array().and_then(|items| items.first()) {
+            claimed_work = Some(work.clone());
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let Some(work) = claimed_work else {
+        resume_future.abort();
+        panic!("PostgreSQL resume did not enqueue claimable continuation within 5 seconds");
+    };
+    assert_eq!(work["run_id"], run_id);
+    let finished = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/internal/runtime/results".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "handoff": {
+                    "message_id":work["message_id"], "claimed_by":work["claimed_by"],
+                    "run_id":work["run_id"], "step_id":work["step_id"],
+                    "correlation_id":work["correlation_id"]
+                },
+                "effect": {
+                    "contract_version":1,
+                    "effect_id":"postgres-finish-after-syscall-resume",
+                    "state_update":[["u", {"after_resume":true}]], "successors":[],
+                    "result":{"done":true}
+                }
+            }))
+            .unwrap(),
+            principal: json!({"role":"rw", "ns":["workflow"]}),
+        })
+        .await;
+    assert_eq!(finished.status, StatusCode::OK.as_u16());
+
+    let resumed = resume_future.await.unwrap();
+    assert_eq!(
+        resumed.status,
+        StatusCode::OK.as_u16(),
+        "{}",
+        String::from_utf8_lossy(&resumed.body)
+    );
+    let envelope: Value = serde_json::from_slice(&resumed.body).unwrap();
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(envelope["version"], "v1");
+    assert_eq!(envelope["op"], "resume");
+    assert_eq!(envelope["status"], "ok");
+    for field in contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(envelope["result"].get(field).is_some(), "missing {field}");
+    }
+    assert_eq!(envelope["result"]["workflow_status"], "succeeded");
+    assert_eq!(envelope["result"]["final_state"]["after_resume"], true);
+    assert_eq!(envelope["result"]["budget"], json!({}));
+
+    drop(service);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let cleanup_task = tokio::spawn(connection);
+    cleanup
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+         DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+         DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+         DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+        ))
+        .await
+        .unwrap();
+    drop(cleanup);
+    cleanup_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn workflow_lineage_checks_authority_before_run_lookup() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-lineage-auth-order-{}.sqlite",

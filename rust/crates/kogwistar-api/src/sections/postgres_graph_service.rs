@@ -3436,14 +3436,16 @@ impl PostgresRunApplicationService {
                     let nested = ApiEffectRequest {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
-                        path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
+                        path_and_query: format!(
+                            "/api/workflow/runs/{run_id}/resume?wait_for_completion=true"
+                        ),
                         body: resume_syscall_args(&input.args),
                         principal: request.principal.clone(),
                     };
                     syscall_result(
                         &input.version,
                         op,
-                        self.resume_runtime_run(run_id, &nested).await,
+                        self.resume_runtime_run_and_wait(run_id, &nested).await,
                     )
                 } else {
                     effect_error(

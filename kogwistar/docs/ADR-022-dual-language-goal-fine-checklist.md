@@ -73,6 +73,15 @@ before decoding the strict resume body and waits through the existing runtime
 route for the completed result. This closes SQLite metadata applicability only;
 cross-backend parity and DLFC-11's full syscall error/retry behavior remain open.
 
+PostgreSQL `resume` is now `PASS: supported (live)`: Rust
+`postgres_resume_syscall_resumes_persisted_suspended_token` uses an isolated
+PostgreSQL schema, persists a suspended worker result, resumes via the syscall,
+claims and completes the continuation, then checks the shared
+`contracts/golden/workflow-run-resume-result-v1.json` contract. The syscall
+waits through the same public completed-result route as SQLite. This closes
+PostgreSQL applicability only; it does not establish all syscall behavior
+families or Python/PostgreSQL parity.
+
 | Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |
 | --- | --- | --- | --- | --- |
 | `checkpoint` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
@@ -82,7 +91,7 @@ cross-backend parity and DLFC-11's full syscall error/retry behavior remain open
 | `project_view` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
 | `receive_message` | NOT STARTED | PASS: fail closed | PASS: supported (live) | PARTIAL |
 | `request_approval` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
-| `resume` | NOT STARTED | PASS: supported (live) | NOT STARTED | PARTIAL |
+| `resume` | PASS: supported (live) | PASS: supported (live) | NOT STARTED | PARTIAL |
 | `send_message` | PARTIAL | PASS: fail closed | PARTIAL | PARTIAL |
 | `spawn_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
 | `terminate_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
@@ -90,7 +99,7 @@ cross-backend parity and DLFC-11's full syscall error/retry behavior remain open
 Evidence pointers for current `PARTIAL` cells (focused evidence only; not gate
 closure):
 
-- PostgreSQL: `conversation_admission.rs::postgres_send_message_checks_actor_and_request_before_storage`, `conversation_admission.rs::postgres_send_message_admission_is_one_graph_run_event_lane_transaction`, and `conversation_mcp.rs::mcp_conversation_create_uses_native_postgres_syscall`. PostgreSQL `resume` remains `NOT STARTED` in this syscall ledger; the REST resume test is not counted as syscall evidence.
+- PostgreSQL: `conversation_admission.rs::postgres_send_message_checks_actor_and_request_before_storage`, `conversation_admission.rs::postgres_send_message_admission_is_one_graph_run_event_lane_transaction`, and `conversation_mcp.rs::mcp_conversation_create_uses_native_postgres_syscall`. `workflow_run_routes.rs::postgres_resume_syscall_resumes_persisted_suspended_token` closes PostgreSQL resume applicability using the live DB and shared result fixture.
 - SQLite metadata: `sqlite_runtime/worker_lifecycle.rs::sqlite_syscall_spawn_and_terminate_use_authoritative_run_service` (**1 passed**, 2026-11-23) covers `project_view` authorization and a bounded successful response shape alongside spawn/terminate; Python `tests/server/test_syscall_api.py::test_syscall_project_view_matches_resource_snapshot_contract` (**1 passed**, same date) checks required resource fields. These remain `PARTIAL`: Python uses a contract fixture, but values are not compared exactly across both backend services. `sqlite_request_approval_mutations_require_scope_and_return_snapshot` covers approval; worker suspend/resume and operator-dashboard tests remain adjacent runtime/HTTP evidence, not syscall parity evidence.
 - SQLite + Chroma: Python `tests/server/test_syscall_api.py::test_syscall_receive_message_reads_chroma_graph_and_matches_shared_fixture` (**1 passed**, 2026-11-23) seeds the fixture into the embedded Chroma-backed conversation graph and compares the authenticated syscall response exactly. Rust `sqlite_transcript_reads.rs::sqlite_chroma_receive_message_reads_live_chroma_and_matches_shared_fixture` (**1 passed**, same date) uses unique collections on the configured live Chroma service and verifies the same result through SQLite canonical ACL events; the fake-endpoint companion `::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` covers denied capability/namespace and missing-ID behavior. This closes only the supported-applicability success cell; other error/retry/persistence parity remains open.
 - In-memory: `in_memory_conversations.rs` tests `in_memory_create_conversation_is_atomic_and_matches_shared_contract`, `in_memory_mount_memory_matches_shared_contract_and_authority`, `in_memory_send_message_admits_turn_and_run_atomically`, `in_memory_receive_message_matches_shared_python_contract`, and `in_memory_invoke_builtin_tools_match_shared_contract_and_authority`; `in_memory_run_admission.rs` tests `in_memory_workflow_syscalls_use_native_run_handlers`, `in_memory_project_view_syscall_is_reachable_through_authenticated_http`, and `in_memory_resume_syscall_preserves_resume_envelope_and_result`.
