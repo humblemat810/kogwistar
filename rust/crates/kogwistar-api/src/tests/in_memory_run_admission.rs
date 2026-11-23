@@ -506,6 +506,18 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(terminated.status, StatusCode::OK.as_u16());
     let terminated: Value = serde_json::from_slice(&terminated.body).unwrap();
     assert_eq!(terminated["op"], "terminate_process");
+    let cancel_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-cancel-v1.json"
+    ))
+    .unwrap();
+    for field in cancel_contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(terminated["result"].get(field).is_some(), "missing {field}");
+    }
+    assert!(cancel_contract["accepted_run_statuses"]
+        .as_array()
+        .unwrap()
+        .contains(&terminated["result"]["status"]));
     assert_eq!(terminated["result"]["status"], "cancelled");
 
     let checkpoint = service.execute(ApiEffectRequest {

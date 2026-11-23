@@ -365,6 +365,30 @@ def test_syscall_spawn_process_returns_ok_contract(monkeypatch, engine_triplet):
         assert payload["status"] == "ok"
         assert payload["result"]["workflow_id"] == "wf.syscall.demo"
 
+        cancel_contract = json.loads(
+            (Path(__file__).resolve().parents[2] / "contracts/golden/run-cancel-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        terminated = client.post(
+            "/api/syscall/v1/terminate_process",
+            json={
+                "version": "v1",
+                "op": "terminate_process",
+                "args": {"run_id": payload["result"]["run_id"]},
+            },
+            headers=headers,
+        )
+        assert terminated.status_code == 200, terminated.text
+        terminated_payload = terminated.json()
+        assert terminated_payload["version"] == "v1"
+        assert terminated_payload["op"] == "terminate_process"
+        assert terminated_payload["status"] == "ok"
+        terminated_run = terminated_payload["result"]
+        for field in cancel_contract["required_fields"]:
+            assert field in terminated_run, field
+        assert terminated_run["status"] in cancel_contract["accepted_run_statuses"]
+
 
 def test_syscall_request_approval_is_blocked_contract(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
