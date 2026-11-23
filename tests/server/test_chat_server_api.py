@@ -1983,6 +1983,59 @@ def test_mount_memory_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
+def test_project_view_syscall_uses_python_in_memory_backend(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "project-view-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/workflow-resources-http-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        with TestClient(server.app) as client:
+            headers = _token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities=",".join(contract["required_capabilities"]),
+            )
+            response = client.post(
+                "/api/syscall/v1/project_view",
+                json={"version": "v1", "op": "project_view", "args": {}},
+                headers=headers,
+            )
+
+        assert response.status_code == 200, response.text
+        payload = response.json()["result"]
+        assert all(field in payload for field in contract["required_fields"])
+        for key, required_fields in contract["required_object_fields"].items():
+            assert all(field in payload[key] for field in required_fields), key
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
