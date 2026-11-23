@@ -1,0 +1,35 @@
+# ADR-022 Dual-Language Goal Closure Checklist
+
+**Updated:** 2026-11-23  
+**Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
+**Status summary:** **5 bounded criteria PASS; 2 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
+
+## Closure Criteria
+
+| ID | Criterion | Status | Evidence and exact remaining condition |
+| --- | --- | --- | --- |
+| GOAL-01 | Keep usable Python and Rust implementations, with explicit per-capability selection and no silent cross-language fallback. | PASS (bounded) | `contracts/rust-port-v1.json` keeps Python as current writer and Rust selection explicit; `ADR-022-dual-language-capability-paths.md` defines declared seams and fail-closed selection. Python-only and Rust-only boundary tests are mapped in ADR-015 REL-04. Scope is the tested routes, not every public operation. |
+| GOAL-02 | Preserve safe authority, ACL/scope, transaction ownership, retry, persistence, and trace contracts at declared language seams. | PASS (bounded) | ADR-022 invariants 1-14 plus ADR-015's named capability clauses and REL-04C. Mixed traces test declared seams and transaction ownership; these do not cover every public API operation. |
+| GOAL-03 | Provide at least one top-down Rust-native request path with no Python handoff, from server ingress through workflow execution to durable state. | PASS (bounded) | ADR-015 WFR-04 and REL-04B exercise Rust-native workflow/server paths; REL-05C measures the Rust-native HTTP graph trace with zero FFI calls. This proves named workloads only, not all server routes or a global speedup. |
+| GOAL-04 | Keep persisted state readable and writable across Python/Rust handoff without weakening rollback or canonical authority. | PASS (bounded) | ADR-015 REL-02C/02D and named SQLite/PostgreSQL/Chroma interoperability tests cover bidirectional reads/writes, reopen, and rollback for their fixtures. Unlisted schemas, historical versions, and backend combinations are not implied. |
+| GOAL-05 | Exercise interchangeable memory, PostgreSQL/pgvector, and Chroma paths without claiming cross-store atomicity. | PASS (bounded) | ADR-015 backend gates and `chroma_rust_interop_worklist.md` show Rust/Python Chroma composition and handoff tests; PostgreSQL and memory have separate named gates. Chroma remains an eventual projection; its Python adapter is still explicitly Python-owned in `rust-port-v1`. This PASS establishes tested interoperability, not Rust ownership of that adapter. |
+| GOAL-06 | Cover every public graph, storage, runtime, conversation, agent, REST, MCP, and CLI operation in the cross-language inventory, with explicit implementation and conformance status. | OPEN | `contracts/dual-language-capabilities-v1.json` remains `inventory-in-progress`; its interpretation says full request-path claims are not verified. The Rust server contract still lists `send_message`, `receive_message`, `mount_memory`, and `invoke_tool` as Python-owned/deferred syscalls. Some Rust handlers and bounded tests exist, but implementation presence is not cutover/authority evidence. Close only after the public-surface inventory is reconciled and each operation has a named executable oracle or an explicitly accepted exclusion. |
+| GOAL-07 | Verify native and mixed paths on the declared interpreter/platform support matrix. | PARTIAL | Required CPython 3.12-3.14 lanes and Python-authority PyPy 3.11 lane are recorded as passing in ADR-022 DL-17; POSIX CPython SQLite ownership matrix passed CI #859. The SQLite-meta Rust binding is excluded from the PyPy 3.11 experimental dependency profile, so PyPy Rust interop remains unverified. Either add a supported/tested binding path or explicitly limit the Rust+PyPy support claim; do not relabel Python-only PyPy support as dual-language parity. |
+| GOAL-08 | Reconcile behavior across the full declared public surface, preserving Python compatibility and documenting any intentional differences. | OPEN | ADR-015's 22 clauses and 68 tasklets are a bounded capability suite; ADR-022's 177/911 evidence inventories explicitly disclaim whole-stack parity. The crosswalk is still inventory-in-progress, so the complete set of behavior differences and missing oracles is not yet known. Close after GOAL-06 inventory is complete, all required parity oracles pass, and each deliberate difference has an owner and compatibility statement. Do not reopen existing PASS items absent regression, invalid evidence, or approved contract change. |
+| GOAL-09 | Keep the seam-free native option and evaluate its performance without promising unmeasured global superiority. | PARTIAL | REL-05 compares Python, mixed, and Rust-native HTTP for one resource-matched SQLite graph trace; Rust-native was fastest in that measured workload. The goal requires a seam-free option, not universal Rust speed guarantees. Broader representative request families and backends have no end-to-end performance evidence; retain only per-workload claims until measured. |
+
+## Reading the Existing Counts
+
+- ADR-015 **68/68 tasklets, 22/22 clauses, 8/8 Rust-targeted capability readiness** means its declared capability-gate suite passed. It does not close GOAL-06 through GOAL-09.
+- ADR-022 **177/177 coarse rows and 911/911 fine rows** are mapped implementation/evidence inventories, not proof that every public operation or runtime combination is represented.
+- `rust_cutover_ready=true` is an explicit selection control for the named capability profile. It is not proof of complete public-surface inventory or universal parity.
+- `chroma-adapter` being intentionally Python-owned is distinct from Rust's tested Chroma GraphStore support. Keep this distinction visible; do not infer either Rust adapter ownership or lack of Chroma interoperability from one flag.
+- Do not add rows to the established ADR-015 or ADR-022 denominators to make this audit look more complete. Update a row only when its stated evidence/remaining condition changes; add a new criterion only for a separately approved requirement.
+
+## Next Closure Order
+
+1. Reconcile GOAL-06 against `contracts/dual-language-surface-inventory-v1.json`, the Rust pending-route/syscall declarations, and actual Python/Rust handlers. Close or explicitly exclude each operation without changing completed gates.
+2. Decide and document the supported Rust+PyPy SQLite-meta boundary; run the existing cross-process and persisted-data tests if that combination is to be supported.
+3. Use the completed operation inventory to identify actual parity deltas for GOAL-08. Add executable tests first, then implement only failures that block required capability.
+4. Extend performance evidence only for representative high-value request families/backends; keep current benchmark claims scoped to their measured traces.
+

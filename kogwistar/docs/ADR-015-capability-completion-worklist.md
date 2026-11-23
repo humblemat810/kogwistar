@@ -11,6 +11,12 @@ passed on merged candidate `2b53eab1` in CI #859 and were revalidated by CI #860
 on descendant `f5fcc708`. The six capability gates and their merged-candidate
 Docker-backed acceptance are complete. CI #860 required jobs passed; its PyPy
 beta ABI failure remains explicitly non-blocking.
+This count closes only the capability profiles and shared acceptance declared
+here. It does **not** mean the broader dual-language objective is complete:
+public-operation inventory, four intentionally Python-owned syscalls, PyPy
+Rust-binding coverage, whole-surface parity, and broader per-workload
+performance evidence are tracked separately in
+[`ADR-022-dual-language-goal-closure-checklist.md`](ADR-022-dual-language-goal-closure-checklist.md).
 The authoritative remaining requirements are the capability conformance
 profiles in `contracts/dual-language-capabilities-v1.json` and deferrals in
 `contracts/rust-port-v1.json`.

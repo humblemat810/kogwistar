@@ -19,7 +19,7 @@ interop is now inventoried as verified; Chroma remains outside Rust cutover
 readiness because SQLite events remain canonical and Chroma remains an eventual,
 non-transactional projection.
 
-Closed fine-grained evidence inventory: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Neither ADR-022 list tracks the remaining implementation work. The active, authoritative Rust cutover tasks and gates are in [ADR-015 implementation status](ADR-015-implementation-status.md); do not infer overall completion from either ADR-022 percentage.
+Closed fine-grained evidence inventory: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Neither ADR-022 count is an overall-goal completion percentage. ADR-015's declared capability-gate suite is currently closed; the broader dual-language objective remains **NOT COMPLETE** and its finite closure audit is [ADR-022-dual-language-goal-closure-checklist.md](ADR-022-dual-language-goal-closure-checklist.md). Do not infer full parity or goal completion from either ADR-022 percentage or ADR-015's 8/8 readiness count.
 
 Latest DL-03 leaf closures include paired authenticated service disable/enable HTTP success contracts and non-empty `POST /api/document.upsert_tree` behavior on SQLite+Chroma. Re-enable without a live worker returns degraded health and durably records `service.degraded` in both implementations. The new document-tree cell preserves SQLite event authority and Chroma eventual projection; standalone metadata-only SQLite remains unsupported. These are additional evidence for mapped DL-03 operations; the coarse DL-03 evidence/crosswalk gate is PASS, while ADR-015 readiness still blocks any full Rust cutover.
 

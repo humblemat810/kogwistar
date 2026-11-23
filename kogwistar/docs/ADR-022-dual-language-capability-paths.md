@@ -4,6 +4,13 @@
 **Decision date:** 2026-10-24
 **Scope:** Kogwistar core runtime, graph, storage, and service capabilities
 
+The full dual-language goal is not complete merely because ADR-015's bounded
+capability gates pass. Current objective-level closure status and remaining
+requirements are tracked in
+[`ADR-022-dual-language-goal-closure-checklist.md`](ADR-022-dual-language-goal-closure-checklist.md);
+that checklist does not change existing gate denominators or reopen passed
+items.
+
 ## Context
 
 ADR-015 describes an incremental Rust port, with Python retained as an SDK and
