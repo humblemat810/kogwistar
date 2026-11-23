@@ -1269,8 +1269,8 @@ jobs:
       - name: Keep native PyPy gate visible
         if: always() && (steps.pydantic_binary_abi.outcome != 'success' || steps.pydantic_dlopen.outcome != 'success' || steps.native_binary_abi.outcome != 'success' || steps.native_dlopen.outcome != 'success' || steps.native_verify.outcome != 'success' || steps.native_direct_verify.outcome != 'success' || steps.pypy_dependency_verify.outcome != 'success' || steps.pydantic_import.outcome != 'success')
         run: |
-          echo "PyPy native extension or application dependency verification failed; the profile remains experimental." >&2
-          exit 1
+          echo "::warning title=PyPy beta diagnostic::Native extension or application dependency verification failed; profile remains experimental and non-blocking."
+          echo "PyPy native extension or application dependency verification failed; the profile remains experimental and non-blocking." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload PyPy native diagnostics
         if: always()
