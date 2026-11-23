@@ -587,6 +587,63 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(denied_approval.status, StatusCode::FORBIDDEN.as_u16());
 }
 
+#[tokio::test]
+async fn in_memory_project_view_syscall_is_reachable_through_authenticated_http() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let secret = "memory-project-view-syscall-secret";
+    let service = InMemoryGraphApplicationService::default();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service),
+    );
+    let token = |capabilities: Vec<&str>| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"project-view-reader", "role":"ro", "ns":["workflow"],
+                "capabilities":capabilities, "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        ).unwrap()
+    };
+    let call = |jwt: String| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/syscall/v1/project_view")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::from(json!({"version":"syscall-v1", "args":{}}).to_string()))
+            .unwrap()
+    };
+    let denied = app.clone().oneshot(call(token(vec!["project_view"]))).await.unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let accepted = app.oneshot(call(token(vec!["read_security_scope", "project_view"]))).await.unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &to_bytes(accepted.into_body(), 65_536).await.unwrap(),
+    ).unwrap();
+    assert_eq!(body["version"], "syscall-v1");
+    assert_eq!(body["op"], "project_view");
+    assert_eq!(body["status"], "ok");
+    assert_eq!(body["result"]["runs"]["total_runs"], 0);
+}
+
 // PYTHON_PARITY_NOTE_V1: MCP transport authorization and dispatch reach the in-memory workflow cancel effect; denied capability preserves run state. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
 #[tokio::test]
 async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
