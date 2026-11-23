@@ -1055,12 +1055,20 @@ jobs:
           python - <<'PY'
           from pathlib import Path
 
-          path = Path("rust/Cargo.toml")
-          text = path.read_text(encoding="utf-8")
-          old = 'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }'
-          new = 'pyo3 = { version = "0.28.3", features = ["extension-module"] }'
-          assert text.count(old) == 1, "unexpected PyO3 workspace dependency layout"
-          path.write_text(text.replace(old, new), encoding="utf-8")
+          replacements = {
+              Path("rust/Cargo.toml"): (
+                  'pyo3 = { version = "0.29.0", features = ["extension-module", "abi3-py312", "generate-import-lib"] }',
+                  'pyo3 = { version = "0.28.3", features = ["extension-module"] }',
+              ),
+              Path("rust/crates/kogwistar-store-graph/Cargo.toml"): (
+                  "pyo3 = { version = '0.29', features = ['abi3', 'auto-initialize'] }",
+                  "pyo3 = { version = '0.28.3', features = ['abi3', 'auto-initialize'] }",
+              ),
+          }
+          for path, (old, new) in replacements.items():
+              text = path.read_text(encoding="utf-8")
+              assert text.count(old) == 1, f"unexpected PyO3 dependency layout: {path}"
+              path.write_text(text.replace(old, new), encoding="utf-8")
           PY
           cargo update --manifest-path rust/Cargo.toml --package pyo3 --precise 0.28.3
           cargo tree --manifest-path rust/Cargo.toml --package pyo3
