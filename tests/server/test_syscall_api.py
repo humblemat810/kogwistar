@@ -708,13 +708,22 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
             "reason": "approval pending",
         }
 
-        missing_action = client.post(
-            "/api/syscall/v1/request_approval",
-            json={"version": "v1", "op": "request_approval", "args": {}},
-            headers=_token_header(client, role="rw", ns="workflow", capabilities=""),
+        invalid_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts"
+                / "golden"
+                / "syscall-request-approval-invalid-v1.json"
+            ).read_text(encoding="utf-8")
         )
-        assert missing_action.status_code == 400
-        assert missing_action.json()["detail"] == "action is required"
+        for case in invalid_contract["cases"]:
+            invalid_response = client.post(
+                "/api/syscall/v1/request_approval",
+                json=case["request"],
+                headers=_token_header(client, role="rw", ns="workflow", capabilities=""),
+            )
+            assert invalid_response.status_code == case["http_status"], case["name"]
+            assert invalid_response.json() == case["response"], case["name"]
 
         revoked = client.post(
             "/api/syscall/v1/request_approval",

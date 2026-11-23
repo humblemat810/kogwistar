@@ -1739,6 +1739,28 @@ fn request_approval_syscall_effect(
     shared: &SharedCapabilityState,
     input: &SyscallInput,
 ) -> ApiEffectResponse {
+    let action = input
+        .args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if matches!(action.as_str(), "grant" | "revoke")
+        && input
+            .args
+            .get("capability")
+            .and_then(Value::as_str)
+            .map_or(true, |capability| capability.trim().is_empty())
+    {
+        if !syscall_allowed(request, shared, &input.op, true, &[]) {
+            return syscall_forbidden(&input.op);
+        }
+        return json_effect(
+            StatusCode::BAD_REQUEST,
+            json!({"detail": format!("capability is required for {action}")}),
+        );
+    }
     let required = if request_approval_mutates_capabilities(input) {
         &["approve_action"][..]
     } else {
@@ -1777,10 +1799,9 @@ fn request_approval_syscall(
         .trim()
         .to_ascii_lowercase();
     if action.is_empty() {
-        return effect_error(
+        return json_effect(
             StatusCode::BAD_REQUEST,
-            "KOGWISTAR_INVALID_REQUEST",
-            "action is required",
+            json!({"detail":"action is required"}),
         );
     }
     if action == "deny" {
@@ -1814,10 +1835,9 @@ fn request_approval_syscall(
         .trim()
         .to_ascii_lowercase();
     if capability.is_empty() {
-        return effect_error(
+        return json_effect(
             StatusCode::BAD_REQUEST,
-            "KOGWISTAR_INVALID_REQUEST",
-            format!("capability is required for {action}"),
+            json!({"detail":format!("capability is required for {action}")}),
         );
     }
     let subject = input
