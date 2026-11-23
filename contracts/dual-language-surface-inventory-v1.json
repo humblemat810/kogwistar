@@ -13,7 +13,7 @@
     "mcp_operations": 62,
     "pending_http_operations": 0,
     "allowlisted_mcp_operations": 62,
-    "pending_syscalls": 4,
+    "pending_syscalls": 0,
     "python_syscalls": 11,
     "rust_syscalls": 11
   },
@@ -897,12 +897,7 @@
       "rust": "allowlisted-subject-to-runtime-gates"
     }
   ],
-  "pending_syscalls": [
-    "send_message",
-    "receive_message",
-    "mount_memory",
-    "invoke_tool"
-  ],
+  "pending_syscalls": [],
   "syscall_catalogs": {
     "python": {
       "source": "kogwistar/server/syscall_api.py#create_syscall_router.list_syscalls",
@@ -956,12 +951,7 @@
         "terminate_process"
       ],
       "unavailable": [],
-      "cutover_deferred": [
-        "invoke_tool",
-        "mount_memory",
-        "receive_message",
-        "send_message"
-      ],
+      "cutover_deferred": [],
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     },
     "sqlite-metadata": {
@@ -1004,12 +994,7 @@
         "terminate_process"
       ],
       "unavailable": [],
-      "cutover_deferred": [
-        "invoke_tool",
-        "mount_memory",
-        "receive_message",
-        "send_message"
-      ],
+      "cutover_deferred": [],
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     },
     "in-memory": {
@@ -1029,12 +1014,7 @@
         "spawn_process",
         "terminate_process"
       ],
-      "cutover_deferred": [
-        "invoke_tool",
-        "mount_memory",
-        "receive_message",
-        "send_message"
-      ],
+      "cutover_deferred": [],
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     }
   }

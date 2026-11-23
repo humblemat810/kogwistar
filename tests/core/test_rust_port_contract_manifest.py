@@ -632,16 +632,14 @@ def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> No
     assert "zero currently frozen HTTP operations" in status
 
 
-def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() -> None:
+def test_closed_server_cutover_inventory_matches_rust_frozen_inventory() -> None:
     manifest = _manifest()
     deferrals = manifest["server_operation_deferrals"]
-    assert deferrals["contract_version"] == 1
-    assert deferrals["status"] == "versioned-intentionally-deferred"
-    assert deferrals["owner"] == "python-rollback-deployment"
-    assert "blocks capability-readiness claims, not handler execution" in deferrals[
-        "execution_policy"
-    ]
-    assert "does not disable an implemented Rust handler" in deferrals["rule"]
+    assert deferrals["contract_version"] == 2
+    assert deferrals["status"] == "closed-no-active-deferrals"
+    assert deferrals["owner"] == "kogwistar-rust-server"
+    assert "no route or syscall is deferred" in deferrals["rule"].lower()
+    assert "explicit rust selection" in deferrals["execution_policy"].lower()
 
     build_script = RUST_API_BUILD_SCRIPT_PATH.read_text(encoding="utf-8")
     manifest_routes = {
@@ -661,15 +659,28 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     assert "PENDING_SYSCALL_CUTOVER_OPS" in build_script
     assert "duplicate deferred route" in build_script
     assert "duplicate deferred syscall operation" in build_script
+    assert "closed cutover inventory must contain no pending operations" in build_script
     gate_path = ROOT / "scripts" / "rust_port_release_gate.py"
     gate_source = gate_path.read_text(encoding="utf-8")
-    assert f"SERVER_DEFERRAL_ROUTE_COUNT_V1 = {len(manifest_routes)}" in gate_source
-    assert f"SERVER_DEFERRAL_SYSCALL_COUNT_V1 = {len(manifest_syscalls)}" in gate_source
-    for group in [*deferrals["route_groups"], deferrals["syscall_group"]]:
-        assert group["owner"] == "python"
-        assert group["status"] == "intentionally-deferred"
-        assert group["required_authority"]
-        assert group["exit_evidence"]
+    assert manifest_routes == set()
+    assert manifest_syscalls == set()
+    assert "SERVER_DEFERRAL_ROUTE_COUNT_V2 = 0" in gate_source
+    assert "SERVER_DEFERRAL_SYSCALL_COUNT_V2 = 0" in gate_source
+    assert deferrals["syscall_group"]["status"] == "verified"
+    assert deferrals["syscall_group"]["required_authority"] == []
+    assert deferrals["syscall_group"]["exit_evidence"]
+    verified = deferrals["syscall_group"]["verified_operations"]
+    assert {item["name"] for item in verified} == {
+        "send_message",
+        "receive_message",
+        "mount_memory",
+        "invoke_tool",
+    }
+    rust_test_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "tests").rglob("*.rs")
+    )
+    assert all(item["test_selector"] in rust_test_sources for item in verified)
 
 
 def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> None:
@@ -728,9 +739,7 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
     gaps = crosswalk["rust_server_gaps"]
     assert {tuple(route) for route in gaps["pending_routes"]} == expected_routes
     assert set(gaps["pending_syscalls"]) == expected_syscalls
-    assert deferrals["syscall_group"]["required_authority"] == [
-        "server-rest-sse-mcp-cli"
-    ]
+    assert deferrals["syscall_group"]["required_authority"] == []
 
 
 def test_capability_evidence_links_reject_missing_stale_duplicate_and_route_refs(
@@ -1331,7 +1340,7 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         item["capability"] for item in rust_targets if not item["rust_cutover_ready"]
     ]
 
-    assert len(ready) == 7
+    assert len(ready) == 8
     assert set(ready) == {
         "deterministic-contracts",
         "sqlite-meta",
@@ -1340,8 +1349,9 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         "queues-leases-lanes",
         "graph-pgvector",
         "workflow-runtime",
+        "server-rest-sse-mcp-cli",
     }
-    assert not_ready == ["server-rest-sse-mcp-cli"]
+    assert not_ready == []
     support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     server_support = next(
         item for item in support_matrix["capabilities"]
@@ -1349,12 +1359,11 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
     )
     assert server_support["rust"]["status"] == "enabled"
     assert "Full dual-language objective remains **NOT COMPLETE**" in checklist
-    assert "Of eight Rust-targeted manifest flags, **7/8** are true" in checklist
-    assert "release gate independently derives `graph-pgvector` and `workflow-runtime` ready" in checklist
-    assert "server cutover blocked" in checklist
+    assert "All eight Rust-targeted manifest flags are now true" in checklist
+    assert "server cutover readiness independently" in checklist
     assert "not unfinished implementation or overall migration progress" in worklist
-    assert "**Declared Rust capability flags:** **7/8 Rust-targeted `rust_cutover_ready` flags are true**" in worklist
-    assert "four deferred syscall operations block only `server-rest-sse-mcp-cli`" in worklist
+    assert "**Declared Rust capability flags:** **8/8 Rust-targeted `rust_cutover_ready` flags are true**" in worklist
+    assert "no syscall operations remain deferred" in worklist
 
     adr015_flags = {
         capability: value == "true"
@@ -1366,8 +1375,8 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         item["capability"]: item["rust_cutover_ready"]
         for item in manifest["capability_ownership"]
     }
-    assert "remains blocked by four versioned syscall deferrals" in adr015
-    assert "nor this status claims universal Python/Rust parity" in adr015
+    assert "no route/syscall is pending" in adr015
+    assert "does not claim universal Python/Rust parity" in adr015
     assert "**Overall status:** **NOT COMPLETE**" in (
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
     ).read_text(encoding="utf-8")
@@ -1948,7 +1957,7 @@ def test_workflow_runtime_selector_keeps_python_default_with_rust_enabled() -> N
     } <= set(conformance["conformance_profiles"][capability_id])
 
 
-def test_rest_capability_keeps_deferred_route_explicit_after_cutover_acceptance() -> None:
+def test_rest_capability_is_cutover_ready_without_deferred_routes() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     ownership = next(
         item
@@ -1975,7 +1984,7 @@ def test_rest_capability_keeps_deferred_route_explicit_after_cutover_acceptance(
     assert support["python"]["status"] == "opt-in"
     assert support["rust"]["status"] == "enabled"
     assert support["mixed"]["status"] == "enabled"
-    assert server_gaps["status"] == "intentionally-deferred"
+    assert server_gaps["status"] == "closed"
     assert ["DELETE", "/admin/doc/{doc_id}"] not in server_gaps["pending_routes"]
 
 
@@ -1996,7 +2005,7 @@ def test_sse_support_is_enabled_after_ordering_and_resume_parity() -> None:
     assert "sse-ordering-and-resume" in conformance["conformance_profiles"][capability_id]
 
 
-def test_mcp_support_keeps_pending_syscalls_explicit_after_cutover_acceptance() -> None:
+def test_mcp_support_has_no_pending_syscalls_after_cutover_acceptance() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     manifest = _manifest()
     selector = next(
@@ -2023,8 +2032,9 @@ def test_mcp_support_keeps_pending_syscalls_explicit_after_cutover_acceptance() 
         "openapi-and-mcp-contract-parity",
         "authentication-acl-namespace-and-capability-parity",
     } <= set(conformance["conformance_profiles"][capability_id])
-    assert deferred_syscalls == {"send_message", "receive_message", "mount_memory", "invoke_tool"}
-    assert set(conformance["rust_server_gaps"]["pending_syscalls"]) == deferred_syscalls
+    assert deferred_syscalls == set()
+    assert conformance["rust_server_gaps"]["status"] == "closed"
+    assert set(conformance["rust_server_gaps"]["pending_syscalls"]) == set()
 
 
 def test_python_cli_remains_http_client_for_rust_selected_server(

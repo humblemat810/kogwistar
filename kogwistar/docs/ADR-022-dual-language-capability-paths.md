@@ -26,7 +26,9 @@ be extrapolated into a whole-stack performance ranking. The Rust health report's
 `runtime_cutover_ready` attests only the complete built-in native operation
 matrix, backed by SQLite, PostgreSQL, and in-memory evidence; it does not grant
 the full workflow-runtime ownership cutover recorded in `rust-port-v1`. The
-server still reports `server_cutover_ready: false` while deferred routes remain.
+server reports `server_cutover_ready: true` only when its route inventory is
+complete and current Phase-5 capability evidence passes; no route or syscall is
+currently deferred.
 A native Rust HTTP benchmark slice is not evidence that every public operation
 has a native Rust execution path.
 

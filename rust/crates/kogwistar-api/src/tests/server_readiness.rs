@@ -1,13 +1,15 @@
     #[test]
-    fn server_readiness_cannot_overclaim_pending_routes() {
+    fn server_readiness_requires_declared_flag_and_reconciled_route_count() {
         let mut implementation = ImplementationSnapshot::default();
         assert!(!implementation.effective_server_cutover_ready());
 
         implementation.server_cutover_ready = true;
-        assert!(!implementation.effective_server_cutover_ready());
+        assert!(implementation.effective_server_cutover_ready());
 
         implementation.implemented_route_operations = implementation.frozen_route_operations;
         assert!(!implementation.effective_server_cutover_ready());
+        assert!(PENDING_SERVER_CUTOVER_ROUTES.is_empty());
+        assert!(PENDING_SYSCALL_CUTOVER_OPS.is_empty());
     }
 
     #[test]

@@ -800,8 +800,7 @@
             "external event",
             1_000,
         ));
-        assert_eq!(PENDING_SYSCALL_CUTOVER_OPS.len(), 4);
-        assert!(PENDING_SYSCALL_CUTOVER_OPS.contains(&"invoke_tool"));
+        assert!(PENDING_SYSCALL_CUTOVER_OPS.is_empty());
         assert!(!PENDING_SYSCALL_CUTOVER_OPS.contains(&"project_view"));
         assert!(!PENDING_SYSCALL_CUTOVER_OPS.contains(&"spawn_process"));
     }

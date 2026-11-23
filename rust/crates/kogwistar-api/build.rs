@@ -39,13 +39,13 @@ fn main() {
     let deferrals = &port_manifest["server_operation_deferrals"];
     assert_eq!(
         deferrals["contract_version"].as_u64(),
-        Some(1),
-        "unsupported server deferral contract version"
+        Some(2),
+        "unsupported server cutover inventory contract version"
     );
     assert_eq!(
         deferrals["status"].as_str(),
-        Some("versioned-intentionally-deferred"),
-        "server deferrals must remain explicitly versioned"
+        Some("closed-no-active-deferrals"),
+        "server cutover inventory must be closed"
     );
 
     let mut pending_routes = BTreeSet::new();
@@ -98,6 +98,10 @@ fn main() {
             "duplicate deferred syscall operation: {operation}"
         );
     }
+    assert!(
+        pending_routes.is_empty() && pending_syscalls.is_empty(),
+        "closed cutover inventory must contain no pending operations"
+    );
 
     let pending_route_entries = pending_routes
         .iter()

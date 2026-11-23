@@ -395,10 +395,10 @@ Only these local items remain in scope before production rollout:
   gate only. Production readiness flags remain unchanged; capability canary
   and explicit `workflow-runtime` readiness decision remain open in the
   cutover worklist.
-- [x] Phase 5: zero currently frozen HTTP operations; four syscall operations
-  remain explicitly deferred. The manifest records the remaining grouped
-  Python ownership, prerequisite Rust authorities, and exit evidence; its exact
-  operation set is bidirectionally checked against Rust's fail-closed inventory.
+- [x] Phase 5: zero currently frozen HTTP operations and zero deferred syscall
+  operations. The closed manifest records all four verified syscall selectors;
+  its empty pending set is checked against Rust's fail-closed inventory. Current
+  Phase-5 evidence remains required before release readiness is claimed.
 - [x] The PostgreSQL Rust service now serves
   `GET /api/conversations/{conversation_id}/snapshots/latest` through its
   existing ACL-filtered snapshot projection, with Python-compatible namespace,
@@ -443,10 +443,10 @@ Only these local items remain in scope before production rollout:
   storage-scope/ACL-principal derivation and one ACL-filtered record-read
   helper. The scope/principal invariant test and both live summary/transcript
   and latest-snapshot PostgreSQL integrations passed after refactoring.
-- [x] Phase 5: explicitly version/defer the four remaining conversation/tool syscall
-  sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
-  manifest entry records Python rollback ownership, the required worker/runtime
-  protocol authority, and required exit evidence.
+- [x] Phase 5: verify all conversation/tool syscall sub-operations and close the
+  deferral inventory. The v2 manifest records named test selectors for
+  `send_message`, `receive_message`, `mount_memory`, and `invoke_tool`; the
+  runtime-generated pending syscall list must remain empty.
 - [x] Phase 5: pass current-candidate local route/auth/capability/error,
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
   `scripts/server_contract_gate.py` re-run produced local report
@@ -680,11 +680,11 @@ not authorize a broad authority-flag promotion or replace production canaries.
   service projection against concurrent duplicate spawn. REST and MCP share
   this path. Rust syscall dispatch now owns spawn/terminate process,
   checkpoint, resume, and approval branches over existing authoritative run
-  and capability services. Conversation/tool-dependent branches remain listed
-  in `PENDING_SYSCALL_CUTOVER_OPS` and are not cutover-ready; implemented
-  handlers may still run under explicit Rust selection in isolated UAT with
-  ordinary authorization checks. The inventory is a promotion gate, not a
-  runtime disable switch. The
+  and capability services. Conversation/tool-dependent branches now have
+  named Rust security, persistence, retry, and backend tests and are no longer
+  deferred. Explicit Rust selection still requires ordinary authorization and
+  backend authority checks. The inventory is a readiness gate, not a runtime
+  disable switch. The
   graph-validation route now validates frozen Node/Edge provenance shape and
   preserves Python's metadata-pointer lift without touching storage. Three
   visualization HTML shells are embedded from the existing packaged templates;
@@ -835,22 +835,20 @@ deployment canary evidence required to make Rust its live default writer.
   executable evidence. Local runtime gaps and their acceptance oracles are
   tracked in `ADR-015-implementation-tasklets.md`; same-candidate four-layer proof
   remains pending.
-- Rust server binary and application services exist, but server and runtime
-  cutover readiness remain false.
-- Effective Rust server readiness now requires both pending HTTP-route and
-  pending syscall inventories to be empty, in addition to the declared flag
-  and route-count checks. `server_readiness_cannot_overclaim_pending_routes`
-  guards against manually setting the route count complete while syscalls
-  remain deferred. This is a fail-closed local invariant, not production
-  readiness evidence; Docker-backed runs remain UAT only.
-- The currently deferred Rust server routes and four remaining frozen
-  conversation/tool syscalls are classified in `server_operation_deferrals` in
-  `contracts/rust-port-v1.json`. Each records a prerequisite authority and
-  capability-specific exit evidence; a contract test requires an exact,
-  duplicate-free match with Rust's pending cutover inventories. Implemented
-  routes leave this inventory only after their native authority path and
-  capability-specific evidence are verified. This closes classification only,
-  not the remaining Rust authority or Phase 5 conformance gates.
+- Rust server binary and application services exist. Server readiness is
+  declared by the manifest and remains fail-closed on current Phase-5 evidence;
+  runtime readiness remains independently gated.
+- Effective Rust server readiness requires empty pending HTTP-route and
+  syscall inventories, the declared flag, reconciled route counts, and current
+  Phase-5 evidence. The v2 inventory closes all four former syscall deferrals;
+  tests reject reintroducing any. This is library readiness evidence; isolated
+  Docker-backed runs remain UAT.
+- The formerly deferred Rust server routes and four frozen conversation/tool
+  syscalls are verified in `server_operation_deferrals` in
+  `contracts/rust-port-v1.json`. The v2 contract has no pending routes or
+  syscalls and requires named verification selectors; build and release gates
+  fail if any operation is re-deferred. Full server readiness still requires
+  current Phase-5 conformance evidence.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
 - Customer traffic canary records do not exist and are not required for library

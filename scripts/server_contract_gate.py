@@ -68,7 +68,7 @@ GROUPS: dict[str, tuple[tuple[str, ...], bool]] = {
         (
             "tests/core/test_rust_port_contract_manifest.py::test_committed_openapi_golden_has_no_drift",
             "tests/server/test_mcp_tool_registry_contract.py::test_committed_mcp_tool_schema_matches_live_registry",
-            "tests/core/test_rust_port_contract_manifest.py::test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory",
+            "tests/core/test_rust_port_contract_manifest.py::test_closed_server_cutover_inventory_matches_rust_frozen_inventory",
         ),
         False,
     ),

@@ -2,7 +2,7 @@
 
 ## Status
 
-Status — ADR-015's six named capability test groups and its bounded CI/UAT gates passed for the recorded candidate. The manifest declares 7/8 Rust-targeted capability flags true. The executable release gate derives `graph-pgvector` and `workflow-runtime` ready; `server-rest-sse-mcp-cli` remains blocked by four versioned syscall deferrals. The broader public-surface parity goal remains open; neither the capability gate suite nor this status claims universal Python/Rust parity.
+Status — ADR-015's six named capability test groups and its bounded CI/UAT gates passed for the recorded candidate. The manifest now declares 8/8 Rust-targeted capability flags true. The v2 server deferral contract is closed: all four former syscall deferrals have named test selectors, and no route/syscall is pending. Effective server readiness still requires current-source Phase-5 evidence. Broader public-surface parity remains open; this does not claim universal Python/Rust parity.
 
 The release-gate report separates deferral-manifest validation from cutover effect: a structurally valid deferral list reports `validation_status=passed`, while non-empty pending operations report `cutover_status=blocked` with their names. A green schema check must never be read as cutover approval.
 
@@ -49,19 +49,19 @@ The table reports the manifest's per-capability selection flags, not the effecti
 |---|---|---|---|
 | deterministic-contracts | true | no | already ready |
 | sqlite-meta | true | no | already ready |
-| postgres-sequence-event-log | true | yes | Capability gate passed; four deferred syscalls still block server-wide readiness. |
-| projections-snapshots-run-registry | true | yes | Capability gate passed; four deferred syscalls still block server-wide readiness. |
-| queues-leases-lanes | true | yes | Capability gate passed; four deferred syscalls still block server-wide readiness. |
-| graph-pgvector | true | yes | Capability gate passed; four deferred syscalls still block server-wide readiness. |
+| postgres-sequence-event-log | true | yes | Capability gate passed; server gate is independently evidence-gated. |
+| projections-snapshots-run-registry | true | yes | Capability gate passed; server gate is independently evidence-gated. |
+| queues-leases-lanes | true | yes | Capability gate passed; server gate is independently evidence-gated. |
+| graph-pgvector | true | yes | Capability gate passed; server gate is independently evidence-gated. |
 | chroma-adapter | false | no | Intentionally Python-owned target; Rust Chroma GraphStore interop is verified separately in `kogwistar/docs/chroma_rust_interop_worklist.md`. |
-| workflow-runtime | true | yes | Capability gate passed; four deferred syscalls still block server-wide readiness. |
-| server-rest-sse-mcp-cli | false | yes | Named REST/SSE/MCP/CLI test gate passed; effective cutover remains blocked by four deferred syscalls. |
+| workflow-runtime | true | yes | Capability gate passed; server gate is independently evidence-gated. |
+| server-rest-sse-mcp-cli | true | yes | Named REST/SSE/MCP/CLI and syscall tests exist; current-source Phase-5 evidence remains required for effective readiness. |
 
 
 
 ## 6 Capability CI Gate - Grounding Evidence
 
-All six capability **test gates** are verified by named ADR-015 oracle selectors. The accepted CI/UAT evidence closes those declared test gates. The contract still marks `send_message`, `receive_message`, `mount_memory`, and `invoke_tool` as intentionally deferred, so the server cutover flag remains false. These server-level deferrals do not block the independently passing graph-pgvector or workflow-runtime readiness gates. Evidence is recorded under `kogwistar/.codex/adr015-phase3-capability-gate/` with per-group JUnit XML; consult current CI records and manifests rather than treating local historical artifacts as current proof.
+All six capability **test gates** are verified by named ADR-015 oracle selectors. The v2 contract lists all four former syscalls as verified and no longer deferred. Current-source Phase-5 evidence remains the effective server readiness condition. Evidence is recorded under `kogwistar/.codex/adr015-phase3-capability-gate/` with per-group JUnit XML; consult current CI records and manifests rather than treating local historical artifacts as current proof.
 
 | # | Capability | Gate group | Tests | Result | Why it worked |
 |---|---|---|---|---|---|
@@ -97,11 +97,11 @@ Revalidation results from the `kogwistar` repository root:
 - Rust runtime authority, PostgreSQL durability, and worker handoff: **82 passed, 10 skipped, 0 failed**.
 - Server REST/SSE/MCP/CLI suite: **247 passed, 25 skipped, 0 failed**.
 
-The first server attempt run from the outer workspace root reported three missing-file errors because tests resolve committed files relative to the `kogwistar` repository root; rerunning with that root passed. The historical table and narrative above that described the six capability flags as false predate the current manifest and are superseded by it. Current release-gate evidence keeps server cutover blocked while preserving independently passing graph-pgvector and workflow-runtime readiness. Full public-surface parity remains incomplete. This is a library/UAT capability decision, not customer production rollout.
+The first server attempt run from the outer workspace root reported three missing-file errors because tests resolve committed files relative to the `kogwistar` repository root; rerunning with that root passed. Historical statements about deferred syscalls are superseded by the v2 contract and current test evidence. Full public-surface parity remains incomplete. This is a library/UAT capability decision, not customer production rollout.
 
 ## Next steps
 
 1. Keep six capability test gates executable and current.
-2. Resolve or explicitly retain the four versioned syscall deferrals before claiming server-wide Rust cutover readiness.
+2. Refresh current-source Phase-5 evidence after any server implementation or contract change.
 3. Keep manifest per-capability readiness aligned with executable gate evidence; do not infer whole-stack parity from those flags.
 4. Track full public-surface parity separately in `kogwistar/docs/ADR-022-dual-language-goal-closure-checklist.md`.

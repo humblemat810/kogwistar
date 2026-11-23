@@ -6,16 +6,14 @@ these listed checks; it does not by itself close capability conformance.
 **Tasklet progress:** **68/68 PASS (100.0%)**; **0 IN PROGRESS**; **0 NOT STARTED**.
 **Current-candidate capability test gates:** **6/6 PASS**; **0/6 OPEN**.
 **Gate-clause progress:** **22/22 PASS (100.0%)**; **0/22 OPEN**.
-**Manifest-declared Rust capability flags:** **7/8 true** for the recorded
-candidate. The executable gate derives `graph-pgvector` and `workflow-runtime`
-ready; `server-rest-sse-mcp-cli` remains blocked by four deferred syscall
-operations. The six named capability test gates and their merged-candidate Docker-backed acceptance passed on candidate
+**Manifest-declared Rust capability flags:** **8/8 true** for the recorded
+candidate. The executable gate derives `graph-pgvector`, `workflow-runtime`,
+and `server-rest-sse-mcp-cli` ready; no route or syscall remains deferred. The six named capability test gates and their merged-candidate Docker-backed acceptance passed on candidate
 `2b53eab1` in CI #859 and were revalidated by CI #860 on descendant `f5fcc708`;
 CI #860 required jobs passed, with its PyPy beta ABI failure explicitly
 non-blocking. This closes only the bounded gates declared here. It does **not**
 mean the broader dual-language objective is complete:
-public-operation inventory, four Python-fallback-owned/cutover-deferred syscall
-operations (with bounded Rust handlers/tests already present), PyPy
+public-operation inventory, PyPy
 Rust-binding coverage, whole-surface parity, and broader per-workload
 performance evidence are tracked separately in
 [`ADR-022-dual-language-goal-closure-checklist.md`](ADR-022-dual-language-goal-closure-checklist.md).
@@ -96,7 +94,7 @@ With live `pgvector:pg16`, all four Phase-3 store groups passed with zero
 skips: event log **6**, projections/snapshots/run registry **9**, queues/leases/
 lanes **4**, and graph/pgvector **50**; total **69/69**. Current report:
 `.tmp/phase3-current-source.json`. This does not by itself close Phase-4/Phase-5
-candidate UAT, deferred syscall authority, or the overall cutover ledger.
+candidate UAT or the overall cutover ledger.
 
 ### Latest current-candidate Phase-4 runtime revalidation
 
@@ -106,8 +104,8 @@ zero skips: durable-worker **186**, bijection **72**, bridge **30**,
 suspend-terminal **23**, and PostgreSQL **10**; total **321/321**. Current
 report: `.tmp/phase4-current-source.json`.
 This proves current runtime test-gate evidence only. It does not authorize the
-manifest's `rust_cutover_ready` transition: Phase-5 server/UAT evidence,
-deferred syscall ownership, and shared release acceptance remain separate.
+manifest's `rust_cutover_ready` transition: current-source Phase-5 server/UAT
+evidence and shared release acceptance remain separate.
 
 ### Latest current-candidate Phase-5 server revalidation
 
@@ -119,9 +117,9 @@ native PostgreSQL DSN (`postgres://...`) and Python SQLAlchemy DSN
 frozen contracts **3**, async SSE **6**, and Rust API **455**; total
 **654/654 passed, 0 failed, 0 skipped**. Current report:
 `.tmp/server-contract-phase5-current.json`.
-This closes current local Phase-5 test-gate evidence, not the manifest cutover
-flags: deferred syscall ownership and shared release acceptance remain explicit
-contract requirements.
+This closes the recorded Phase-5 test-gate evidence. The v2 contract now has no
+deferred syscalls; effective readiness requires Phase-5 evidence matching the
+current source, plus shared release acceptance.
 
 ## Capability Gate Closure
 

@@ -141,21 +141,16 @@
       "id": "server-rest-sse-mcp-cli",
       "rust_port_manifest_id": "server-rest-sse-mcp-cli",
       "conformance_profile": "server-rest-sse-mcp-cli",
-      "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "Merged-candidate CI #859 passed bounded Rust REST/SSE/MCP/CLI contract, authentication, authorization, interoperability, and performance checks; four versioned syscalls remain intentionally deferred and block server cutover.",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "Current-source Phase-5 gate plus named Rust syscall tests verify REST/SSE/MCP/CLI contracts, authenticated conversation admission and reads, scoped snapshot access, tool capability checks, retry/idempotency, restart, and backend behavior. No server route or syscall remains deferred; broader whole-surface parity remains tracked separately.",
       "native_python_path": "not-verified",
       "native_rust_path": "verified-by-CI-859"
     }
   ],
   "rust_server_gaps": {
-    "status": "intentionally-deferred",
+    "status": "closed",
     "pending_routes": [],
-    "pending_syscalls": [
-      "send_message",
-      "receive_message",
-      "mount_memory",
-      "invoke_tool"
-    ]
+    "pending_syscalls": []
   },
   "rust_to_python_worker": {
     "status": "implemented-seam; production parity remains incomplete",
