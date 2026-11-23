@@ -2118,6 +2118,85 @@ def test_create_conversation_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
+def test_receive_message_syscall_uses_python_in_memory_backend(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "receive-message-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        fixture = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/receive-message-result-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        for message in fixture["messages"]:
+            content = message["content"]
+            embedding = conversation_engine.iterative_defensive_emb(content)
+            conversation_engine.write.add_node(
+                ConversationNode(
+                    id=message["node_id"],
+                    label=f"Turn {message['turn_index']}",
+                    type="entity",
+                    summary=content,
+                    mentions=[
+                        Grounding(spans=[Span.from_dummy_for_conversation("c1")])
+                    ],
+                    doc_id="conv:c1",
+                    metadata={
+                        "entity_type": message["entity_type"],
+                        "in_conversation_chain": True,
+                        "level_from_root": 0,
+                    },
+                    role=message["role"],
+                    turn_index=message["turn_index"],
+                    conversation_id=fixture["conversation_id"],
+                    user_id="reader-1",
+                    embedding=embedding.tolist()
+                    if hasattr(embedding, "tolist")
+                    else embedding,
+                )
+            )
+
+        with TestClient(server.app) as client:
+            response = client.post(
+                "/api/syscall/v1/receive_message",
+                json={
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": fixture["conversation_id"]},
+                },
+                headers=_token_header(client, role="ro", ns="conversation"),
+            )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["version"] == "v1"
+        assert payload["op"] == "receive_message"
+        assert payload["status"] == "ok"
+        assert payload["result"] == fixture
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
