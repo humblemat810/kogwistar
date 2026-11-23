@@ -703,7 +703,12 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
         assert item["rust_coverage"] == expected_rust_coverage
         assert item["native_python_path"] == "not-verified"
         if expected_rust_coverage != "python-only":
-            assert item["native_rust_path"] == "not-verified"
+            expected_native_rust_path = (
+                "verified-by-CI-859"
+                if ownership["rust_cutover_ready"]
+                else "not-verified"
+            )
+            assert item["native_rust_path"] == expected_native_rust_path
 
     deferrals = port_manifest["server_operation_deferrals"]
     expected_routes = {
@@ -1742,7 +1747,7 @@ def test_graph_pgvector_capability_is_opt_in_until_graph_conformance_passes() ->
     } <= set(conformance["conformance_profiles"][capability_id])
 
 
-def test_chroma_adapter_remains_python_only_and_mixed_disabled() -> None:
+def test_chroma_adapter_is_python_owned_but_interop_verified() -> None:
     capability_id = "chroma-adapter"
     ownership = next(
         item
@@ -1772,7 +1777,9 @@ def test_chroma_adapter_remains_python_only_and_mixed_disabled() -> None:
     assert support["rust"]["status"] == "not-applicable"
     assert support["mixed"]["status"] == "disabled"
     assert coverage["rust_coverage"] == "python-only"
-    assert coverage["mixed_coverage"] == "not-inventoried"
+    assert coverage["mixed_coverage"] == (
+        "verified-by-current-source-chroma-interop-suite"
+    )
     assert set(conformance["conformance_profiles"][capability_id]) == {
         "python-chroma-contract",
         "single-writer-and-isolated-shadow-read",

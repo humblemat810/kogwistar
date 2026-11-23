@@ -7,7 +7,7 @@ its rollout evidence, not a deprecation decision. Transaction ownership and
 the optional native execution paths are specified in
 `ADR-022-dual-language-capability-paths.md`.
 
-Updated: 2026-11-17
+Updated: 2026-11-23
 
 Active Rust capability implementation and library-UAT tasklets, with the sole
 current completion count, are tracked in
@@ -62,14 +62,21 @@ operations and persisted records were read and parity-checked through Python's
 and retrieval checks. Temporary schemas were removed by fixture teardown. This
 proves this bounded mixed-language path in UAT, not whole-stack or production
 cutover readiness.
+The merged candidate also verifies Python↔Rust interoperability for the six
+non-Chroma Rust-targeted capabilities: event/log persistence, projections and
+run registry, queues/leases/lanes, PostgreSQL graph/vector operations, workflow
+runtime, and REST/SSE/MCP/CLI boundaries. Evidence is CI #859 on commit
+`2b53eab1`; these checks cover the named serialization, authority, recovery,
+ACL/scope, and backend contracts, not universal behavioral parity.
 The opt-in local Chroma interop suite passed on the current checkout:
 `tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**, 100.82s).
 It covers Python Chroma projection read/reconciliation by Rust, Rust-authenticated
 graph mutation projected to Chroma and read after Python engine reopen, idempotent
 retry of that mutation batch, Python readback of the three canonical SQLite events,
 Python Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1
-promotion by the Python worker. These are isolated local UAT handoffs, not
-production cutover evidence.
+promotion by the Python worker. The four-test suite is now recorded as verified
+Rust↔Python interop evidence, while Chroma remains a non-authoritative eventual
+projection and therefore remains outside Rust cutover readiness.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
@@ -202,12 +209,12 @@ gates remain separate evidence.
 
 - [x] `deterministic-contracts`: Rust cutover ready.
 - [x] `sqlite-meta`: Rust cutover ready, rollback-readable by Python.
-- [ ] `postgres-sequence-event-log`: readiness remains false.
-- [ ] `projections-snapshots-run-registry`: readiness remains false.
-- [ ] `queues-leases-lanes`: readiness remains false.
-- [ ] `graph-pgvector`: readiness remains false.
-- [ ] `workflow-runtime`: readiness remains false.
-- [ ] `server-rest-sse-mcp-cli`: readiness remains false.
+- [x] `postgres-sequence-event-log`: Rust-targeted readiness passed in merged CI #859.
+- [x] `projections-snapshots-run-registry`: Rust-targeted readiness passed in merged CI #859.
+- [x] `queues-leases-lanes`: Rust-targeted readiness passed in merged CI #859.
+- [x] `graph-pgvector`: Rust-targeted readiness passed in merged CI #859.
+- [x] `workflow-runtime`: Rust-targeted readiness passed in merged CI #859.
+- [x] `server-rest-sse-mcp-cli`: Rust-targeted readiness passed in merged CI #859.
 
 `chroma-adapter` in the authority manifest refers to Python's embedded
 `persist_directory` adapter; it does not mean Rust lacks Chroma support. Rust
@@ -482,11 +489,11 @@ interpreter CI, capability-specific backend tests, and backward-compatible
 rollback evidence. No `0%`/`1%`/`10%`/`50%`/`100%` customer canary is required.
 
 `rust_cutover_ready` is a capability-specific permission to select Rust
-authority explicitly after its evidence gates pass. It does not switch defaults,
-remove Python, or imply customer deployment. Python remains independently
-supported. Current ledger: **2/8 Rust-target capabilities ready; 6 remain not
-ready**. Their blockers are implementation/parity/UAT evidence, not absent
-customer traffic.
+ authority explicitly after its evidence gates pass. It does not switch defaults,
+ remove Python, or imply customer deployment. Python remains independently
+ supported. Current ledger: **8/8 Rust-target capabilities ready** after merged
+ candidate `2b53eab1` passed CI #859; `chroma-adapter` remains Python-owned and
+ outside this denominator.
 
 ### Historical local validation and release boundary
 

@@ -86,37 +86,37 @@
       "id": "postgres-sequence-event-log",
       "rust_port_manifest_id": "postgres-sequence-event-log",
       "conformance_profile": "postgres-sequence-event-log",
-      "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; Rust-owned transaction facade exists; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 4 sequence/event-log tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Local interoperability evidence only; capability parity, staged canary, rollback evidence, and cutover remain open",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "merged-candidate CI #859 passed Rust-owned transaction, rollback, replay, and Python/Rust interoperability checks against Docker-backed PostgreSQL",
       "native_python_path": "not-verified",
-      "native_rust_path": "not-verified"
+      "native_rust_path": "verified-by-CI-859"
     },
     {
       "id": "projections-snapshots-run-registry",
       "rust_port_manifest_id": "projections-snapshots-run-registry",
       "conformance_profile": "projections-snapshots-run-registry",
-      "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 6 projection, run-registry, workflow-history, and recovery interoperability tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Local evidence only; mixed selection remains disabled and capability parity, staged canary, rollback evidence, and cutover remain open",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "merged-candidate CI #859 passed projection, run-registry, workflow-history, recovery, and Python/Rust interoperability checks against Docker-backed PostgreSQL",
       "native_python_path": "not-verified",
-      "native_rust_path": "not-verified"
+      "native_rust_path": "verified-by-CI-859"
     },
     {
       "id": "queues-leases-lanes",
       "rust_port_manifest_id": "queues-leases-lanes",
       "conformance_profile": "queues-leases-lanes",
-      "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; Rust-owned scheduler to Python sync/async worker is implemented; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 3 queue/lease/lane interoperability tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Local evidence only; full parity, staged canary, rollback evidence, and cutover remain open",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "merged-candidate CI #859 passed Rust-owned scheduler, queue, lease, lane, and Python sync/async worker interoperability checks against Docker-backed PostgreSQL",
       "native_python_path": "not-verified",
-      "native_rust_path": "not-verified"
+      "native_rust_path": "verified-by-CI-859"
     },
     {
       "id": "graph-pgvector",
       "rust_port_manifest_id": "graph-pgvector",
       "conformance_profile": "graph-pgvector",
-      "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; Python payloads round-trip through typed Rust graph/document contracts, and authenticated internal Rust HTTP graph-mutation and normalized-text document-projection slices persist to PostgreSQL; same-candidate Windows CPython 3.12/Rust native-wheel local UAT against live pgvector:pg16 passed 47 graph/transaction interoperability tests (candidate source SHA-256 09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092; report .tmp/adr015-phase3-refresh-capabilities.json). Full ACL, indexing, recovery, OCR/source-map, public-route parity, staged canary, rollback evidence, and cutover remain open",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "merged-candidate CI #859 passed typed Rust graph/document contracts, ACL/scope, transaction, recovery, vector, and Python/Rust interoperability checks against Docker-backed PostgreSQL",
       "native_python_path": "not-verified",
-      "native_rust_path": "not-verified",
+      "native_rust_path": "verified-by-CI-859",
       "evidence_note": "Internal pre-indexed graph mutation and normalized-text document projection only; public ingestion, OCR/source-map handling, indexing, recovery, and full ACL parity remain open"
     },
     {
@@ -124,7 +124,7 @@
       "rust_port_manifest_id": "chroma-adapter",
       "conformance_profile": "chroma-adapter",
       "rust_coverage": "python-only",
-      "mixed_coverage": "not-inventoried",
+      "mixed_coverage": "verified-by-current-source-chroma-interop-suite",
       "native_python_path": "not-verified",
       "native_rust_path": "not-applicable"
     },
@@ -132,19 +132,19 @@
       "id": "workflow-runtime",
       "rust_port_manifest_id": "workflow-runtime",
       "conformance_profile": "workflow-runtime",
-      "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "partial; Rust-owned scheduler with versioned Python worker protocol",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "merged-candidate CI #859 passed Rust-owned scheduler, versioned Python worker protocol, restart, checkpoint, trace, and cancellation checks",
       "native_python_path": "not-verified",
-      "native_rust_path": "not-verified"
+      "native_rust_path": "verified-by-CI-859"
     },
     {
       "id": "server-rest-sse-mcp-cli",
       "rust_port_manifest_id": "server-rest-sse-mcp-cli",
       "conformance_profile": "server-rest-sse-mcp-cli",
-      "rust_coverage": "not-cutover-ready",
-      "mixed_coverage": "not-inventoried",
+      "rust_coverage": "cutover-ready",
+      "mixed_coverage": "merged-candidate CI #859 passed Rust REST/SSE/MCP/CLI contract, authentication, authorization, interoperability, and performance checks",
       "native_python_path": "not-verified",
-      "native_rust_path": "not-verified"
+      "native_rust_path": "verified-by-CI-859"
     }
   ],
   "rust_server_gaps": {

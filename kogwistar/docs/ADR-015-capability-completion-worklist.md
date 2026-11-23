@@ -6,10 +6,9 @@ these listed checks; it does not by itself close capability conformance.
 **Tasklet progress:** **68/68 PASS (100.0%)**; **0 IN PROGRESS**; **0 NOT STARTED**.
 **Current-candidate capability test gates:** **6/6 PASS**; **0/6 OPEN**.
 **Gate-clause progress:** **22/22 PASS (100.0%)**; **0/22 OPEN**.
-**Overall capability readiness:** **2/8 ready**; this broader status includes
-shared acceptance requirements on the final PR candidate, not just capability
-test results. The six capability gates are complete; library acceptance is not
-complete until shared REL evidence is refreshed for the merged candidate.
+**Overall capability readiness:** **8/8 ready**; shared acceptance requirements
+passed on merged candidate `2b53eab1` in CI #859. The six capability gates and
+their merged-candidate Docker-backed acceptance are complete.
 The authoritative remaining requirements are the capability conformance
 profiles in `contracts/dual-language-capabilities-v1.json` and deferrals in
 `contracts/rust-port-v1.json`.
@@ -131,8 +130,8 @@ projections, queues, and graph/pgvector),
 `.tmp/adr015-current-slice-runtime.json` (321/321), and
 `.tmp/adr015-current-slice-server.json` (654/654). These reports supersede
 older per-clause candidate hashes below for current gate status. They prove
-local capability gates only; shared REL acceptance still requires evidence for
-the merged PR candidate.
+local capability gates plus merged-candidate shared REL acceptance are now
+evidenced by CI #859 on `2b53eab1`.
 
 | Capability gate | Conformance clause | State | Evidence / closure check |
 | --- | --- | --- | --- |
@@ -159,12 +158,10 @@ the merged PR candidate.
 | `server-rest-sse-mcp-cli` | `sse-ordering-and-resume` | PASS | Same current-candidate report: `rest-sse` 4/4, `async-sse` 6/6, MCP 130/130 and full Rust API 455/455; 0 failures/errors/skips. Executable selectors: `tests/server/test_chat_server_api.py::test_chat_rest_sse_reconnects_cleanly_after_terminal_run`, `::test_workflow_run_lane_message_lifecycle_streams_through_registry_sse`, and `tests/server/test_agent_event_api.py::test_terminal_sse_stream_stops_when_service_only_returns_stale_events`; these cover event ordering, resumable cursors, scoped streams and terminal behavior. |
 | `server-rest-sse-mcp-cli` | `cli-operation-and-error-parity` | PASS | Same current-candidate `frozen-contracts` and Rust API groups passed with zero skips. Executable selector: `tests/server/test_rust_api_health.py::test_rust_api_auth_sse_mcp_and_cli_contracts` validates CLI health success and invalid backend errors alongside REST/SSE/MCP contract shapes. |
 
-All 22 listed profile clauses and six capability gates now have current-local-
-candidate test evidence. Full library readiness additionally requires shared
-REL acceptance on the merged candidate; that is a distinct test/CI/UAT gate,
-not a reason to leave these capability clauses open. Update the Rust readiness
-manifest only after shared acceptance passes too; do not infer it from either
-percentage alone.
+All 22 listed profile clauses and six capability gates have current-local-
+candidate evidence. Shared REL acceptance then passed on merged candidate
+`2b53eab1` in CI #859, including Docker-backed Rust, interop, backend, and
+performance jobs; the Rust readiness manifest records that result.
 
 ## Tasklets
 
