@@ -572,20 +572,10 @@
         let _ = std::fs::remove_file(path);
     }
 
-    #[test]
-    fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
-        use std::time::{SystemTime, UNIX_EPOCH};
-
-        let contract: Value = serde_json::from_str(include_str!(
-            "../../../../../../contracts/golden/syscall-checkpoint-persisted-v1.json"
-        ))
-        .unwrap();
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!("kogwistar-syscall-checkpoint-{nonce}.sqlite3"));
-        let service = SqliteRunApplicationService::open(&path).unwrap();
+    fn assert_checkpoint_syscall_reads_recorded_state_and_checks_scope(
+        service: &SqliteRunApplicationService,
+        contract: &Value,
+    ) {
         service
             .store
             .create_server_run(ServerRunCreate {
@@ -664,7 +654,52 @@
         assert_eq!(missing.status, StatusCode::NOT_FOUND.as_u16());
         let missing: Value = serde_json::from_slice(&missing.body).unwrap();
         assert_eq!(missing["code"], "KOGWISTAR_CHECKPOINT_NOT_FOUND");
+    }
 
+    #[test]
+    fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-checkpoint-persisted-v1.json"
+        ))
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-checkpoint-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        assert_checkpoint_syscall_reads_recorded_state_and_checks_scope(&service, &contract);
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/syscall-checkpoint-persisted-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_checkpoint_syscall_reads_recorded_state; python_test=tests/server/test_chat_server_api.py#test_checkpoint_syscall_reads_python_backend
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_checkpoint_syscall_reads_recorded_state() {
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let path = std::env::temp_dir().join(format!("kogwistar-checkpoint-{suffix}.sqlite3"));
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: format!("checkpoint-n-{suffix}"),
+                edge_collection: format!("checkpoint-e-{suffix}"),
+            }),
+        )
+        .await
+        .unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-checkpoint-persisted-v1.json"
+        ))
+        .unwrap();
+        assert_checkpoint_syscall_reads_recorded_state_and_checks_scope(&service, &contract);
         drop(service);
         let _ = std::fs::remove_file(path);
     }
