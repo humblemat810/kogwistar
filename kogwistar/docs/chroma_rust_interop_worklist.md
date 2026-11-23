@@ -12,7 +12,7 @@
 
 ### Current-candidate revalidation
 
-On 2026-11-23, candidate source commit `603095ff2581a6dc174dc3183cd85e8848cd74f1` (SHA-256 `8bb3bb78a16ce55c96d371de201a826826d66abb4343282f107795699b661a2b`) passed the existing Rust Chroma contract (**8/8**) and live Python↔Rust Chroma handoff suite (**4/4**, 89.05s). The complete Phase-5 gate passed against local PostgreSQL and Chroma: REST/SSE **4**, auth/syscall **56**, MCP **130**, frozen contracts **3**, async SSE **6**, Rust API **455**; total **654/654**, zero failures or skips. The first Rust API attempt used a stale PostgreSQL password and failed; reruns with the running container's configured credentials passed, including the complete gate. Reports/logs remain under ignored `.tmp/`. These refresh evidence for CH-C1–CH-C4 only; they do not close the separately deferred server syscalls or claim universal parity.
+Current checkout revalidation on 2026-11-23 (Rust source commit `48362e3c3f212c0e443cbb69893e4e9c8d49d1b7`; following commit `2a25e527` changes only docs/contracts/tests): Rust Chroma adapter contract **8/8**; rebuilt current Rust server plus live Python↔Rust Chroma handoff **4/4** (**95.86s**); SQLite-canonical/Chroma-eventual projection failure-retry-reopen test **1/1**. Initial live run skipped three cases because the server binary was stale; no skips counted after rebuilding. The previously recorded Phase-5 gate evidence remains tied to its recorded candidate and is not attributed to this checkout revalidation. These results evidence CH-C1–CH-C4 only; they do not claim universal parity.
 
 ## Coarse Gates
 
