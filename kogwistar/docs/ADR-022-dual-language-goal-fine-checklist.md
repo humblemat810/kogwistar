@@ -1,8 +1,8 @@
 # ADR-022 Dual-Language Goal Fine Checklist
 
-**Updated:** 2026-11-23  
-**Purpose:** Executable closure tracker for GOAL-06/08/09 in [the goal-closure audit](ADR-022-dual-language-goal-closure-checklist.md). This is not the 177/911 evidence inventory and does not change its denominator.  
-**Progress:** **1/18 tasklets PASS (5.6%); 2 IN PROGRESS; 15 NOT STARTED; 0 FAIL; 0 BLOCKED.** This is tasklet completion only, not an estimate that the overall goal is 5.6% complete.  
+**Updated:** 2026-11-23
+**Purpose:** Executable closure tracker for GOAL-06/08/09 in [the goal-closure audit](ADR-022-dual-language-goal-closure-checklist.md). This is not the 177/911 evidence inventory and does not change its denominator.
+**Progress:** **1/18 tasklets PASS (5.6%); 3 IN PROGRESS; 14 NOT STARTED; 0 FAIL; 0 BLOCKED.** This is tasklet completion only, not an estimate that the overall goal is 5.6% complete.
 **Closure:** GOAL-06 and GOAL-08 close only when every applicable operation/backend/behavior cell below has a passing executable oracle or an explicit unsupported + fail-closed oracle. GOAL-09 closes only when all declared performance tasklets pass with scoped claims. Coarse status must be derived from all mapped fine tasklets; no deferrals remain.
 
 ## Rules
@@ -30,7 +30,7 @@
 | DLFC-09 | GOAL-06 | NOT STARTED | MCP authorization cells: every operation with an authority boundary denies the same principal/scope cases before backend reads/writes; assert unchanged state. |
 | DLFC-10 | GOAL-06 | NOT STARTED | MCP effect/retry cells: authorized calls reach the same backend effect, durable state, event/trace, and duplicate/replay outcome; no tool execution from mere catalog presence. |
 | DLFC-11 | GOAL-06 | IN PROGRESS | Syscall success/error cells: all 11 catalogued operations have Python/Rust result and error-shape parity for supported backend cells; unsupported paths fail closed. Partial evidence: Python `tests/server/test_syscall_api.py::test_syscall_request_approval_branches` and Rust `in_memory_workflow_syscalls_use_native_run_handlers` both pass for memory REST `request_approval` grant/revoke authorization and response snapshots. Remaining: all other syscall operations, backends, MCP path, and full error-envelope parity. |
-| DLFC-12 | GOAL-06 | NOT STARTED | Backend applicability cells: each operation/backend pair is explicitly supported or explicitly rejected; prove no hidden fallback. Preserve SQLite metadata + eventual Chroma projection, PostgreSQL, and memory semantics distinctly. |
+| DLFC-12 | GOAL-06 | IN PROGRESS | Backend applicability cells: each operation/backend pair is explicitly supported or explicitly rejected; prove no hidden fallback. Preserve SQLite metadata + eventual Chroma projection, PostgreSQL, and memory semantics distinctly. SQLite metadata inventory identifies five conversation syscalls as unavailable; Rust `sqlite_metadata_conversation_syscalls_fail_closed` asserts the 501 capability error for all five and confirms no run was created. Remaining: enumerate and test every other operation/backend pair; this narrow test does not close applicability globally. |
 | DLFC-13 | GOAL-08 | NOT STARTED | Durable lifecycle cells: close/reopen, read-after-write, replay/recovery, sequence/version, and Python-write→Rust-read plus Rust-write→Python-read for every applicable durable operation/backend. |
 | DLFC-14 | GOAL-08 | NOT STARTED | Runtime trace cells: same fixed-ID workflow traces compare routing, deltas, step/event order, retry, cancel, suspend/resume, terminal frontier, trace parentage, and restart/replay. |
 | DLFC-15 | GOAL-08 | NOT STARTED | Transaction/authority seam cells: instrument transaction ownership and failure injection at each declared interop seam; prove no cross-stack partial commit, authority weakening, or unsafe retry. Backend-specific guarantees only. |

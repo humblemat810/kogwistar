@@ -171,6 +171,58 @@
         std::fs::remove_file(path).unwrap();
     }
 
+    #[test]
+    fn sqlite_metadata_conversation_syscalls_fail_closed() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-unavailable-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let cases = [
+            ("create_conversation", "conversation", json!({}), json!([])),
+            ("invoke_tool", "conversation", json!({}), json!([])),
+            ("mount_memory", "conversation", json!({"conversation_id":"c1"}), json!(["project_view"])),
+            ("receive_message", "conversation", json!({"conversation_id":"c1"}), json!(["read_graph"])),
+            (
+                "send_message",
+                "conversation",
+                json!({"conversation_id":"c1","content":"hello"}),
+                json!([]),
+            ),
+        ];
+
+        for (operation, namespace, args, capabilities) in cases {
+            let response = service.execute_sync(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: format!("/api/syscall/v1/{operation}"),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":operation,
+                    "args":args,
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"metadata-only-test",
+                    "role":"rw",
+                    "ns":namespace,
+                    "capabilities":capabilities,
+                }),
+            });
+            assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16(), "{operation}");
+            let body: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(body["code"], "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER", "{operation}");
+            assert_eq!(body["path"], format!("/api/syscall/v1/{operation}"), "{operation}");
+        }
+
+        assert!(service.store.list_server_runs(None, None, None, 10).unwrap().is_empty());
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn sqlite_worker_suspend_resume_is_durable_and_scheduler_owned() {
         use axum::body::{Body, to_bytes};
