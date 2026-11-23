@@ -78,7 +78,7 @@
       "rust_port_manifest_id": "sqlite-meta",
       "conformance_profile": "sqlite-meta",
       "rust_coverage": "cutover-ready",
-      "mixed_coverage": "partial; Windows CPython/Rust cross-process ownership, hard-link alias rejection, and bidirectional persisted-data handoff verified; POSIX CPython matrix (Ubuntu 3.12-3.14, macOS 3.13) passed CI #859; SQLite-meta Rust binding is excluded from the experimental PyPy 3.11 dependency lane, so PyPy parity remains unverified",
+      "mixed_coverage": "Windows CPython/Rust cross-process ownership, hard-link alias rejection, and bidirectional persisted-data handoff verified; POSIX CPython matrix (Ubuntu 3.12-3.14, macOS 3.13) passed CI #859; PyPy 3.11 Rust-server/Python-worker HTTP interoperability passed CI #860 for SQLite, SQLite+Chroma, and PostgreSQL. Direct in-process PyO3 SQLite-meta binding remains unsupported and excluded from the PyPy dependency profile; no PyO3-on-PyPy claim",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified"
     },

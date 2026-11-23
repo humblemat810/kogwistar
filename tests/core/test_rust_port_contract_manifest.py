@@ -1905,7 +1905,8 @@ def test_sqlite_meta_mixed_coverage_matches_ci_runtime_matrix() -> None:
 
     assert "Windows CPython/Rust cross-process ownership" in coverage
     assert "POSIX CPython matrix (Ubuntu 3.12-3.14, macOS 3.13) passed CI #859" in coverage
-    assert "PyPy parity remains unverified" in coverage
+    assert "PyPy 3.11 Rust-server/Python-worker HTTP interoperability passed CI #860" in coverage
+    assert "Direct in-process PyO3 SQLite-meta binding remains unsupported" in coverage
     assert "sqlite-architectural-invariants:" in workflow
     assert "os: ubuntu-latest" in workflow
     assert "python-version: \"3.12\"" in workflow
