@@ -2450,6 +2450,21 @@ def test_conversation_syscalls_use_python_postgres_backend(
             )
             assert conflict.status_code == 409
 
+            received = client.post(
+                "/api/syscall/v1/receive_message",
+                json={
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": conversation_id},
+                },
+                headers=headers,
+            )
+            assert received.status_code == 200, received.text
+            assert any(
+                message["content"] == "hello from Python PostgreSQL backend"
+                for message in received.json()["result"]["messages"]
+            )
+
         result = first.json()["result"]
         assert result["status"] == "queued"
         assert registry.get_run(result["run_id"])["user_turn_node_id"] == result[

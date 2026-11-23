@@ -552,6 +552,37 @@
         assert_eq!(rest_replay_value["result"]["run_id"], run_id);
         assert_eq!(rest_replay_value["result"]["turn_node_id"], turn_id);
         assert_eq!(rest_replay_value["result"]["idempotent"], true);
+        let received = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"receive_message",
+                    "args":{"conversation_id":conversation_id}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"conversation-owner@example.test",
+                    "user_id":"conversation-owner",
+                    "actor_id":"conversation-owner",
+                    "role":"ro",
+                    "ns":"conversation",
+                    "storage_ns":"alpha",
+                    "workspace":"workspace-a",
+                    "graph_space":"conversation",
+                    "security_scope":"team-alpha",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(received.status, StatusCode::OK.as_u16());
+        let received: Value = serde_json::from_slice(&received.body).unwrap();
+        assert_eq!(received["result"]["conversation_id"], conversation_id);
+        assert!(received["result"]["messages"].as_array().unwrap().iter().any(
+            |message| message["content"] == "A user question"
+        ), "received transcript did not include admitted turn: {received:#}");
         let changed = app
             .clone()
             .oneshot(mcp_ask(&token, "send-message-conflict", "Changed question"))
