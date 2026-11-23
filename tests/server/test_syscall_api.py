@@ -78,6 +78,48 @@ def test_syscall_surface_lists_versioned_ops(monkeypatch, engine_triplet):
         assert resp.json() == contract["response_body"]
 
 
+def test_syscall_checkpoint_accepts_numeric_string_step_seq():
+    calls = []
+    workflow_namespace = object()
+
+    def get_checkpoint(run_id, step_seq):
+        calls.append((run_id, step_seq))
+        return {"run_id": run_id, "step_seq": step_seq, "state": {"cursor": "x"}}
+
+    def require_namespace(namespace):
+        if namespace is not workflow_namespace:
+            raise HTTPException(status_code=403)
+
+    app = FastAPI()
+    app.include_router(
+        create_syscall_router(
+            get_service=lambda: SimpleNamespace(get_checkpoint=get_checkpoint),
+            require_role=lambda _role: None,
+            require_namespace=require_namespace,
+            conversation_namespace=object(),
+            workflow_namespaces=workflow_namespace,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/checkpoint",
+            json={
+                "version": "v1",
+                "op": "checkpoint",
+                "args": {"run_id": "run-1", "step_seq": "0"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["result"] == {
+        "run_id": "run-1",
+        "step_seq": 0,
+        "state": {"cursor": "x"},
+    }
+    assert calls == [("run-1", 0)]
+
+
 def test_syscall_create_conversation_uses_authenticated_owner(
     monkeypatch, engine_triplet
 ):

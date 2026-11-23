@@ -468,7 +468,7 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
         body: serde_json::to_vec(&json!({
             "version":"syscall-v1",
-            "args":{"run_id":"memory-syscall-run", "step_seq":0}
+            "args":{"run_id":"memory-syscall-run", "step_seq":"0"}
         })).unwrap(),
         principal: json!({
             "sub":"syscall-owner", "role":"ro", "ns":["workflow"],
