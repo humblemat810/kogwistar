@@ -2264,6 +2264,82 @@ def test_request_approval_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
+def test_send_message_syscall_uses_python_in_memory_backend(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "send-message-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        service, registry = _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        monkeypatch.setattr(service._run_execution, "_run_answer", lambda _request: None)
+        with TestClient(server.app) as client:
+            headers = _token_header(
+                client,
+                role="rw",
+                ns="conversation",
+                username="memory-send-owner",
+                capabilities="send_message,spawn_process,read_graph",
+            )
+            created = client.post(
+                "/api/conversations",
+                json={"user_id": "memory-send-owner"},
+                headers=headers,
+            )
+            assert created.status_code == 200, created.text
+            conversation_id = created.json()["conversation_id"]
+            request = {
+                "version": "v1",
+                "op": "send_message",
+                "args": {
+                    "conversation_id": conversation_id,
+                    "text": "hello from in-memory backend",
+                    "idempotency_key": "memory-send-once",
+                },
+            }
+            first = client.post(
+                "/api/syscall/v1/send_message", json=request, headers=headers
+            )
+            assert first.status_code == 200, first.text
+            replay = client.post(
+                "/api/syscall/v1/send_message", json=request, headers=headers
+            )
+            assert replay.status_code == 200, replay.text
+            assert replay.json() == first.json()
+
+            request["args"]["text"] = "changed payload"
+            conflict = client.post(
+                "/api/syscall/v1/send_message", json=request, headers=headers
+            )
+            assert conflict.status_code == 409
+
+        result = first.json()["result"]
+        assert result["status"] == "queued"
+        assert registry.get_run(result["run_id"])["user_turn_node_id"] == result[
+            "user_turn_node_id"
+        ]
+        assert len(service.list_transcript(conversation_id)) == 1
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
