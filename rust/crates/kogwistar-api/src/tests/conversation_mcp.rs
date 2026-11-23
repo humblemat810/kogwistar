@@ -668,6 +668,79 @@
     }
 
     #[tokio::test]
+    async fn mcp_denied_transcript_admission_never_executes_application_effect() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use tower::ServiceExt;
+
+        struct DeniedTranscript(Arc<AtomicUsize>);
+
+        impl ApplicationService for DeniedTranscript {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "conversation" && name == "conversation.get_transcript"
+            }
+
+            fn supports_mcp_tool_for_principal(
+                &self,
+                _surface: &str,
+                _name: &str,
+                _principal: &Value,
+            ) -> bool {
+                false
+            }
+
+            fn execute(
+                &self,
+                _request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let calls = Arc::clone(&self.0);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: br#"{"conversation_id":"private","turns":[]}"#.to_vec(),
+                    }
+                })
+            }
+        }
+
+        let execute_calls = Arc::new(AtomicUsize::new(0));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(DeniedTranscript(Arc::clone(&execute_calls))),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/conversation")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"transcript-denied","method":"tools/call","params":{"name":"conversation.get_transcript","arguments":{"conversation_id":"private"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], -32602);
+        assert!(value.get("result").is_none());
+        assert_eq!(execute_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn mcp_conversation_create_uses_native_postgres_syscall() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;

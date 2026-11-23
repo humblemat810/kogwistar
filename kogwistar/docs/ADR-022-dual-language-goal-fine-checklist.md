@@ -42,6 +42,10 @@
 
 - `conversation.get_transcript` success over Streamable MCP HTTP: Python `tests/mcp/test_chat_mcp_tools.py::test_mcp_conversation_get_transcript_matches_shared_contract` and Rust `tests::mcp_conversation_transcript_uses_authorized_postgres_read_route` each passed (1 each, 2026-11-24), matching `contracts/golden/conversation-get-transcript-mcp-v1.json`; Python checks wire `structuredContent`, Rust checks exact result plus delegated request method/path. This is one success cell for one tool, not allowlist-wide parity.
 
+### DLFC-09 Additional Evidence
+
+- Rust `tests::mcp_denied_transcript_admission_never_executes_application_effect` passed (2026-11-24): denied `conversation.get_transcript` admission returns JSON-RPC error `-32602`, no result, and zero application-service executions. Combined with the Python fail-if-called spy and Rust per-principal admission test recorded in DLFC-09, this verifies the denied request stops before the application effect for this tool/case. Other tools, authority cases, and backend cells remain open.
+
 ### DLFC-12 Syscall / Backend Cell Ledger
 
 This finite 11-operation × 4-backend ledger makes the currently known support
