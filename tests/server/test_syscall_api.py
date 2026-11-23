@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from jose import jwt
 
 from kogwistar.conversation.models import ConversationNode
+from kogwistar.engine_core.models import Grounding, Span
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.server.auth_middleware import claims_ctx
 from tests.server.auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
@@ -566,6 +567,71 @@ def test_syscall_receive_message_matches_shared_wire_fixture():
     assert payload["status"] == "ok"
     assert payload["result"] == fixture
     assert authorized == [("role", "ro"), ("namespace", "conversation")]
+
+
+def test_syscall_receive_message_reads_chroma_graph_and_matches_shared_fixture(
+    monkeypatch, engine_triplet
+):
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/receive-message-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    _engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch,
+        _engine,
+        conversation_engine,
+        workflow_engine,
+        _runtime_success_runner,
+    )
+
+    for message in fixture["messages"]:
+        content = message["content"]
+        embedding = conversation_engine.iterative_defensive_emb(content)
+        conversation_engine.write.add_node(
+            ConversationNode(
+                id=message["node_id"],
+                label=f"Turn {message['turn_index']}",
+                type="entity",
+                summary=content,
+                mentions=[
+                    Grounding(spans=[Span.from_dummy_for_conversation("c1")])
+                ],
+                doc_id="conv:c1",
+                metadata={
+                    "entity_type": message["entity_type"],
+                    "in_conversation_chain": True,
+                    "level_from_root": 0,
+                },
+                role=message["role"],
+                turn_index=message["turn_index"],
+                conversation_id=fixture["conversation_id"],
+                user_id="reader-1",
+                embedding=embedding.tolist()
+                if hasattr(embedding, "tolist")
+                else embedding,
+            )
+        )
+
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={
+                "version": "v1",
+                "op": "receive_message",
+                "args": {"conversation_id": fixture["conversation_id"]},
+            },
+            headers=_token_header(client, role="ro", ns="conversation"),
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["version"] == "v1"
+    assert payload["op"] == "receive_message"
+    assert payload["status"] == "ok"
+    assert payload["result"] == fixture
 
 
 def test_syscall_receive_message_missing_id_matches_shared_error_fixture():
