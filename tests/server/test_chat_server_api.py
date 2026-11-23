@@ -1987,9 +1987,8 @@ def test_mount_memory_syscall_uses_python_backend(monkeypatch, tmp_path, backend
             engine.close()
 
 
-def test_project_view_syscall_uses_python_in_memory_backend(
-    monkeypatch, tmp_path
-):
+@pytest.mark.parametrize("backend", ["in_memory", "chroma"])
+def test_project_view_syscall_uses_python_backend(monkeypatch, tmp_path, backend):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -2002,9 +2001,11 @@ def test_project_view_syscall_uses_python_in_memory_backend(
         monkeypatch.delenv(selector, raising=False)
 
     engines = build_engine_triplet(
-        root=tmp_path / "project-view-in-memory",
+        root=tmp_path / f"project-view-{backend}",
         embedding_function=FakeEmbeddingFunction(),
-        backend_factory=build_in_memory_backend,
+        backend_factory=(
+            build_in_memory_backend if backend == "in_memory" else None
+        ),
     )
     try:
         engine, conversation_engine, workflow_engine = engines

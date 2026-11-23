@@ -704,6 +704,63 @@
         let _ = std::fs::remove_file(path);
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_project_view_matches_resource_fixture_and_authority; python_test=tests/server/test_chat_server_api.py#test_project_view_syscall_uses_python_backend
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_project_view_matches_resource_fixture_and_authority() {
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let path = std::env::temp_dir().join(format!("kogwistar-project-view-{suffix}.sqlite3"));
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection: format!("project-view-n-{suffix}"),
+                edge_collection: format!("project-view-e-{suffix}"),
+            }),
+        )
+        .await
+        .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-resources-http-v1.json"
+        ))
+        .unwrap();
+        let request = |capabilities: &[&str]| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/project_view".to_owned(),
+            body: json!({"version":"v1","op":"project_view","args":{}})
+                .to_string()
+                .into_bytes(),
+            principal: json!({
+                "sub":"resource-viewer",
+                "role":"ro",
+                "ns":["workflow"],
+                "capabilities":capabilities
+            }),
+        };
+        for denied_capabilities in [&["project_view"][..], &["read_security_scope"][..]] {
+            let denied = service.execute_sync(request(denied_capabilities));
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        }
+        let response = service.execute_sync(request(&["project_view", "read_security_scope"]));
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        let result = &payload["result"];
+        for field in fixture["required_fields"].as_array().unwrap() {
+            assert!(result.get(field.as_str().unwrap()).is_some());
+        }
+        for (object, required_fields) in fixture["required_object_fields"].as_object().unwrap() {
+            for field in required_fields.as_array().unwrap() {
+                assert!(result[object].get(field.as_str().unwrap()).is_some());
+            }
+        }
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn sqlite_metadata_resume_syscall_resumes_persisted_suspended_token() {
         use std::time::{SystemTime, UNIX_EPOCH};
