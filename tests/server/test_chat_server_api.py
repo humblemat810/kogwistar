@@ -2197,6 +2197,73 @@ def test_receive_message_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
+def test_request_approval_syscall_uses_python_in_memory_backend(
+    monkeypatch, tmp_path
+):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "request-approval-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        with TestClient(server.app) as client:
+            headers = _token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                capabilities="approve_action,project_view,read_security_scope",
+            )
+            request = {
+                "version": "v1",
+                "op": "request_approval",
+                "args": {
+                    "action": "grant",
+                    "approval_action": "request_approval",
+                    "subject": "memory-target",
+                    "capability": "workflow.run.read",
+                },
+            }
+            granted = client.post(
+                "/api/syscall/v1/request_approval", json=request, headers=headers
+            )
+            assert granted.status_code == 200, granted.text
+            assert granted.json()["result"]["status"] == "approved"
+
+            denied = client.post(
+                "/api/syscall/v1/request_approval",
+                json=request,
+                headers=_token_header(
+                    client, role="rw", ns="workflow", capabilities="project_view"
+                ),
+            )
+            assert denied.status_code == 403
+
+            request["args"]["action"] = "revoke"
+            revoked = client.post(
+                "/api/syscall/v1/request_approval", json=request, headers=headers
+            )
+            assert revoked.status_code == 200, revoked.text
+            assert revoked.json()["result"]["status"] == "revoked"
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
