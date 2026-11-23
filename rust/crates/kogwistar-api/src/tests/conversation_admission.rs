@@ -581,9 +581,12 @@
         assert_eq!(received.status, StatusCode::OK.as_u16());
         let received: Value = serde_json::from_slice(&received.body).unwrap();
         assert_eq!(received["result"]["conversation_id"], conversation_id);
-        assert!(received["result"]["messages"].as_array().unwrap().iter().any(
-            |message| message["content"] == "A user question"
-        ), "received transcript did not include admitted turn: {received:#}");
+        let received_messages = received["result"]["messages"].as_array().unwrap();
+        assert_eq!(received_messages.len(), 1);
+        assert_eq!(received_messages[0]["node_id"], turn_id);
+        assert_eq!(received_messages[0]["role"], "user");
+        assert_eq!(received_messages[0]["entity_type"], "conversation_turn");
+        assert_eq!(received_messages[0]["content"], "A user question");
         let changed = app
             .clone()
             .oneshot(mcp_ask(&token, "send-message-conflict", "Changed question"))

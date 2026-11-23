@@ -2515,10 +2515,15 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 headers=headers,
             )
             assert received.status_code == 200, received.text
-            assert any(
-                message["content"] == "hello from Python PostgreSQL backend"
-                for message in received.json()["result"]["messages"]
-            )
+            received_messages = received.json()["result"]["messages"]
+            assert len(received_messages) == 1
+            received_turn = received_messages[0]
+            assert received_turn["node_id"] == first.json()["result"][
+                "user_turn_node_id"
+            ]
+            assert received_turn["role"] == "user"
+            assert received_turn["entity_type"] == "conversation_turn"
+            assert received_turn["content"] == "hello from Python PostgreSQL backend"
 
             conversation_service = ConversationService.from_engine(
                 conversation_engine,
