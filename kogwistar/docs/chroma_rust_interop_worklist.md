@@ -12,7 +12,7 @@
 
 ### Current-candidate revalidation
 
-On 2026-11-23, candidate source commit `603095ff2581a6dc174dc3183cd85e8848cd74f1` (SHA-256 `8bb3bb78a16ce55c96d371de201a826826d66abb4343282f107795699b661a2b`) passed the existing Rust Chroma contract (**8/8**) and live Python↔Rust Chroma handoff suite (**4/4**, 89.05s). The complete Rust API group also passed (**455/455**, zero failures or skips) against the local PostgreSQL and Chroma services. The first API-group attempt used a stale PostgreSQL password and failed; rerunning with the running container's configured credentials passed. Reports/logs remain under ignored `.tmp/`. These refresh evidence for CH-C1–CH-C4 only; they do not close the separately deferred server syscalls or claim universal parity.
+On 2026-11-23, candidate source commit `603095ff2581a6dc174dc3183cd85e8848cd74f1` (SHA-256 `8bb3bb78a16ce55c96d371de201a826826d66abb4343282f107795699b661a2b`) passed the existing Rust Chroma contract (**8/8**) and live Python↔Rust Chroma handoff suite (**4/4**, 89.05s). The complete Phase-5 gate passed against local PostgreSQL and Chroma: REST/SSE **4**, auth/syscall **56**, MCP **130**, frozen contracts **3**, async SSE **6**, Rust API **455**; total **654/654**, zero failures or skips. The first Rust API attempt used a stale PostgreSQL password and failed; reruns with the running container's configured credentials passed, including the complete gate. Reports/logs remain under ignored `.tmp/`. These refresh evidence for CH-C1–CH-C4 only; they do not close the separately deferred server syscalls or claim universal parity.
 
 ## Coarse Gates
 

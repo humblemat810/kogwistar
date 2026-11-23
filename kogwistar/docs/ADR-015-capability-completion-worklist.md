@@ -111,12 +111,14 @@ deferred syscall ownership, and shared release acceptance remain separate.
 
 ### Latest current-candidate Phase-5 server revalidation
 
-With the same source SHA and live services, using separate native PostgreSQL
-DSN (`postgres://...`) and Python SQLAlchemy DSN (`postgresql+psycopg://...`),
-the complete server gate passed: REST/SSE **4**, auth/syscall **56**, MCP
-**130**, frozen contracts **3**, async SSE **6**, and Rust API **455**; total
-**654 passed, 0 failed, 0 skipped**. Report:
-`.codex/adr015-phase5-server-044e05-correct-dsn.json`.
+Candidate commit `603095ff2581a6dc174dc3183cd85e8848cd74f1`, source SHA-256
+`8bb3bb78a16ce55c96d371de201a826826d66abb4343282f107795699b661a2b`, passed
+the complete server gate against live PostgreSQL and Chroma, using separate
+native PostgreSQL DSN (`postgres://...`) and Python SQLAlchemy DSN
+(`postgresql+psycopg://...`): REST/SSE **4**, auth/syscall **56**, MCP **130**,
+frozen contracts **3**, async SSE **6**, and Rust API **455**; total
+**654/654 passed, 0 failed, 0 skipped**. Current report:
+`.tmp/server-contract-phase5-current.json`.
 This closes current local Phase-5 test-gate evidence, not the manifest cutover
 flags: deferred syscall ownership and shared release acceptance remain explicit
 contract requirements.
