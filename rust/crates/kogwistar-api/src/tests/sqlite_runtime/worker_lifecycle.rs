@@ -270,19 +270,55 @@
 
     #[tokio::test]
     async fn sqlite_metadata_resume_syscall_resumes_persisted_suspended_token() {
-        use kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE;
         use std::time::{SystemTime, UNIX_EPOCH};
 
-        let resume_contract: Value = serde_json::from_str(include_str!(
-            "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
-        ))
-        .unwrap();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-syscall-resume-{nonce}.sqlite3"));
         let service = SqliteRunApplicationService::open(&path).unwrap();
+        sqlite_resume_syscall_roundtrip(service, path).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_resume_syscall_resumes_persisted_suspended_token() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let config = |kind: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: format!("resume-{kind}-{suffix}"),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            config("nodes"),
+            config("edges"),
+        )
+        .await
+        .unwrap();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-resume-chroma-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_chroma_graph(graph);
+        sqlite_resume_syscall_roundtrip(service, path).await;
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#SqliteRunApplicationService; python=kogwistar/server/chat_service_run_execution.py#_default_resume_runner; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_metadata_resume_syscall_resumes_persisted_suspended_token; python_test=tests/server/test_chat_server_api.py#test_python_resume_syscall_continues_persisted_workflow
+    async fn sqlite_resume_syscall_roundtrip(service: SqliteRunApplicationService, path: std::path::PathBuf) {
+        use kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE;
+
+        let resume_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+        ))
+        .unwrap();
         let run_id = "sqlite-resume-syscall-run";
         let workflow_id = "sqlite-resume-syscall-workflow";
         let conversation_id = "sqlite-resume-syscall-conversation";

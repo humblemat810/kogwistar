@@ -2998,8 +2998,9 @@ def test_resume_route_uses_python_defaults_and_checks_namespace(
         assert len(captured_requests) == 1
 
 
-def test_python_in_memory_resume_syscall_continues_persisted_workflow(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize("backend", ["in_memory", "chroma"])
+def test_python_resume_syscall_continues_persisted_workflow(
+    monkeypatch, tmp_path, backend
 ):
     resume_contract = json.loads(
         (
@@ -3025,9 +3026,11 @@ def test_python_in_memory_resume_syscall_continues_persisted_workflow(
         "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
     )
     engines = build_engine_triplet(
-        root=tmp_path / "python-in-memory-resume",
+        root=tmp_path / f"python-{backend}-resume",
         embedding_function=FakeEmbeddingFunction(),
-        backend_factory=build_in_memory_backend,
+        backend_factory=(
+            build_in_memory_backend if backend == "in_memory" else None
+        ),
     )
     knowledge_engine, conversation_engine, workflow_engine = engines
     service, _registry = _configure_server(
