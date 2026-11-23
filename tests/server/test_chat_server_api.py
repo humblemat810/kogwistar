@@ -2465,6 +2465,61 @@ def test_run_lifecycle_syscalls_use_python_in_memory_backend(monkeypatch, tmp_pa
             engine.close()
 
 
+def test_checkpoint_syscall_reads_python_in_memory_backend(monkeypatch, tmp_path):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engines = build_engine_triplet(
+        root=tmp_path / "checkpoint-in-memory",
+        embedding_function=FakeEmbeddingFunction(),
+        backend_factory=build_in_memory_backend,
+    )
+    try:
+        engine, conversation_engine, workflow_engine = engines
+        _configure_server(
+            monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+        )
+        contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/syscall-checkpoint-persisted-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        _seed_checkpoint(
+            conversation_engine,
+            run_id=contract["run_id"],
+            workflow_id=contract["workflow_id"],
+            step_seq=contract["step_seq_expected"],
+            state=contract["state"],
+        )
+        with TestClient(server.app) as client:
+            response = client.post(
+                "/api/syscall/v1/checkpoint",
+                json={
+                    "version": contract["version"],
+                    "op": contract["op"],
+                    "args": {
+                        "run_id": contract["run_id"],
+                        "step_seq": contract["step_seq_input"],
+                    },
+                },
+                headers=_token_header(client, role="ro", ns="workflow"),
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["result"] == contract["expected_result"]
+    finally:
+        for engine in engines:
+            engine.close()
+
+
 def test_checkpoint_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
