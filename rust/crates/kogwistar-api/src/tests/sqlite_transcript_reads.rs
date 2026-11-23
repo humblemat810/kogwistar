@@ -38,6 +38,7 @@
                         if bytes.len() >= split + 4 + length {
                             break (split, length);
                         }
+
                     }
                 };
                 let head = String::from_utf8_lossy(&bytes[..split]).to_string();
@@ -882,4 +883,138 @@
         assert_eq!(unsupported_tool.status, StatusCode::NOT_IMPLEMENTED.as_u16());
         drop(metadata_only);
         let _ = std::fs::remove_file(metadata_only_path);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_receive_message_reads_live_chroma_and_matches_shared_fixture() {
+        use kogwistar_store::{GraphEntityKind, GraphRecord, GraphWriteStore};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let namespace = format!("rust-receive-{suffix}");
+        let node_collection = format!("kgw-rx-n-{suffix}");
+        let edge_collection = format!("kgw-rx-e-{suffix}");
+        let database = std::env::temp_dir().join(format!("kogwistar-rx-{suffix}.sqlite3"));
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/receive-message-result-v1.json"
+        ))
+        .unwrap();
+        let service = open_sqlite_application_service(
+            &database,
+            Some(SqliteChromaGraphConfig {
+                endpoint: endpoint.clone(),
+                metric: DistanceMetric::Cosine,
+                node_collection: node_collection.clone(),
+                edge_collection: edge_collection.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let common = kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint,
+            metric: DistanceMetric::Cosine,
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            kogwistar_store_chroma::ChromaStoreConfig {
+                collection: node_collection,
+                ..common.clone()
+            },
+            kogwistar_store_chroma::ChromaStoreConfig {
+                collection: edge_collection,
+                ..common
+            },
+        )
+        .await
+        .unwrap();
+
+        for message in fixture["messages"].as_array().unwrap() {
+            let id = message["node_id"].as_str().unwrap();
+            let metadata = serde_json::from_value(json!({
+                "entity_type": message["entity_type"],
+                "conversation_id": fixture["conversation_id"],
+                "turn_index": message["turn_index"],
+                "role": message["role"],
+                "summary": message["content"],
+                "workspace_id": "workspace-a",
+                "graph_space": "conversation",
+                "lifecycle_status": "active",
+                "level_from_root": 0
+            }))
+            .unwrap();
+            graph
+                .upsert_graph_record_of_kind(
+                    &namespace,
+                    GraphEntityKind::Node,
+                    GraphRecord {
+                        id: id.to_owned(),
+                        document: Some("{}".to_owned()),
+                        metadata,
+                        embedding: Some(vec![0.6, 0.8]),
+                    },
+                )
+                .await
+                .unwrap();
+            let acl_id = format!("acl-{id}");
+            service
+                .store
+                .append_raw_entity_event(
+                    &namespace,
+                    SqliteNewRawEntityEvent {
+                        event_id: format!("event-{acl_id}"),
+                        entity_kind: "node".to_owned(),
+                        entity_id: acl_id.clone(),
+                        op: "ADD".to_owned(),
+                        payload_json: json!({
+                            "id": acl_id,
+                            "document": null,
+                            "metadata": {
+                                "entity_type": "acl_record",
+                                "acl_truth_graph": "conversation",
+                                "acl_target_grain": "node",
+                                "acl_target_entity_id": id,
+                                "acl_version": 1,
+                                "acl_mode": "public",
+                                "workspace_id": "workspace-a",
+                                "graph_space": "conversation"
+                            }
+                        })
+                        .to_string(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: json!({
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": fixture["conversation_id"]}
+                })
+                .to_string()
+                .into_bytes(),
+                principal: json!({
+                    "sub": "reader-1",
+                    "role": "ro",
+                    "storage_ns": namespace,
+                    "workspace_id": "workspace-a",
+                    "graph_space": "conversation",
+                    "ns": ["conversation"],
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let response: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(response["result"], fixture);
+
+        drop(graph);
+        drop(service);
+        let _ = std::fs::remove_file(database);
     }
