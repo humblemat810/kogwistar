@@ -1181,10 +1181,24 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
         );
     }
 
-    let unknown = service
-        .execute(request("not_registered", &["invoke_tool"]))
-        .await;
-    assert_eq!(unknown.status, StatusCode::NOT_FOUND.as_u16());
+    let error_fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-invoke-tool-errors-v1.json"
+    ))
+    .unwrap();
+    for case in error_fixture["cases"].as_array().unwrap() {
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: path.to_owned(),
+                body: serde_json::to_vec(&case["request"]).unwrap(),
+                principal: request("unused", &["invoke_tool"]).principal,
+            })
+            .await;
+        assert_eq!(response.status, case["http_status"].as_u64().unwrap() as u16);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body, case["response"], "{}", case["name"]);
+    }
 }
 
 #[tokio::test]

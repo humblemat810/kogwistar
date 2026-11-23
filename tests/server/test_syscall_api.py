@@ -438,6 +438,21 @@ def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engin
         assert payload["result"]["tool_name"] == "list_transcript"
         assert payload["result"]["messages"] == []
 
+        error_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/syscall-invoke-tool-errors-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        for case in error_contract["cases"]:
+            error_response = client.post(
+                "/api/syscall/v1/invoke_tool",
+                json=case["request"],
+                headers=headers,
+            )
+            assert error_response.status_code == case["http_status"], case["name"]
+            assert error_response.json() == case["response"], case["name"]
+
 
 def test_syscall_receive_message_matches_shared_wire_fixture():
     fixture = json.loads(
