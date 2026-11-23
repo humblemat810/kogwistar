@@ -466,6 +466,7 @@
             .unwrap();
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_api.py#create_chat_router.list_conversations+kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_conversations_for_user; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_conversation_list_is_user_scoped_and_has_stable_response_shape
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available()
