@@ -818,6 +818,35 @@ def derive_capability_test_readiness(
     return readiness
 
 
+def validate_manifest_cutover_readiness_alignment(
+    readiness: list[dict[str, Any]],
+    manifest_ownership: list[dict[str, Any]],
+) -> list[str]:
+    """Require the cutover ledger to agree with executable readiness evidence."""
+    manifest_by_capability = {
+        item.get("capability"): item
+        for item in manifest_ownership
+        if isinstance(item, dict) and isinstance(item.get("capability"), str)
+    }
+    errors: list[str] = []
+    for item in readiness:
+        capability = item.get("capability")
+        if not isinstance(capability, str):
+            continue
+        manifest_item = manifest_by_capability.get(capability)
+        if manifest_item is None:
+            errors.append(f"{capability}: missing capability ownership entry")
+            continue
+        evidence_ready = item.get("cutover_readiness") == "ready"
+        declared_ready = manifest_item.get("rust_cutover_ready") is True
+        if evidence_ready != declared_ready:
+            errors.append(
+                f"{capability}: manifest rust_cutover_ready={declared_ready} "
+                f"does not match executable cutover_readiness={item.get('cutover_readiness')}"
+            )
+    return errors
+
+
 def validate_phase3_capability_evidence(
     evidence: dict[str, Any], *, current_source_sha256: str
 ) -> list[str]:
@@ -1218,6 +1247,10 @@ def evaluate_release_gate(
                     ),
                 }
             )
+    for detail in validate_manifest_cutover_readiness_alignment(
+        capability_test_readiness, ownership
+    ):
+        blockers.append({"gate": "capability-cutover-ledger", "detail": detail})
 
     return {
         "status": "passed" if not blockers else "blocked",

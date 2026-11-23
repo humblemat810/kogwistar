@@ -2,7 +2,7 @@
 
 ## Status
 
-Draft — SQLite query-binding fix and differential verification complete for `queues-leases-lanes` and `projections-snapshots-run-registry`. All Rust-cutover capabilities now `true`: `postgres-sequence-event-log`, `graph-pgvector`, `workflow-runtime`, `server-rest-sse-mcp-cli`. `chroma-adapter` remains `false` (Python adapter retained, not a Rust cutover target).
+Draft — SQLite query-binding fix and differential verification complete for `queues-leases-lanes` and `projections-snapshots-run-registry`. The six capability test gates pass, but cutover readiness remains controlled by the current manifest, phase evidence, same-candidate Docker UAT, and deferred-operation policy. `chroma-adapter` remains Python-owned and is not a Rust cutover target.
 
 ## Context
 
@@ -45,19 +45,19 @@ Fix `project_lane_message` INSERT to match column count (remove one trailing `NU
 |---|---|---|---|
 | deterministic-contracts | true | no | already ready |
 | sqlite-meta | true | no | already ready |
-| postgres-sequence-event-log | true | yes | Rust PostgreSQL bridge + PyO3 facade + differential tests complete |
-| projections-snapshots-run-registry | true | yes | `list_server_runs` + `list_projected_lane_messages` verified via differential tests |
-| queues-leases-lanes | true | yes | `claim_index_jobs`, `list_index_jobs`, `enqueue_index_job` verified via differential tests |
-| graph-pgvector | true | yes | graph/vector infrastructure + pgvector differential tests complete |
+| postgres-sequence-event-log | false | yes | Test gate passes; cutover flag remains false until current readiness evidence authorizes Rust authority |
+| projections-snapshots-run-registry | false | yes | Test gate passes; cutover flag remains false until current readiness evidence authorizes Rust authority |
+| queues-leases-lanes | false | yes | Test gate passes; cutover flag remains false until current readiness evidence authorizes Rust authority |
+| graph-pgvector | false | yes | Test gate passes; cutover flag remains false until current readiness evidence authorizes Rust authority |
 | chroma-adapter | false | no | Python adapter retained; not a Rust cutover target |
-| workflow-runtime | true | yes | workflow runtime differential tests complete |
-| server-rest-sse-mcp-cli | true | yes | REST/SSE/MCP server differential tests complete |
+| workflow-runtime | false | yes | Test gate passes; cutover flag remains false until current readiness evidence authorizes Rust authority |
+| server-rest-sse-mcp-cli | false | yes | Test gate passes; cutover flag remains false until current readiness evidence authorizes Rust authority |
 
 
 
 ## 6 Capability CI Gate - Grounding Evidence
 
-All six Rust-cutover capabilities marked yes in the cutover table are verified by the ADR-015 phase-3 capability gate. Evidence is recorded under kogwistar/.codex/adr015-phase3-capability-gate/ with per-group JUnit XML.
+All six capability **test gates** are verified by named ADR-015 oracle selectors. Test-gate PASS is not itself cutover authorization; the release gate also requires current phase evidence, same-candidate Docker library UAT, no deferred required operation, and manifest alignment. Evidence is recorded under kogwistar/.codex/adr015-phase3-capability-gate/ with per-group JUnit XML.
 
 | # | Capability | Gate group | Tests | Result | Why it worked |
 |---|---|---|---|---|---|
@@ -97,8 +97,8 @@ The first server attempt run from the outer workspace root reported three missin
 
 ## Next steps
 
-1. `postgres-sequence-event-log`: complete — Rust bridge + PyO3 facade + differential tests verified.
-2. `graph-pgvector`: complete — graph/vector infrastructure + pgvector differential tests verified.
-3. `workflow-runtime`: complete — runtime differential tests verified; flag `true` in `rust-port-v1.json`.
-4. `server-rest-sse-mcp-cli`: complete — REST/SSE/MCP server differential tests verified; flag `true` in `rust-port-v1.json`.
+1. Keep six capability test gates executable and current.
+2. Produce same-candidate phase/UAT evidence for each capability.
+3. Remove or explicitly account for deferred required operations.
+4. Set each manifest readiness flag only when the executable release gate reports that capability `ready`.
 5. Finalize ADR-015 and push; watch GitHub CI results (per repo policy).

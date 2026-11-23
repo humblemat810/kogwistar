@@ -826,6 +826,15 @@ class RustEngineSQLite:
     def project_lane_message(self, **values: JsonValue) -> None:
         self._call("project_lane_message", **values)
 
+    def _lane_message_get_row(
+        self, *, message_id: str
+    ) -> ProjectedLaneMessageSqlRow | None:
+        """Provide the metastore mixin's private row lookup over Rust SQLite."""
+        value = self._call("get_projected_lane_message", message_id=message_id)
+        if value is None:
+            return None
+        return _lane_message_row(value)
+
     def update_projected_lane_message_status(self, **values: JsonValue) -> None:
         self._call("update_projected_lane_message_status", **values)
 

@@ -422,6 +422,20 @@ def test_milestone_layers_select_only_explicit_ci_gates(layer: str) -> None:
         assert f"not {excluded}" in expression
 
 
+def test_rust_marker_expression_excludes_python_authority_tests() -> None:
+    runner = _runner()
+
+    python_expression = runner._marker_expression(
+        "core", profile="milestone", implementation_mode="python"
+    )
+    rust_expression = runner._marker_expression(
+        "core", profile="milestone", implementation_mode="rust"
+    )
+
+    assert "python_authority" not in python_expression
+    assert "not python_authority" in rust_expression
+
+
 def test_sink_milestone_layer_runs_deterministic_unmarked_suite() -> None:
     runner = _runner()
 

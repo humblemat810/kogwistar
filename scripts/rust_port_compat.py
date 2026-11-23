@@ -427,11 +427,12 @@ def _pytest_args(values: list[str]) -> list[str]:
     return values[1:] if values[:1] == ["--"] else values
 
 
-def _marker_expression(layer: str, profile: str) -> str:
+def _marker_expression(layer: str, profile: str, *, implementation_mode: str = "python") -> str:
     exclusions = (
         "not manual and not llm_real and not legacy and not requires_ollama "
         "and not requires_cargo"
     )
+    authority_exclusion = " and not python_authority" if implementation_mode == "rust" else ""
     if profile == "feature":
         if layer == "sink":
             # Sink marker debt: retain its deterministic unmarked suite until
@@ -439,27 +440,29 @@ def _marker_expression(layer: str, profile: str) -> str:
             return (
                 "not slow and not manual and not integration and not longrun "
                 "and not external and not llm_real and not requires_ollama "
-                "and not requires_cargo"
+                "and not requires_cargo" + authority_exclusion
             )
-        return f"(ci or regression) and not slow and {exclusions}"
+        return f"(ci or regression) and not slow and {exclusions}{authority_exclusion}"
     if profile == "regression":
-        return f"regression and not slow and {exclusions}"
+        return f"regression and not slow and {exclusions}{authority_exclusion}"
     if profile == "milestone":
         if layer in {"core", "parser"}:
             return (
                 "(ci or ci_full) and not slow and not manual and not llm_real "
                 "and not legacy and not requires_ollama and not requires_cargo"
+                + authority_exclusion
             )
         if layer == "application":
             return (
                 "(ci or ci_full) and not slow and not manual and not llm_real "
                 "and not legacy and not requires_ollama and not requires_cargo"
+                + authority_exclusion
             )
         if layer == "sink":
             # The sink does not classify its deterministic tests with ci markers.
             return (
                 "not slow and not manual and not integration and not longrun and not external "
-                "and not llm_real and not requires_ollama"
+                "and not llm_real and not requires_ollama" + authority_exclusion
             )
         raise ValueError(f"unknown suite layer: {layer}")
     raise ValueError(f"unknown test profile: {profile}")
@@ -646,7 +649,7 @@ def _run_layer(
     prior_runs: list[dict[str, object]] | None = None,
     progress: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
-    expression = _marker_expression(layer, profile)
+    expression = _marker_expression(layer, profile, implementation_mode=mode)
     bootstrap = ROOT / "scripts" / "candidate_pytest_runner.py"
     expected_package = (ROOT / "kogwistar" / "__init__.py").resolve()
     target_groups = _target_groups(layer=layer, tests_path=tests_path, profile=profile)

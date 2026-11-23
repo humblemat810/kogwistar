@@ -15,7 +15,7 @@ from kogwistar.agent import (
     ReadScope,
     ToolCallIdempotency,
 )
-from kogwistar.engine_core.engine_sqlite import EngineSQLite
+from kogwistar.engine_core.rust_meta_sqlite import build_sqlite_meta_store
 from kogwistar.json_types import JsonValue
 from kogwistar.runtime.runtime import StepContext
 
@@ -237,7 +237,7 @@ def test_event_dispatch_checks_catalog_acl_and_scope_before_invocation() -> None
 def test_event_dispatch_reuses_durable_idempotency_result_without_repeating_effect(
     tmp_path,
 ) -> None:
-    metadata = EngineSQLite(tmp_path / "dispatcher-meta")
+    metadata = build_sqlite_meta_store(tmp_path / "dispatcher-meta")
     metadata.ensure_initialized()
     dispatcher, tool, _, _ = _dispatcher(
         idempotency=NamedProjectionToolCallIdempotency(metadata)
@@ -330,7 +330,7 @@ def test_event_dispatch_requires_acl_enabled_catalog() -> None:
 
 
 def test_named_projection_idempotency_returns_durable_result_after_reopen(tmp_path) -> None:
-    metadata = EngineSQLite(tmp_path / "metadata")
+    metadata = build_sqlite_meta_store(tmp_path / "metadata")
     metadata.ensure_initialized()
     first_executor = NamedProjectionToolCallIdempotency(metadata)
     calls: list[str] = []
@@ -338,7 +338,7 @@ def test_named_projection_idempotency_returns_durable_result_after_reopen(tmp_pa
     result = first_executor.execute_once(
         "stable-key", lambda: calls.append("invoked") or {"ok": True}
     )
-    reopened_metadata = EngineSQLite(tmp_path / "metadata")
+    reopened_metadata = build_sqlite_meta_store(tmp_path / "metadata")
     reopened_metadata.ensure_initialized()
     reopened_executor = NamedProjectionToolCallIdempotency(reopened_metadata)
     replay = reopened_executor.execute_once(
@@ -350,7 +350,7 @@ def test_named_projection_idempotency_returns_durable_result_after_reopen(tmp_pa
 
 
 def test_named_projection_idempotency_fails_closed_after_ambiguous_effect(tmp_path) -> None:
-    metadata = EngineSQLite(tmp_path / "metadata")
+    metadata = build_sqlite_meta_store(tmp_path / "metadata")
     metadata.ensure_initialized()
     executor = NamedProjectionToolCallIdempotency(metadata)
     calls: list[str] = []
@@ -366,7 +366,7 @@ def test_named_projection_idempotency_fails_closed_after_ambiguous_effect(tmp_pa
     else:
         raise AssertionError("first call should surface the tool failure")
 
-    reopened_metadata = EngineSQLite(tmp_path / "metadata")
+    reopened_metadata = build_sqlite_meta_store(tmp_path / "metadata")
     reopened_metadata.ensure_initialized()
     reopened_executor = NamedProjectionToolCallIdempotency(reopened_metadata)
     try:
