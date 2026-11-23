@@ -2,7 +2,7 @@
 
 **Updated:** 2026-11-23  
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
-**Status summary:** **5 bounded criteria PASS; 2 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
+**Status summary:** **6 bounded criteria PASS; 1 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
 ## Closure Criteria
 
@@ -58,7 +58,6 @@ contract. A passing tasklet cannot imply untested matrix families.
 ## Next Closure Order
 
 1. Reconcile GOAL-06 against `contracts/dual-language-surface-inventory-v1.json`, the Rust pending-route/syscall declarations, and actual Python/Rust handlers. For each of 84 HTTP, 62 MCP, and 11 syscall contracts, distinguish catalog/dispatch presence from backend behavior and authority evidence; close or explicitly exclude each operation/backend pair without changing completed gates.
-2. Keep the PyPy boundary explicit: HTTP-based Rust-server/Python-worker interoperability is verified; direct in-process PyO3 SQLite-meta binding remains unsupported and is not implied by GOAL-07.
-3. Use the completed operation inventory to identify actual parity deltas for GOAL-08. Add executable tests first, then implement only failures that block required capability.
-4. Extend performance evidence only for representative high-value request families/backends; keep current benchmark claims scoped to their measured traces.
+2. Use the operation inventory to select a bounded GOAL-06/08 behavior cell. Add or strengthen an executable parity oracle, run both implementations on the same fixture, and change production code only for a reproduced contract gap.
+3. Extend performance evidence only for representative high-value request families/backends; keep current benchmark claims scoped to their measured traces.
 
