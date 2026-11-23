@@ -30,13 +30,51 @@
 | DLFC-09 | GOAL-06 | NOT STARTED | MCP authorization cells: every operation with an authority boundary denies the same principal/scope cases before backend reads/writes; assert unchanged state. |
 | DLFC-10 | GOAL-06 | NOT STARTED | MCP effect/retry cells: authorized calls reach the same backend effect, durable state, event/trace, and duplicate/replay outcome; no tool execution from mere catalog presence. |
 | DLFC-11 | GOAL-06 | IN PROGRESS | Syscall success/error cells: all 11 catalogued operations have Python/Rust result and error-shape parity for supported backend cells; unsupported paths fail closed. Partial evidence: Python `tests/server/test_syscall_api.py::test_syscall_request_approval_branches` and Rust `in_memory_workflow_syscalls_use_native_run_handlers` pass grant/revoke authorization, response snapshots, and exact shared-fixture parity for missing action and missing grant/revoke capability (`contracts/golden/syscall-request-approval-invalid-v1.json`; 1 Python test and 1 Rust test passed, 2026-11-23; approval slice commit `caba7a07`). Checkpoint string `step_seq` normalization uses `contracts/golden/syscall-checkpoint-step-seq-v1.json`; Python `test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq` and Rust `in_memory_workflow_syscalls_use_native_run_handlers` each passed on 2026-11-23, confirming string `"0"` normalizes to integer `0` (commit `3b523603`). Project-view syscall checks shared resource snapshot required and nested fields via `contracts/golden/workflow-resources-http-v1.json`; Python `test_syscall_project_view_matches_resource_snapshot_contract` and Rust `in_memory_project_view_syscall_is_reachable_through_authenticated_http` passed on 2026-11-23. This asserts required shape, not exact dynamic values; Rust HTTP test also verifies missing capability denial (commit `8e3b8ca4`). Invoke-tool missing/blank name and unknown tool have exact shared-fixture HTTP status/body parity (`contracts/golden/syscall-invoke-tool-errors-v1.json`); Python `test_syscall_invoke_tool_list_transcript_returns_messages` and Rust `in_memory_invoke_builtin_tools_match_shared_contract_and_authority` passed (commit `c6ca243c`). Terminate-process result shape uses `contracts/golden/run-cancel-v1.json`; Python `test_syscall_spawn_process_returns_ok_contract` and Rust `in_memory_workflow_syscalls_use_native_run_handlers` passed on 2026-11-23, asserting required run fields and accepted status only (no exact dynamic-value parity; commit `ec781a02`). Send-message blank-text and non-string idempotency-key errors now match exact status/body via `contracts/golden/syscall-send-message-invalid-v1.json`; Python `test_syscall_send_message_invalid_inputs_match_shared_contract` and Rust `in_memory_send_message_admits_turn_and_run_atomically` passed on 2026-11-23; Rust also verifies no run was created. `sqlite_request_approval_mutations_require_scope_and_return_snapshot` covers SQLite authorization/result. Remaining: other syscall operations, PostgreSQL/SQLite+Chroma cells, and MCP path. |
-| DLFC-12 | GOAL-06 | IN PROGRESS | Backend applicability cells: each operation/backend pair is explicitly supported or explicitly rejected; prove no hidden fallback. Preserve SQLite metadata + eventual Chroma projection, PostgreSQL, and memory semantics distinctly. SQLite metadata inventory identifies five conversation syscalls as unavailable; Rust `sqlite_metadata_conversation_syscalls_fail_closed` asserts the 501 capability error for all five and confirms no run was created. `sqlite_request_approval_mutations_require_scope_and_return_snapshot` verifies an applicable SQLite metadata mutation path. Remaining: enumerate and test every other operation/backend pair; these syscall cells do not close applicability globally. |
+| DLFC-12 | GOAL-06 | IN PROGRESS | Backend applicability cells: each operation/backend pair is explicitly supported or explicitly rejected; prove no hidden fallback. Preserve SQLite metadata + eventual Chroma projection, PostgreSQL, and memory semantics distinctly. Current syscall cell ledger follows; it is subordinate detail, not added to the 18-tasklet completion denominator. SQLite metadata has five fail-closed cells verified by `sqlite_metadata_conversation_syscalls_fail_closed`; six supported cells remain partial/unverified. |
 | DLFC-13 | GOAL-08 | NOT STARTED | Durable lifecycle cells: close/reopen, read-after-write, replay/recovery, sequence/version, and Python-write→Rust-read plus Rust-write→Python-read for every applicable durable operation/backend. |
 | DLFC-14 | GOAL-08 | NOT STARTED | Runtime trace cells: same fixed-ID workflow traces compare routing, deltas, step/event order, retry, cancel, suspend/resume, terminal frontier, trace parentage, and restart/replay. |
 | DLFC-15 | GOAL-08 | NOT STARTED | Transaction/authority seam cells: instrument transaction ownership and failure injection at each declared interop seam; prove no cross-stack partial commit, authority weakening, or unsafe retry. Backend-specific guarantees only. |
 | DLFC-16 | GOAL-08 | NOT STARTED | Native isolation cells: Rust-native ingress-to-persistence fails if Python worker/adaptor is invoked and records zero Python handoffs; separately prove Python-only mode does not import/call Rust. |
 | DLFC-17 | GOAL-08 | NOT STARTED | Transport/CI cells: HTTP, MCP, SSE/notifications, and CLI where inventoried compare protocol/auth/stream ordering; exact selectors run in supported CPython 3.12–3.14 and PyPy 3.11 CI lanes. |
 | DLFC-18 | GOAL-09 | NOT STARTED | Representative performance cells: resource-matched Python-native and Rust-native end-to-end cases across selected high-value operations/backends; publish warm-up, throughput, tail latency, RSS, variation, and seam counts. Pass only declared per-workload thresholds; make no universal speed claim. |
+
+### DLFC-12 Syscall / Backend Cell Ledger
+
+This finite 11-operation × 4-backend ledger makes the currently known support
+surface visible. It does **not** change the counted 18-tasklet denominator.
+`PARTIAL` means a focused test exists for the operation/backend behavior, but
+may not exercise the syscall wire path and does not prove complete Python/Rust
+parity. `NOT STARTED` means no adequate cell-level oracle has been verified.
+`PASS: fail closed` means unsupported behavior and absence of admitted-run
+side effects are explicitly tested. Dispatch alone never upgrades a cell.
+
+| Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |
+| --- | --- | --- | --- | --- |
+| `checkpoint` | NOT STARTED | NOT STARTED | NOT STARTED | PARTIAL |
+| `create_conversation` | PARTIAL | PASS: fail closed | PARTIAL | PARTIAL |
+| `invoke_tool` | NOT STARTED | PASS: fail closed | NOT STARTED | PARTIAL |
+| `mount_memory` | NOT STARTED | PASS: fail closed | NOT STARTED | PARTIAL |
+| `project_view` | NOT STARTED | NOT STARTED | NOT STARTED | PARTIAL |
+| `receive_message` | NOT STARTED | PASS: fail closed | PARTIAL | PARTIAL |
+| `request_approval` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
+| `resume` | NOT STARTED | NOT STARTED | NOT STARTED | PARTIAL |
+| `send_message` | PARTIAL | PASS: fail closed | PARTIAL | PARTIAL |
+| `spawn_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
+| `terminate_process` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
+
+Evidence pointers for current `PARTIAL` cells (focused evidence only; not gate
+closure):
+
+- PostgreSQL: `conversation_admission.rs::postgres_send_message_checks_actor_and_request_before_storage`, `conversation_admission.rs::postgres_send_message_admission_is_one_graph_run_event_lane_transaction`, and `conversation_mcp.rs::mcp_conversation_create_uses_native_postgres_syscall`. PostgreSQL `resume` remains `NOT STARTED` in this syscall ledger; the REST resume test is not counted as syscall evidence.
+- SQLite metadata: `sqlite_runtime/worker_lifecycle.rs::sqlite_syscall_spawn_and_terminate_use_authoritative_run_service` and `::sqlite_request_approval_mutations_require_scope_and_return_snapshot`. The worker suspend/resume and operator-dashboard tests are adjacent runtime/HTTP evidence, not syscall parity evidence, so those syscall cells remain `NOT STARTED`.
+- SQLite + Chroma: `sqlite_conversation_admission.rs::sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic` and `sqlite_transcript_reads.rs::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`.
+- In-memory: `in_memory_conversations.rs` tests `in_memory_create_conversation_is_atomic_and_matches_shared_contract`, `in_memory_mount_memory_matches_shared_contract_and_authority`, `in_memory_send_message_admits_turn_and_run_atomically`, `in_memory_receive_message_matches_shared_python_contract`, and `in_memory_invoke_builtin_tools_match_shared_contract_and_authority`; `in_memory_run_admission.rs` tests `in_memory_workflow_syscalls_use_native_run_handlers`, `in_memory_project_view_syscall_is_reachable_through_authenticated_http`, and `in_memory_resume_syscall_preserves_resume_envelope_and_result`.
+- SQLite metadata unsupported cells: `sqlite_runtime/worker_lifecycle.rs::sqlite_metadata_conversation_syscalls_fail_closed` covers `create_conversation`, `invoke_tool`, `mount_memory`, `receive_message`, and `send_message`; it asserts HTTP 501, the capability error code/path, and no admitted runs.
+
+The next DLFC-12 implementation batch should convert one backend column at a
+time into shared-fixture Python/Rust parity tests, keeping unsupported cells
+as explicit fail-closed tests. Do not mark `PARTIAL` as PASS based only on
+these existing focused selectors.
 
 ## Coarse Mapping
 
