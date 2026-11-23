@@ -2396,7 +2396,13 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 "user_id": "alice",
                 "role": "rw",
                 "ns": ["conversation"],
-                "capabilities": ["send_message", "spawn_process", "read_graph"],
+                "capabilities": [
+                    "send_message",
+                    "spawn_process",
+                    "read_graph",
+                    "invoke_tool",
+                    "project_view",
+                ],
                 "iat": now,
                 "exp": now + 3600,
                 "iss": "local",
@@ -2464,6 +2470,86 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 message["content"] == "hello from Python PostgreSQL backend"
                 for message in received.json()["result"]["messages"]
             )
+
+            conversation_service = ConversationService.from_engine(
+                conversation_engine,
+                knowledge_engine=engine,
+                workflow_engine=workflow_engine,
+            )
+            snapshot_id = conversation_service.persist_context_snapshot(
+                conversation_id=conversation_id,
+                run_id="postgres-memory-run",
+                run_step_seq=0,
+                stage="final",
+                view=SimpleNamespace(
+                    messages=[{"role": "user", "content": "postgres snapshot"}],
+                    items=[],
+                    cost=None,
+                    token_budget=32,
+                ),
+                model_name="fake-model",
+                budget_tokens=32,
+            )
+            conversation_engine.acl.record_acl(
+                grain="node",
+                truth_graph="conversation",
+                entity_id=snapshot_id,
+                version=2,
+                mode="private",
+                owner_id="alice",
+                supersedes_version=1,
+            )
+            mounted = client.post(
+                "/api/syscall/v1/mount_memory",
+                json={
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": conversation_id,
+                        "run_id": "postgres-memory-run",
+                        "stage": "final",
+                    },
+                },
+                headers=headers,
+            )
+            assert mounted.status_code == 200, mounted.text
+            assert mounted.json()["result"]["snapshot_node_id"] == snapshot_id
+
+            invoked = client.post(
+                "/api/syscall/v1/invoke_tool",
+                json={
+                    "version": "v1",
+                    "op": "invoke_tool",
+                    "args": {
+                        "tool_name": "latest_snapshot",
+                        "conversation_id": conversation_id,
+                        "run_id": "postgres-memory-run",
+                        "stage": "final",
+                    },
+                },
+                headers=headers,
+            )
+            assert invoked.status_code == 200, invoked.text
+            assert invoked.json()["result"]["snapshot"]["snapshot_node_id"] == snapshot_id
+
+            outsider = client.post(
+                "/api/syscall/v1/mount_memory",
+                json={
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": conversation_id,
+                        "run_id": "postgres-memory-run",
+                        "stage": "final",
+                    },
+                },
+                headers=_token_header(
+                    client, role="ro", ns="conversation", username="outsider"
+                ),
+            )
+            assert outsider.status_code == 404
+            assert snapshot_id not in outsider.text
+            assert "postgres snapshot" not in outsider.text
 
         result = first.json()["result"]
         assert result["status"] == "queued"
