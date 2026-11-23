@@ -2541,7 +2541,8 @@ def test_checkpoint_syscall_reads_python_in_memory_backend(monkeypatch, tmp_path
             engine.close()
 
 
-def test_invoke_tool_syscall_uses_python_in_memory_backend(monkeypatch, tmp_path):
+@pytest.mark.parametrize("backend", ["in_memory", "chroma"])
+def test_invoke_tool_syscall_uses_python_backend(monkeypatch, tmp_path, backend):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -2554,9 +2555,11 @@ def test_invoke_tool_syscall_uses_python_in_memory_backend(monkeypatch, tmp_path
         monkeypatch.delenv(selector, raising=False)
 
     engines = build_engine_triplet(
-        root=tmp_path / "invoke-tool-in-memory",
+        root=tmp_path / f"invoke-tool-{backend}",
         embedding_function=FakeEmbeddingFunction(),
-        backend_factory=build_in_memory_backend,
+        backend_factory=(
+            build_in_memory_backend if backend == "in_memory" else None
+        ),
     )
     try:
         engine, conversation_engine, workflow_engine = engines

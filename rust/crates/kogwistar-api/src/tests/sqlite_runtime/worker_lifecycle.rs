@@ -475,6 +475,103 @@
         let _ = std::fs::remove_file(path);
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_invoke_builtin_tool_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/invoke-tool-results-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_invoke_list_transcript_reads_live_graph; python_test=tests/server/test_chat_server_api.py#test_invoke_tool_syscall_uses_python_backend
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_invoke_list_transcript_reads_live_graph() {
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let node_collection = format!("invoke-tool-n-{suffix}");
+        let edge_collection = format!("invoke-tool-e-{suffix}");
+        let namespace = "conversation".to_owned();
+        let path = std::env::temp_dir().join(format!("kogwistar-invoke-tool-{suffix}.sqlite3"));
+        let service = open_sqlite_application_service(
+            &path,
+            Some(SqliteChromaGraphConfig {
+                endpoint,
+                metric: DistanceMetric::Cosine,
+                node_collection,
+                edge_collection,
+            }),
+        )
+        .await
+        .unwrap();
+        let principal = |capabilities: &[&str]| {
+            json!({
+                "sub":"list-owner",
+                "role":"rw",
+                "storage_ns":namespace,
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation",
+                "ns":["conversation"],
+                "capabilities":capabilities
+            })
+        };
+        let conversation_id = format!("conversation-{suffix}");
+        let created = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/create_conversation".to_owned(),
+                body: json!({
+                    "version":"v1",
+                    "op":"create_conversation",
+                    "args":{"conversation_id":conversation_id,"user_id":"list-owner"}
+                })
+                .to_string()
+                .into_bytes(),
+                principal: principal(&["spawn_process"]),
+            })
+            .await;
+        assert_eq!(
+            created.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&created.body)
+        );
+
+        let invoke = |capabilities: &[&str]| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+            body: json!({
+                "version":"v1",
+                "op":"invoke_tool",
+                "args":{"tool_name":"list_transcript","conversation_id":conversation_id}
+            })
+            .to_string()
+            .into_bytes(),
+            principal: principal(capabilities),
+        };
+        let denied = service
+            .execute(invoke(&["invoke_tool"]))
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+        let response = service
+            .execute(invoke(&["invoke_tool", "read_graph"]))
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        let result = &payload["result"];
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/invoke-tool-results-v1.json"
+        ))
+        .unwrap();
+        for field in fixture["results"]["list_transcript"]["root_fields"]
+            .as_array()
+            .unwrap()
+        {
+            assert!(result.get(field.as_str().unwrap()).is_some());
+        }
+        assert_eq!(result["tool_name"], "list_transcript");
+        assert_eq!(result["conversation_id"], conversation_id);
+        assert_eq!(result["messages"], json!([]));
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
         use std::time::{SystemTime, UNIX_EPOCH};
