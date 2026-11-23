@@ -2343,7 +2343,8 @@ def test_send_message_syscall_uses_python_in_memory_backend(
             engine.close()
 
 
-def test_run_lifecycle_syscalls_use_python_in_memory_backend(monkeypatch, tmp_path):
+@pytest.mark.parametrize("backend", ["in_memory", "chroma"])
+def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backend):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -2356,13 +2357,15 @@ def test_run_lifecycle_syscalls_use_python_in_memory_backend(monkeypatch, tmp_pa
         monkeypatch.delenv(selector, raising=False)
 
     engines = build_engine_triplet(
-        root=tmp_path / "run-lifecycle-in-memory",
+        root=tmp_path / f"run-lifecycle-{backend}",
         embedding_function=FakeEmbeddingFunction(),
-        backend_factory=build_in_memory_backend,
+        backend_factory=(
+            build_in_memory_backend if backend == "in_memory" else None
+        ),
     )
     try:
         engine, conversation_engine, workflow_engine = engines
-        service, _registry = _configure_server(
+        service, registry = _configure_server(
             monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
         )
         workflow_id = "wf.in-memory-syscall"
@@ -2463,6 +2466,19 @@ def test_run_lifecycle_syscalls_use_python_in_memory_backend(monkeypatch, tmp_pa
             terminated_result = terminated.json()["result"]
             assert all(field in terminated_result for field in cancel_contract["required_fields"])
             assert terminated_result["status"] in cancel_contract["accepted_run_statuses"]
+            deadline = time.monotonic() + 10.0
+            final_run = registry.get_run(spawned_result["run_id"])
+            while time.monotonic() < deadline:
+                if final_run and final_run["status"] in {
+                    "succeeded",
+                    "failed",
+                    "cancelled",
+                }:
+                    break
+                time.sleep(0.05)
+                final_run = registry.get_run(spawned_result["run_id"])
+            assert final_run is not None
+            assert final_run["status"] == "cancelled"
     finally:
         for engine in engines:
             engine.close()

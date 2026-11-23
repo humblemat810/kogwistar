@@ -171,6 +171,94 @@
         std::fs::remove_file(path).unwrap();
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/run-cancel-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_syscall_spawn_and_terminate_use_authoritative_run_service; python_test=tests/server/test_chat_server_api.py#test_run_lifecycle_syscalls_use_python_backend
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_syscall_spawn_and_terminate_use_authoritative_run_service() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let config = |kind: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: format!("lifecycle-{kind}-{suffix}"),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            config("nodes"),
+            config("edges"),
+        )
+        .await
+        .unwrap();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-lifecycle-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_chroma_graph(graph);
+        let principal = json!({
+            "sub":"chroma-lifecycle-owner",
+            "role":"rw",
+            "ns":"workflow",
+            "capabilities":["spawn_process", "workflow.run.write", "workflow.run.read"]
+        });
+        let spawned = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/spawn_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"spawn_process",
+                "args":{
+                    "workflow_id":"chroma-lifecycle-workflow",
+                    "conversation_id":"chroma-lifecycle-conversation",
+                    "initial_state":{"source":"sqlite-chroma"}
+                }
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        });
+        assert_eq!(spawned.status, StatusCode::OK.as_u16());
+        let spawned: Value = serde_json::from_slice(&spawned.body).unwrap();
+        let run_id = spawned["result"]["run_id"].as_str().unwrap();
+        assert!(service.store.get_server_run(run_id).unwrap().is_some());
+
+        let terminated = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":run_id}
+            }))
+            .unwrap(),
+            principal,
+        });
+        assert_eq!(terminated.status, StatusCode::OK.as_u16());
+        let terminated: Value = serde_json::from_slice(&terminated.body).unwrap();
+        let cancel_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/run-cancel-v1.json"
+        ))
+        .unwrap();
+        assert!(cancel_contract["accepted_run_statuses"]
+            .as_array()
+            .unwrap()
+            .contains(&terminated["result"]["status"]));
+        assert_eq!(terminated["result"]["cancel_requested"], true);
+        assert!(service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .unwrap()
+            .cancel_requested);
+        drop(service);
+        std::fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
         use std::time::{SystemTime, UNIX_EPOCH};
