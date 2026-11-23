@@ -786,6 +786,21 @@ async fn in_memory_project_view_syscall_is_reachable_through_authenticated_http(
     assert_eq!(body["op"], "project_view");
     assert_eq!(body["status"], "ok");
     assert_eq!(body["result"]["runs"]["total_runs"], 0);
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-resources-http-v1.json"
+    ))
+    .unwrap();
+    for field in contract["required_fields"].as_array().unwrap() {
+        assert!(body["result"].get(field.as_str().unwrap()).is_some(), "{field}");
+    }
+    for (key, required_fields) in contract["required_object_fields"].as_object().unwrap() {
+        for field in required_fields.as_array().unwrap() {
+            assert!(
+                body["result"][key].get(field.as_str().unwrap()).is_some(),
+                "{key}.{field}"
+            );
+        }
+    }
 }
 
 // PYTHON_PARITY_NOTE_V1: MCP transport authorization and dispatch reach the in-memory workflow cancel effect; denied capability preserves run state. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json

@@ -130,6 +130,38 @@ def test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_st
     assert calls == [("run-1", contract["step_seq_expected"])]
 
 
+def test_syscall_project_view_matches_resource_snapshot_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-resources-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="ro",
+            ns="workflow",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
+        response = client.post(
+            "/api/syscall/v1/project_view",
+            json={"version": "v1", "op": "project_view", "args": {}},
+            headers=headers,
+        )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()["result"]
+    assert all(field in payload for field in contract["required_fields"])
+    for key, required_fields in contract["required_object_fields"].items():
+        assert all(field in payload[key] for field in required_fields), key
+
+
 def test_syscall_create_conversation_uses_authenticated_owner(
     monkeypatch, engine_triplet
 ):
