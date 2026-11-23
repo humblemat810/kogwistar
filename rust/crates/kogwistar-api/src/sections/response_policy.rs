@@ -1222,7 +1222,15 @@ fn syscall_result(version: &str, op: &str, response: ApiEffectResponse) -> ApiEf
     if !(200..300).contains(&response.status) {
         return response;
     }
-    let result = serde_json::from_slice::<Value>(&response.body).unwrap_or_else(|_| json!({}));
+    let mut result = serde_json::from_slice::<Value>(&response.body).unwrap_or_else(|_| json!({}));
+    if op == "send_message"
+        && let Some(object) = result.as_object_mut()
+        && let Some(turn_node_id) = object.get("turn_node_id").cloned()
+    {
+        object
+            .entry("user_turn_node_id".to_owned())
+            .or_insert(turn_node_id);
+    }
     json_effect(
         StatusCode::OK,
         json!({"version": version, "op": op, "status": "ok", "result": result}),

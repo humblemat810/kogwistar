@@ -551,6 +551,7 @@
         let rest_replay_value: Value = serde_json::from_slice(&rest_replay_body).unwrap();
         assert_eq!(rest_replay_value["result"]["run_id"], run_id);
         assert_eq!(rest_replay_value["result"]["turn_node_id"], turn_id);
+        assert_eq!(rest_replay_value["result"]["user_turn_node_id"], turn_id);
         assert_eq!(rest_replay_value["result"]["idempotent"], true);
         let received = service
             .execute(ApiEffectRequest {
