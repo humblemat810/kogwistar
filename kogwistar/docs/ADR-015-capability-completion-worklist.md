@@ -89,22 +89,22 @@ compilation.
 
 ### Latest current-candidate Phase-3 revalidation
 
-Current source SHA `044e05b5c3175f2debcc3a1a083f3f4cd74b66301d926e21dddb5ba3c693b707`
-and native extension SHA `eec297a27045882eff4ff46bc25447ddaae5a1ff3bb6c211b2689ece09a78fd5`.
+Candidate source SHA-256
+`8bb3bb78a16ce55c96d371de201a826826d66abb4343282f107795699b661a2b` and native
+extension SHA-256 `4f3e030e721e4f68e43f8f1828636498a255366dc093f82c0016e2b2bedaf9a2`.
 With live `pgvector:pg16`, all four Phase-3 store groups passed with zero
 skips: event log **6**, projections/snapshots/run registry **9**, queues/leases/
-lanes **4**, and graph/pgvector **50**. Reports are local evidence under
-`.codex/adr015-phase3-capability-gate/`; this refresh does not by itself close
-Phase-4/Phase-5 candidate UAT, deferred syscall authority, or the overall
-cutover ledger.
+lanes **4**, and graph/pgvector **50**; total **69/69**. Current report:
+`.tmp/phase3-current-source.json`. This does not by itself close Phase-4/Phase-5
+candidate UAT, deferred syscall authority, or the overall cutover ledger.
 
 ### Latest current-candidate Phase-4 runtime revalidation
 
 Using the same source SHA and native extension SHA above, with live
-`pgvector:pg16` over `postgresql+psycopg`, the Phase-4 runtime gate passed with
-zero skips: durable-worker **186** and PostgreSQL runtime **10**; total
-**196 passed, 0 failed, 0 skipped**. Report:
-`.codex/adr015-phase4-runtime-044e05.json`.
+`pgvector:pg16` over `postgresql+psycopg`, all five Phase-4 groups passed with
+zero skips: durable-worker **186**, bijection **72**, bridge **30**,
+suspend-terminal **23**, and PostgreSQL **10**; total **321/321**. Current
+report: `.tmp/phase4-current-source.json`.
 This proves current runtime test-gate evidence only. It does not authorize the
 manifest's `rust_cutover_ready` transition: Phase-5 server/UAT evidence,
 deferred syscall ownership, and shared release acceptance remain separate.

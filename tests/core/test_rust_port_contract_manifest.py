@@ -1034,6 +1034,69 @@ def test_dual_language_surface_inventory_is_current() -> None:
     )
 
 
+def test_public_http_and_mcp_tasklets_name_executable_tests() -> None:
+    inventory = json.loads(
+        (ROOT / "contracts" / "dual-language-surface-inventory-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    route_map = json.loads(
+        (ROOT / "contracts" / "http-route-tasklet-map-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    implementation_tasklets = (
+        ROOT / "kogwistar" / "docs" / "ADR-015-implementation-tasklets.md"
+    ).read_text(encoding="utf-8")
+    tasklet_rows = {
+        cells[0].strip(): line
+        for line in (worklist + "\n" + implementation_tasklets).splitlines()
+        if line.startswith(("| FW-", "| SRV-"))
+        for cells in [line.strip().strip("|").split("|")]
+    }
+    expected_tasklets = {item["tasklet_id"] for item in route_map["operations"]}
+    for operation in inventory["mcp_operations"]:
+        suffix = operation["name"].upper().replace(".", "-").replace("_", "-")
+        expected_tasklets.update(
+            {f"FW-03-04A-MCP-{suffix}", f"FW-03-04B-MCP-{suffix}"}
+        )
+
+    python_test_names: set[str] = set()
+    for path in (ROOT / "tests").rglob("*.py"):
+        python_test_names.update(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+    rust_test_names: set[str] = set()
+    for path in (ROOT / "rust" / "crates").rglob("*.rs"):
+        if "tests" not in path.parts:
+            continue
+        rust_test_names.update(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+
+    missing_rows = sorted(expected_tasklets - tasklet_rows.keys())
+    missing_tests = []
+    for tasklet_id in sorted(expected_tasklets & tasklet_rows.keys()):
+        tokens = set(
+            re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", tasklet_rows[tasklet_id])
+        )
+        if not tokens.intersection(python_test_names | rust_test_names):
+            missing_tests.append(tasklet_id)
+
+    assert not missing_rows, f"public operation tasklets missing: {missing_rows}"
+    assert not missing_tests, (
+        "public operation tasklets lack executable test selectors: "
+        f"{missing_tests}"
+    )
+
+
 def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
     crosswalk = json.loads(
         DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8")
