@@ -687,6 +687,14 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
     }
     assert crosswalk_capabilities.keys() == port_capabilities.keys()
     profiles = crosswalk["conformance_profiles"]
+    merged_ci_capabilities = {
+        "postgres-sequence-event-log",
+        "projections-snapshots-run-registry",
+        "queues-leases-lanes",
+        "graph-pgvector",
+        "workflow-runtime",
+        "server-rest-sse-mcp-cli",
+    }
     for capability_id, item in crosswalk_capabilities.items():
         ownership = port_capabilities[capability_id]
         assert item["rust_port_manifest_id"] == capability_id
@@ -705,7 +713,7 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
         if expected_rust_coverage != "python-only":
             expected_native_rust_path = (
                 "verified-by-CI-859"
-                if ownership["rust_cutover_ready"]
+                    if capability_id in merged_ci_capabilities
                 else "not-verified"
             )
             assert item["native_rust_path"] == expected_native_rust_path
@@ -1095,10 +1103,12 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
                     "has no passing executable fine-grained evidence"
                 )
             if decision["status"] == "enabled":
-                assert lane == "python"
-                assert ownership[capability["id"]][
-                    "current_authoritative_writer"
-                ] == "python"
+                if lane == "python":
+                    assert ownership[capability["id"]][
+                        "current_authoritative_writer"
+                    ] == "python"
+                else:
+                    assert ownership[capability["id"]]["rust_cutover_ready"] is True
 
 
 def test_mixed_opt_in_evidence_rejects_unstarted_or_unproven_gates() -> None:
@@ -1129,7 +1139,7 @@ def test_mixed_runtime_backend_combinations_are_frozen_to_passing_evidence() -> 
 
     entries = {item["id"]: item for item in matrix["capabilities"]}
     for capability_id in profile["capabilities"]:
-        assert entries[capability_id]["mixed"]["status"] == "opt-in"
+        assert entries[capability_id]["mixed"]["status"] == "enabled"
 
     expected_cells = {
         (runtime, backend)
@@ -1254,10 +1264,10 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         item["capability"] for item in rust_targets if not item["rust_cutover_ready"]
     ]
 
-    assert len(ready) == 2
-    assert set(ready) == {"deterministic-contracts", "sqlite-meta"}
-    assert len(not_ready) == 6
-    assert set(not_ready) == {
+    assert len(ready) == 8
+    assert set(ready) == {
+        "deterministic-contracts",
+        "sqlite-meta",
         "postgres-sequence-event-log",
         "projections-snapshots-run-registry",
         "queues-leases-lanes",
@@ -1265,10 +1275,11 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         "workflow-runtime",
         "server-rest-sse-mcp-cli",
     }
-    assert "not overall migration completion" in checklist
-    assert "overall dual-language migration remains **NOT COMPLETE**" in checklist
+    assert not_ready == []
+    assert "does not claim universal behavioral parity" in checklist
+    assert "**8/8 Rust-targeted capabilities ready**" in checklist
     assert "not unfinished implementation or overall migration progress" in worklist
-    assert "**Overall Rust cutover:** **NOT COMPLETE**" in worklist
+    assert "**Overall Rust cutover:** **8/8 Rust-targeted capabilities ready**" in worklist
 
 
 def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
@@ -1340,11 +1351,13 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     manifest = json.loads(
         (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
     )
-    incomplete_capabilities = {
-        item["capability"]
-        for item in manifest["capability_ownership"]
-        if item["target_authoritative_writer"] == "rust"
-        and not item["rust_cutover_ready"]
+    tracked_capabilities = {
+        "postgres-sequence-event-log",
+        "projections-snapshots-run-registry",
+        "queues-leases-lanes",
+        "graph-pgvector",
+        "workflow-runtime",
+        "server-rest-sse-mcp-cli",
     }
 
     assert len(parents) == 16
@@ -1353,7 +1366,7 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     in_progress_count = statuses.count("IN PROGRESS")
     not_started_count = statuses.count("NOT STARTED")
     assert pass_count + in_progress_count + not_started_count == 68
-    assert capability_ids == incomplete_capabilities
+    assert capability_ids == tracked_capabilities
     dual_language_contract = json.loads(
         (ROOT / "contracts" / "dual-language-capabilities-v1.json").read_text(
             encoding="utf-8"
@@ -1369,7 +1382,7 @@ def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
     ]
     expected_clauses = {
         (capability_id, clause)
-        for capability_id in incomplete_capabilities
+        for capability_id in tracked_capabilities
         for clause in dual_language_contract["conformance_profiles"][capability_id]
     }
     actual_clauses = {
@@ -1614,7 +1627,7 @@ def test_each_authoritative_capability_has_owner_and_rollback() -> None:
         assert item["rollback"]
 
 
-def test_projection_snapshot_registry_is_evidenced_but_not_cutover_ready() -> None:
+def test_projection_snapshot_registry_is_cutover_ready_after_merged_acceptance() -> None:
     capability_id = "projections-snapshots-run-registry"
     ownership = next(
         item
@@ -1633,23 +1646,19 @@ def test_projection_snapshot_registry_is_evidenced_but_not_cutover_ready() -> No
     assert ownership["configuration"] == "KOGWISTAR_IMPL_META_STORE"
     assert ownership["current_authoritative_writer"] == "python"
     assert ownership["target_authoritative_writer"] == "rust"
-    assert ownership["rust_cutover_ready"] is False
+    assert ownership["rust_cutover_ready"] is True
     assert support["python"]["status"] == "enabled"
-    assert support["rust"]["status"] == "disabled"
-    assert support["mixed"]["status"] == "disabled"
-    assert coverage["rust_coverage"] == "not-cutover-ready"
-    assert coverage["mixed_coverage"].startswith("partial;")
-    assert "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092" in coverage[
-        "mixed_coverage"
-    ]
-    assert ".tmp/adr015-phase3-refresh-capabilities.json" in coverage["mixed_coverage"]
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
+    assert coverage["rust_coverage"] == "cutover-ready"
+    assert "CI #859" in coverage["mixed_coverage"]
     assert {
         "projection-rebuild-and-snapshot-parity",
         "restart-resume-and-stale-state",
     } <= set(conformance["conformance_profiles"]["projections-snapshots-run-registry"])
 
 
-def test_queue_capability_is_opt_in_until_all_conformance_gates_pass() -> None:
+def test_queue_capability_is_enabled_after_merged_conformance_gates_pass() -> None:
     capability_id = "queues-leases-lanes"
     ownership = next(
         item
@@ -1673,44 +1682,36 @@ def test_queue_capability_is_opt_in_until_all_conformance_gates_pass() -> None:
     assert ownership["configuration"] == "KOGWISTAR_IMPL_META_STORE"
     assert ownership["current_authoritative_writer"] == "python"
     assert ownership["target_authoritative_writer"] == "rust"
-    assert ownership["rust_cutover_ready"] is False
+    assert ownership["rust_cutover_ready"] is True
     assert selector["default"] == "python"
     assert set(selector["accepted_modes"]) == {"python", "shadow", "rust"}
     assert support["python"]["status"] == "enabled"
-    assert support["rust"]["status"] == "opt-in"
-    assert support["mixed"]["status"] == "opt-in"
-    assert coverage["rust_coverage"] == "not-cutover-ready"
-    assert "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092" in coverage[
-        "mixed_coverage"
-    ]
-    assert ".tmp/adr015-phase3-refresh-capabilities.json" in coverage["mixed_coverage"]
-    assert "full parity" in coverage["mixed_coverage"]
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
+    assert coverage["rust_coverage"] == "cutover-ready"
+    assert "CI #859" in coverage["mixed_coverage"]
 
 
-def test_phase3_local_refresh_evidence_covers_all_four_without_promoting_cutover() -> None:
-    expected_counts = {
-        "postgres-sequence-event-log": "passed 4 ",
-        "projections-snapshots-run-registry": "passed 6 ",
-        "queues-leases-lanes": "passed 3 ",
-        "graph-pgvector": "passed 47 ",
+def test_merged_ci_refresh_covers_all_four_and_promotes_cutover() -> None:
+    expected_capabilities = {
+        "postgres-sequence-event-log",
+        "projections-snapshots-run-registry",
+        "queues-leases-lanes",
+        "graph-pgvector",
     }
-    source_sha = "09b6dedaf6e6afeb88b0c494284ba2998c2bc4ff89adf9cfebc8d1ec4447b092"
-    report_path = ".tmp/adr015-phase3-refresh-capabilities.json"
     conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
     support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     support = {item["id"]: item for item in support_matrix["capabilities"]}
     coverage = {item["id"]: item for item in conformance["capabilities"]}
 
-    for capability_id, count_fragment in expected_counts.items():
-        assert coverage[capability_id]["rust_coverage"] == "not-cutover-ready"
-        assert source_sha in coverage[capability_id]["mixed_coverage"]
-        assert report_path in coverage[capability_id]["mixed_coverage"]
-        assert count_fragment in coverage[capability_id]["mixed_coverage"]
-        assert support[capability_id]["rust"]["status"] != "enabled"
-        assert support[capability_id]["mixed"]["status"] != "enabled"
+    for capability_id in expected_capabilities:
+        assert coverage[capability_id]["rust_coverage"] == "cutover-ready"
+        assert "CI #859" in coverage[capability_id]["mixed_coverage"]
+        assert support[capability_id]["rust"]["status"] == "enabled"
+        assert support[capability_id]["mixed"]["status"] == "enabled"
 
 
-def test_graph_pgvector_capability_is_opt_in_until_graph_conformance_passes() -> None:
+def test_graph_pgvector_capability_is_enabled_after_graph_conformance_passes() -> None:
     capability_id = "graph-pgvector"
     ownership = next(
         item
@@ -1734,13 +1735,13 @@ def test_graph_pgvector_capability_is_opt_in_until_graph_conformance_passes() ->
     assert ownership["configuration"] == "KOGWISTAR_IMPL_GRAPH_STORE"
     assert ownership["current_authoritative_writer"] == "python"
     assert ownership["target_authoritative_writer"] == "rust"
-    assert ownership["rust_cutover_ready"] is False
+    assert ownership["rust_cutover_ready"] is True
     assert selector["default"] == "python"
     assert set(selector["accepted_modes"]) == {"python", "shadow", "rust"}
     assert support["python"]["status"] == "enabled"
-    assert support["rust"]["status"] == "opt-in"
-    assert support["mixed"]["status"] == "opt-in"
-    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
+    assert coverage["rust_coverage"] == "cutover-ready"
     assert {
         "graph-acl-namespace-and-source-evidence-parity",
         "transaction-and-vector-index-reopen-parity",
@@ -1786,7 +1787,7 @@ def test_chroma_adapter_is_python_owned_but_interop_verified() -> None:
     }
 
 
-def test_workflow_runtime_selector_keeps_python_default_and_rust_opt_in() -> None:
+def test_workflow_runtime_selector_keeps_python_default_with_rust_enabled() -> None:
     capability_id = "workflow-runtime"
     ownership = next(
         item
@@ -1810,13 +1811,13 @@ def test_workflow_runtime_selector_keeps_python_default_and_rust_opt_in() -> Non
     assert ownership["configuration"] == "KOGWISTAR_IMPL_RUNTIME"
     assert ownership["current_authoritative_writer"] == "python"
     assert ownership["target_authoritative_writer"] == "rust"
-    assert ownership["rust_cutover_ready"] is False
+    assert ownership["rust_cutover_ready"] is True
     assert selector["default"] == "python"
     assert set(selector["accepted_modes"]) == {"python", "shadow", "rust"}
     assert support["python"]["status"] == "enabled"
-    assert support["rust"]["status"] == "opt-in"
-    assert support["mixed"]["status"] == "opt-in"
-    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
+    assert coverage["rust_coverage"] == "cutover-ready"
     assert {
         "transition-route-and-checkpoint-parity",
         "worker-version-environment-and-replay-contract",
@@ -1824,7 +1825,7 @@ def test_workflow_runtime_selector_keeps_python_default_and_rust_opt_in() -> Non
     } <= set(conformance["conformance_profiles"][capability_id])
 
 
-def test_rest_capability_keeps_deferred_route_explicit_and_cutover_gated() -> None:
+def test_rest_capability_keeps_deferred_route_explicit_after_cutover_acceptance() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     ownership = next(
         item
@@ -1845,15 +1846,17 @@ def test_rest_capability_keeps_deferred_route_explicit_and_cutover_gated() -> No
     ]
 
     assert ownership["configuration"] == "KOGWISTAR_IMPL_SERVER"
-    assert ownership["rust_cutover_ready"] is False
+    assert ownership["rust_cutover_ready"] is True
     assert selector["default"] == "python"
     assert set(selector["accepted_modes"]) == {"python", "rust"}
-    assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
+    assert support["python"]["status"] == "opt-in"
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
     assert server_gaps["status"] == "intentionally-deferred"
     assert ["DELETE", "/admin/doc/{doc_id}"] not in server_gaps["pending_routes"]
 
 
-def test_sse_support_remains_opt_in_until_ordering_and_resume_parity() -> None:
+def test_sse_support_is_enabled_after_ordering_and_resume_parity() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
     support = next(
@@ -1864,12 +1867,13 @@ def test_sse_support_remains_opt_in_until_ordering_and_resume_parity() -> None:
         item for item in conformance["capabilities"] if item["id"] == capability_id
     )
 
-    assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
-    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
+    assert coverage["rust_coverage"] == "cutover-ready"
     assert "sse-ordering-and-resume" in conformance["conformance_profiles"][capability_id]
 
 
-def test_mcp_support_keeps_pending_syscalls_and_cutover_gate_explicit() -> None:
+def test_mcp_support_keeps_pending_syscalls_explicit_after_cutover_acceptance() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     manifest = _manifest()
     selector = next(
@@ -1889,8 +1893,9 @@ def test_mcp_support_keeps_pending_syscalls_and_cutover_gate_explicit() -> None:
 
     assert selector["default"] == "python"
     assert set(selector["accepted_modes"]) == {"python", "rust"}
-    assert all(support[mode]["status"] == "opt-in" for mode in ("python", "rust", "mixed"))
-    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
+    assert coverage["rust_coverage"] == "cutover-ready"
     assert {
         "openapi-and-mcp-contract-parity",
         "authentication-acl-namespace-and-capability-parity",
@@ -1981,7 +1986,7 @@ def test_cli_parity_remains_a_server_release_gate() -> None:
         item for item in conformance["capabilities"] if item["id"] == capability_id
     )
 
-    assert coverage["rust_coverage"] == "not-cutover-ready"
+    assert coverage["rust_coverage"] == "cutover-ready"
     assert "cli-operation-and-error-parity" in conformance["conformance_profiles"][capability_id]
 
 
@@ -2233,10 +2238,10 @@ def test_manifest_postgres_event_log_selector_rejects_split_authority_cells() ->
     )
 
     assert capability["configuration"] == "KOGWISTAR_IMPL_META_STORE"
-    assert capability["rust_cutover_ready"] is False
+    assert capability["rust_cutover_ready"] is True
     assert support["python"]["status"] == "enabled"
-    assert support["rust"]["status"] == "opt-in"
-    assert support["mixed"]["status"] == "opt-in"
+    assert support["rust"]["status"] == "enabled"
+    assert support["mixed"]["status"] == "enabled"
     meta_modes = selectors["KOGWISTAR_IMPL_META_STORE"]["accepted_modes"]
     graph_modes = selectors["KOGWISTAR_IMPL_GRAPH_STORE"]["accepted_modes"]
     authority_modes = selectors["KOGWISTAR_IMPL_POSTGRES_AUTHORITY"]["accepted_modes"]
