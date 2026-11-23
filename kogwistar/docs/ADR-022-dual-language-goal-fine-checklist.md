@@ -51,9 +51,17 @@ backend service reads the shared fixture successfully; it closes only this
 DLFC-12 applicability cell, not DLFC-11's complete behavior families.
 Dispatch alone never upgrades a cell.
 
+SQLite metadata `checkpoint` is now `PARTIAL`: Rust
+`sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope`
+reads a recorded transition through the syscall, checks `workflow.run.read`,
+accepts numeric-string `step_seq`, and returns not-found for a missing step;
+Python `test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq`
+passes its wire normalization contract. Python still uses a stub service for
+that syscall test, so shared persisted-result parity is not established.
+
 | Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |
 | --- | --- | --- | --- | --- |
-| `checkpoint` | NOT STARTED | NOT STARTED | NOT STARTED | PARTIAL |
+| `checkpoint` | NOT STARTED | PARTIAL | NOT STARTED | PARTIAL |
 | `create_conversation` | PARTIAL | PASS: fail closed | PARTIAL | PARTIAL |
 | `invoke_tool` | NOT STARTED | PASS: fail closed | NOT STARTED | PARTIAL |
 | `mount_memory` | NOT STARTED | PASS: fail closed | NOT STARTED | PARTIAL |

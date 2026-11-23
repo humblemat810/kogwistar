@@ -172,6 +172,94 @@
     }
 
     #[test]
+    fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-syscall-checkpoint-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        service
+            .store
+            .create_server_run(ServerRunCreate {
+                run_id: "checkpoint-run".to_owned(),
+                conversation_id: "checkpoint-conversation".to_owned(),
+                workflow_id: "checkpoint-workflow".to_owned(),
+                user_id: Some("checkpoint-owner".to_owned()),
+                user_turn_node_id: "turn-1".to_owned(),
+                status: "running".to_owned(),
+            })
+            .unwrap();
+        service
+            .store
+            .append_server_run_event(
+                "checkpoint-run",
+                "workflow.recorded_transition.v1",
+                serde_json::to_string(&json!({
+                    "transition_id":"transition-1",
+                    "reduced":{
+                        "kind":"recorded_step_success",
+                        "state":{
+                            "last_step_seq":0,
+                            "workflow_id":"checkpoint-workflow",
+                            "last_node_id":"node-1",
+                            "state":{"counter":7},
+                            "frontier":{"pending":[]}
+                        },
+                        "state_update":[],
+                        "update":null,
+                        "result":null,
+                        "errors":[],
+                        "server_status":"running"
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+
+        let request = |step_seq: Value, capabilities: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"checkpoint",
+                "args":{"run_id":"checkpoint-run","step_seq":step_seq}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"checkpoint-owner",
+                "role":"ro",
+                "ns":"workflow",
+                "capabilities":capabilities
+            }),
+        };
+
+        let denied = service.execute_sync(request(json!("0"), json!([])));
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+        let found = service.execute_sync(request(json!("0"), json!(["workflow.run.read"])));
+        assert_eq!(found.status, StatusCode::OK.as_u16());
+        let found: Value = serde_json::from_slice(&found.body).unwrap();
+        assert_eq!(found["op"], "checkpoint");
+        assert_eq!(found["result"], json!({
+            "run_id":"checkpoint-run",
+            "step_seq":0,
+            "state":{"counter":7}
+        }));
+
+        let missing = service.execute_sync(request(json!(1), json!(["workflow.run.read"])));
+        assert_eq!(missing.status, StatusCode::NOT_FOUND.as_u16());
+        let missing: Value = serde_json::from_slice(&missing.body).unwrap();
+        assert_eq!(missing["code"], "KOGWISTAR_CHECKPOINT_NOT_FOUND");
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn sqlite_metadata_conversation_syscalls_fail_closed() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
