@@ -409,6 +409,132 @@ async fn in_memory_run_cancel_matches_shared_contract_and_authority() {
     );
 }
 
+// PYTHON_PARITY_NOTE_V1: MCP transport authorization and dispatch reach the in-memory workflow cancel effect; denied capability preserves run state. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
+#[tokio::test]
+async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let secret = "in-memory-workflow-cancel-mcp-secret";
+    let service = InMemoryGraphApplicationService::default();
+    let admitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":"memory-mcp-cancel-run",
+                "workflow_id":"memory-mcp-cancel-workflow",
+                "conversation_id":"memory-mcp-cancel-conversation",
+                "expected_run_owner_id":"alice",
+                "initial_state":{"seed":1},
+                "node_ops":{"start":"noop"},
+                "node_executor_targets":{"start":"rust-native"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"alice", "role":"rw", "ns":["workflow"],
+                "capabilities":["spawn_process", "workflow.run.write"]
+            }),
+        })
+        .await;
+    assert_eq!(admitted.status, StatusCode::ACCEPTED.as_u16());
+
+    let token = |capabilities: Vec<&str>| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"alice", "role":"rw", "ns":["workflow"],
+                "capabilities":capabilities, "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let call = |jwt: String| {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp/workflow")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0", "id":"memory-cancel", "method":"tools/call",
+                    "params":{"name":"workflow.run_cancel", "arguments":{"run_id":"memory-mcp-cancel-run"}}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+
+    let denied = app
+        .clone()
+        .oneshot(call(token(vec!["workflow.run.read"])))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::OK);
+    let denied_wire = to_bytes(denied.into_body(), 8192).await.unwrap();
+    let denied_data = String::from_utf8(denied_wire.to_vec()).unwrap();
+    let denied_message = denied_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(denied_message).unwrap()["result"]["isError"],
+        true
+    );
+    assert_eq!(
+        kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-mcp-cancel-run")
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        "running"
+    );
+
+    let accepted = app
+        .oneshot(call(token(vec!["workflow.run.write"])))
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), StatusCode::OK);
+    let accepted_wire = to_bytes(accepted.into_body(), 8192).await.unwrap();
+    let accepted_data = String::from_utf8(accepted_wire.to_vec()).unwrap();
+    let accepted_message = accepted_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let accepted_value: Value = serde_json::from_str(accepted_message).unwrap();
+    assert_ne!(accepted_value["result"]["isError"], true);
+    let cancelled = kogwistar_store::ServerRunReadStore::server_run(
+        &service.store,
+        "memory-mcp-cancel-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(cancelled.cancel_requested);
+    assert_eq!(cancelled.status, "cancelled");
+}
+
 #[tokio::test]
 async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     use kogwistar_store::{
