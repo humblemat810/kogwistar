@@ -8,8 +8,8 @@ use kogwistar_runtime::{
     RecordedTransitionResult, RecordedWorkerHandoff, RecordedWorkerSuccessEffect,
     RuntimeStepExecutePayload, RuntimeStepExecuteRequest, RuntimeWorkerEffectStatus,
     RuntimeWorkerSuccessEffect, authoritative_runtime_successors_for_result,
-    frontier_after_worker_success, frontier_after_worker_suspend, reduce_recorded_transition,
-    transition_digest, worker_effect_digest,
+    frontier_after_worker_resume, frontier_after_worker_success, frontier_after_worker_suspend,
+    reduce_recorded_transition, transition_digest, worker_effect_digest,
 };
 use kogwistar_store::{
     EntityEvent, GraphMutation, GraphMutationBatch, GraphProjectionRead, GraphRecord, NewIndexJob,
@@ -18,7 +18,7 @@ use kogwistar_store::{
     runtime_projection_write, runtime_status_namespace, timestamp_i64,
     validate_graph_mutation_batch, validate_graph_mutation_replay,
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::sync::{Arc, RwLock};
 
 const RECORDED_RUNTIME_EVENT_TYPE: &str = "workflow.recorded_transition.v1";
@@ -509,6 +509,135 @@ impl InMemoryStore {
     ) -> StoreResult<RecordedTransitionResult> {
         let mut state = self.state.write().expect("in-memory store lock poisoned");
         apply_transition(&mut state, transition, None, abort_after_writes)
+    }
+
+    /// Atomically resumes a suspended token and queues its Rust-native worker
+    /// continuation under the same process-local write lock.
+    pub fn resume_recorded_runtime_token(
+        &self,
+        run_id: &str,
+        workflow_id: &str,
+        conversation_id: &str,
+        node_id: &str,
+        token_id: &str,
+        resume_payload: Option<Value>,
+    ) -> StoreResult<RecordedTransitionResult> {
+        let mut committed = self.state.write().expect("in-memory store lock poisoned");
+        let mut staged = committed.clone();
+        let current = recorded_state_for(&staged, run_id, workflow_id, conversation_id)?
+            .ok_or_else(|| {
+                runtime_conflict(format!("run {run_id:?} has no recorded runtime state"))
+            })?;
+        let parent = current
+            .frontier
+            .suspended
+            .iter()
+            .find(|(node, _, token, _)| node == node_id && token == token_id)
+            .and_then(|(_, _, _, parent)| parent.clone());
+        let frontier =
+            frontier_after_worker_resume(&current.frontier, node_id, token_id, parent.as_deref())
+                .map_err(runtime_error)?;
+        let expected_event_seq = staged
+            .server_run_events
+            .get(run_id)
+            .and_then(|events| events.last())
+            .map_or(0, |event| event.seq);
+        let result = apply_transition(
+            &mut staged,
+            RecordedRuntimeTransition {
+                contract_version: RECORDED_RUNTIME_CONTRACT_VERSION,
+                transition_id: format!("resume-{run_id}-{token_id}-{expected_event_seq}"),
+                expected_event_seq,
+                kind: RecordedTransitionKind::ResumeResult,
+                run_id: run_id.to_owned(),
+                workflow_id: workflow_id.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                user_id: None,
+                user_turn_node_id: None,
+                step_seq: current.last_step_seq.saturating_add(1),
+                node_id: Some(node_id.to_owned()),
+                token_id: Some(token_id.to_owned()),
+                parent_token_id: parent.clone(),
+                initial_state: None,
+                state_update: Vec::new(),
+                update: None,
+                state_schema: Map::new(),
+                frontier: Some(frontier),
+                result: None,
+                wait_reason: None,
+                resume_payload,
+                errors: Vec::new(),
+            },
+            None,
+            false,
+        )?;
+        let step_seq = result.reduced.state.last_step_seq.saturating_add(1);
+        let message_id = format!(
+            "lane|{}",
+            stable_id(
+                "runtime.worker.request",
+                &[
+                    run_id.to_owned(),
+                    token_id.to_owned(),
+                    node_id.to_owned(),
+                    step_seq.to_string(),
+                ],
+            )
+        );
+        let op = result
+            .reduced
+            .state
+            .state
+            .get("_rt_node_ops")
+            .and_then(Value::as_object)
+            .and_then(|ops| ops.get(node_id))
+            .cloned()
+            .unwrap_or_else(|| Value::String("noop".to_owned()));
+        let join_mask = result
+            .reduced
+            .state
+            .frontier
+            .pending
+            .iter()
+            .find(|(_, _, token, _)| token == token_id)
+            .map_or(0, |(_, mask, _, _)| *mask);
+        let payload = RuntimeStepExecutePayload::from_recorded_state(
+            &result.reduced.state,
+            RuntimeStepExecuteRequest {
+                node_id: node_id.to_owned(),
+                op,
+                join_mask,
+                token_id: token_id.to_owned(),
+                parent_token_id: parent,
+                step_seq,
+                expected_event_seq: result.event_seq,
+                resume_effect: result.reduced.state.resume_payload.clone(),
+            },
+        );
+        let now = now_seconds();
+        insert_initial_lane(
+            &mut staged,
+            NewProjectedLaneMessage {
+                message_id,
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                recipient_id: "rust-native-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "pending".to_owned(),
+                created_at: now,
+                available_at: now,
+                run_id: Some(run_id.to_owned()),
+                step_id: Some(node_id.to_owned()),
+                correlation_id: Some(run_id.to_owned()),
+                payload_json: Some(serde_json::to_string(&payload).map_err(json_error)?),
+                error_json: None,
+            },
+        );
+        *committed = staged;
+        Ok(result)
     }
 
     // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-memory/src/recorded_runtime.rs#apply_claimed_recorded_worker_effect; python=kogwistar/agent/event_journal.py#acknowledge,kogwistar/messaging/service.py#ack; fixture=contracts/golden/agent-durable-provider-event-v1.json; rust_test=recorded_runtime::tests::provider_event_acknowledgement_and_run_trace_are_atomic_and_idempotent; python_test=tests/agent/test_agent_event_journal.py#test_event_journal_persists_semantic_event_then_acknowledges_after_handler; note=claim identity, successful state transition, run handled event, and lane completion commit under one in-memory writer lock.
@@ -2045,6 +2174,82 @@ mod tests {
             )
             .unwrap();
         store
+    }
+
+    #[test]
+    fn resume_records_transition_and_native_lane_atomically() {
+        let store = InMemoryStore::new();
+        store
+            .apply_recorded_runtime_transition(pending_start(), false)
+            .unwrap();
+        block_on(store.project_lane_message(worker_lane())).unwrap();
+        let claimed = block_on(store.claim_projected_lane_messages_filtered(
+            kogwistar_store::LaneMessageClaimFilter {
+                namespace: "workflow".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                claimed_by: "rust-native-worker#suspend".to_owned(),
+                message_ids: Some(vec!["lane-noop-1".to_owned()]),
+                run_id: Some("memory-run".to_owned()),
+                msg_type: Some("workflow.step.execute".to_owned()),
+                recipient_id: Some("rust-native-worker".to_owned()),
+                limit: 1,
+                lease_seconds: 60,
+            },
+        ))
+        .unwrap();
+        assert_eq!(claimed.len(), 1);
+        let mut suspension = noop_effect();
+        suspension.status = RuntimeWorkerEffectStatus::Suspended;
+        suspension.wait_reason = Some("approval".to_owned());
+        suspension.resume_payload = Some(json!({"question": "approve?"}));
+        store
+            .apply_claimed_recorded_worker_effect(handoff("rust-native-worker#suspend"), suspension)
+            .unwrap();
+
+        let resumed = store
+            .resume_recorded_runtime_token(
+                "memory-run",
+                "memory-workflow",
+                "memory-conversation",
+                "noop",
+                "token-1",
+                Some(json!({"approved": true})),
+            )
+            .unwrap();
+        assert_eq!(resumed.reduced.state.status, RecordedRunStatus::Running);
+        assert_eq!(
+            resumed.reduced.state.resume_payload,
+            Some(json!({"approved": true}))
+        );
+        assert_eq!(resumed.reduced.state.frontier.pending.len(), 1);
+        assert!(resumed.reduced.state.frontier.suspended.is_empty());
+
+        let resumed_lane = block_on(store.projected_lane_messages(
+            kogwistar_store::LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                inbox_id: Some("workflow-runtime".to_owned()),
+                conversation_id: Some("memory-conversation".to_owned()),
+                msg_type: Some("workflow.step.execute".to_owned()),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let continuation = resumed_lane
+            .iter()
+            .find(|lane| lane.message_id != "lane-noop-1")
+            .expect("resume transition and continuation lane commit together");
+        let payload: Value =
+            serde_json::from_str(continuation.payload_json.as_deref().unwrap()).unwrap();
+        assert_eq!(continuation.status, "pending");
+        assert_eq!(continuation.recipient_id, "rust-native-worker");
+        assert_eq!(payload["resume_effect"], json!({"approved": true}));
+        assert_eq!(
+            block_on(store.server_run_events("memory-run", 0, 10))
+                .unwrap()
+                .len(),
+            4,
+            "run creation, start, suspend, and resume are durably ordered"
+        );
     }
 
     #[test]

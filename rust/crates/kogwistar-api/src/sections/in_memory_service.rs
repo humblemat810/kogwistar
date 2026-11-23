@@ -2386,7 +2386,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
-        if surface == "workflow" && name == "workflow.run_events" {
+        if surface == "workflow"
+            && matches!(name, "workflow.run_events" | "workflow.run_resume")
+        {
             return true;
         }
         surface == "root"
@@ -2418,6 +2420,23 @@ impl ApplicationService for InMemoryGraphApplicationService {
                         .unwrap_or_else(|poisoned| poisoned.into_inner()),
                 )
                 .contains("workflow.run.read")
+                && self.supports_mcp_tool(surface, name);
+        }
+        if name == "workflow.run_resume" {
+            let effective = effective_capabilities(
+                principal,
+                &self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && (effective.contains("workflow.run.write")
+                    || effective.contains("approve_action"))
                 && self.supports_mcp_tool(surface, name);
         }
         if name == "wisdom.semantic_seed_then_expand" {
@@ -2468,6 +2487,12 @@ impl ApplicationService for InMemoryGraphApplicationService {
             return true;
         }
         if method == "POST" && route == Some("/api/workflow/runs") {
+            return true;
+        }
+        if method == "POST"
+            && runtime_run_route(path)
+                .is_some_and(|(_, tail)| tail.as_slice() == ["resume"])
+        {
             return true;
         }
         if method == "GET"
@@ -2524,6 +2549,12 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
             {
                 return self.submit_run_effect(&request, None).await;
+            }
+            if request.method == "POST"
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["resume"]
+            {
+                return self.resume_runtime_run_effect(&request, &run_id).await;
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next()
@@ -4548,6 +4579,128 @@ impl InMemoryGraphApplicationService {
                 "KOGWISTAR_RUNTIME_ADMISSION_CONFLICT",
                 error.to_string(),
             ),
+        }
+    }
+
+    // PYTHON_PARITY_NOTE_V1: Rust mirrors ChatRunService.resume_run and the synchronous public resume response; the volatile store commits resume transition plus continuation lane atomically, without claiming durability across process loss.
+    async fn resume_runtime_run_effect(
+        &self,
+        request: &ApiEffectRequest,
+        run_id: &str,
+    ) -> ApiEffectResponse {
+        if principal_role(&request.principal) != "rw"
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "*" || namespace == "workflow")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Resuming workflow runs requires workflow namespace and write role",
+            );
+        }
+        if !capability_any_allowed(
+            request,
+            &self.capabilities,
+            "workflow.run.write",
+            &["workflow.run.write", "approve_action"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Resuming workflow runs requires workflow.run.write capability",
+            );
+        }
+        let input: RuntimeResumeRequest = match serde_json::from_slice(&request.body) {
+            Ok(input) => input,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "KOGWISTAR_INVALID_REQUEST",
+                    error.to_string(),
+                );
+            }
+        };
+        match self.store.resume_recorded_runtime_token(
+            run_id,
+            &input.workflow_id,
+            &input.conversation_id,
+            &input.suspended_node_id,
+            &input.suspended_token_id,
+            Some(input.client_result),
+        ) {
+            Err(error) => {
+                return effect_error(
+                    StatusCode::CONFLICT,
+                    "KOGWISTAR_RUNTIME_RESUME_CONFLICT",
+                    error.to_string(),
+                );
+            }
+            Ok(result) if !query_boolean(&request.path_and_query, "wait_for_completion", true) => {
+                return json_effect(
+                    StatusCode::OK,
+                    serde_json::to_value(result).expect("recorded runtime result serializes"),
+                );
+            }
+            Ok(_) => {}
+        }
+
+        loop {
+            let run = match kogwistar_store::ServerRunReadStore::server_run(&self.store, run_id).await
+            {
+                Ok(Some(run)) => run,
+                Ok(None) => {
+                    return effect_error(
+                        StatusCode::NOT_FOUND,
+                        "KOGWISTAR_RUN_NOT_FOUND",
+                        format!("Unknown run_id: {run_id}"),
+                    );
+                }
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    );
+                }
+            };
+            if matches!(
+                run.status.as_str(),
+                "succeeded" | "failed" | "cancelled" | "suspended"
+            ) {
+                let state = match kogwistar_store::ProjectionReadStore::named_projection(
+                    &self.store,
+                    kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE,
+                    run_id,
+                )
+                .await
+                {
+                    Ok(Some(projection)) => serde_json::from_value::<
+                        kogwistar_runtime::RecordedRuntimeState,
+                    >(Value::Object(projection.payload))
+                    .ok(),
+                    Ok(None) => None,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        );
+                    }
+                };
+                return json_effect(StatusCode::OK, resumed_run_result(run, state));
+            }
+            match self.execute_native_step_once().await {
+                Ok(true) => continue,
+                Ok(false) => tokio::time::sleep(std::time::Duration::from_millis(25)).await,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_RUNTIME_WORKER_FAILED",
+                        error,
+                    );
+                }
+            }
         }
     }
 

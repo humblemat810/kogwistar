@@ -3,6 +3,29 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
     let service = InMemoryGraphApplicationService::default();
     assert!(service.supports_http_operation("POST", "/api/workflow/runs"));
     assert!(service.supports_http_operation("GET", "/api/workflow/runs/memory-http-run/events"));
+    assert!(service.supports_http_operation("POST", "/api/workflow/runs/memory-http-run/resume"));
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_resume",
+        &json!({"role":"rw", "ns":["workflow"], "capabilities":["workflow.run.write"]})
+    ));
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_resume",
+        &json!({"role":"rw", "ns":["workflow"], "capabilities":["approve_action"]})
+    ));
+    for denied in [
+        json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.write"]}),
+        json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.write"]}),
+        json!({"role":"rw", "ns":["conversation"], "capabilities":["workflow.run.write"]}),
+        json!({"role":"rw", "ns":["workflow"], "capabilities":["workflow.run.read"]}),
+    ] {
+        assert!(!service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.run_resume",
+            &denied
+        ));
+    }
     let request = |principal: Value, body: Value| ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
@@ -136,6 +159,51 @@ async fn in_memory_native_run_admission_is_authenticated_and_atomic() {
             .unwrap()
             .unwrap();
     assert_eq!(completed.status, "succeeded");
+
+    let resume_request = |principal: Value| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/workflow/runs/memory-http-run/resume".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "suspended_node_id": "start",
+            "suspended_token_id": "stale-token",
+            "client_result": {"approved": true},
+            "workflow_id": "memory-http-workflow",
+            "conversation_id": "memory-http-conversation"
+        }))
+        .unwrap(),
+        principal,
+    };
+    let unauthorized_resume = service
+        .execute(resume_request(json!({
+            "sub":"owner",
+            "role":"rw",
+            "ns":["workflow"],
+            "capabilities":["workflow.run.read"]
+        })))
+        .await;
+    assert_eq!(
+        unauthorized_resume.status,
+        StatusCode::FORBIDDEN.as_u16()
+    );
+    let read_only_resume = service
+        .execute(resume_request(json!({
+            "sub":"owner",
+            "role":"ro",
+            "ns":["workflow"],
+            "capabilities":["workflow.run.write"]
+        })))
+        .await;
+    assert_eq!(read_only_resume.status, StatusCode::FORBIDDEN.as_u16());
+    let stale_resume = service
+        .execute(resume_request(json!({
+            "sub":"owner",
+            "role":"rw",
+            "ns":["workflow"],
+            "capabilities":["workflow.run.write"]
+        })))
+        .await;
+    assert_eq!(stale_resume.status, StatusCode::CONFLICT.as_u16());
     let final_state = kogwistar_store::ProjectionReadStore::named_projection(
         &service.store,
         kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE,
