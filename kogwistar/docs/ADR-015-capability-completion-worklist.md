@@ -7,8 +7,10 @@ these listed checks; it does not by itself close capability conformance.
 **Current-candidate capability test gates:** **6/6 PASS**; **0/6 OPEN**.
 **Gate-clause progress:** **22/22 PASS (100.0%)**; **0/22 OPEN**.
 **Overall capability readiness:** **8/8 ready**; shared acceptance requirements
-passed on merged candidate `2b53eab1` in CI #859. The six capability gates and
-their merged-candidate Docker-backed acceptance are complete.
+passed on merged candidate `2b53eab1` in CI #859 and were revalidated by CI #860
+on descendant `f5fcc708`. The six capability gates and their merged-candidate
+Docker-backed acceptance are complete. CI #860 required jobs passed; its PyPy
+beta ABI failure remains explicitly non-blocking.
 The authoritative remaining requirements are the capability conformance
 profiles in `contracts/dual-language-capabilities-v1.json` and deferrals in
 `contracts/rust-port-v1.json`.
