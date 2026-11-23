@@ -82,6 +82,14 @@ def test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_st
     calls = []
     request_namespaces = {"conversation"}
     workflow_namespaces = {"conversation", "workflow"}
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "syscall-checkpoint-step-seq-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     def get_checkpoint(run_id, step_seq):
         calls.append((run_id, step_seq))
@@ -109,17 +117,17 @@ def test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_st
             json={
                 "version": "v1",
                 "op": "checkpoint",
-                "args": {"run_id": "run-1", "step_seq": "0"},
+            "args": {"run_id": "run-1", "step_seq": contract["step_seq_input"]},
             },
         )
 
     assert response.status_code == 200
     assert response.json()["result"] == {
         "run_id": "run-1",
-        "step_seq": 0,
+        "step_seq": contract["step_seq_expected"],
         "state": {"cursor": "x"},
     }
-    assert calls == [("run-1", 0)]
+    assert calls == [("run-1", contract["step_seq_expected"])]
 
 
 def test_syscall_create_conversation_uses_authenticated_owner(

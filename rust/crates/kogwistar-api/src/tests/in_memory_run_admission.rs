@@ -512,10 +512,17 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         contract_version: 1,
         method: "POST".to_owned(),
         path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
-        body: serde_json::to_vec(&json!({
-            "version":"syscall-v1",
-            "args":{"run_id":"memory-syscall-run", "step_seq":0}
-        })).unwrap(),
+        body: {
+            let contract: Value = serde_json::from_str(include_str!(
+                "../../../../../contracts/golden/syscall-checkpoint-step-seq-v1.json"
+            ))
+            .unwrap();
+            serde_json::to_vec(&json!({
+                "version":"syscall-v1",
+                "args":{"run_id":"memory-syscall-run", "step_seq":contract["step_seq_input"]}
+            }))
+            .unwrap()
+        },
         principal: json!({
             "sub":"syscall-owner", "role":"ro", "ns":["workflow"],
             "capabilities":["workflow.run.read"]
@@ -526,7 +533,11 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(checkpoint["op"], "checkpoint");
     assert_eq!(checkpoint["status"], "ok");
     assert_eq!(checkpoint["result"]["run_id"], "memory-syscall-run");
-    assert_eq!(checkpoint["result"]["step_seq"], 0);
+    let checkpoint_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-checkpoint-step-seq-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(checkpoint["result"]["step_seq"], checkpoint_contract["step_seq_expected"]);
 
     let conversation_scoped_checkpoint = service.execute(ApiEffectRequest {
         contract_version: 1,
