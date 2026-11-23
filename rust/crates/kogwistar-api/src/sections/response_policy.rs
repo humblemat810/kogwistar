@@ -1249,7 +1249,9 @@ fn syscall_allowed(
     write: bool,
     required: &[&str],
 ) -> bool {
+    // Python configures both workflow and conversation as workflow syscall namespaces; retain the same role/capability checks for either.
     syscall_allowed_in_namespace(request, shared, op, write, required, "workflow")
+        || syscall_allowed_in_namespace(request, shared, op, write, required, "conversation")
 }
 
 fn syscall_allowed_in_namespace(

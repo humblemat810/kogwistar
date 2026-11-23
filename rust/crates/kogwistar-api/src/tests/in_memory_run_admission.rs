@@ -528,6 +528,21 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(checkpoint["result"]["run_id"], "memory-syscall-run");
     assert_eq!(checkpoint["result"]["step_seq"], 0);
 
+    let conversation_scoped_checkpoint = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{"run_id":"memory-syscall-run", "step_seq":0}
+        })).unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"ro", "ns":["conversation"],
+            "capabilities":["workflow.run.read"]
+        }),
+    }).await;
+    assert_eq!(conversation_scoped_checkpoint.status, StatusCode::OK.as_u16());
+
     let project_view = service.execute(ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
@@ -549,7 +564,7 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         path_and_query: "/api/syscall/v1/project_view".to_owned(),
         body: serde_json::to_vec(&json!({"version":"syscall-v1", "args":{}})).unwrap(),
         principal: json!({
-            "sub":"syscall-reader", "role":"ro", "ns":["conversation"],
+            "sub":"syscall-reader", "role":"ro", "ns":["wisdom"],
             "capabilities":["read_security_scope", "project_view"]
         }),
     }).await;

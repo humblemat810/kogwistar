@@ -78,16 +78,18 @@ def test_syscall_surface_lists_versioned_ops(monkeypatch, engine_triplet):
         assert resp.json() == contract["response_body"]
 
 
-def test_syscall_checkpoint_accepts_numeric_string_step_seq():
+def test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq():
     calls = []
-    workflow_namespace = object()
+    request_namespaces = {"conversation"}
+    workflow_namespaces = {"conversation", "workflow"}
 
     def get_checkpoint(run_id, step_seq):
         calls.append((run_id, step_seq))
         return {"run_id": run_id, "step_seq": step_seq, "state": {"cursor": "x"}}
 
     def require_namespace(namespace):
-        if namespace is not workflow_namespace:
+        required = set(namespace) if isinstance(namespace, (set, frozenset, list, tuple)) else {namespace}
+        if not request_namespaces.intersection(required):
             raise HTTPException(status_code=403)
 
     app = FastAPI()
@@ -97,7 +99,7 @@ def test_syscall_checkpoint_accepts_numeric_string_step_seq():
             require_role=lambda _role: None,
             require_namespace=require_namespace,
             conversation_namespace=object(),
-            workflow_namespaces=workflow_namespace,
+            workflow_namespaces=workflow_namespaces,
         )
     )
 
