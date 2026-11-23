@@ -2,7 +2,7 @@
 
 **Updated:** 2026-11-23  
 **Scope:** Verification-only slice for Rust Chroma support and Python↔Rust data handoff. Existing architecture already provides `ChromaGraphStore` and SQLite+Chroma composition; expected outcome is test evidence, not product-code changes.  
-**Exit:** All counted fine items PASS and all coarse gates derive PASS. Combined with accepted CI #859/#860 evidence for the six named non-Chroma capabilities, this closes the documented cutover/interoperability gates in scope. It does **not** prove every runtime/platform combination (the `sqlite-meta` profile still records partial mixed-runtime coverage), Chroma as Rust's canonical event authority, transactions spanning SQLite and Chroma, or universal Kogwistar behavior parity.
+**Exit:** All counted fine items PASS and all coarse gates derive PASS. Combined with accepted CI #859/#860 evidence for the six named non-Chroma capabilities, this closes the documented cutover/interoperability gates in scope. It does **not** prove every runtime/platform combination (`sqlite-meta` PyPy 3.11 native-binding coverage remains open), Chroma as Rust's canonical event authority, transactions spanning SQLite and Chroma, or universal Kogwistar behavior parity.
 
 ## Progress
 

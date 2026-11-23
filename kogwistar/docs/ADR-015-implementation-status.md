@@ -85,9 +85,9 @@ Chroma interop tasklets are closed; their sole progress count and exact
 current-checkout evidence are in that worklist. This completes the documented
 cutover/interoperability gates when combined with CI #859/#860 evidence for
 the six named non-Chroma capabilities. It does not prove every runtime/platform
-combination: `sqlite-meta` still records partial mixed-runtime coverage in the
-capability contract. Nor does it make Chroma Rust's canonical writer or couple
-Chroma transactionally to SQLite.
+combination: `sqlite-meta` remains partial for PyPy 3.11 native-binding
+coverage; its POSIX CPython matrix passed CI #859. Nor does this make Chroma
+Rust's canonical writer or couple Chroma transactionally to SQLite.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;

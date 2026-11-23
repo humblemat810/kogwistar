@@ -1787,6 +1787,38 @@ def test_chroma_adapter_is_python_owned_but_interop_verified() -> None:
     }
 
 
+def test_sqlite_meta_mixed_coverage_matches_ci_runtime_matrix() -> None:
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == "sqlite-meta"
+    )["mixed_coverage"]
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    invariant_tests = (ROOT / "tests" / "core" / "test_sqlite_context_invariant.py").read_text(
+        encoding="utf-8"
+    )
+    handoff_tests = (
+        ROOT / "tests" / "core" / "test_rust_meta_sqlite_authority.py"
+    ).read_text(encoding="utf-8")
+    pypy_requirements = (
+        ROOT / "requirements-pypy-3.11-experimental.txt"
+    ).read_text(encoding="utf-8")
+
+    assert "Windows CPython/Rust cross-process ownership" in coverage
+    assert "POSIX CPython matrix (Ubuntu 3.12-3.14, macOS 3.13) passed CI #859" in coverage
+    assert "PyPy parity remains unverified" in coverage
+    assert "sqlite-architectural-invariants:" in workflow
+    assert "os: ubuntu-latest" in workflow
+    assert "python-version: \"3.12\"" in workflow
+    assert "python-version: \"3.13\"" in workflow
+    assert "python-version: \"3.14\"" in workflow
+    assert "os: macos-latest" in workflow
+    assert "tests/core/test_sqlite_context_invariant.py -q" in workflow
+    assert "tests/core/test_rust_meta_sqlite_authority.py" in workflow
+    assert "test_cross_process_store_open_race_on_new_database_has_one_owner" in invariant_tests
+    assert "test_manifest_advertised_sqlite_meta_run_round_trip_and_python_rollback" in handoff_tests
+    assert "native extension" in pypy_requirements
+
+
 def test_workflow_runtime_selector_keeps_python_default_with_rust_enabled() -> None:
     capability_id = "workflow-runtime"
     ownership = next(
