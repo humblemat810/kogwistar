@@ -1136,6 +1136,29 @@ def test_conversation_list_parity_tasklet_references_rust_route_assertions() -> 
     ) in postgres_source
 
 
+def test_add_index_entries_parity_tasklet_points_to_http_assertions() -> None:
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    tasklet_id = "FW-03-03A-HTTP-POST-7437a87e"
+    row = next(
+        line for line in worklist.splitlines() if line.startswith(f"| {tasklet_id} |")
+    )
+    rust_source = (
+        ROOT / "rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "test_add_index_entries_requires_write_role_and_keeps_payload" in row
+    assert "in_memory_search_index_hybrid_is_scoped_and_acl_filtered" in row
+    assert '"/api/add_index_entries"' in rust_source
+    assert '"search_index.upsert"' in rust_source
+    assert 'json!({"ok":true})' in rust_source
+    assert '"an HTTP retry must not duplicate search-index events"' in rust_source
+    assert "exactly two `search_index.upsert` events" in row
+    assert (
+        "python=kogwistar/server_mcp_with_admin.py#add_index_entries; "
+        "fixture=contracts/golden/search-index-entry-v1.json"
+    ) in rust_source
+
+
 def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
     crosswalk = json.loads(
         DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8")

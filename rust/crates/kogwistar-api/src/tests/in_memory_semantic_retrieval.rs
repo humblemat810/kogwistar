@@ -601,6 +601,7 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
     );
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python=kogwistar/server_mcp_with_admin.py#add_index_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python_test=tests/server/test_search_index_api_auth.py#test_add_index_entries_requires_write_role_and_keeps_payload
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
 #[tokio::test]
 async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {
