@@ -175,6 +175,10 @@
     fn sqlite_metadata_checkpoint_syscall_reads_recorded_state_and_checks_scope() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-checkpoint-persisted-v1.json"
+        ))
+        .unwrap();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -184,9 +188,9 @@
         service
             .store
             .create_server_run(ServerRunCreate {
-                run_id: "checkpoint-run".to_owned(),
+                run_id: contract["run_id"].as_str().unwrap().to_owned(),
                 conversation_id: "checkpoint-conversation".to_owned(),
-                workflow_id: "checkpoint-workflow".to_owned(),
+                workflow_id: contract["workflow_id"].as_str().unwrap().to_owned(),
                 user_id: Some("checkpoint-owner".to_owned()),
                 user_turn_node_id: "turn-1".to_owned(),
                 status: "running".to_owned(),
@@ -195,7 +199,7 @@
         service
             .store
             .append_server_run_event(
-                "checkpoint-run",
+                contract["run_id"].as_str().unwrap(),
                 "workflow.recorded_transition.v1",
                 serde_json::to_string(&json!({
                     "transition_id":"transition-1",
@@ -203,9 +207,9 @@
                         "kind":"recorded_step_success",
                         "state":{
                             "last_step_seq":0,
-                            "workflow_id":"checkpoint-workflow",
+                            "workflow_id":contract["workflow_id"],
                             "last_node_id":"node-1",
-                            "state":{"counter":7},
+                            "state":contract["state"],
                             "frontier":{"pending":[]}
                         },
                         "state_update":[],
@@ -224,9 +228,9 @@
             method: "POST".to_owned(),
             path_and_query: "/api/syscall/v1/checkpoint".to_owned(),
             body: serde_json::to_vec(&json!({
-                "version":"v1",
-                "op":"checkpoint",
-                "args":{"run_id":"checkpoint-run","step_seq":step_seq}
+                "version":contract["version"],
+                "op":contract["op"],
+                "args":{"run_id":contract["run_id"],"step_seq":step_seq}
             }))
             .unwrap(),
             principal: json!({
@@ -237,20 +241,25 @@
             }),
         };
 
-        let denied = service.execute_sync(request(json!("0"), json!([])));
+        let denied = service.execute_sync(request(
+            contract["step_seq_input"].clone(),
+            json!([]),
+        ));
         assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
 
-        let found = service.execute_sync(request(json!("0"), json!(["workflow.run.read"])));
+        let found = service.execute_sync(request(
+            contract["step_seq_input"].clone(),
+            json!(["workflow.run.read"]),
+        ));
         assert_eq!(found.status, StatusCode::OK.as_u16());
         let found: Value = serde_json::from_slice(&found.body).unwrap();
-        assert_eq!(found["op"], "checkpoint");
-        assert_eq!(found["result"], json!({
-            "run_id":"checkpoint-run",
-            "step_seq":0,
-            "state":{"counter":7}
-        }));
+        assert_eq!(found["op"], contract["op"]);
+        assert_eq!(found["result"], contract["expected_result"]);
 
-        let missing = service.execute_sync(request(json!(1), json!(["workflow.run.read"])));
+        let missing = service.execute_sync(request(
+            json!(contract["step_seq_expected"].as_i64().unwrap() + 1),
+            json!(["workflow.run.read"]),
+        ));
         assert_eq!(missing.status, StatusCode::NOT_FOUND.as_u16());
         let missing: Value = serde_json::from_slice(&missing.body).unwrap();
         assert_eq!(missing["code"], "KOGWISTAR_CHECKPOINT_NOT_FOUND");

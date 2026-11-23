@@ -133,27 +133,34 @@ def test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_st
 
 
 def test_syscall_checkpoint_reads_persisted_python_checkpoint(monkeypatch, engine_triplet):
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/syscall-checkpoint-persisted-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _runtime_success_runner
     )
-    run_id = "syscall-persisted-checkpoint"
-    expected_state = {"counter": 7}
     _seed_checkpoint(
         conversation_engine,
-        run_id=run_id,
-        workflow_id="checkpoint-workflow",
-        step_seq=0,
-        state=expected_state,
+        run_id=contract["run_id"],
+        workflow_id=contract["workflow_id"],
+        step_seq=contract["step_seq_expected"],
+        state=contract["state"],
     )
 
     with TestClient(server.app) as client:
         response = client.post(
             "/api/syscall/v1/checkpoint",
             json={
-                "version": "v1",
-                "op": "checkpoint",
-                "args": {"run_id": run_id, "step_seq": "0"},
+                "version": contract["version"],
+                "op": contract["op"],
+                "args": {
+                    "run_id": contract["run_id"],
+                    "step_seq": contract["step_seq_input"],
+                },
             },
             headers=_token_header(client, role="ro", ns="workflow"),
         )
@@ -161,11 +168,7 @@ def test_syscall_checkpoint_reads_persisted_python_checkpoint(monkeypatch, engin
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload["status"] == "ok"
-    assert payload["result"] == {
-        "run_id": run_id,
-        "step_seq": 0,
-        "state": expected_state,
-    }
+    assert payload["result"] == contract["expected_result"]
 
 
 def test_syscall_project_view_matches_resource_snapshot_contract(monkeypatch, engine_triplet):

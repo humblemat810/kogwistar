@@ -1,0 +1,18 @@
+{
+  "version": "v1",
+  "op": "checkpoint",
+  "run_id": "checkpoint-run",
+  "workflow_id": "checkpoint-workflow",
+  "step_seq_input": "0",
+  "step_seq_expected": 0,
+  "state": {
+    "counter": 7
+  },
+  "expected_result": {
+    "run_id": "checkpoint-run",
+    "step_seq": 0,
+    "state": {
+      "counter": 7
+    }
+  }
+}
