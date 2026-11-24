@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Goal Closure Checklist
 
-**Updated:** 2026-11-24  
+**Updated:** 2026-11-25
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
 **Status summary:** **6 bounded criteria PASS; 1 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
@@ -22,26 +22,41 @@
 
 ## Pivoted Test-Case Status
 
-One row per unique test case: this is the case-level status view, not a new completion denominator. Current case view: **88 PASS / 15 NOT YET VERIFIED / 103 cases**. Repeated goal IDs show which cases support each goal. Duplicate selectors formerly listed in both status tables are merged here. `PASS` means cited run is recorded as passing; `NOT YET VERIFIED` means no current passing evidence is recorded; it does not assert the test or implementation is absent. Keep overall goal status in the summary above. Open work without a concrete selector remains in the fine checklist, not this table.
+One row per executed test case, including pytest parameter cases; this is the case-level status view, not a new completion denominator. Current case view: **111 PASS / 5 NOT YET VERIFIED / 116 cases**. Repeated goal IDs show which cases support each goal. Duplicate selectors formerly listed in both status tables are merged here. `PASS` means cited run is recorded as passing; `NOT YET VERIFIED` means no current passing evidence is recorded; it does not assert the test or implementation is absent. Keep overall goal status in the summary above. Open work without a concrete selector remains in the fine checklist, not this table.
+
+Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL-01 Python-only matrix, GOAL-02 MCP denial, and GOAL-05 fake-backend and pending-embedding tests with `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider`; **15 passed** (12 parameter cases plus 3 tests, 13.59s). Batch B ran the GOAL-02/04 SQLite cases and GOAL-05 Chroma/PostgreSQL cases listed below with the same command flags; **8 passed** (18.12s), including disposable PostgreSQL testcontainers.
 
 | Goal | Test case / selector | Status | Evidence or gap |
 | --- | --- | --- | --- |
-| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust` | NOT YET VERIFIED | Python-only path does not load Rust. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[knowledge-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[knowledge-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[conversation-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[conversation-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[workflow-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[workflow-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[wisdom-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[wisdom-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[acl-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[acl-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[custom-role-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[custom-role-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
 | GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker` | NOT YET VERIFIED | Rust-native request reaches persistence without Python worker. |
-| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_cross_implementation_acquire_race_grants_one_owner_only` | NOT YET VERIFIED | One SQLite transaction owner across implementations. |
-| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_direct_native_python_overlap_fails_before_database_mutation` | NOT YET VERIFIED | Overlap rejected before mutation. |
-| GOAL-02 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback` | NOT YET VERIFIED | Retry, namespace, and rollback integrity. |
-| GOAL-02 | `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission` | NOT YET VERIFIED | Authorization denied before run admission. |
+| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_cross_implementation_acquire_race_grants_one_owner_only` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_direct_native_python_overlap_fails_before_database_mutation` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-02 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-02 | `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission` | PASS | CPython 3.13.3 Windows; focused batch A passed (1 case). |
 | GOAL-03 | `postgres_agentic_answer_workflow_executes_durably_without_python_worker` | PASS | Live pgvector, 1 passed; authenticated ingress through durable run/turn/lane state, no Python worker. |
 | GOAL-03 | `tests::in_memory_provider_events::in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together` | NOT YET VERIFIED | Native graph, ACL, index, and lane commit path. |
-| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract` | NOT YET VERIFIED | Bidirectional queue persistence. |
-| GOAL-04 | `tests/core/test_rust_store_projection_differential.py::test_sqlite_named_projections_python_and_rust_interoperate` | NOT YET VERIFIED | Bidirectional named-projection persistence. |
+| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-04 | `tests/core/test_rust_store_projection_differential.py::test_sqlite_named_projections_python_and_rust_interoperate` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
 | GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server` | NOT YET VERIFIED | Python Chroma projection read/reconciliation by Rust server. |
 | GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_rust_graph_mutation_is_readable_by_python_over_chroma` | NOT YET VERIFIED | Rust graph mutation visible through Python Chroma path. |
 | GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_postgres_python_rust_queue_differential_live` | NOT YET VERIFIED | Live PostgreSQL cross-language queue parity. |
-| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where` | NOT YET VERIFIED | Parameterized backend collection CRUD/filter contract. |
-| GOAL-05 | `tests/core/test_backend_contract.py::test_in_memory_semantic_query_excludes_pending_embedding` | NOT YET VERIFIED | In-memory semantic query visibility. |
-| GOAL-05 | `tests/core/test_async_backend_invariants.py::test_async_pg_backend_invariants` | NOT YET VERIFIED | Async PostgreSQL backend invariants. |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where[fake]` | PASS | CPython 3.13.3 Windows; focused batch A passed (1 case). |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where[chroma]` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where[pg]` | PASS | CPython 3.13.3 Windows; live testcontainer; focused batch B passed (1 case). |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_in_memory_semantic_query_excludes_pending_embedding` | PASS | CPython 3.13.3 Windows; focused batch A passed (1 case). |
+| GOAL-05 | `tests/core/test_async_backend_invariants.py::test_async_pg_backend_invariants` | PASS | CPython 3.13.3 Windows; live PostgreSQL testcontainer; focused batch B passed (1 case). |
 | GOAL-06 | `test_public_http_and_mcp_tasklets_name_executable_tests` | PASS | Manifest selector-mapping check passed; proves selectors exist, not behavior parity. |
 | GOAL-06 | `test_dual_language_surface_inventory_is_current` | PASS | Inventory-to-route/MCP mapping passed. |
 | GOAL-06 | `test_syscall_backend_ledger_matches_surface_inventory` | PASS | 11 syscalls × 4 backends resolved, 44 cells. |
