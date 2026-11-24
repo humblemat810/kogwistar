@@ -2743,6 +2743,38 @@ def test_conversation_syscalls_use_python_postgres_backend(
             assert invoked.status_code == 200, invoked.text
             assert invoked.json()["result"]["snapshot"]["snapshot_node_id"] == snapshot_id
 
+            invoke_error_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-invoke-tool-errors-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            graph_ids_before_invoke_errors = {
+                node.id
+                for node in conversation_engine.read.get_nodes(
+                    where={"conversation_id": conversation_id},
+                    node_type=ConversationNode,
+                    limit=1_000,
+                )
+            }
+            for case in invoke_error_contract["cases"]:
+                error_response = client.post(
+                    "/api/syscall/v1/invoke_tool",
+                    json=case["request"],
+                    headers=headers,
+                )
+                assert error_response.status_code == case["http_status"], case["name"]
+                assert error_response.json() == case["response"], case["name"]
+            graph_ids_after_invoke_errors = {
+                node.id
+                for node in conversation_engine.read.get_nodes(
+                    where={"conversation_id": conversation_id},
+                    node_type=ConversationNode,
+                    limit=1_000,
+                )
+            }
+            assert graph_ids_after_invoke_errors == graph_ids_before_invoke_errors
+
             outsider = client.post(
                 "/api/syscall/v1/mount_memory",
                 json={
@@ -3300,6 +3332,38 @@ def test_invoke_tool_syscall_uses_python_backend(monkeypatch, tmp_path, backend)
         assert result["tool_name"] == "list_transcript"
         assert result["conversation_id"] == conversation["conversation_id"]
         assert result["messages"] == []
+
+        error_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/syscall-invoke-tool-errors-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        graph_ids_before_errors = {
+            node.id
+            for node in conversation_engine.read.get_nodes(
+                where={"conversation_id": conversation["conversation_id"]},
+                node_type=ConversationNode,
+                limit=1_000,
+            )
+        }
+        for case in error_contract["cases"]:
+            error_response = client.post(
+                "/api/syscall/v1/invoke_tool",
+                json=case["request"],
+                headers=headers,
+            )
+            assert error_response.status_code == case["http_status"], case["name"]
+            assert error_response.json() == case["response"], case["name"]
+        graph_ids_after_errors = {
+            node.id
+            for node in conversation_engine.read.get_nodes(
+                where={"conversation_id": conversation["conversation_id"]},
+                node_type=ConversationNode,
+                limit=1_000,
+            )
+        }
+        assert graph_ids_after_errors == graph_ids_before_errors
     finally:
         for engine in engines:
             engine.close()
