@@ -20,9 +20,9 @@
 | GOAL-08 | Reconcile behavior across the full declared public surface, preserving Python compatibility and documenting any intentional differences. | OPEN | ADR-015's 22 clauses and 68 tasklets remain bounded capability evidence; ADR-022's 177/911 rows are not whole-stack parity. DLFC-16 is now PASS: CI-selected tests prove Python-only graph/MCP paths do not load Rust, Rust-native workflow ingress-to-persistence has no Python worker handoff across declared in-memory/SQLite/SQLite+Chroma/PostgreSQL paths, and the API dependency closure excludes PyO3. The new test matrix still has many operation/backend behavior families not enumerated and executed. Bounded resume and `request_approval` branches have adjacent Python/Rust coverage, but neither closes other runtime/backend cells. Close only after GOAL-06 inventory is reconciled, applicable matrix oracles pass, and each deliberate difference has an owner, scope, and compatibility statement. Do not reopen existing PASS items absent regression, invalid evidence, or approved contract change. |
 | GOAL-09 | Keep the seam-free native option and evaluate its performance without promising unmeasured global superiority. | PARTIAL | REL-05 now has a current-checkout resource-matched Docker smoke at `1dcd1278cba081a6d5a698330d0df5ca57d3c959`: Python HTTP 56.71 ops/s vs Rust-native HTTP 584.35 ops/s on the same 100-record/300-operation SQLite trace, 2 CPU/2 GiB, two samples, equal final state digest, and zero FFI in both pure paths. `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_report_verifier_rejects_ffi_in_pure_mode` now enforces zero FFI in both pure paths; its Python-mode case exposed a missing verifier check. Rust-native won this measured trace; sample count/fixture scope is insufficient to close DLFC-18. Broader representative operations/backends and stable per-workload thresholds remain unverified; no universal Rust speed claim. Detailed evidence is in DLFC-18 and ignored raw output `.tmp/mixed-runtime-current-1dcd1278/`. |
 
-## Test-Case Status
+## Pivoted Test-Case Status
 
-One row per named test selector or bounded unimplemented test group; this is a view of existing goal evidence, not a new completion denominator. It enumerates individually cited selectors; suite-level aggregate mentions are not expanded into invented cases. `PASS` means the cited run is recorded as passing; `FAIL` means a recorded red test; `NOT STARTED` means no selector is implemented for that group. Keep goal-level status in the summary above.
+One row per named test selector or fine-gate cell; repeated goal IDs make progress visible by case instead of hiding it in a composite goal row. This is a view of existing goal evidence, not a new completion denominator. Suite-level aggregate mentions are not expanded into invented cases. `PASS` means cited run is recorded as passing; `IN PROGRESS` means some mapped cases pass while coverage remains; `NOT STARTED` means no complete selector/evidence exists for that cell. Keep goal-level status in the summary above.
 
 | Goal | Test case / selector | Status | Evidence or gap |
 | --- | --- | --- | --- |
@@ -69,14 +69,16 @@ One row per named test selector or bounded unimplemented test group; this is a v
 | GOAL-06 | `test_conversation_syscalls_use_python_postgres_backend` | PASS | Python PostgreSQL syscall cancellation exposes `run.cancelling`; terminal retry leaves SSE history unchanged. Live testcontainers: 1 passed. |
 | GOAL-06 | `in_memory_workflow_cancel_mcp_reaches_authorized_store_effect` | PASS | Focused rerun passed; authorized cancel emits `run.cancelling`, denied cancel is effect-free, terminal retry adds no event. |
 | GOAL-06 | `sqlite_mcp_run_submit_persists_admission` | PASS | Focused rerun passed; authorized cancel persists `run.cancelling`; terminal retry adds no event. |
-| GOAL-06 | HTTP success parity for all inventoried operations/backends | NOT STARTED | Full parameterized Python/Rust case matrix not yet implemented. |
-| GOAL-06 | HTTP invalid-input parity and no-side-effect cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
-| GOAL-06 | HTTP authorization/scope parity and deny-before-effect cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
-| GOAL-06 | HTTP read semantics parity cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
-| GOAL-06 | HTTP mutation, retry, and rollback parity cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
-| GOAL-06 | Remaining MCP effect/retry/backend cases under DLFC-10 | NOT STARTED | Only individually evidenced cases above are closed; remaining cells lack passing selectors. |
-| GOAL-08 | Remaining durable lifecycle, replay, and cross-backend parity cases under DLFC-13–17 | NOT STARTED | Existing named tests cover bounded fixtures only; full behavior matrix remains open. |
-| GOAL-09 | Representative performance samples and per-workload threshold cases | NOT STARTED | Current Docker benchmark is a two-sample smoke, not a threshold gate. |
+| GOAL-06 | DLFC-03: HTTP success-contract parity cells | NOT STARTED | Python selector per applicable operation/backend: not complete. Rust counterpart selector per cell: not complete. |
+| GOAL-06 | DLFC-04: HTTP invalid-input and no-side-effect cells | NOT STARTED | Python/Rust paired rejection and no-effect selectors remain to implement for the applicable inventory. |
+| GOAL-06 | DLFC-05: HTTP authorization/scope and deny-before-effect cells | NOT STARTED | Paired Python/Rust authority selectors remain incomplete across applicable scope/backend cells. |
+| GOAL-06 | DLFC-06: HTTP read-semantics cells | NOT STARTED | Paired selectors for filters, ordering, limits, hydration, lifecycle, provenance, and not-found remain incomplete. |
+| GOAL-06 | DLFC-07: HTTP mutation/retry/rollback cells | NOT STARTED | Paired selectors for durable state, events, retries, and failure atomicity remain incomplete. |
+| GOAL-06 | DLFC-10: MCP effect/retry/backend cells | IN PROGRESS | Cancellation cases above pass on Memory, SQLite, SQLite+Chroma, and PostgreSQL in both languages. Remaining applicable MCP mutation/effect/retry cells lack paired selectors or passing evidence. |
+| GOAL-08 | DLFC-13: Durable lifecycle/replay parity | IN PROGRESS | Named SQLite, Chroma, and PostgreSQL tests pass (see fine checklist); remaining operation/backend lifecycle cells are not fully enumerated and run. |
+| GOAL-08 | DLFC-14: Runtime trace parity | IN PROGRESS | Named success, suspend/resume, retry/cancel, failure/recovery, and trace-parent tests pass; remaining event-order/backend combinations lack evidence. |
+| GOAL-08 | DLFC-17: HTTP/MCP/SSE/CLI transport parity on supported runtimes | NOT STARTED | Per-transport and runtime selectors are not yet fully mapped and verified across CPython 3.12–3.14 and PyPy 3.11. |
+| GOAL-09 | DLFC-18: Representative performance samples and per-workload thresholds | IN PROGRESS | Existing two-sample Docker smoke passes digest/zero-FFI checks; representative workload/backend samples and threshold evidence remain absent. |
 
 ## Full-Parity Test Matrix
 
