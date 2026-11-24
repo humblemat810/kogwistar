@@ -797,6 +797,7 @@ impl ChromaGraphStore {
         for item in &mut matches {
             item.distance = normalize_chroma_distance(query.metric, item.distance);
         }
+        sort_vector_matches(&mut matches);
         Ok(matches)
     }
 }
@@ -1015,13 +1016,23 @@ fn normalize_chroma_distance(metric: DistanceMetric, distance: f64) -> f64 {
     }
 }
 
+fn sort_vector_matches(matches: &mut [VectorMatch]) {
+    matches.sort_by(|left, right| {
+        left.distance
+            .total_cmp(&right.distance)
+            .then_with(|| left.record.id.cmp(&right.record.id))
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::ChromaGraphStore;
     use super::normalize_chroma_distance;
+    use super::sort_vector_matches;
     use crate::ChromaStoreConfig;
     use kogwistar_store::{
-        DistanceMetric, GraphEntityKind, GraphReadStore, VectorQuery, similarity_from_distance,
+        DistanceMetric, GraphEntityKind, GraphReadStore, GraphRecord, VectorMatch, VectorQuery,
+        similarity_from_distance,
     };
     use serde_json::{Value, json};
     use std::time::Duration;
@@ -1068,6 +1079,48 @@ mod tests {
             assert_eq!(
                 similarity_from_distance(Some(normalized), metric),
                 Some(case["similarity"].as_f64().expect("similarity"))
+            );
+        }
+    }
+
+    #[test]
+    fn chroma_vector_ties_match_shared_id_order_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/graph-vector-metric-semantics-v1.json"
+        )))
+        .expect("shared graph vector metric contract");
+
+        for case in fixture["tie_cases"].as_array().expect("tie cases") {
+            let distance = case["expected_distance"].as_f64().expect("distance");
+            let mut matches = case["vectors"]
+                .as_array()
+                .expect("vectors")
+                .iter()
+                .map(|vector| VectorMatch {
+                    record: GraphRecord {
+                        id: vector["id"].as_str().expect("id").to_owned(),
+                        document: None,
+                        metadata: Default::default(),
+                        embedding: None,
+                    },
+                    distance,
+                })
+                .collect::<Vec<_>>();
+            sort_vector_matches(&mut matches);
+
+            let expected = case["expected_ids"]
+                .as_array()
+                .expect("expected ids")
+                .iter()
+                .map(|value| value.as_str().expect("expected id"))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matches
+                    .iter()
+                    .map(|item| item.record.id.as_str())
+                    .collect::<Vec<_>>(),
+                expected
             );
         }
     }

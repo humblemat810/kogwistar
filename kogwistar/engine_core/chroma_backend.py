@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -215,6 +216,47 @@ def _restore_chroma_result(value: object) -> object:
     return restored
 
 
+def _sort_chroma_query_rows(value: object) -> object:
+    if not isinstance(value, dict):
+        return value
+    ids_by_query = value.get("ids")
+    distances_by_query = value.get("distances")
+    if not isinstance(ids_by_query, list) or not isinstance(distances_by_query, list):
+        return value
+
+    ordered = dict(value)
+    row_fields = ("ids", "distances", "documents", "metadatas", "embeddings", "uris")
+    for query_index, (ids, distances) in enumerate(
+        zip(ids_by_query, distances_by_query, strict=False)
+    ):
+        if not isinstance(ids, list) or not isinstance(distances, list):
+            continue
+        if len(ids) != len(distances) or not all(isinstance(item, str) for item in ids):
+            continue
+        if not all(
+            isinstance(item, (int, float))
+            and not isinstance(item, bool)
+            and math.isfinite(item)
+            for item in distances
+        ):
+            continue
+
+        indexes = sorted(range(len(ids)), key=lambda index: (distances[index], ids[index]))
+        if indexes == list(range(len(ids))):
+            continue
+        for field in row_fields:
+            rows = ordered.get(field)
+            if not isinstance(rows, list) or query_index >= len(rows):
+                continue
+            row = rows[query_index]
+            if not isinstance(row, list) or len(row) != len(ids):
+                continue
+            reordered_rows = list(rows)
+            reordered_rows[query_index] = [row[index] for index in indexes]
+            ordered[field] = reordered_rows
+    return ordered
+
+
 class _AwaitableValue:
     def __init__(self, value: object) -> None:
         self._value = value
@@ -347,7 +389,10 @@ class ChromaBackend:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
         result = run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs)))
-        return _awaitable_result(_restore_chroma_result(result))
+        restored = _restore_chroma_result(result)
+        if method == "query" and collection_key in {"node_index", "node", "edge"}:
+            restored = _sort_chroma_query_rows(restored)
+        return _awaitable_result(restored)
 
     # --- node_index ---
     def node_index_get(self, **kwargs: object) -> object:
@@ -536,7 +581,10 @@ class AsyncChromaBackend(ChromaBackend):
         result = getattr(coll, method)(**_chroma_safe_kwargs(kwargs))
         if hasattr(result, "__await__"):
             result = await result
-        return _restore_chroma_result(result)
+        restored = _restore_chroma_result(result)
+        if method == "query" and collection_key in {"node_index", "node", "edge"}:
+            restored = _sort_chroma_query_rows(restored)
+        return restored
 
     async def async_node_get(self, **kwargs: object) -> object:
         return await self.async_call("node", "get", **kwargs)

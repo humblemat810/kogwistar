@@ -59,6 +59,76 @@ def test_chroma_vector_distance_semantics_match_shared_rust_contract():
 
 
 @pytest.mark.parametrize(
+    ("query_method", "collection_key"),
+    [
+        ("node_index_query", "node_index"),
+        ("node_query", "node"),
+        ("edge_query", "edge"),
+    ],
+)
+def test_chroma_vector_query_ties_break_by_id_and_keep_rows_aligned(
+    query_method, collection_key
+):
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-vector-metric-semantics-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    class QueryCollection:
+        def __init__(self, result):
+            self.result = result
+
+        def query(self, **_kwargs):
+            return self.result
+
+    for case in fixture["tie_cases"]:
+        records = case["vectors"]
+        ids = [record["id"] for record in records]
+        response = {
+            "ids": [ids],
+            "distances": [[case["expected_distance"]] * len(ids)],
+            "documents": [[f"doc:{entity_id}" for entity_id in ids]],
+            "metadatas": [[{"record_id": entity_id} for entity_id in ids]],
+            "embeddings": [[record["embedding"] for record in records]],
+        }
+        collections = {
+            "node_index": object(),
+            "node": object(),
+            "edge": object(),
+            "edge_endpoints": object(),
+            "document": object(),
+            "domain": object(),
+            "node_docs": object(),
+            "node_refs": object(),
+            "edge_refs": object(),
+        }
+        collections[collection_key] = QueryCollection(response)
+        backend = ChromaBackend(
+            **{
+                f"{key}_collection": collection
+                for key, collection in collections.items()
+            },
+            distance_metric=case["metric"],
+        )
+
+        result = getattr(backend, query_method)(
+            query_embeddings=[fixture["query_embedding"]],
+            n_results=len(ids),
+            include=["distances", "documents", "metadatas", "embeddings"],
+        )
+        expected_ids = case["expected_ids"]
+        assert result["ids"][0] == expected_ids
+        assert result["documents"][0] == [f"doc:{entity_id}" for entity_id in expected_ids]
+        assert [item["record_id"] for item in result["metadatas"][0]] == expected_ids
+        assert result["embeddings"][0] == [
+            next(record["embedding"] for record in records if record["id"] == entity_id)
+            for entity_id in expected_ids
+        ]
+
+
+@pytest.mark.parametrize(
     ("metric", "expected_distance_kind"),
     [("cosine", "distance"), ("ip", "distance"), ("l2", "squared_l2")],
 )
