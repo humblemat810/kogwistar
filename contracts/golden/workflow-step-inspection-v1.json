@@ -21,5 +21,43 @@
     "status": "success",
     "answer": "worker"
   },
+  "parity_seed": {
+    "run_id": "run-1",
+    "workflow_id": "workflow-1",
+    "step_seq": 0,
+    "op": "prepare",
+    "state_update": [["u", {"answer": "worker"}]],
+    "result_fields": {"answer": "worker"},
+    "trace_context": {
+      "trace_id": "trace-seed",
+      "span_id": "span-step-0",
+      "parent_span_id": "span-parent",
+      "attempt": 2
+    }
+  },
+  "parity_step": {
+    "node_id": "wf_step|run-1|0",
+    "step_seq": 0,
+    "workflow_id": "workflow-1",
+    "workflow_node_id": "wf:workflow-1:prepare",
+    "op": "prepare",
+    "status": "ok",
+    "duration_ms": 1,
+    "result": {
+      "conversation_node_id": null,
+      "state_update": [["u", {"answer": "worker"}]],
+      "update": null,
+      "next_step_names": [],
+      "workflow_invocations": [],
+      "status": "success",
+      "answer": "worker"
+    },
+    "trace_context": {
+      "trace_id": "trace-seed",
+      "span_id": "span-step-0",
+      "parent_span_id": "span-parent",
+      "attempt": 2
+    }
+  },
   "legacy_step_omits_trace_context": true
 }

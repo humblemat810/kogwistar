@@ -4554,6 +4554,54 @@ def test_run_steps_uses_python_defaults_and_checks_namespace(monkeypatch, engine
         assert run_id not in denied.text
 
 
+def test_run_steps_matches_shared_rust_projection_fixture(monkeypatch, engine_triplet):
+    for selector in (
+        "KOGWISTAR_IMPL_MODE",
+        "KOGWISTAR_IMPL_CONTRACTS",
+        "KOGWISTAR_IMPL_GRAPH_STORE",
+        "KOGWISTAR_IMPL_META_STORE",
+        "KOGWISTAR_IMPL_POSTGRES_AUTHORITY",
+        "KOGWISTAR_IMPL_RUNTIME",
+        "KOGWISTAR_IMPL_SERVER",
+    ):
+        monkeypatch.delenv(selector, raising=False)
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-step-inspection-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    seed = contract["parity_seed"]
+    _seed_step(
+        conversation_engine,
+        run_id=seed["run_id"],
+        workflow_id=seed["workflow_id"],
+        step_seq=seed["step_seq"],
+        op=seed["op"],
+        state_update=seed["state_update"],
+        result_fields=seed["result_fields"],
+        trace_context=seed["trace_context"],
+    )
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="workflow")
+        response = client.get(
+            f"/api/runs/{seed['run_id']}/steps", headers=headers
+        )
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert payload["run_id"] == seed["run_id"]
+        assert len(payload["steps"]) == 1
+        expected = contract["parity_step"]
+        actual = payload["steps"][0]
+        assert {field: actual[field] for field in expected} == expected
+
+
 def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
     for selector in (
         "KOGWISTAR_IMPL_MODE",
