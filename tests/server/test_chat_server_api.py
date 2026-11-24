@@ -4616,6 +4616,46 @@ def test_chat_rest_events_poll_returns_run_events(monkeypatch, engine_triplet):
         assert set(contract["required_event_fields"]).issubset(payload["events"][0])
 
 
+def test_chat_rest_events_poll_matches_rust_seeded_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/run-events-poll-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    registry.create_run(
+        run_id="run-1",
+        conversation_id="conversation-1",
+        workflow_id="workflow-1",
+        user_id="user-1",
+        user_turn_node_id="turn-1",
+        status="running",
+    )
+    registry.append_event("run-1", "run.started", {"source": "test"})
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="conversation", username="user-1")
+        response = client.get(
+            "/api/runs/run-1/events/poll?after_seq=0&limit=10",
+            headers=headers,
+        )
+
+    assert response.status_code == contract["success_status"], response.text
+    body = response.json()
+    assert body["run_id"] == "run-1"
+    assert len(body["events"]) == 1
+    event = body["events"][0]
+    assert set(event) == set(contract["required_event_fields"])
+    assert event["seq"] == 1
+    assert event["event_type"] == "run.started"
+    assert event["payload"] == {"source": "test"}
+    assert isinstance(event["created_at_ms"], int)
+
+
 def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(
     monkeypatch, engine_triplet
 ):

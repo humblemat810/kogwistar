@@ -2441,6 +2441,9 @@
             assert!(event_value["events"][0].get(field).is_some(), "missing {field}");
         }
         assert_eq!(event_value["events"][0]["event_type"], "run.started");
+        assert_eq!(event_value["events"][0]["seq"], 1);
+        assert_eq!(event_value["events"][0]["payload"], json!({"source":"test"}));
+        assert!(event_value["events"][0]["created_at_ms"].as_i64().is_some());
 
         let cancel = app
             .clone()
