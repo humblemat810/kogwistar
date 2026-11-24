@@ -1213,7 +1213,7 @@ mod tests {
         }
     }
 
-    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#ChromaGraphStore::vector_query_in_collection; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_http_graph_queries_match_shared_metric_order_and_scores; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_vector_distance_semantics_match_shared_rust_contract; note=Rust fake-HTTP query ordering and scores lack a paired Python test consuming this same contract fixture.
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#ChromaGraphStore::vector_query_in_collection; python=kogwistar/engine_core/chroma_backend.py#_sort_chroma_query_rows; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_http_graph_queries_match_shared_metric_order_and_scores; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_graph_query_order_and_scores_match_shared_rust_contract; note=Both adapters validate canonical order, metric distances, normalized similarities, and aligned result rows against the same fixture.
     #[tokio::test]
     async fn chroma_http_graph_queries_match_shared_metric_order_and_scores() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
