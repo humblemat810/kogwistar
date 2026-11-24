@@ -869,6 +869,30 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
         }),
         scope.clone(),
     );
+    add_node(
+        "turn-private-only",
+        json!({
+            "entity_type":"conversation_turn",
+            "conversation_id":"c-hidden",
+            "turn_index":1,
+            "role":"user",
+            "summary":"must not leak"
+        }),
+        scope.clone(),
+    );
+    add_node(
+        "acl-turn-private-only",
+        json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"conversation",
+            "acl_target_grain":"node",
+            "acl_target_entity_id":"turn-private-only",
+            "acl_version":1,
+            "acl_mode":"private",
+            "owner_id":"someone-else"
+        }),
+        scope.clone(),
+    );
     GraphMutationStore::apply_graph_mutations_atomic(&service.store, mutations)
         .await
         .unwrap();
@@ -996,6 +1020,22 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
         ))
         .await;
     assert_eq!(missing_conversation.status, StatusCode::NOT_FOUND.as_u16());
+    let private_conversation = service
+        .execute(request(
+            json!({"conversation_id":"c-hidden"}),
+            json!({
+                "sub":"reader-1",
+                "role":"ro",
+                "storage_ns":"scope-a",
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation",
+                "ns":["conversation"],
+                "capabilities":["read_graph"]
+            }),
+        ))
+        .await;
+    assert_eq!(private_conversation.status, StatusCode::NOT_FOUND.as_u16());
+    assert!(!String::from_utf8_lossy(&private_conversation.body).contains("must not leak"));
 
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
