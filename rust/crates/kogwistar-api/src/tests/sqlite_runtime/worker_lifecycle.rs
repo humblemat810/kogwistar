@@ -238,6 +238,36 @@
         }
         let run_id = spawned["result"]["run_id"].as_str().unwrap();
         assert!(service.store.get_server_run(run_id).unwrap().is_some());
+        let terminate_errors: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-terminate-errors-v1.json"
+        ))
+        .unwrap();
+        for (args, expected_status) in [
+            (
+                json!({}),
+                terminate_errors["missing_run_id_status"].as_u64().unwrap() as u16,
+            ),
+            (
+                json!({"run_id":"unknown-chroma-run"}),
+                terminate_errors["unknown_run_id_status"].as_u64().unwrap() as u16,
+            ),
+        ] {
+            let invalid_termination = service.execute_sync(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+                body: serde_json::to_vec(&json!({"version":"v1", "op":"terminate_process", "args":args}))
+                    .unwrap(),
+                principal: principal.clone(),
+            });
+            assert_eq!(invalid_termination.status, expected_status);
+        }
+        assert!(!service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .unwrap()
+            .cancel_requested);
 
         let denied_termination = service.execute_sync(ApiEffectRequest {
             contract_version: 1,

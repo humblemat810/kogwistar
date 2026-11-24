@@ -2895,6 +2895,23 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 assert spawned_result[field] == value
             run_id = spawned_result["run_id"]
             assert registry.get_run(run_id) is not None
+            terminate_errors = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-terminate-errors-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            for args, expected_status in (
+                ({}, terminate_errors["missing_run_id_status"]),
+                ({"run_id": f"{run_id}-unknown"}, terminate_errors["unknown_run_id_status"]),
+            ):
+                invalid_termination = client.post(
+                    "/api/syscall/v1/terminate_process",
+                    json={"version": "v1", "op": "terminate_process", "args": args},
+                    headers=headers,
+                )
+                assert invalid_termination.status_code == expected_status
+            assert registry.get_run(run_id)["cancel_requested"] is False
 
             denied_termination = client.post(
                 "/api/syscall/v1/terminate_process",
@@ -3250,6 +3267,27 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
                 username="memory-workflow-owner",
                 capabilities="workflow.run.read",
             )
+            terminate_errors = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-terminate-errors-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            for args, expected_status in (
+                ({}, terminate_errors["missing_run_id_status"]),
+                (
+                    {"run_id": f"{spawned_result['run_id']}-unknown"},
+                    terminate_errors["unknown_run_id_status"],
+                ),
+            ):
+                invalid_termination = client.post(
+                    "/api/syscall/v1/terminate_process",
+                    json={"version": "v1", "op": "terminate_process", "args": args},
+                    headers=headers,
+                )
+                assert invalid_termination.status_code == expected_status
+            assert registry.get_run(spawned_result["run_id"])["cancel_requested"] is False
+
             denied_termination = client.post(
                 "/api/syscall/v1/terminate_process",
                 json={

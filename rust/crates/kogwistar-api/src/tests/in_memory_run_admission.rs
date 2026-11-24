@@ -465,6 +465,38 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     for (field, value) in submit_contract["expected_common_values"].as_object().unwrap() {
         assert_eq!(&spawned_result[field], value, "field {field}");
     }
+    let terminate_errors: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-terminate-errors-v1.json"
+    ))
+    .unwrap();
+    for (args, expected_status) in [
+        (json!({}), terminate_errors["missing_run_id_status"].as_u64().unwrap() as u16),
+        (
+            json!({"run_id":"unknown-memory-run"}),
+            terminate_errors["unknown_run_id_status"].as_u64().unwrap() as u16,
+        ),
+    ] {
+        let invalid_termination = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+                body: serde_json::to_vec(&json!({"version":"syscall-v1", "args":args}))
+                    .unwrap(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(invalid_termination.status, expected_status);
+    }
+    let active_run = kogwistar_store::ServerRunReadStore::server_run(
+        &service.store,
+        "memory-syscall-run",
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(active_run.status, "running");
+    assert!(!active_run.cancel_requested);
 
     for op in [
         "terminate_process",

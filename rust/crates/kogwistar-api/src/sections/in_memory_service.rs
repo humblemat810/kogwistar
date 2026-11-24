@@ -4706,7 +4706,7 @@ impl InMemoryGraphApplicationService {
             "terminate_process" => {
                 let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) else {
                     return effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     );

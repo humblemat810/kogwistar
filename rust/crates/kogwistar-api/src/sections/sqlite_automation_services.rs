@@ -91,7 +91,7 @@ impl SqliteRunApplicationService {
                     &["workflow.run.write"],
                 ) {
                     syscall_forbidden(op)
-                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
                     match self.store.request_server_run_cancel(run_id) {
                         Ok(()) => match self.store.get_server_run(run_id) {
                             Ok(Some(run)) => syscall_result(
@@ -118,7 +118,7 @@ impl SqliteRunApplicationService {
                     }
                 } else {
                     effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     )
