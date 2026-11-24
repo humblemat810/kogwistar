@@ -728,8 +728,32 @@ def test_syscall_receive_message_reads_chroma_graph_and_matches_shared_fixture(
                 else embedding,
             )
         )
+    empty_embedding = conversation_engine.iterative_defensive_emb("snapshot")
+    conversation_engine.write.add_node(
+        ConversationNode(
+            id="receive-empty-snapshot",
+            label="Empty conversation snapshot",
+            type="entity",
+            summary="snapshot",
+            mentions=[
+                Grounding(spans=[Span.from_dummy_for_conversation("c-empty")])
+            ],
+            doc_id="conv:c-empty",
+            metadata={
+                "entity_type": "context_snapshot",
+                "in_conversation_chain": True,
+                "level_from_root": 0,
+            },
+            conversation_id="c-empty",
+            user_id="reader-1",
+            embedding=empty_embedding.tolist()
+            if hasattr(empty_embedding, "tolist")
+            else empty_embedding,
+        )
+    )
 
     with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="conversation")
         response = client.post(
             "/api/syscall/v1/receive_message",
             json={
@@ -737,7 +761,25 @@ def test_syscall_receive_message_reads_chroma_graph_and_matches_shared_fixture(
                 "op": "receive_message",
                 "args": {"conversation_id": fixture["conversation_id"]},
             },
-            headers=_token_header(client, role="ro", ns="conversation"),
+            headers=headers,
+        )
+        unknown = client.post(
+            "/api/syscall/v1/receive_message",
+            json={
+                "version": "v1",
+                "op": "receive_message",
+                "args": {"conversation_id": "c-unknown"},
+            },
+            headers=headers,
+        )
+        empty = client.post(
+            "/api/syscall/v1/receive_message",
+            json={
+                "version": "v1",
+                "op": "receive_message",
+                "args": {"conversation_id": "c-empty"},
+            },
+            headers=headers,
         )
 
     assert response.status_code == 200, response.text
@@ -746,6 +788,9 @@ def test_syscall_receive_message_reads_chroma_graph_and_matches_shared_fixture(
     assert payload["op"] == "receive_message"
     assert payload["status"] == "ok"
     assert payload["result"] == fixture
+    assert unknown.status_code == 404, unknown.text
+    assert empty.status_code == 200, empty.text
+    assert empty.json()["result"]["messages"] == []
 
 
 def test_syscall_receive_message_missing_id_matches_shared_error_fixture():
