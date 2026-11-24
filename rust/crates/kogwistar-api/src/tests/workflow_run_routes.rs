@@ -382,7 +382,7 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     let token = encode(
         &Header::new(Algorithm::HS256),
         &json!({
-            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "sub":"alice", "user_id":"alice", "role":"rw", "ns":["workflow"],
             "capabilities":["spawn_process", "workflow.run.write"],
             "iss":"local", "exp":4102444800_u64
         }),
@@ -409,7 +409,7 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     ))
     .unwrap();
     let mut arguments = contract["arguments"].clone();
-    arguments["user_id"] = json!("alice");
+    arguments["user_id"] = json!("caller-controlled-owner");
     let response = app
         .clone()
         .oneshot(
@@ -462,6 +462,7 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     let persisted = reopened.get_server_run(run_id).unwrap().unwrap();
     assert_eq!(persisted.workflow_id, "workflow-contract");
     assert_eq!(persisted.conversation_id, "conversation-contract");
+    assert_eq!(persisted.user_id.as_deref(), Some("alice"));
     assert_eq!(persisted.status, "queued");
 
     drop(reopened);

@@ -1164,14 +1164,28 @@ async fn mcp_dispatch(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_submit; fixture=contracts/golden/workflow-run-submit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_run_submit_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract
-            "workflow.run_submit" => Some(ApiEffectRequest {
-                contract_version: 1,
-                method: "POST".to_owned(),
-                path_and_query: "/api/workflow/runs".to_owned(),
-                body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
-                principal: principal.clone(),
-            }),
+            // PYTHON_PARITY_V1: authenticated user_id overrides caller argument; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_submit; fixture=contracts/golden/workflow-run-submit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_uses_authenticated_user_over_argument
+            "workflow.run_submit" => {
+                let mut submit_arguments = arguments.clone();
+                if let Some(authenticated_user_id) = principal
+                    .get("user_id")
+                    .and_then(Value::as_str)
+                    .filter(|user_id| !user_id.trim().is_empty())
+                {
+                    submit_arguments.insert(
+                        "user_id".to_owned(),
+                        Value::String(authenticated_user_id.to_owned()),
+                    );
+                }
+                Some(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/workflow/runs".to_owned(),
+                    body: serde_json::to_vec(&submit_arguments)
+                        .expect("MCP arguments serialize"),
+                    principal: principal.clone(),
+                })
+            }
             "workflow.run_resume" if !run_id.is_empty() => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),

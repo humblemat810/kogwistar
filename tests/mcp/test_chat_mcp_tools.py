@@ -2043,6 +2043,60 @@ async def test_mcp_workflow_run_submit_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_submit_uses_authenticated_user_over_argument(
+    monkeypatch, engine_triplet
+):
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        service,
+        "submit_workflow_run",
+        lambda **kwargs: calls.append(kwargs) or {"run_id": "run-auth-owner"},
+    )
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda _workflow_id, _role: None,
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        scope_parts={"user_id": "authenticated-owner"},
+    ):
+        result = await workflow_mcp.call_tool(
+            "workflow.run_submit",
+            {
+                "workflow_id": "wf-auth-owner",
+                "conversation_id": "conv-auth-owner",
+                "user_id": "caller-controlled-owner",
+            },
+        )
+
+    assert result.is_error is False
+    assert len(calls) == 1
+    assert calls[0]["user_id"] == "authenticated-owner"
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_scheduler_timeline_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

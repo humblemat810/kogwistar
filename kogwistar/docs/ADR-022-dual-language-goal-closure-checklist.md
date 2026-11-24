@@ -43,6 +43,29 @@ the assertion is sufficient or currently passing.
 | Native isolation | For Rust-native claims, run ingress-to-persistence while Python worker/adaptor entry points are instrumented to fail; prove zero Python handoff. Separately prove Python-only mode does not import/call Rust. |
 | Regression and CI selection | Run exact selectors in supported CPython 3.12–3.14 / PyPy 3.11 lanes as applicable, with live backend gates marked explicit. A locally passing selector not selected by CI is not a closed CI gate. |
 
+## Executable Test Cases By Goal
+
+Every coarse goal has executable test coverage. This map prevents a
+goal from having only prose evidence; it does **not** imply all goal criteria
+are closed. Run the named selectors before changing their status. GOAL-06 and
+GOAL-08 remain broader matrix obligations, not single-test claims.
+
+| Goal | Implemented executable cases | What they assert; remaining scope |
+| --- | --- | --- |
+| GOAL-01 | Python unit test `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust`; Python integration test of Rust server `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker`. | Explicit Python selection cannot enter Rust; selected Rust-native request reaches persistence without Python worker. Covers named graph/runtime paths, not all APIs. |
+| GOAL-02 | Python tests exercising authority/seam behavior: `tests/core/test_sqlite_context_invariant.py::test_cross_implementation_acquire_race_grants_one_owner_only`, `::test_direct_native_python_overlap_fails_before_database_mutation`; `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback`; `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission`. | One SQLite owner, overlap denied before mutation, rollback/retry integrity, authorization denied before run admission. Other operations/backends remain subject to their matrix cells. |
+| GOAL-03 | Rust-native unit tests: `tests::postgres_agentic_answer::postgres_agentic_answer_workflow_executes_durably_without_python_worker` and `tests::in_memory_provider_events::in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together`; Python integration test of Rust server `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker`. | Authenticated ingress/native execution/durable effects and absence of Python-worker handoff for the tested backend paths. PostgreSQL case requires its live test gate. |
+| GOAL-04 | Python integration tests exercising bidirectional Rust/Python persistence: `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract`; `tests/core/test_rust_store_projection_differential.py::test_sqlite_named_projections_python_and_rust_interoperate`; live Chroma `tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server` and `::test_rust_graph_mutation_is_readable_by_python_over_chroma`; live PostgreSQL `tests/core/test_rust_store_index_jobs_differential.py::test_postgres_python_rust_queue_differential_live`. | Bidirectional read/write or reconciliation across named persisted contracts; backend-specific selectors are separate and do not imply cross-store atomicity. |
+| GOAL-05 | Python tests: `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where` (fake/Chroma/PostgreSQL parameterized); `tests/core/test_backend_contract.py::test_in_memory_semantic_query_excludes_pending_embedding`; `tests/core/test_async_backend_invariants.py::test_async_pg_backend_invariants`; Rust/Python Chroma integration selectors listed under GOAL-04. | Backend contract behavior plus separate memory, PostgreSQL, and Chroma composition cases. Chroma eventual projection semantics remain distinct; no universal transaction promise. |
+| GOAL-06 | Python manifest test `tests/core/test_rust_port_contract_manifest.py::test_public_http_and_mcp_tasklets_name_executable_tests`; Python/Rust HTTP contract pair: Python `tests/server/test_chat_server_api.py::test_document_validate_graph_matches_shared_success_contract`, Rust unit tests `tests::document_validation::document_validate_graph_http_route_matches_shared_success_contract` and `::document_graph_validation_missing_nodes_matches_python_error_detail`. | Fails closed for missing HTTP/MCP selectors and checks one shared HTTP success/error contract. Full 84 HTTP × 62 MCP × syscall/backend behavior matrix remains OPEN. |
+| GOAL-07 | Python CI-configuration tests: `tests/core/test_pypy_ci_contract.py::test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes`, `::test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips`; separate Rust/Python runtime interop jobs are named by those tests. | Support-matrix declaration and required interop lane selection are executable assertions. Actual runtime compatibility still requires successful CI evidence for each declared lane. |
+| GOAL-08 | Python parity tests exercising Rust runtime/storage paths: `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_workflow_success_matches_rust_durable_successor_admission`, `::test_python_suspend_resume_matches_rust_durable_ordered_history`, `::test_python_workflow_failure_matches_rust_durable_state_and_step_event`; `tests/core/test_sqlite_context_invariant.py::test_native_transaction_id_cannot_cross_contexts`. | Fixed-trace state/history parity, failure semantics, and transaction-context ownership for named cells. Full behavior/transport/backend matrix remains OPEN. |
+| GOAL-09 | Python benchmark tests exercising Python and Rust HTTP modes: `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_runner_compares_python_mixed_and_rust_http_modes`, `::test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch`, `::test_endpoint_report_verifier_rejects_ffi_in_pure_mode`. | Same trace/digest and zero-FFI checks for pure paths; smoke test guards methodology, not statistical performance closure. DLFC-18 remains IN PROGRESS pending representative samples and thresholds. |
+
+These selectors are deliberately a minimum per-goal test index, not a new
+checklist denominator. Existing OPEN/PARTIAL statuses remain unchanged until
+their full stated exit conditions pass.
+
 ## Test-First Entry Cases For Open Goals
 
 These are the first small executable cases to run or reuse before production
@@ -62,12 +85,15 @@ TDD order per goal: land these few focused test cases first, run them, then
 change only code needed to pass. Build/live-backend integration comes after
 unit cases; never infer full goal closure from these starter cases alone.
 
-Starter selectors verified 2026-11-24: Python **10 passed** across HTTP
-success/error, SQLite bidirectional handoff, runtime success/suspend-resume,
-and endpoint report verification (including the two new pure-path FFI rejection
-cases); checklist/status consistency test **1 passed**; Rust API **2 passed**
-for the shared HTTP success/error fixtures. These verify starter cases only;
-GOAL-06/08 remain OPEN and GOAL-09 remains PARTIAL.
+Selected verification 2026-11-24: Python goal-map selectors **27 passed**
+across Python-only isolation, SQLite ownership/interop, memory backend,
+inventory/support-matrix checks, runtime parity, and benchmark verification.
+Rust-native server selector: **5 passed, 2 skipped** (both PostgreSQL cases
+skipped because no DSN was configured). Rust API unit selectors: **2 passed**
+for shared HTTP validation and native in-memory persistence. Live Chroma and
+PostgreSQL interop selectors are implemented and mapped above, but were not
+rerun in this batch. These are representative checks only; GOAL-06/08 remain
+OPEN and GOAL-09 remains PARTIAL.
 
 Completion rule: GOAL-06 requires every inventory operation × declared backend
 pair to be `tested` or explicitly `unsupported` with a passing fail-closed
