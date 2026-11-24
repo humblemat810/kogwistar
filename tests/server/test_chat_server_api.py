@@ -2559,7 +2559,11 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 headers=headers,
             )
             assert received.status_code == 200, received.text
-            received_messages = received.json()["result"]["messages"]
+            received_payload = received.json()
+            assert received_payload["version"] == "v1"
+            assert received_payload["op"] == "receive_message"
+            assert received_payload["status"] == "ok"
+            received_messages = received_payload["result"]["messages"]
             assert len(received_messages) == 1
             received_turn = received_messages[0]
             assert received_turn["node_id"] == first.json()["result"][
