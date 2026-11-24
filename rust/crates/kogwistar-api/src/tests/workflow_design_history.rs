@@ -780,6 +780,25 @@
             let field = field.as_str().unwrap();
             assert!(deleted.get(field).is_none(), "field {field}");
         }
+        let repeated_edge_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-write/edges/edge",
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_edge_delete.status(), StatusCode::NOT_FOUND);
+        let history_after_repeated_edge_delete = public_call!(
+            "GET",
+            "/api/workflow/design/wf-write/history",
+            json!({})
+        );
+        assert_eq!(history_after_repeated_edge_delete.status(), StatusCode::OK);
+        let history_after_repeated_edge_delete: Value = serde_json::from_slice(
+            &to_bytes(history_after_repeated_edge_delete.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(history_after_repeated_edge_delete["current_version"], deleted["version"]);
         let node_upsert_mcp: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-node-upsert-mcp-v1.json"
