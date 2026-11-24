@@ -1985,28 +1985,42 @@ impl SqliteRunApplicationService {
             {
                 json_effect(StatusCode::ACCEPTED, server_run_value(run))
             }
-            ("POST", ["cancel"]) => match self.store.request_server_run_cancel(&run_id) {
-                Ok(()) => match self.get_run(&run_id) {
-                    Ok(Some(updated)) => {
-                        json_effect(StatusCode::ACCEPTED, server_run_value(updated))
-                    }
-                    Ok(None) => effect_error(
-                        StatusCode::NOT_FOUND,
-                        "KOGWISTAR_RUN_NOT_FOUND",
-                        format!("Unknown run_id: {run_id}"),
-                    ),
+            ("POST", ["cancel"]) => {
+                let event = self.store.append_server_run_event(
+                    &run_id,
+                    "run.cancelling",
+                    json!({"run_id": run_id, "status": "cancelling"}).to_string(),
+                );
+                match event {
+                    Ok(_) => match self.store.request_server_run_cancel(&run_id) {
+                        Ok(()) => match self.get_run(&run_id) {
+                            Ok(Some(updated)) => {
+                                json_effect(StatusCode::ACCEPTED, server_run_value(updated))
+                            }
+                            Ok(None) => effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Unknown run_id: {run_id}"),
+                            ),
+                            Err(error) => effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error,
+                            ),
+                        },
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    },
                     Err(error) => effect_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "KOGWISTAR_STORE_ERROR",
-                        error,
+                        error.to_string(),
                     ),
-                },
-                Err(error) => effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                ),
-            },
+                }
+            }
             _ => unavailable_effect(request),
         }
     }

@@ -614,8 +614,11 @@ async fn sqlite_mcp_run_submit_persists_admission() {
         100,
     )
     .await
-    .unwrap()
-    .len();
+    .unwrap();
+    assert!(first_event_count
+        .iter()
+        .any(|event| event.event_type == "run.cancelling"));
+    let first_event_count = first_event_count.len();
     assert!(
         first_event_count > before_cancel_event_count,
         "authorized cancel must append its durable run event",
@@ -808,7 +811,7 @@ fn rust_run_evidence_projection_matches_shared_v1_contract() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
-// PYTHON_PARITY_NOTE_V1: PostgreSQL MCP submit persists the queued run/effect event; denied submit/cancel leave state unchanged and authorized terminal retry adds no run event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
+// PYTHON_PARITY_NOTE_V1: PostgreSQL MCP submit persists the queued run/effect event; denied submit/cancel leave state unchanged; each authorized nonterminal cancel appends run.cancelling; terminal retries add no event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
 async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -1111,6 +1114,17 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     assert!(contract["accepted_run_statuses"].as_array().unwrap().contains(&body["status"]));
     assert_eq!(body["cancel_requested"], true);
 
+    let first_cancel_events = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "cancel-auth-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first_cancel_events.len(), 1);
+    assert_eq!(first_cancel_events[0].event_type, "run.cancelling");
+
     let event_count_before_retry = kogwistar_store::ServerRunReadStore::server_run_events(
         &service.store,
         "cancel-auth-run",
@@ -1155,7 +1169,17 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .expect("MCP Streamable HTTP retry result data");
     let retry_value: Value = serde_json::from_str(retry_data).unwrap();
     assert_ne!(retry_value["result"]["isError"], true, "{retry_value}");
-    assert_eq!(retry_value["result"]["structuredContent"]["status"], body["status"]);
+    let retry_result = &retry_value["result"]["structuredContent"];
+    for field in contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        if field != "updated_at_ms" {
+            assert_eq!(retry_result[field], body[field], "retry field {field}");
+        }
+    }
+    assert!(
+        retry_result["updated_at_ms"].as_i64().unwrap()
+            >= body["updated_at_ms"].as_i64().unwrap()
+    );
     let event_count_after_retry = kogwistar_store::ServerRunReadStore::server_run_events(
         &service.store,
         "cancel-auth-run",
@@ -1165,7 +1189,16 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     .await
     .unwrap()
     .len();
-    assert_eq!(event_count_after_retry, event_count_before_retry);
+    assert_eq!(event_count_after_retry, event_count_before_retry + 1);
+    let retry_events = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "cancel-auth-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(retry_events.last().unwrap().event_type, "run.cancelling");
 
     let syscall_principal = json!({
         "sub":"alice",

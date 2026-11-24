@@ -20,6 +20,58 @@
 | GOAL-08 | Reconcile behavior across the full declared public surface, preserving Python compatibility and documenting any intentional differences. | OPEN | ADR-015's 22 clauses and 68 tasklets remain bounded capability evidence; ADR-022's 177/911 rows are not whole-stack parity. DLFC-16 is now PASS: CI-selected tests prove Python-only graph/MCP paths do not load Rust, Rust-native workflow ingress-to-persistence has no Python worker handoff across declared in-memory/SQLite/SQLite+Chroma/PostgreSQL paths, and the API dependency closure excludes PyO3. The new test matrix still has many operation/backend behavior families not enumerated and executed. Bounded resume and `request_approval` branches have adjacent Python/Rust coverage, but neither closes other runtime/backend cells. Close only after GOAL-06 inventory is reconciled, applicable matrix oracles pass, and each deliberate difference has an owner, scope, and compatibility statement. Do not reopen existing PASS items absent regression, invalid evidence, or approved contract change. |
 | GOAL-09 | Keep the seam-free native option and evaluate its performance without promising unmeasured global superiority. | PARTIAL | REL-05 now has a current-checkout resource-matched Docker smoke at `1dcd1278cba081a6d5a698330d0df5ca57d3c959`: Python HTTP 56.71 ops/s vs Rust-native HTTP 584.35 ops/s on the same 100-record/300-operation SQLite trace, 2 CPU/2 GiB, two samples, equal final state digest, and zero FFI in both pure paths. `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_report_verifier_rejects_ffi_in_pure_mode` now enforces zero FFI in both pure paths; its Python-mode case exposed a missing verifier check. Rust-native won this measured trace; sample count/fixture scope is insufficient to close DLFC-18. Broader representative operations/backends and stable per-workload thresholds remain unverified; no universal Rust speed claim. Detailed evidence is in DLFC-18 and ignored raw output `.tmp/mixed-runtime-current-1dcd1278/`. |
 
+## Test-Case Status
+
+One row per named test selector or bounded unimplemented test group; this is a view of existing goal evidence, not a new completion denominator. It enumerates individually cited selectors; suite-level aggregate mentions are not expanded into invented cases. `PASS` means the cited run is recorded as passing; `FAIL` means a recorded red test; `NOT STARTED` means no selector is implemented for that group. Keep goal-level status in the summary above.
+
+| Goal | Test case / selector | Status | Evidence or gap |
+| --- | --- | --- | --- |
+| GOAL-03 | `postgres_agentic_answer_workflow_executes_durably_without_python_worker` | PASS | Live pgvector, 1 passed; authenticated ingress through durable run/turn/lane state, no Python worker. |
+| GOAL-06 | `test_public_http_and_mcp_tasklets_name_executable_tests` | PASS | Manifest selector-mapping check passed; proves selectors exist, not behavior parity. |
+| GOAL-06 | `test_dual_language_surface_inventory_is_current` | PASS | Inventory-to-route/MCP mapping passed. |
+| GOAL-06 | `test_syscall_backend_ledger_matches_surface_inventory` | PASS | 11 syscalls × 4 backends resolved, 44 cells. |
+| GOAL-06 | `test_capability_evidence_links_reject_missing_stale_duplicate_and_route_refs` | PASS | Evidence-link validation passed. |
+| GOAL-06 | `test_adr015_capability_worklist_covers_fixed_incomplete_scope` | PASS | Worklist scope cross-check passed. |
+| GOAL-06 | `test_each_capability_gate_clause_names_an_executable_test` | PASS | Gate-clause selectors verified. |
+| GOAL-06 | `test_rust_python_parity_annotations_resolve_to_shared_executable_contracts` | PASS | Source/test/fixture references resolved. |
+| GOAL-06 | `document_validate_graph_http_route_matches_shared_success_contract` | PASS | Rust shared HTTP success contract passed. |
+| GOAL-06 | `document_graph_validation_missing_nodes_matches_python_error_detail` | PASS | Rust/Python invalid-input detail case passed. |
+| GOAL-06 | `in_memory_native_synchronous_resume_matches_shared_result_contract` | PASS | Named Rust in-memory resume result case passed. |
+| GOAL-06 | `in_memory_native_run_admission_is_authenticated_and_atomic` | PASS | Named admission/authority case passed. |
+| GOAL-06 | `resume_records_transition_and_native_lane_atomically` | PASS | Durable resume transition case passed. |
+| GOAL-06 | `test_resume_route_uses_python_defaults_and_checks_namespace` | PASS | Python counterpart passed. |
+| GOAL-06 | `in_memory_workflow_syscalls_use_native_run_handlers` | PASS | Rust approval/syscall case passed. |
+| GOAL-06 | `test_syscall_request_approval_branches` | PASS | Python approval branches and shared invalid fixture passed. |
+| GOAL-06 | `test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq` | PASS | Python checkpoint normalization case passed. |
+| GOAL-06 | `test_syscall_project_view_matches_resource_snapshot_contract` | PASS | Python resource-shape case passed. |
+| GOAL-06 | `in_memory_project_view_syscall_is_reachable_through_authenticated_http` | PASS | Rust authenticated resource-shape case passed. |
+| GOAL-06 | `test_syscall_invoke_tool_list_transcript_returns_messages` | PASS | Python invoke-tool success/error cases passed. |
+| GOAL-06 | `in_memory_invoke_builtin_tools_match_shared_contract_and_authority` | PASS | Rust invoke-tool contract/authority case passed. |
+| GOAL-06 | `test_syscall_send_message_invalid_inputs_match_shared_contract` | PASS | Python invalid-input/no-admission case passed. |
+| GOAL-06 | `in_memory_send_message_admits_turn_and_run_atomically` | PASS | Rust invalid-input and atomic admission case passed. |
+| GOAL-06 | `test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP success contract passed. |
+| GOAL-06 | `test_python_document_graph_validation_http_error_matches_shared_fixture` | PASS | Python HTTP error fixture case passed. |
+| GOAL-07 | `test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | CI interpreter matrix contract passed. |
+| GOAL-07 | `test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips` | PASS | Required mixed-worker backend selection passed. |
+| GOAL-08 | `test_python_workflow_success_matches_rust_durable_successor_admission` | PASS | Fixed-trace success parity case passed. |
+| GOAL-08 | `test_python_suspend_resume_matches_rust_durable_ordered_history` | PASS | Fixed-trace suspend/resume history case passed. |
+| GOAL-08 | `test_python_workflow_failure_matches_rust_durable_state_and_step_event` | PASS | Failure state/event parity case passed. |
+| GOAL-08 | `test_native_transaction_id_cannot_cross_contexts` | PASS | Transaction ownership invariant passed. |
+| GOAL-09 | `test_endpoint_runner_compares_python_mixed_and_rust_http_modes` | PASS | Benchmark runner executes both modes; not a performance threshold result. |
+| GOAL-09 | `test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch` | PASS | Digest-mismatch rejection case passed. |
+| GOAL-09 | `test_endpoint_report_verifier_rejects_ffi_in_pure_mode` | PASS | Both pure modes enforce zero FFI; workload remains a smoke, not representative gate closure. |
+| GOAL-06 | `postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` | PASS | Live disposable pgvector rerun passed: nonterminal REST cancel and MCP retry each append `run.cancelling`; denied cancel is effect-free; terminal retry adds no event. |
+| GOAL-06 | `in_memory_workflow_cancel_mcp_reaches_authorized_store_effect` | PASS | Focused rerun passed; authorized cancel emits `run.cancelling`, denied cancel is effect-free, terminal retry adds no event. |
+| GOAL-06 | `sqlite_mcp_run_submit_persists_admission` | PASS | Focused rerun passed; authorized cancel persists `run.cancelling`; terminal retry adds no event. |
+| GOAL-06 | HTTP success parity for all inventoried operations/backends | NOT STARTED | Full parameterized Python/Rust case matrix not yet implemented. |
+| GOAL-06 | HTTP invalid-input parity and no-side-effect cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
+| GOAL-06 | HTTP authorization/scope parity and deny-before-effect cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
+| GOAL-06 | HTTP read semantics parity cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
+| GOAL-06 | HTTP mutation, retry, and rollback parity cases | NOT STARTED | Full operation/backend test matrix not yet implemented. |
+| GOAL-06 | Remaining MCP effect/retry/backend cases under DLFC-10 | NOT STARTED | Only individually evidenced cases above are closed; remaining cells lack passing selectors. |
+| GOAL-08 | Remaining durable lifecycle, replay, and cross-backend parity cases under DLFC-13–17 | NOT STARTED | Existing named tests cover bounded fixtures only; full behavior matrix remains open. |
+| GOAL-09 | Representative performance samples and per-workload threshold cases | NOT STARTED | Current Docker benchmark is a two-sample smoke, not a threshold gate. |
+
 ## Full-Parity Test Matrix
 
 This matrix defines the required test classes for GOAL-06/08; it adds no new

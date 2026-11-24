@@ -1062,15 +1062,18 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     assert!(cancelled.cancel_requested);
     assert_eq!(cancelled.status, "cancelled");
 
-    let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+    let cancel_events = kogwistar_store::ServerRunReadStore::server_run_events(
         &service.store,
         &run_id,
         0,
         100,
     )
     .await
-    .unwrap()
-    .len();
+    .unwrap();
+    assert!(cancel_events
+        .iter()
+        .any(|event| event.event_type == "run.cancelling"));
+    let event_count = cancel_events.len();
     let retried = app
         .oneshot(call(
             "workflow.run_cancel",

@@ -4886,24 +4886,44 @@ impl InMemoryGraphApplicationService {
                 "Cancelling workflow runs requires workflow.run.write capability",
             );
         }
-        match kogwistar_store::ServerRunWriteStore::request_server_run_cancel(&self.store, run_id)
-            .await
-        {
-            Ok(()) => match kogwistar_store::ServerRunReadStore::server_run(&self.store, run_id)
+        let event = kogwistar_store::ServerRunWriteStore::append_server_run_event(
+            &self.store,
+            run_id,
+            "run.cancelling",
+            json!({"run_id": run_id, "status": "cancelling"}).to_string(),
+        )
+        .await;
+        match event {
+            Ok(_) => {
+                match kogwistar_store::ServerRunWriteStore::request_server_run_cancel(
+                    &self.store, run_id,
+                )
                 .await
-            {
-                Ok(Some(run)) => json_effect(StatusCode::ACCEPTED, server_run_value(run)),
-                Ok(None) => effect_error(
-                    StatusCode::NOT_FOUND,
-                    "KOGWISTAR_RUN_NOT_FOUND",
-                    format!("Unknown run_id: {run_id}"),
-                ),
-                Err(error) => effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                ),
-            },
+                {
+                    Ok(()) => match kogwistar_store::ServerRunReadStore::server_run(
+                        &self.store, run_id,
+                    )
+                    .await
+                    {
+                        Ok(Some(run)) => json_effect(StatusCode::ACCEPTED, server_run_value(run)),
+                        Ok(None) => effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Unknown run_id: {run_id}"),
+                        ),
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    },
+                    Err(error) => effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error.to_string(),
+                    ),
+                }
+            }
             Err(error) => effect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "KOGWISTAR_STORE_ERROR",
