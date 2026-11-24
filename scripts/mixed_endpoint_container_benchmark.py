@@ -220,9 +220,10 @@ def _verify_endpoint_reports(
                     or seams.get("tool_dispatches") != size * 3
                     or seams.get("transport_requests") != size * 3
                     or not isinstance(seams.get("ffi_calls"), int)
-                    or (mode == "rust_native" and seams.get("ffi_calls") != 0)
                 ):
                     errors.append(f"{size}/{mode}: seam counters are invalid")
+                elif mode in {"http", "rust_native"} and seams["ffi_calls"] != 0:
+                    errors.append(f"{size}/{mode}: pure mode reports FFI calls")
 
             reported_metrics = {
                 "median_elapsed_ms": "elapsed_ms",

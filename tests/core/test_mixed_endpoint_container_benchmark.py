@@ -189,6 +189,37 @@ def test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch(tmp_path) -
     )
 
 
+@pytest.mark.ci
+@pytest.mark.parametrize("pure_mode", ("http", "rust_native"))
+def test_endpoint_report_verifier_rejects_ffi_in_pure_mode(
+    tmp_path, pure_mode: str
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_source = source / "fixture-run" / "mcp_trace.v1.json"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(trace_source.read_bytes())
+
+    for sample in [
+        report["modes"][pure_mode]["warmup"],
+        *report["modes"][pure_mode]["samples"],
+    ]:
+        sample["seam_metrics"]["ffi_calls"] = 1
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any(
+        f"2/{pure_mode}: pure mode reports FFI calls" in error
+        for error in verification["errors"]
+    )
+
+
 def test_endpoint_runner_preserves_json_evidence_when_mode_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
