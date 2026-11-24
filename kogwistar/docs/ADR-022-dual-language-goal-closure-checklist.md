@@ -51,6 +51,8 @@ One row per named test selector; repeated goal IDs make progress visible by case
 | GOAL-06 | `in_memory_send_message_admits_turn_and_run_atomically` | PASS | Rust invalid-input and atomic admission case passed. |
 | GOAL-06 | `test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP success contract passed. |
 | GOAL-06 | `test_python_document_graph_validation_http_error_matches_shared_fixture` | PASS | Python HTTP error fixture case passed. |
+| GOAL-06 | `test_server_health_matches_shared_contract` | PASS | Python `GET /health` checks success status and common health fields against `contracts/golden/health-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `health_route_matches_shared_python_contract` | PASS | Rust `GET /health` checks same shared fixture fields and types; focused Cargo test: 1 passed. |
 | GOAL-07 | `test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | CI interpreter matrix contract passed. |
 | GOAL-07 | `test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips` | PASS | Required mixed-worker backend selection passed. |
 | GOAL-08 | `test_python_workflow_success_matches_rust_durable_successor_admission` | PASS | Fixed-trace success parity case passed. |
