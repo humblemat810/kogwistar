@@ -1,3 +1,4 @@
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python=kogwistar/server/auth_middleware.py#get_current_user_id; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python_test=tests/server/test_chat_server_api.py#test_conversation_list_http_denials_precede_service_read
     #[tokio::test]
     async fn sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript() {
         use axum::body::{Body, to_bytes};
@@ -188,7 +189,7 @@
             principal,
         };
         let principal = json!({
-            "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+            "sub":"reader-1", "user_id":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
             "graph_space":"conversation", "ns":["conversation"], "capabilities":["read_graph"]
         });
         let denied = service
@@ -484,7 +485,7 @@
         let token = encode(
             &Header::new(jsonwebtoken::Algorithm::HS256),
             &json!({
-                "sub":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
                 "workspace_id":"workspace-a", "graph_space":"conversation",
                 "ns":["conversation"], "capabilities":["read_graph","project_view"], "exp":now + 300
             }),
@@ -794,6 +795,26 @@
             ))
             .await;
         assert_eq!(no_identity.status, StatusCode::UNAUTHORIZED.as_u16());
+        let denial_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-list-denied-http-v1.json"
+        ))
+        .unwrap();
+        let missing_user_id = denial_fixture["denial_cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["case"] == "missing_user_id_claim")
+            .unwrap();
+        let missing_user_id = service
+            .execute(read_request(
+                "/api/conversations",
+                missing_user_id["claims"].clone(),
+            ))
+            .await;
+        assert_eq!(
+            missing_user_id.status,
+            StatusCode::UNAUTHORIZED.as_u16()
+        );
 
         // A read-only syscall retry must keep returning the same canonical result
         // after the SQLite authority is reopened; Chroma remains the graph projection.

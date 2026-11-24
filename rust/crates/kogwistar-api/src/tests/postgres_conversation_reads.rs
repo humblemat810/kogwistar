@@ -133,6 +133,7 @@
                 body: Vec::new(),
                 principal: json!({
                     "sub": "alice",
+                    "user_id": "alice",
                     "role": "ro",
                     "ns": "workflow",
                     "storage_ns": "conversation",
