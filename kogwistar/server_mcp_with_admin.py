@@ -806,6 +806,16 @@ async def document_validate_graph(payload: DocumentGraphProposal) -> object:
             Node.model_validate(n)
         except ValidationError as e:
             node_errors[str(nid)] = e.json()
+        except KeyError:
+            node_errors[str(nid)] = json.dumps(
+                [
+                    {
+                        "type": "invalid_pointer",
+                        "loc": ["metadata", "pointers"],
+                        "msg": "Pointer metadata is missing a required field",
+                    }
+                ]
+            )
 
     # try to coerce edges
     for e in payload.edges:

@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "request": {
+    "doc_id": "doc-invalid-pointer",
+    "nodes": [
+      {
+        "id": "node-incomplete-pointer",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer is missing required source_cluster_id",
+        "metadata": {
+          "pointers": [
+            {
+              "start_char": 0,
+              "end_char": 4,
+              "verbatim_text": "Node"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "status": 200,
+  "ok": false,
+  "node_error_ids": ["node-incomplete-pointer"]
+}

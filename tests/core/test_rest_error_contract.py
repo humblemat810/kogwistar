@@ -74,3 +74,17 @@ def test_python_document_graph_validation_defaults_omitted_edges_to_empty() -> N
 
     assert response.status_code == fixture["status"]
     assert response.json() == fixture["response"]
+
+
+def test_python_document_graph_validation_rejects_incomplete_pointer_without_500() -> None:
+    fixture_path = _FIXTURE.with_name("document-validate-graph-invalid-pointer-v1.json")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/document.validate_graph",
+        json=fixture["request"],
+    )
+
+    assert response.status_code == fixture["status"]
+    body = response.json()
+    assert body["ok"] is fixture["ok"]
+    assert list(body["node_errors"]) == fixture["node_error_ids"]

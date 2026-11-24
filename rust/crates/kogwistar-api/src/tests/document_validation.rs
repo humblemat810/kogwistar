@@ -206,6 +206,39 @@
     }
 
     #[test]
+    fn document_graph_validation_rejects_incomplete_pointer_without_route_failure() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-invalid-pointer-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["ok"], fixture["ok"]);
+        let actual_ids = body["node_errors"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let expected_ids = fixture["node_error_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_ids, expected_ids);
+    }
+
+    #[test]
     fn internal_document_projection_reuses_wire_contract_and_write_authority() {
         let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
         let request = |principal: Value| ApiEffectRequest {
