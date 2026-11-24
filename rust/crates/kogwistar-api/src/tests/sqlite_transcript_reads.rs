@@ -707,7 +707,37 @@
                     assert_eq!(payload["turn_count"], 2);
                 }
                 "list" => {
+                    let contract: Value = serde_json::from_str(include_str!(
+                        "../../../../../contracts/golden/conversation-list-http-v1.json"
+                    ))
+                    .unwrap();
+                    let response_fields = contract["response_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|field| field.as_str().unwrap())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    let actual_response_fields = payload
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert_eq!(actual_response_fields, response_fields);
                     assert_eq!(payload["conversations"].as_array().unwrap().len(), 1);
+                    let conversation_fields = contract["conversation_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|field| field.as_str().unwrap())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    let actual_conversation_fields = payload["conversations"][0]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert_eq!(actual_conversation_fields, conversation_fields);
                     assert_eq!(payload["conversations"][0]["id"], "c1");
                     assert_eq!(payload["conversations"][0]["start_node_id"], "start");
                     assert_eq!(payload["conversations"][0]["status"], "active");
