@@ -364,7 +364,7 @@ async fn workflow_run_submit_checks_both_capabilities_before_admission() {
     remove_test_sqlite(&sqlite_path);
 }
 
-// PYTHON_PARITY_NOTE_V1: SQLite MCP submit persists the admitted run; Python counterpart verifies the same public contract and authorization. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-submit-mcp-v1.json
+// PYTHON_PARITY_NOTE_V1: SQLite MCP submit/cancel persist effects and terminal retry adds no run event; Python counterparts verify submit/cancel behavior and authorization. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-submit-mcp-v1.json
 #[tokio::test]
 async fn sqlite_mcp_run_submit_persists_admission() {
     use axum::body::{Body, to_bytes};
@@ -411,6 +411,7 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     let mut arguments = contract["arguments"].clone();
     arguments["user_id"] = json!("alice");
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -449,6 +450,76 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     assert_eq!(persisted.status, "queued");
 
     drop(reopened);
+
+    let cancel = || {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp/workflow")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0", "id":"sqlite-cancel", "method":"tools/call",
+                    "params":{"name":"workflow.run_cancel", "arguments":{"run_id":run_id}}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let cancelled = app.clone().oneshot(cancel()).await.unwrap();
+    assert_eq!(cancelled.status(), StatusCode::OK);
+    let cancelled_body = to_bytes(cancelled.into_body(), 8192).await.unwrap();
+    let cancelled_data = String::from_utf8(cancelled_body.to_vec()).unwrap();
+    let cancelled_message = cancelled_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let cancelled_payload: Value = serde_json::from_str(cancelled_message).unwrap();
+    assert_eq!(
+        cancelled_payload["result"]["structuredContent"]["status"],
+        "cancelled"
+    );
+
+    let after_cancel = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+    assert_eq!(after_cancel.get_server_run(run_id).unwrap().unwrap().status, "cancelled");
+    let first_event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+        &after_cancel,
+        run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    drop(after_cancel);
+
+    let retried = app.oneshot(cancel()).await.unwrap();
+    assert_eq!(retried.status(), StatusCode::OK);
+    let retry_body = to_bytes(retried.into_body(), 8192).await.unwrap();
+    let retry_data = String::from_utf8(retry_body.to_vec()).unwrap();
+    let retry_message = retry_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let retry_payload: Value = serde_json::from_str(retry_message).unwrap();
+    assert_eq!(
+        retry_payload["result"]["structuredContent"]["status"],
+        "cancelled"
+    );
+
+    let after_retry = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+    let retry_event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+        &after_retry,
+        run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    assert_eq!(retry_event_count, first_event_count, "retry must not add a duplicate event");
+    drop(after_retry);
     drop(service);
     remove_test_sqlite(&path);
 }
