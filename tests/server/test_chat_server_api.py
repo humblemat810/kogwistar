@@ -5526,20 +5526,18 @@ def test_workflow_design_node_upsert_requires_write_graph_before_effect(
         lambda **kwargs: calls.append(kwargs) or {},
     )
     with TestClient(server.app) as client:
-        headers = _token_header(
-            client,
-            role=contract["denied_claims"]["role"],
-            ns="workflow",
-            username=contract["denied_claims"]["sub"],
-            capabilities=",".join(contract["denied_claims"]["capabilities"]),
-        )
-        response = client.post(
-            contract["path"],
-            json=contract["request"],
-            headers=headers,
-        )
+        for case in contract["denial_cases"]:
+            claims = case["claims"]
+            headers = _token_header(
+                client,
+                role=claims["role"],
+                ns=claims["ns"],
+                username=claims["sub"],
+                capabilities=",".join(claims["capabilities"]),
+            )
+            response = client.post(case["path"], json=case["request"], headers=headers)
+            assert response.status_code == case["status"], case["case"]
 
-    assert response.status_code == contract["denial_status"]
     assert calls == []
 
 

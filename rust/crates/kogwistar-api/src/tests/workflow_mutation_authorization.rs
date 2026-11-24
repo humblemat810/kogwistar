@@ -15,12 +15,6 @@
         ));
         let service = SqliteRunApplicationService::open(&path).unwrap();
         let secret = "design-node-denial-test-secret";
-        let token = encode(
-            &Header::new(Algorithm::HS256),
-            &fixture["denied_claims"],
-            &EncodingKey::from_secret(secret.as_bytes()),
-        )
-        .unwrap();
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
@@ -35,25 +29,43 @@
             },
             Arc::new(service.clone()),
         );
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(fixture["path"].as_str().unwrap())
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {token}"))
-                    .body(Body::from(serde_json::to_vec(&fixture["request"]).unwrap()))
-                    .unwrap(),
+        for case in fixture["denial_cases"].as_array().unwrap() {
+            let token = encode(
+                &Header::new(Algorithm::HS256),
+                &case["claims"],
+                &EncodingKey::from_secret(secret.as_bytes()),
             )
-            .await
             .unwrap();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(case["path"].as_str().unwrap())
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::from(serde_json::to_vec(&case["request"]).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
 
-        assert_eq!(
-            response.status().as_u16(),
-            fixture["denial_status"].as_u64().unwrap() as u16
-        );
-        let namespace = format!("wf_design:{}", fixture["workflow_id"].as_str().unwrap());
-        assert!(service.store.replay_raw_events(&namespace, 0, 100).unwrap().is_empty());
+            assert_eq!(
+                response.status().as_u16(),
+                case["status"].as_u64().unwrap() as u16,
+                "case {}",
+                case["case"]
+            );
+            let namespace = format!(
+                "wf_design:{}",
+                case["workflow_id"].as_str().unwrap()
+            );
+            assert!(
+                service.store.replay_raw_events(&namespace, 0, 100).unwrap().is_empty(),
+                "case {} wrote an event",
+                case["case"]
+            );
+        }
 
         drop(service);
         let _ = std::fs::remove_file(path);

@@ -1,21 +1,43 @@
 {
   "contract_version": 1,
-  "workflow_id": "wf-node-upsert-denied",
-  "path": "/api/workflow/design/wf-node-upsert-denied/nodes",
-  "designer_id": "alice",
-  "request": {
-    "designer_id": "alice",
-    "node_id": "node-denied",
-    "label": "Denied"
-  },
-  "denied_claims": {
-    "sub": "alice",
-    "role": "rw",
-    "roles": ["reader", "rw"],
-    "ns": "workflow",
-    "capabilities": ["workflow.design.write"],
-    "exp": 4102444800
-  },
-  "denial_status": 403,
-  "expected_required_capability": "write_graph"
+  "denial_cases": [
+    {
+      "case": "missing_write_graph",
+      "workflow_id": "wf-node-upsert-missing-capability",
+      "path": "/api/workflow/design/wf-node-upsert-missing-capability/nodes",
+      "request": {
+        "designer_id": "alice",
+        "node_id": "node-missing-capability",
+        "label": "Denied"
+      },
+      "claims": {
+        "sub": "alice",
+        "role": "rw",
+        "roles": ["reader", "rw"],
+        "ns": "workflow",
+        "capabilities": ["workflow.design.write"],
+        "exp": 4102444800
+      },
+      "status": 403
+    },
+    {
+      "case": "wrong_namespace",
+      "workflow_id": "wf-node-upsert-wrong-namespace",
+      "path": "/api/workflow/design/wf-node-upsert-wrong-namespace/nodes",
+      "request": {
+        "designer_id": "alice",
+        "node_id": "node-wrong-namespace",
+        "label": "Denied"
+      },
+      "claims": {
+        "sub": "alice",
+        "role": "rw",
+        "roles": ["reader", "rw"],
+        "ns": "conversation",
+        "capabilities": ["workflow.design.write", "write_graph"],
+        "exp": 4102444800
+      },
+      "status": 403
+    }
+  ]
 }
