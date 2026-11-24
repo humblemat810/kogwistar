@@ -175,6 +175,66 @@
     }
 
     #[tokio::test]
+    async fn conversation_list_http_denials_precede_storage_read() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use tower::ServiceExt;
+
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-list-denied-http-v1.json"
+        ))
+        .unwrap();
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_list_http_auth_contract",
+        )
+        .unwrap();
+        let secret = "conversation-list-denial-test-secret";
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service),
+        );
+
+        for case in fixture["denial_cases"].as_array().unwrap() {
+            let token = encode(
+                &Header::new(Algorithm::HS256),
+                &case["claims"],
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(fixture["path"].as_str().unwrap())
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                case["status"].as_u64().unwrap() as u16,
+                "case {}",
+                case["case"]
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn conversation_transcript_route_checks_namespace_and_capability_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",

@@ -1831,6 +1831,7 @@ impl PostgresRunApplicationService {
         }
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#conversation_list_effect; python=kogwistar/server/auth_middleware.py#get_current_user_id; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_read_authorization.rs#conversation_list_http_denials_precede_storage_read; python_test=tests/server/test_chat_server_api.py#test_conversation_list_http_denials_precede_service_read
     async fn conversation_list_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let namespaces = principal_strings(&request.principal, "ns");
         let namespaces = if namespaces.is_empty() {
@@ -1857,8 +1858,7 @@ impl PostgresRunApplicationService {
         }
         let user_id = request
             .principal
-            .get("sub")
-            .or_else(|| request.principal.get("user_id"))
+            .get("user_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());

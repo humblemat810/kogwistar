@@ -1425,6 +1425,40 @@ def test_conversation_list_is_user_scoped_and_has_stable_response_shape(
         }
 
 
+def test_conversation_list_http_denials_precede_service_read(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-list-denied-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    reads = []
+    monkeypatch.setattr(
+        service._conversation_queries,
+        "list_conversations_for_user",
+        lambda user_id: reads.append(user_id) or [],
+    )
+
+    with TestClient(server.app) as client:
+        for case in fixture["denial_cases"]:
+            claims = case["claims"]
+            headers = _token_header(
+                client,
+                role=claims["role"],
+                ns=claims["ns"],
+                username=claims["sub"],
+                capabilities=",".join(claims["capabilities"]),
+            )
+            response = client.get(fixture["path"], headers=headers)
+            assert response.status_code == case["status"], case["case"]
+
+    assert reads == []
+
+
 def test_conversation_create_uses_authenticated_owner_and_persists_start_node(
     monkeypatch, engine_triplet
 ):
