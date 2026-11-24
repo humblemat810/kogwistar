@@ -31,6 +31,8 @@ except ImportError:
     )
 
 ENDPOINT_MODES = ("http", "rust_authority_http", "rust_native")
+MIN_RUST_NATIVE_THROUGHPUT_RATIO = 0.95
+MAX_RUST_NATIVE_P95_LATENCY_RATIO = 1.10
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -60,6 +62,7 @@ def _verify_endpoint_reports(
 ) -> dict[str, Any]:
     errors: list[str] = []
     latency_summary: dict[str, dict[str, dict[str, float]]] = {}
+    throughput_summary: dict[str, dict[str, float]] = {}
     if len(reports) != len(items):
         errors.append("report count does not match requested item sizes")
 
@@ -283,8 +286,65 @@ def _verify_endpoint_reports(
                 for operation, rows in operation_metrics.items()
                 if rows
             }
+            throughput = result.get("median_throughput_ops_per_sec")
+            if isinstance(throughput, (int, float)) and math.isfinite(throughput):
+                throughput_summary.setdefault(str(size), {})[mode] = float(throughput)
         if set(digest_by_mode) != set(modes) or len(set(digest_by_mode.values())) != 1:
             errors.append(f"{size}: canonical state digests differ or are incomplete")
+
+    performance_gate: dict[str, Any] = {
+        "applicable": "http" in modes and "rust_native" in modes,
+        "thresholds": {
+            "minimum_throughput_ratio": MIN_RUST_NATIVE_THROUGHPUT_RATIO,
+            "maximum_per_operation_p95_latency_ratio": MAX_RUST_NATIVE_P95_LATENCY_RATIO,
+        },
+        "fixtures": {},
+        "passed": None,
+    }
+    if performance_gate["applicable"]:
+        performance_gate["passed"] = True
+        for size in items:
+            size_key = str(size)
+            python_throughput = throughput_summary.get(size_key, {}).get("http")
+            rust_throughput = throughput_summary.get(size_key, {}).get("rust_native")
+            python_latency = latency_summary.get(size_key, {}).get("http", {})
+            rust_latency = latency_summary.get(size_key, {}).get("rust_native", {})
+            if (
+                python_throughput is None
+                or rust_throughput is None
+                or set(python_latency) != set(rust_latency)
+            ):
+                errors.append(f"{size}: performance comparison metrics are incomplete")
+                performance_gate["passed"] = False
+                continue
+
+            throughput_ratio = rust_throughput / python_throughput
+            p95_ratios: dict[str, float | None] = {}
+            if throughput_ratio < MIN_RUST_NATIVE_THROUGHPUT_RATIO:
+                errors.append(
+                    f"{size}/rust_native: throughput ratio {throughput_ratio:.3f} "
+                    f"is below {MIN_RUST_NATIVE_THROUGHPUT_RATIO:.2f}"
+                )
+                performance_gate["passed"] = False
+            for operation in python_latency:
+                python_p95 = python_latency[operation]["p95_ms"]
+                rust_p95 = rust_latency[operation]["p95_ms"]
+                if python_p95 <= 0:
+                    ratio = 1.0 if rust_p95 <= 0 else None
+                else:
+                    ratio = rust_p95 / python_p95
+                p95_ratios[operation] = ratio
+                if ratio is None or ratio > MAX_RUST_NATIVE_P95_LATENCY_RATIO:
+                    ratio_label = "undefined" if ratio is None else f"{ratio:.3f}"
+                    errors.append(
+                        f"{size}/rust_native/{operation}: p95 latency ratio "
+                        f"{ratio_label} exceeds {MAX_RUST_NATIVE_P95_LATENCY_RATIO:.2f}"
+                    )
+                    performance_gate["passed"] = False
+            performance_gate["fixtures"][size_key] = {
+                "throughput_ratio": throughput_ratio,
+                "operation_p95_latency_ratios": p95_ratios,
+            }
 
     return {
         "passed": not errors,
@@ -292,6 +352,7 @@ def _verify_endpoint_reports(
         "validation_error_count": len(errors),
         "failed_samples": 0 if not errors else None,
         "latency_summary_ms": latency_summary,
+        "performance_gate": performance_gate,
     }
 
 

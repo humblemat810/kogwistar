@@ -1490,6 +1490,37 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert all(current[item_id] == "PASS" for item_id, status in baseline_rows.items() if status == "PASS")
 
 
+def test_dual_language_goal_case_table_matches_pivot_rows() -> None:
+    checklist = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    ).read_text(encoding="utf-8")
+    pivot_section = checklist.partition("## Pivoted Test-Case Status")[2]
+    section = pivot_section.partition("\n## ")[0]
+    rows = [line for line in section.splitlines() if line.startswith("| GOAL-")]
+    parsed = [[part.strip() for part in row.strip("|").split("|")] for row in rows]
+
+    assert all(len(row) == 4 for row in parsed)
+    assert all(row[2] in {"PASS", "NOT STARTED"} for row in parsed)
+    assert any(
+        "test_dual_language_goal_case_table_matches_pivot_rows" in row[1]
+        for row in parsed
+    )
+    counts = {
+        status: sum(row[2] == status for row in parsed)
+        for status in ("PASS", "NOT STARTED")
+    }
+    summary = re.search(
+        r"Current: \*\*(\d+) PASS / (\d+) NOT STARTED / (\d+) listed cases\*\*",
+        section,
+    )
+    assert summary is not None
+    assert tuple(map(int, summary.groups())) == (
+        counts["PASS"],
+        counts["NOT STARTED"],
+        len(parsed),
+    )
+
+
 def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() -> None:
     checklist = (
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"

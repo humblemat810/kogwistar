@@ -2529,11 +2529,17 @@ errors. Digests: 100 records `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f
 Mean sample-level p95 event-read / projection-read / write latency (ms):
 Python vs Rust-native was 15.27 / 15.45 / 31.75 vs 1.76 / 1.81 / 2.69 at
 100 records, and 16.09 / 15.75 / 33.14 vs 1.80 / 1.83 / 2.91 at 500.
-Rust-native peak RSS was 7.31 MiB and 8.55 MiB, respectively.
+Rust-native peak RSS was 7.31 MiB and 8.55 MiB, respectively. The existing
+performance thresholds are now executable in the report verifier:
+Rust-native/Python throughput must be at least 0.95, and each operation's p95
+latency ratio must be at most 1.10. Both fixtures passed; throughput ratios
+were 9.99 and 9.81, while per-operation p95 ratios ranged from 0.085 to 0.117.
+Unit tests cover both regression failures, exact threshold acceptance, and
+that the gate is unassessed unless both pure modes are present.
 
 These results strengthen evidence for this sequential SQLite endpoint trace
 only. The hybrid column is diagnostic and has no performance guarantee.
-Concurrent workload, other backends, broader operations, and stable declared
-thresholds remain unverified; DLFC-18 stays open. Raw JSON and trace artifacts
+Concurrent workload, other backends, and broader operations remain unverified;
+DLFC-18 stays open. Raw JSON and trace artifacts
 are retained locally (ignored) under
 `.tmp/mixed-runtime-followup-20261125/endpoint/`.

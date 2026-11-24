@@ -189,6 +189,107 @@ def test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch(tmp_path) -
     )
 
 
+def test_endpoint_performance_gate_rejects_rust_native_throughput_regression(
+    tmp_path,
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+    rust_native = report["modes"]["rust_native"]
+    for sample in rust_native["samples"]:
+        sample["throughput_ops_per_sec"] *= 0.9
+    rust_native["median_throughput_ops_per_sec"] *= 0.9
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any(
+        "rust_native: throughput ratio" in error for error in verification["errors"]
+    )
+
+
+def test_endpoint_performance_gate_rejects_rust_native_operation_tail_regression(
+    tmp_path,
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+    rust_native = report["modes"]["rust_native"]
+    for sample in rust_native["samples"]:
+        sample["per_operation"]["write_record"]["p95_ms"] = 2.3
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any(
+        "rust_native/write_record: p95 latency ratio" in error
+        for error in verification["errors"]
+    )
+
+
+def test_endpoint_performance_gate_accepts_values_at_declared_limits(tmp_path) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+    rust_native = report["modes"]["rust_native"]
+    for sample in rust_native["samples"]:
+        sample["throughput_ops_per_sec"] *= 0.95
+        for metrics in sample["per_operation"].values():
+            metrics["p95_ms"] = 2.2
+    rust_native["median_throughput_ops_per_sec"] *= 0.95
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is True
+    assert verification["performance_gate"]["passed"] is True
+
+
+def test_endpoint_performance_gate_is_unassessed_without_both_pure_modes(
+    tmp_path,
+) -> None:
+    modes = ("http",)
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is True
+    assert verification["performance_gate"]["applicable"] is False
+    assert verification["performance_gate"]["passed"] is None
+
+
 @pytest.mark.ci
 @pytest.mark.parametrize("pure_mode", ("http", "rust_native"))
 def test_endpoint_report_verifier_rejects_ffi_in_pure_mode(
