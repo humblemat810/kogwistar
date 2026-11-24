@@ -464,16 +464,36 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     assert_eq!(persisted.conversation_id, "conversation-contract");
     assert_eq!(persisted.user_id.as_deref(), Some("alice"));
     assert_eq!(persisted.status, "queued");
+    let before_denial_event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+        &reopened,
+        run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
 
     drop(reopened);
 
-    let cancel = || {
+    let read_only_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "user_id":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["workflow.run.read"],
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+
+    let cancel = |bearer: &str| {
         Request::builder()
             .method("POST")
             .uri("/mcp/workflow")
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
-            .header("authorization", format!("Bearer {token}"))
+            .header("authorization", format!("Bearer {bearer}"))
             .body(Body::from(
                 json!({
                     "jsonrpc":"2.0", "id":"sqlite-cancel", "method":"tools/call",
@@ -483,7 +503,41 @@ async fn sqlite_mcp_run_submit_persists_admission() {
             ))
             .unwrap()
     };
-    let cancelled = app.clone().oneshot(cancel()).await.unwrap();
+
+    let denied = app
+        .clone()
+        .oneshot(cancel(&read_only_token))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::OK);
+    let denied_body = to_bytes(denied.into_body(), 8192).await.unwrap();
+    let denied_data = String::from_utf8(denied_body.to_vec()).unwrap();
+    let denied_message = denied_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let denied_payload: Value = serde_json::from_str(denied_message).unwrap();
+    assert_eq!(denied_payload["result"]["isError"], true, "{denied_payload}");
+
+    let after_denial = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+    assert_eq!(after_denial.get_server_run(run_id).unwrap().unwrap().status, "queued");
+    let before_cancel_event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+        &after_denial,
+        run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    assert_eq!(
+        before_cancel_event_count,
+        before_denial_event_count,
+        "denied cancel must not append a durable run event",
+    );
+    drop(after_denial);
+
+    let cancelled = app.clone().oneshot(cancel(&token)).await.unwrap();
     assert_eq!(cancelled.status(), StatusCode::OK);
     let cancelled_body = to_bytes(cancelled.into_body(), 8192).await.unwrap();
     let cancelled_data = String::from_utf8(cancelled_body.to_vec()).unwrap();
@@ -508,9 +562,13 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     .await
     .unwrap()
     .len();
+    assert!(
+        first_event_count > before_cancel_event_count,
+        "authorized cancel must append its durable run event",
+    );
     drop(after_cancel);
 
-    let retried = app.oneshot(cancel()).await.unwrap();
+    let retried = app.oneshot(cancel(&token)).await.unwrap();
     assert_eq!(retried.status(), StatusCode::OK);
     let retry_body = to_bytes(retried.into_body(), 8192).await.unwrap();
     let retry_data = String::from_utf8(retry_body.to_vec()).unwrap();
