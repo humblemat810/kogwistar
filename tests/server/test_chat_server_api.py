@@ -5375,6 +5375,7 @@ def test_workflow_design_edge_upsert_matches_shared_contract(
         )
         graph = client.get(
             f"/api/workflow/design/{contract['workflow_id']}/graph",
+            params={"refresh": "true"},
             headers=headers,
         )
 
@@ -5608,6 +5609,7 @@ def test_workflow_design_node_upsert_repeated_request_creates_next_python_versio
         )
         graph = client.get(
             f"/api/workflow/design/{contract['workflow_id']}/graph",
+            params={"refresh": "true"},
             headers=headers,
         )
 
