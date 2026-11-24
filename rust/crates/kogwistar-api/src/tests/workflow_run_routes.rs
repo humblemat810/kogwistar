@@ -378,11 +378,18 @@ async fn sqlite_mcp_run_submit_persists_admission() {
         uuid::Uuid::new_v4()
     ));
     let service = SqliteRunApplicationService::open(&path).unwrap();
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-submit-mcp-v1.json"
+    ))
+    .unwrap();
+    let expected_owner = contract["python_service_arguments"]["user_id"]
+        .as_str()
+        .unwrap();
     let secret = b"sqlite-mcp-submit-secret";
     let token = encode(
         &Header::new(Algorithm::HS256),
         &json!({
-            "sub":"alice", "user_id":"alice", "role":"rw", "ns":["workflow"],
+            "sub":expected_owner, "user_id":expected_owner, "role":"rw", "ns":["workflow"],
             "capabilities":["spawn_process", "workflow.run.write"],
             "iss":"local", "exp":4102444800_u64
         }),
@@ -404,17 +411,13 @@ async fn sqlite_mcp_run_submit_persists_admission() {
         },
         Arc::new(service.clone()),
     );
-    let contract: Value = serde_json::from_str(include_str!(
-        "../../../../../contracts/golden/workflow-run-submit-mcp-v1.json"
-    ))
-    .unwrap();
     let mut arguments = contract["arguments"].clone();
     arguments["user_id"] = json!("caller-controlled-owner");
 
     let submit_without_spawn_token = encode(
         &Header::new(Algorithm::HS256),
         &json!({
-            "sub":"alice", "user_id":"alice", "role":"rw", "ns":["workflow"],
+            "sub":expected_owner, "user_id":expected_owner, "role":"rw", "ns":["workflow"],
             "capabilities":["workflow.run.write"],
             "iss":"local", "exp":4102444800_u64
         }),
@@ -516,7 +519,7 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     let persisted = reopened.get_server_run(run_id).unwrap().unwrap();
     assert_eq!(persisted.workflow_id, "workflow-contract");
     assert_eq!(persisted.conversation_id, "conversation-contract");
-    assert_eq!(persisted.user_id.as_deref(), Some("alice"));
+    assert_eq!(persisted.user_id.as_deref(), Some(expected_owner));
     assert_eq!(persisted.status, "queued");
     let before_denial_event_count = kogwistar_store::ServerRunReadStore::server_run_events(
         &reopened,

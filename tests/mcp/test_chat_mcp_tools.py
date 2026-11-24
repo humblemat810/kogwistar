@@ -5417,6 +5417,13 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
     from kogwistar.server.chat_mcp import build_workflow_mcp
     from kogwistar.server.mcp_tools import require_ns, tool_roles
 
+    submit_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-submit-mcp-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected_owner = submit_contract["python_service_arguments"]["user_id"]
     cancel_contract = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -5450,22 +5457,19 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
         require_workflow_access=lambda _workflow_id, _role: None,
     )
 
-    with _claims(
-        "rw", "conversation", scope_parts={"user_id": "authenticated-owner"}
-    ):
+    with _claims("rw", "conversation", scope_parts={"user_id": expected_owner}):
         created = _structured(
             await server.mcp.call_tool("conversation.create", {"user_id": "u-wf-mcp"})
         )
         conversation_id = created["conversation_id"]
 
-    with _claims("rw", "workflow", scope_parts={"user_id": "authenticated-owner"}):
+    with _claims("rw", "workflow", scope_parts={"user_id": expected_owner}):
         submitted = _structured(
             await workflow_mcp.call_tool(
-                "workflow.run_submit",
+                submit_contract["tool"],
                 {
-                    "workflow_id": "wf.runtime.mcp.cancel",
+                    **submit_contract["arguments"],
                     "conversation_id": conversation_id,
-                    "initial_state": {"counter": 1},
                     "user_id": "caller-controlled-owner",
                 },
             )
@@ -5473,7 +5477,7 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
         run_id = submitted["run_id"]
         stored_run = server.run_registry.get_run(run_id)
         assert stored_run is not None
-        assert stored_run["user_id"] == "authenticated-owner"
+        assert stored_run["user_id"] == expected_owner
         cancelling = _structured(
             await workflow_mcp.call_tool("workflow.run_cancel", {"run_id": run_id})
         )
