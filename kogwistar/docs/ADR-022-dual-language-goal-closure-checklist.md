@@ -61,7 +61,8 @@ One row per named test selector; repeated goal IDs make progress visible by case
 | GOAL-06 | `test_workflow_design_empty_history_matches_shared_contract` | PASS | Python `GET /api/workflow/design/{id}/history` exactly matches `workflow-design-empty-history-http-v1.json`; focused pytest: 1 passed. |
 | GOAL-06 | `sqlite_design_history_folds_branch_and_repairs_projection` | PASS | Rust route checks both shared empty-graph and empty-history HTTP fixtures exactly; focused Cargo test: 1 passed. |
 | GOAL-06 | `test_workflow_design_node_upsert_matches_shared_contract` | PASS | Python POST node-upsert consumes the shared fixture and checks fixed, integer, and absent response fields; focused pytest: 1 passed. |
-| GOAL-06 | `sqlite_design_capability_mutates_graph_and_undoes_atomically` | PASS | Rust POST node-upsert consumes the same fixture and checks matching response fields; same test verifies mutation/undo atomicity; focused Cargo test: 1 passed. |
+| GOAL-06 | `sqlite_design_capability_mutates_graph_and_undoes_atomically` | PASS | Rust POST node- and edge-upsert consume their respective shared fixtures and check matching fixed/typed/absent response fields; same test verifies mutation/undo atomicity; focused Cargo test: 1 passed. |
+| GOAL-06 | `test_workflow_design_edge_upsert_matches_shared_contract` | PASS | Python creates fixture-defined endpoints, then checks edge-upsert fixed, integer, and absent response fields; focused pytest: 1 passed. |
 | GOAL-07 | `test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | CI interpreter matrix contract passed. |
 | GOAL-07 | `test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips` | PASS | Required mixed-worker backend selection passed. |
 | GOAL-08 | `test_python_workflow_success_matches_rust_durable_successor_admission` | PASS | Fixed-trace success parity case passed. |
