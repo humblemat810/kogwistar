@@ -5414,6 +5414,18 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
         assert "run.cancelling" in names
         assert "run.cancelled" in names
 
+        retried = _structured(
+            await server.mcp.call_tool("workflow.run_cancel", {"run_id": run_id})
+        )
+        assert retried["status"] == "cancelled"
+        replayed_events = _structured(
+            await server.mcp.call_tool("workflow.run_events", {"run_id": run_id})
+        )
+        replayed_names = [
+            str(evt.get("event_type") or "") for evt in replayed_events.get("events", [])
+        ]
+        assert replayed_names == names
+
         cancel_nodes = conversation_engine.get_nodes(
             where={
                 "$and": [{"entity_type": "workflow_cancel_request"}, {"run_id": run_id}]

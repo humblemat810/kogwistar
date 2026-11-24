@@ -895,7 +895,7 @@ async fn in_memory_project_view_syscall_is_reachable_through_authenticated_http(
     }
 }
 
-// PYTHON_PARITY_NOTE_V1: MCP transport authorization and dispatch reach the in-memory workflow cancel effect; denied capability preserves run state. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
+// PYTHON_PARITY_NOTE_V1: MCP cancel reaches the in-memory effect; denied capability preserves state and terminal retry adds no event. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
 #[tokio::test]
 async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     use axum::body::{Body, to_bytes};
@@ -998,6 +998,7 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     );
 
     let accepted = app
+        .clone()
         .oneshot(call(token(vec!["workflow.run.write"])))
         .await
         .unwrap();
@@ -1019,6 +1020,44 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     .unwrap();
     assert!(cancelled.cancel_requested);
     assert_eq!(cancelled.status, "cancelled");
+
+    let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-mcp-cancel-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    let retried = app
+        .oneshot(call(token(vec!["workflow.run.write"])))
+        .await
+        .unwrap();
+    assert_eq!(retried.status(), StatusCode::OK);
+    let retried_wire = to_bytes(retried.into_body(), 8192).await.unwrap();
+    let retried_data = String::from_utf8(retried_wire.to_vec()).unwrap();
+    let retried_message = retried_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    assert_ne!(
+        serde_json::from_str::<Value>(retried_message).unwrap()["result"]["isError"],
+        true
+    );
+    assert_eq!(
+        kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            "memory-mcp-cancel-run",
+            0,
+            100,
+        )
+        .await
+        .unwrap()
+        .len(),
+        event_count,
+        "terminal MCP retry must not append a duplicate run event"
+    );
 }
 
 #[tokio::test]
