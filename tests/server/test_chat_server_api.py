@@ -4803,7 +4803,7 @@ def test_chat_rest_cancelled_run_persists_no_assistant(monkeypatch, engine_tripl
 
         events = _collect_sse_events(client, run_id, ro_headers)
         names = [name for name, _payload in events]
-        assert "run.cancelling" in names
+        assert cancel_contract["nonterminal_cancel_event"] in names
         assert names[-1] == "run.cancelled"
 
 

@@ -615,9 +615,13 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     )
     .await
     .unwrap();
+    let cancel_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-cancel-v1.json"
+    ))
+    .unwrap();
     assert!(first_event_count
         .iter()
-        .any(|event| event.event_type == "run.cancelling"));
+        .any(|event| event.event_type == cancel_contract["nonterminal_cancel_event"]));
     let first_event_count = first_event_count.len();
     assert!(
         first_event_count > before_cancel_event_count,
@@ -649,6 +653,7 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     .await
     .unwrap()
     .len();
+    assert_eq!(cancel_contract["terminal_retry_appends_event"], false);
     assert_eq!(retry_event_count, first_event_count, "retry must not add a duplicate event");
     drop(after_retry);
     drop(service);
@@ -1123,7 +1128,10 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     .await
     .unwrap();
     assert_eq!(first_cancel_events.len(), 1);
-    assert_eq!(first_cancel_events[0].event_type, "run.cancelling");
+    assert_eq!(
+        first_cancel_events[0].event_type,
+        contract["nonterminal_cancel_event"]
+    );
 
     let event_count_before_retry = kogwistar_store::ServerRunReadStore::server_run_events(
         &service.store,
@@ -1198,7 +1206,10 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     )
     .await
     .unwrap();
-    assert_eq!(retry_events.last().unwrap().event_type, "run.cancelling");
+    assert_eq!(
+        retry_events.last().unwrap().event_type,
+        contract["nonterminal_cancel_event"]
+    );
 
     let syscall_principal = json!({
         "sub":"alice",

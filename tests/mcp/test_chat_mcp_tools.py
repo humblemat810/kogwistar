@@ -5408,6 +5408,12 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
 
 @pytest.mark.asyncio
 async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
+    cancel_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/run-cancel-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     run_status_contract = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -5465,7 +5471,7 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
             await server.mcp.call_tool("workflow.run_events", {"run_id": run_id})
         )
         names = [str(evt.get("event_type") or "") for evt in events.get("events", [])]
-        assert "run.cancelling" in names
+        assert cancel_contract["nonterminal_cancel_event"] in names
         assert "run.cancelled" in names
 
         retried = _structured(
@@ -5478,6 +5484,7 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
         replayed_names = [
             str(evt.get("event_type") or "") for evt in replayed_events.get("events", [])
         ]
+        assert cancel_contract["terminal_retry_appends_event"] is False
         assert replayed_names == names
 
         cancel_nodes = conversation_engine.get_nodes(

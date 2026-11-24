@@ -390,10 +390,14 @@ async fn in_memory_run_cancel_matches_shared_contract_and_authority() {
     )
     .await
     .unwrap();
+    assert!(events_after_cancel
+        .iter()
+        .any(|event| event.event_type == contract["nonterminal_cancel_event"]));
     let terminal_repeat = service
         .execute(cancel(json!({"sub":"alice", "role":"rw", "ns":["workflow"], "capabilities":[]})))
         .await;
     assert_eq!(terminal_repeat.status, StatusCode::ACCEPTED.as_u16());
+    assert_eq!(contract["terminal_retry_appends_event"], false);
     assert_eq!(
         kogwistar_store::ServerRunReadStore::server_run_events(
             &service.store,
