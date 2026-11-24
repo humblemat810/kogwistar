@@ -465,13 +465,19 @@ from mcp.client.streamable_http import streamable_http_client
 ENDPOINT = {endpoint:?}
 READY = Path({ready_path_literal})
 received = asyncio.Event()
-received_methods = []
+received_notifications = []
 
 async def on_message(message):
     method = getattr(message, "method", None)
     if method == "notifications/message":
-        received_methods.append(method)
-    if received_methods:
+        params = getattr(message, "params", None)
+        received_notifications.append((
+            method,
+            getattr(params, "level", None),
+            getattr(params, "logger", None),
+            getattr(params, "data", None),
+        ))
+    if len(received_notifications) == 2:
         received.set()
 
 async def record_session(response):
@@ -489,8 +495,11 @@ async def main():
             async with ClientSession(read, write, message_handler=on_message) as session:
                 await session.initialize()
                 await asyncio.wait_for(received.wait(), timeout=20)
-                assert received_methods == ["notifications/message"], received_methods
-                print("python-sdk-server-notification-received")
+                assert received_notifications == [
+                    ("notifications/message", "info", "rust-interoperability-smoke", "rust-sdk-interoperability-marker-1"),
+                    ("notifications/message", "warning", "rust-interoperability-smoke", "rust-sdk-interoperability-marker-2"),
+                ], received_notifications
+                print("python-sdk-server-notification-order-and-payload-passed")
 
 asyncio.run(main())
 "#
@@ -545,12 +554,29 @@ asyncio.run(main())
                     "params": {
                         "level": "info",
                         "logger": "rust-interoperability-smoke",
-                        "data": "rust-sdk-interoperability-marker"
+                        "data": "rust-sdk-interoperability-marker-1"
                     }
                 }),
             )
             .unwrap();
         assert_eq!(logging_event_id, "1");
+        let next_logging_event_id = mcp_sessions
+            .publish(
+                &session_id,
+                &session_owner,
+                Some("2025-11-25"),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/message",
+                    "params": {
+                        "level": "warning",
+                        "logger": "rust-interoperability-smoke",
+                        "data": "rust-sdk-interoperability-marker-2"
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(next_logging_event_id, "2");
         let child_deadline = Instant::now() + Duration::from_secs(25);
         while child.try_wait().unwrap().is_none() && Instant::now() < child_deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -568,7 +594,7 @@ asyncio.run(main())
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout)
-            .contains("python-sdk-server-notification-received"));
+            .contains("python-sdk-server-notification-order-and-payload-passed"));
     }
 
     #[test]
