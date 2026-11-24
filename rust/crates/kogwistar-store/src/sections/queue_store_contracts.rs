@@ -230,6 +230,15 @@ pub trait LaneMessageWriteStore: LaneMessageReadStore {
         status: &str,
         error_json: Option<String>,
     ) -> impl Future<Output = StoreResult<()>> + Send;
+    /// Changes a lane status only when its current value matches `expected_status`.
+    /// Returns false when another worker already performed the transition.
+    fn compare_and_set_projected_lane_message_status(
+        &self,
+        message_id: &str,
+        expected_status: &str,
+        status: &str,
+        error_json: Option<String>,
+    ) -> impl Future<Output = StoreResult<bool>> + Send;
     fn update_projected_lane_message_links(
         &self,
         message_id: &str,

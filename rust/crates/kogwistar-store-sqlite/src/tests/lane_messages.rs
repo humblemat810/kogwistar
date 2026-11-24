@@ -37,6 +37,44 @@ fn targeted_lane_claim_does_not_take_earlier_other_run() {
     drop(store);
     fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn lane_status_compare_and_set_allows_only_one_replay_transition() {
+    let (store, path) = store("lane-status-cas");
+    let mut row = runtime_worker_lane("run-target", "dead-letter-cas");
+    row.status = "dead-letter".to_owned();
+    store.project_lane_message(row).unwrap();
+
+    let first = store
+        .compare_and_set_projected_lane_message_status(
+            "dead-letter-cas",
+            "dead-letter",
+            "pending",
+            None,
+        )
+        .unwrap();
+    let retry = store
+        .compare_and_set_projected_lane_message_status(
+            "dead-letter-cas",
+            "dead-letter",
+            "pending",
+            None,
+        )
+        .unwrap();
+
+    assert!(first);
+    assert!(!retry);
+    assert_eq!(
+        store
+            .get_projected_lane_message("dead-letter-cas")
+            .unwrap()
+            .unwrap()
+            .status,
+        "pending"
+    );
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
 #[test]
 fn filtered_lane_claim_is_atomic_for_run_kind_recipient_and_ids() {
     let (store, path) = store("filtered-control-claim");

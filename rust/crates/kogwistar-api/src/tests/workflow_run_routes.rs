@@ -2143,3 +2143,118 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
     drop(auth);
     let _ = std::fs::remove_file(auth_path);
 }
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+async fn postgres_dead_letter_replay_mcp_is_single_claim_under_concurrency() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_dead_replay_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
+    service
+        .store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: "dead-letter-concurrent".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "conversation-dead-replay".to_owned(),
+            recipient_id: "worker".to_owned(),
+            sender_id: "scheduler".to_owned(),
+            msg_type: "workflow.run.execute".to_owned(),
+            status: "dead-letter".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some("dead-replay-run".to_owned()),
+            step_id: None,
+            correlation_id: None,
+            payload_json: None,
+            error_json: Some("failed".to_owned()),
+        })
+        .await
+        .unwrap();
+
+    let secret = "postgres-dead-replay-test-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["service.manage"], "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let request = |id: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp/workflow")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0", "id":id, "method":"tools/call",
+                    "params":{"name":"workflow.dead_letter_replay", "arguments":{"run_id":"dead-replay-run"}}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let (first, second) = tokio::join!(
+        app.clone().oneshot(request("replay-a")),
+        app.clone().oneshot(request("replay-b")),
+    );
+    let first = serde_json::from_slice::<Value>(
+        &to_bytes(first.unwrap().into_body(), 16_384).await.unwrap(),
+    )
+    .unwrap();
+    let second = serde_json::from_slice::<Value>(
+        &to_bytes(second.unwrap().into_body(), 16_384).await.unwrap(),
+    )
+    .unwrap();
+    let mut outcomes = [
+        first["result"]["replayed"].as_bool().unwrap(),
+        second["result"]["replayed"].as_bool().unwrap(),
+    ];
+    outcomes.sort_unstable();
+    assert_eq!(outcomes, [false, true]);
+    let lane = service
+        .store
+        .get_projected_lane_message("dead-letter-concurrent")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(lane.status, "pending");
+
+    drop(app);
+    drop(service);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let cleanup_task = tokio::spawn(connection);
+    cleanup
+        .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .await
+        .unwrap();
+    drop(cleanup);
+    cleanup_task.await.unwrap().unwrap();
+}

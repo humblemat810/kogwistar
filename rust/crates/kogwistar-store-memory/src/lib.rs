@@ -376,6 +376,30 @@ impl LaneMessageWriteStore for InMemoryStore {
         }
         Ok(())
     }
+    async fn compare_and_set_projected_lane_message_status(
+        &self,
+        message_id: &str,
+        expected_status: &str,
+        status: &str,
+        error_json: Option<String>,
+    ) -> StoreResult<bool> {
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let Some(row) = state.lane_messages.get_mut(message_id) else {
+            return Ok(false);
+        };
+        if row.status != expected_status {
+            return Ok(false);
+        }
+        row.status = status.to_owned();
+        if error_json.is_some() {
+            row.error_json = error_json;
+        }
+        if matches!(status, "completed" | "failed" | "cancelled") {
+            row.claimed_by = None;
+            row.lease_until = None;
+        }
+        Ok(true)
+    }
     async fn update_projected_lane_message_links(
         &self,
         message_id: &str,
@@ -3517,6 +3541,56 @@ mod tests {
             record: record(id, "red", embedding),
             embedding_dim: embedding.len(),
         }
+    }
+
+    #[test]
+    fn lane_status_compare_and_set_allows_only_one_replay_transition() {
+        let store = InMemoryStore::new();
+        block_on(store.project_lane_message(NewProjectedLaneMessage {
+            message_id: "dead-letter-cas".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "conversation-cas".to_owned(),
+            recipient_id: "worker".to_owned(),
+            sender_id: "scheduler".to_owned(),
+            msg_type: "workflow.run.execute".to_owned(),
+            status: "dead-letter".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some("run-cas".to_owned()),
+            step_id: None,
+            correlation_id: None,
+            payload_json: None,
+            error_json: None,
+        }))
+        .unwrap();
+
+        assert!(
+            block_on(store.compare_and_set_projected_lane_message_status(
+                "dead-letter-cas",
+                "dead-letter",
+                "pending",
+                None,
+            ))
+            .unwrap()
+        );
+        assert!(
+            !block_on(store.compare_and_set_projected_lane_message_status(
+                "dead-letter-cas",
+                "dead-letter",
+                "pending",
+                None,
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("dead-letter-cas"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
     }
 
     #[test]

@@ -849,9 +849,14 @@ impl SqliteRunApplicationService {
         };
         match self
             .store
-            .update_projected_lane_message_status(&lane.message_id, "pending", None)
+            .compare_and_set_projected_lane_message_status(
+                &lane.message_id,
+                "dead-letter",
+                "pending",
+                None,
+            )
         {
-            Ok(()) => json_effect(
+            Ok(true) => json_effect(
                 StatusCode::OK,
                 json!({
                     "run_id": run_id,
@@ -859,6 +864,7 @@ impl SqliteRunApplicationService {
                     "dead_letter": lane_progress_value(&lane),
                 }),
             ),
+            Ok(false) => json_effect(StatusCode::OK, json!({"run_id": run_id, "replayed": false})),
             Err(error) => effect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "KOGWISTAR_STORE_ERROR",
