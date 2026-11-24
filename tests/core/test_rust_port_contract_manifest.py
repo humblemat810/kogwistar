@@ -1056,6 +1056,54 @@ def test_dual_language_surface_inventory_is_current() -> None:
     )
 
 
+def test_syscall_backend_ledger_matches_surface_inventory() -> None:
+    inventory = json.loads(
+        (ROOT / "contracts" / "dual-language-surface-inventory-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    worklist = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    ).read_text(encoding="utf-8")
+    lines = worklist.splitlines()
+    header = "| Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |"
+    header_index = lines.index(header)
+    backends = [
+        "postgresql",
+        "sqlite-metadata",
+        "sqlite-chroma",
+        "in-memory",
+    ]
+    rows: dict[str, list[str]] = {}
+    for line in lines[header_index + 2 :]:
+        if not line.startswith("| `"):
+            break
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        operation = cells[0].strip("`")
+        assert operation not in rows, f"duplicate syscall ledger row: {operation}"
+        assert len(cells) == len(backends) + 1, line
+        rows[operation] = cells[1:]
+
+    operations = inventory["syscall_catalogs"]["python"]["operations"]
+    assert set(rows) == set(operations)
+    assert len(rows) == len(operations) == 11
+    assert sum(map(len, rows.values())) == 44
+    for backend_name in backends:
+        backend = inventory["rust_backend_syscalls"][backend_name]
+        dispatched = set(backend["dispatches"])
+        unavailable = set(backend["unavailable"])
+        assert dispatched.isdisjoint(unavailable)
+        assert dispatched | unavailable == set(operations)
+        column = backends.index(backend_name)
+        for operation, statuses in rows.items():
+            expected = (
+                "PASS: supported (live)"
+                if operation in dispatched
+                else "PASS: fail closed"
+            )
+            assert statuses[column] == expected, f"{backend_name}/{operation}"
+
+
 def test_public_http_and_mcp_tasklets_name_executable_tests() -> None:
     inventory = json.loads(
         (ROOT / "contracts" / "dual-language-surface-inventory-v1.json").read_text(
