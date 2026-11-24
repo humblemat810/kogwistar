@@ -42,8 +42,9 @@
 
 This finite 11-operation × 4-backend ledger makes the currently known support
 surface visible. It does **not** change the counted 18-tasklet denominator.
-Current progress: **39/44 cells resolved**; remaining five cells are the
-PostgreSQL operations listed in DLFC-12 above.
+Current progress: **44/44 cells resolved** (39 supported, five explicitly
+fail-closed). PostgreSQL now has all 11 supported cells; table reflects the
+live evidence recorded below.
 `PARTIAL` means a focused test exists for the operation/backend behavior, but
 may not exercise the syscall wire path and does not prove complete Python/Rust
 parity. `NOT STARTED` means no adequate cell-level oracle has been verified.
@@ -116,15 +117,15 @@ retry, and failure cases, so DLFC-11 remains open.
 | --- | --- | --- | --- | --- |
 | `checkpoint` | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
 | `create_conversation` | PASS: supported (live) | PASS: fail closed | PASS: supported (live) | PASS: supported (live) |
-| `invoke_tool` | NOT STARTED | PASS: fail closed | PASS: supported (live) | PASS: supported (live) |
-| `mount_memory` | NOT STARTED | PASS: fail closed | PASS: supported (live) | PASS: supported (live) |
+| `invoke_tool` | PASS: supported (live) | PASS: fail closed | PASS: supported (live) | PASS: supported (live) |
+| `mount_memory` | PASS: supported (live) | PASS: fail closed | PASS: supported (live) | PASS: supported (live) |
 | `project_view` | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
 | `receive_message` | PASS: supported (live) | PASS: fail closed | PASS: supported (live) | PASS: supported (live) |
-| `request_approval` | NOT STARTED | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
+| `request_approval` | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
 | `resume` | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
 | `send_message` | PASS: supported (live) | PASS: fail closed | PASS: supported (live) | PASS: supported (live) |
-| `spawn_process` | NOT STARTED | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
-| `terminate_process` | NOT STARTED | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
+| `spawn_process` | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
+| `terminate_process` | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) | PASS: supported (live) |
 
 Evidence pointers for current `PARTIAL` cells (focused evidence only; not gate
 closure):
