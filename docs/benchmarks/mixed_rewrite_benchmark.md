@@ -2504,3 +2504,36 @@ reported medians, per-operation percentiles, resources, and seam counters:
 unit tests passed (**3 passed**), including cross-mode digest-mismatch rejection.
 Raw machine report and manifest are retained locally under the ignored
 `.tmp/mixed-runtime-matrix-20261118-rel05a/` directory.
+
+### 2026-11-25 resource-matched endpoint scale follow-up
+
+Rebuilt the current source revision `ed3d0c1e5fc1b0f45b291d710c5f3e5764c24d5a`
+in the existing Docker harness. CPython 3.15.1t container limits were verified
+at 2 CPU / 4 GiB; network disabled. Each fresh fixture used one warm-up and
+three samples per mode. The deterministic sequential trace contains one
+`write_record`, one `read_event`, and one `read_projection` per record.
+
+| Fixture | Mode | Median throughput | Median elapsed | Startup | Throughput CV | FFI |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 100 records / 300 ops | Python HTTP | 53.62 ops/s | 5.595 s | 76.8 ms | 1.40% | 0 |
+| 100 records / 300 ops | Rust-authority HTTP (diagnostic hybrid) | 55.23 ops/s | 5.432 s | 74.3 ms | 1.72% | 1,000 |
+| 100 records / 300 ops | Rust-native HTTP | 535.61 ops/s | 0.560 s | 23.3 ms | 2.10% | 0 |
+| 500 records / 1,500 ops | Python HTTP | 52.67 ops/s | 28.480 s | 81.8 ms | 1.12% | 0 |
+| 500 records / 1,500 ops | Rust-authority HTTP (diagnostic hybrid) | 54.24 ops/s | 27.654 s | 77.9 ms | 1.63% | 5,000 |
+| 500 records / 1,500 ops | Rust-native HTTP | 516.58 ops/s | 2.904 s | 23.3 ms | 0.49% | 0 |
+
+All modes produced the same canonical state digest within each fixture, and
+the report verifier passed with zero failed samples and zero validation
+errors. Digests: 100 records `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`;
+500 records `627d7adf7569b5678e60229141a94ec77e859464c3940ee565c21b38a558e9c8`.
+Mean sample-level p95 event-read / projection-read / write latency (ms):
+Python vs Rust-native was 15.27 / 15.45 / 31.75 vs 1.76 / 1.81 / 2.69 at
+100 records, and 16.09 / 15.75 / 33.14 vs 1.80 / 1.83 / 2.91 at 500.
+Rust-native peak RSS was 7.31 MiB and 8.55 MiB, respectively.
+
+These results strengthen evidence for this sequential SQLite endpoint trace
+only. The hybrid column is diagnostic and has no performance guarantee.
+Concurrent workload, other backends, broader operations, and stable declared
+thresholds remain unverified; DLFC-18 stays open. Raw JSON and trace artifacts
+are retained locally (ignored) under
+`.tmp/mixed-runtime-followup-20261125/endpoint/`.
