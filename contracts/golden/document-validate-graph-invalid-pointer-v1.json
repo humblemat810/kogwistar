@@ -17,10 +17,19 @@
             }
           ]
         }
+      },
+      {
+        "id": "node-null-pointer",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer entry is null",
+        "metadata": {
+          "pointers": [null]
+        }
       }
     ]
   },
   "status": 200,
   "ok": false,
-  "node_error_ids": ["node-incomplete-pointer"]
+  "node_error_ids": ["node-incomplete-pointer", "node-null-pointer"]
 }

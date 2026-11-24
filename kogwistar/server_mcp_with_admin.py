@@ -806,7 +806,7 @@ async def document_validate_graph(payload: DocumentGraphProposal) -> object:
             Node.model_validate(n)
         except ValidationError as e:
             node_errors[str(nid)] = e.json()
-        except KeyError:
+        except (KeyError, TypeError):
             node_errors[str(nid)] = json.dumps(
                 [
                     {
