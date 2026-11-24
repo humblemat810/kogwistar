@@ -895,6 +895,66 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         },
         Arc::new(service.clone()),
     );
+    let submit_denial_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["workflow.run.write"],
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let submit_denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {submit_denial_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"pg-submit-denied", "method":"tools/call",
+                        "params":{
+                            "name":"workflow.run_submit",
+                            "arguments":{
+                                "workflow_id":"denied-submit-workflow",
+                                "conversation_id":"denied-submit-conversation",
+                                "initial_state":{"counter":1}
+                            }
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(submit_denied.status(), StatusCode::OK);
+    let submit_denied_wire = String::from_utf8(
+        to_bytes(submit_denied.into_body(), 8192).await.unwrap().to_vec(),
+    )
+    .unwrap();
+    let submit_denied_data = submit_denied_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("MCP Streamable HTTP submit denial data");
+    let submit_denied_payload: Value = serde_json::from_str(submit_denied_data).unwrap();
+    assert_eq!(submit_denied_payload["result"]["isError"], true);
+    assert!(service
+        .store
+        .list_server_runs(
+            None,
+            Some("denied-submit-workflow"),
+            Some("denied-submit-conversation"),
+            20,
+        )
+        .await
+        .unwrap()
+        .is_empty());
+
     let mcp_denied = app
         .clone()
         .oneshot(
