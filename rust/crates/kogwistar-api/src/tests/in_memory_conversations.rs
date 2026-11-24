@@ -1429,8 +1429,7 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
 }
 
 #[tokio::test]
-async fn in_memory_invoke_tool_is_available_through_authenticated_rest() {
-    use axum::body::to_bytes;
+async fn in_memory_invoke_tool_checks_capability_before_missing_conversation() {
     use axum::http::Request;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use tower::ServiceExt;
@@ -1530,11 +1529,5 @@ async fn in_memory_invoke_tool_is_available_through_authenticated_rest() {
         )
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let payload: Value =
-        serde_json::from_slice(&to_bytes(response.into_body(), 65_536).await.unwrap()).unwrap();
-    assert_eq!(payload["version"], "v1");
-    assert_eq!(payload["op"], "invoke_tool");
-    assert_eq!(payload["result"]["tool_name"], "list_transcript");
-    assert_eq!(payload["result"]["messages"], json!([]));
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
