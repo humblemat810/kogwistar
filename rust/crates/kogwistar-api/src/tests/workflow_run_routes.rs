@@ -680,6 +680,7 @@ fn rust_run_evidence_projection_matches_shared_v1_contract() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+// PYTHON_PARITY_NOTE_V1: PostgreSQL MCP denial preserves run state; authorized terminal retry must preserve state and event count. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/run-cancel-v1.json
 async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -767,6 +768,7 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         Arc::new(service.clone()),
     );
     let mcp_denied = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -827,6 +829,62 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     }
     assert!(contract["accepted_run_statuses"].as_array().unwrap().contains(&body["status"]));
     assert_eq!(body["cancel_requested"], true);
+
+    let event_count_before_retry = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "cancel-auth-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    let retry_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["workflow.run.write"], "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let mcp_retry = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {retry_token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"cancel-retry","method":"tools/call","params":{"name":"workflow.run_cancel","arguments":{"run_id":"cancel-auth-run"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_retry.status(), StatusCode::OK);
+    let retry_wire = String::from_utf8(
+        to_bytes(mcp_retry.into_body(), 8192).await.unwrap().to_vec(),
+    )
+    .unwrap();
+    let retry_data = retry_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("MCP Streamable HTTP retry result data");
+    let retry_value: Value = serde_json::from_str(retry_data).unwrap();
+    assert_ne!(retry_value["result"]["isError"], true, "{retry_value}");
+    assert_eq!(retry_value["result"]["structuredContent"]["status"], body["status"]);
+    let event_count_after_retry = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "cancel-auth-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    assert_eq!(event_count_after_retry, event_count_before_retry);
 
     let syscall_principal = json!({
         "sub":"alice",
