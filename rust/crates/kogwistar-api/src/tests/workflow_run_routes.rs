@@ -808,7 +808,7 @@ fn rust_run_evidence_projection_matches_shared_v1_contract() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
-// PYTHON_PARITY_NOTE_V1: PostgreSQL MCP denial preserves run state; authorized terminal retry must preserve state and event count. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/run-cancel-v1.json
+// PYTHON_PARITY_NOTE_V1: PostgreSQL MCP submit persists the queued run/effect event; denied submit/cancel leave state unchanged and authorized terminal retry adds no run event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
 async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -898,7 +898,7 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     let submit_denial_token = encode(
         &Header::new(Algorithm::HS256),
         &json!({
-            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "sub":"alice", "user_id":"alice", "role":"rw", "ns":["workflow"],
             "capabilities":["workflow.run.write"],
             "iss":"local", "exp":4102444800_u64
         }),
@@ -954,6 +954,92 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .await
         .unwrap()
         .is_empty());
+
+    let submit_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-submit-mcp-v1.json"
+    ))
+    .unwrap();
+    let mut submit_arguments = submit_contract["arguments"].clone();
+    submit_arguments["user_id"] = json!("alice");
+    let submit_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["spawn_process", "workflow.run.write"],
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let submitted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {submit_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"pg-submit-accepted", "method":"tools/call",
+                        "params":{
+                            "name":submit_contract["tool"],
+                            "arguments":submit_arguments
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(submitted.status(), StatusCode::OK);
+    let submitted_wire = String::from_utf8(
+        to_bytes(submitted.into_body(), 8192).await.unwrap().to_vec(),
+    )
+    .unwrap();
+    let submitted_data = submitted_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("MCP Streamable HTTP submit data");
+    let submitted_payload: Value = serde_json::from_str(submitted_data).unwrap();
+    assert_ne!(submitted_payload["result"]["isError"], true, "{submitted_payload}");
+    let submitted_result = &submitted_payload["result"]["structuredContent"];
+    let expected_result = &submit_contract["result"];
+    for field in [
+        "conversation_id",
+        "workflow_id",
+        "turn_node_id",
+        "status",
+        "priority_class",
+        "token_budget",
+        "time_budget_ms",
+        "admission",
+    ] {
+        assert_eq!(submitted_result[field], expected_result[field], "field {field}");
+    }
+    let submitted_run_id = submitted_result["run_id"].as_str().unwrap();
+    assert!(!submitted_run_id.is_empty());
+    let persisted_submit = service
+        .store
+        .get_server_run(submitted_run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted_submit.workflow_id, "workflow-contract");
+    assert_eq!(persisted_submit.conversation_id, "conversation-contract");
+    assert_eq!(persisted_submit.user_id.as_deref(), Some("alice"));
+    assert_eq!(persisted_submit.status, "queued");
+    assert!(!kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        submitted_run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .is_empty());
 
     let mcp_denied = app
         .clone()
