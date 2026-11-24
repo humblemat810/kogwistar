@@ -124,6 +124,11 @@
         use axum::http::Request;
         use tower::ServiceExt;
 
+        let send_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/send-message-syscall-result-v1.json"
+        ))
+        .unwrap();
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_send_message_{}", uuid::Uuid::new_v4().simple());
@@ -549,10 +554,27 @@
         assert_eq!(rest_replay.status(), StatusCode::OK);
         let rest_replay_body = to_bytes(rest_replay.into_body(), 65_536).await.unwrap();
         let rest_replay_value: Value = serde_json::from_slice(&rest_replay_body).unwrap();
+        for (key, value) in send_fixture["envelope"].as_object().unwrap() {
+            assert_eq!(rest_replay_value[key], *value);
+        }
+        for field in send_fixture["common_result_fields"].as_array().unwrap() {
+            assert!(rest_replay_value["result"].get(field.as_str().unwrap()).is_some());
+        }
+        for (key, value) in send_fixture["common_result_values"].as_object().unwrap() {
+            assert_eq!(rest_replay_value["result"][key], *value);
+        }
         assert_eq!(rest_replay_value["result"]["run_id"], run_id);
         assert_eq!(rest_replay_value["result"]["turn_node_id"], turn_id);
         assert_eq!(rest_replay_value["result"]["user_turn_node_id"], turn_id);
         assert_eq!(rest_replay_value["result"]["idempotent"], true);
+        for (field, expected) in send_fixture["rust_replay_additive_result"].as_object().unwrap() {
+            let expected = if expected.as_str() == Some("user_turn_node_id") {
+                rest_replay_value["result"]["user_turn_node_id"].clone()
+            } else {
+                expected.clone()
+            };
+            assert_eq!(rest_replay_value["result"][field], expected);
+        }
         let received = service
             .execute(ApiEffectRequest {
                 contract_version: 1,

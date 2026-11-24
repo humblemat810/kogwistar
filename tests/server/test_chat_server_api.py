@@ -2512,6 +2512,9 @@ def test_conversation_syscalls_use_python_postgres_backend(
             create_fixture = json.loads(
                 (Path(__file__).resolve().parents[2] / "contracts/golden/conversation-create-syscall-result-v1.json").read_text(encoding="utf-8")
             )
+            send_fixture = json.loads(
+                (Path(__file__).resolve().parents[2] / "contracts/golden/send-message-syscall-result-v1.json").read_text(encoding="utf-8")
+            )
             assert created.json()["result"] == create_fixture
             conversation_id = created.json()["result"]["conversation_id"]
             request = {
@@ -2526,18 +2529,25 @@ def test_conversation_syscalls_use_python_postgres_backend(
             first = client.post(
                 "/api/syscall/v1/send_message", json=request, headers=headers
             )
-            assert first.status_code == 200, first.text
+            assert first.status_code == send_fixture["http_status"], first.text
+            first_payload = first.json()
+            for key, value in send_fixture["envelope"].items():
+                assert first_payload[key] == value
+            first_result = first_payload["result"]
+            assert set(send_fixture["common_result_fields"]).issubset(first_result)
+            for key, value in send_fixture["common_result_values"].items():
+                assert first_result[key] == value
             replay = client.post(
                 "/api/syscall/v1/send_message", json=request, headers=headers
             )
-            assert replay.status_code == 200, replay.text
-            assert replay.json() == first.json()
+            assert replay.status_code == send_fixture["http_status"], replay.text
+            assert replay.json() == first_payload
 
             request["args"]["text"] = "changed payload"
             conflict = client.post(
                 "/api/syscall/v1/send_message", json=request, headers=headers
             )
-            assert conflict.status_code == 409
+            assert conflict.status_code == send_fixture["conflict_status"]
 
             received = client.post(
                 "/api/syscall/v1/receive_message",
