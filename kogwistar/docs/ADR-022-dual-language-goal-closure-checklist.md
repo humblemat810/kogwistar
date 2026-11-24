@@ -164,6 +164,8 @@ remain below.
 | GOAL-06 | `tests::document_validation::document_graph_validation_ignores_extra_top_level_field` | PASS | Same request and response fixture as Python. |
 | GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_rejects_null_nodes` | PASS | Shared fixture verifies null `nodes` is rejected with Python validation detail. |
 | GOAL-06 | `tests::document_validation::document_graph_validation_rejects_null_nodes` | PASS | Same request; Rust status and legacy error fields match fixture. |
+| GOAL-06 | `tests/server/test_chat_server_api.py::test_workflow_design_node_upsert_requires_write_graph_before_effect` | PASS | Shared denied-request fixture; HTTP returns 403 before mutation handler call. |
+| GOAL-06 | `tests::workflow_design_node_upsert_http_denial_matches_python_before_effect` | PASS | Same request/claims fixture; Axum/JWT returns 403 and SQLite event log stays empty. |
 | GOAL-06 | `tests/server/test_chat_server_api.py::test_run_steps_matches_shared_rust_projection_fixture` | PASS | Same seed as Rust; compares normalized step fields, result, and trace context. |
 | GOAL-06 | `tests::runtime_step_inspection_matches_shared_python_projection_fixture` | PASS | Same seed as Python; compares normalized runtime-inspection response to shared fixture. |
 | GOAL-07 | `tests/core/test_pypy_ci_contract.py::test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | Declared interpreter matrix. |

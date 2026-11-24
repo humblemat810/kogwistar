@@ -1,0 +1,21 @@
+{
+  "contract_version": 1,
+  "workflow_id": "wf-node-upsert-denied",
+  "path": "/api/workflow/design/wf-node-upsert-denied/nodes",
+  "designer_id": "alice",
+  "request": {
+    "designer_id": "alice",
+    "node_id": "node-denied",
+    "label": "Denied"
+  },
+  "denied_claims": {
+    "sub": "alice",
+    "role": "rw",
+    "roles": ["reader", "rw"],
+    "ns": "workflow",
+    "capabilities": ["workflow.design.write"],
+    "exp": 4102444800
+  },
+  "denial_status": 403,
+  "expected_required_capability": "write_graph"
+}

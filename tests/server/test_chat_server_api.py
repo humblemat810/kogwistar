@@ -5513,6 +5513,12 @@ def test_workflow_design_node_upsert_requires_write_graph_before_effect(
     service, _registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-node-upsert-denied-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     calls = []
     monkeypatch.setattr(
         service._workflow_design,
@@ -5522,18 +5528,18 @@ def test_workflow_design_node_upsert_requires_write_graph_before_effect(
     with TestClient(server.app) as client:
         headers = _token_header(
             client,
-            role="rw",
+            role=contract["denied_claims"]["role"],
             ns="workflow",
-            username="alice",
-            capabilities="workflow.design.write",
+            username=contract["denied_claims"]["sub"],
+            capabilities=",".join(contract["denied_claims"]["capabilities"]),
         )
         response = client.post(
-            "/api/workflow/design/wf-node-upsert-denied/nodes",
-            json={"designer_id": "alice", "node_id": "node-denied", "label": "Denied"},
+            contract["path"],
+            json=contract["request"],
             headers=headers,
         )
 
-    assert response.status_code == 403
+    assert response.status_code == contract["denial_status"]
     assert calls == []
 
 
