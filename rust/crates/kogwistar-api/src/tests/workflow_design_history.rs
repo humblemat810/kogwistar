@@ -291,6 +291,26 @@
             let field = field.as_str().unwrap();
             assert!(node_upsert.get(field).is_none(), "field {field}");
         }
+        let repeated_node_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-node-contract/nodes",
+            json!({
+                "designer_id":"alice",
+                "node_id":"node-contract",
+                "label":"Start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(repeated_node_upsert.status(), StatusCode::OK);
+        let repeated_node_upsert: Value = serde_json::from_slice(
+            &to_bytes(repeated_node_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(node_upsert["version"], 1);
+        assert_eq!(repeated_node_upsert["version"], 2);
         let node_delete_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-node-delete-http-v1.json"

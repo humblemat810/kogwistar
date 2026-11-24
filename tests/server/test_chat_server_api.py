@@ -5540,6 +5540,42 @@ def test_workflow_design_node_upsert_matches_shared_contract(
         assert field not in body
 
 
+def test_workflow_design_node_upsert_repeated_request_creates_next_python_version(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-node-upsert-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    body = {
+        "designer_id": contract["designer_id"],
+        "node_id": contract["node_id"],
+        "label": "Start",
+        "op": "start",
+        "start": True,
+    }
+    with TestClient(server.app) as client:
+        headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=contract["designer_id"],
+        )
+        path = f"/api/workflow/design/{contract['workflow_id']}/nodes"
+        first = client.post(path, json=body, headers=headers)
+        second = client.post(path, json=body, headers=headers)
+
+    assert first.status_code == second.status_code == contract["success_status"]
+    assert first.json()["version"] == 1
+    assert second.json()["version"] == 2
+
+
 def test_workflow_design_node_upsert_requires_write_graph_before_effect(
     monkeypatch, engine_triplet
 ):
