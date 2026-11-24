@@ -2097,6 +2097,73 @@ async def test_mcp_workflow_run_submit_uses_authenticated_user_over_argument(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_submit_denies_workflow_acl_before_admission(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    submissions: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        service,
+        "submit_workflow_run",
+        lambda **kwargs: submissions.append(kwargs) or {"run_id": "unexpected"},
+    )
+    access_checks: list[tuple[str, str]] = []
+
+    def deny_workflow_access(workflow_id: str, role: str) -> None:
+        access_checks.append((workflow_id, role))
+        raise HTTPException(status_code=403, detail="workflow denied")
+
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=deny_workflow_access,
+    )
+
+    with _claims("rw", "workflow", sub="alice"):
+        with pytest.raises(HTTPException) as denied:
+            await workflow_mcp._execute(
+                "workflow.run_submit",
+                {
+                    "workflow_id": "acl-denied-workflow",
+                    "conversation_id": "acl-denied-conversation",
+                },
+                enforce_visibility=True,
+            )
+
+    assert denied.value.status_code == 403
+    assert access_checks == [("acl-denied-workflow", "rw")]
+    assert submissions == []
+    assert (
+        service.run_registry.meta_store.list_server_runs(
+            workflow_id="acl-denied-workflow",
+            conversation_id="acl-denied-conversation",
+            limit=20,
+        )
+        == []
+    )
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_scheduler_timeline_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
