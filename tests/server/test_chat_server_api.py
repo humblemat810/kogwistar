@@ -2705,6 +2705,8 @@ def test_conversation_syscalls_use_python_postgres_backend(
             assert terminated.status_code == 200, terminated.text
             assert terminated.json()["result"]["cancel_requested"] is True
             assert registry.get_run(run_id)["cancel_requested"] is True
+            final_run = _wait_for_status(client, run_id, headers, {"cancelled"})
+            assert final_run["status"] == "cancelled"
 
         result = first.json()["result"]
         assert result["status"] == "queued"
