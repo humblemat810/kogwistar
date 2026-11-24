@@ -78,6 +78,8 @@ One row per named test selector; repeated goal IDs make progress visible by case
 | GOAL-06 | `test_mcp_workflow_dead_letter_replay_dispatches_effect_once` | PASS | Python MCP dispatches scheduler resume once and reports no replay on retry. Focused run: 1 passed. Python scheduler is stubbed. |
 | GOAL-06 | `sqlite_run_service_handles_get_events_and_cancel` | PASS | Rust SQLite routes compare `/api/workflow/catalog/ops` exactly with `workflow-catalog-ops-http-v1.json` and MCP dead-letter replay moves lane to `pending`; focused Rust test: 1 passed. |
 | GOAL-06 | `test_workflow_catalog_ops_matches_shared_contract` | PASS | Python `GET /api/workflow/catalog/ops` response equals `workflow-catalog-ops-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_d3_bundle_route_matches_shared_rust_contract_and_escapes_inline_json` | PASS | Python `GET /viz/d3.bundle` consumes the shared fixture, checks embedded payload/metadata, and rejects unsafe script fragments; focused pytest: 1 passed. |
+| GOAL-06 | `d3_bundle_route_matches_shared_python_contract` | PASS | Rust `GET /viz/d3.bundle` uses the same fixture and checks status, content type, payload escaping, and forbidden fragments; focused Cargo test: 1 passed. |
 
 ## Full-Parity Test Matrix
 
