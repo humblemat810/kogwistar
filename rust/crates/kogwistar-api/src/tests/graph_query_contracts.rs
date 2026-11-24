@@ -70,7 +70,7 @@
         assert_eq!(projected["target_edge_ids"], edge["target_edge_ids"]);
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#authorized_evidence_records; python=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract; fixture=contracts/golden/visualization-hyperedge-v1.json
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#authorized_evidence_records; python=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract; fixture=contracts/golden/visualization-hyperedge-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_edge_hydration_preserves_hyperedge_endpoint_ids; python_test=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
     async fn postgres_edge_hydration_preserves_hyperedge_endpoint_ids() {

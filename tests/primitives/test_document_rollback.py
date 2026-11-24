@@ -50,6 +50,29 @@ def test_rollback_span_filter_matches_shared_python_fixture(engine) -> None:
     assert changed is fixture["changed"]
 
 
+def test_rollback_span_filter_accepts_shared_graph_payload_mentions(engine) -> None:
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "python-graph-model-payloads-v1.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    node_payload = next(
+        case["payload"] for case in fixture["cases"] if case["kind"] == "node"
+    )
+    mention = Grounding.model_validate(node_payload["mentions"][0])
+    mention.spans[0] = mention.spans[0].model_copy(update={"doc_id": "doc-remove"})
+    mention.spans.append(mention.spans[0].model_copy(update={"doc_id": "doc-keep"}))
+
+    actual, changed = engine.rollback._filter_mentions_for_document(
+        [mention], "doc-remove"
+    )
+
+    assert changed is True
+    assert [[span.doc_id for span in item.spans] for item in actual] == [["doc-keep"]]
+
+
 def _fake_llm_tasks() -> LLMTaskSet:
     def _extract_graph(request):
         _ = request

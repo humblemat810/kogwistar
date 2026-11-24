@@ -83,6 +83,9 @@ fn graph_reference_rows_match_python_reference_projection_contract() {
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn postgres_document_rollback_updates_canonical_graph_and_indexes_atomically()
 -> PostgresStoreResult<()> {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/python-graph-model-payloads-v1.json"
+    ))?;
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = test_schema("document_rollback");
@@ -97,6 +100,13 @@ async fn postgres_document_rollback_updates_canonical_graph_and_indexes_atomical
         workspace_id: Some("ws".to_owned()),
         graph_space: Some("facts".to_owned()),
     };
+    let node_template = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["kind"] == "node")
+        .unwrap()["payload"]
+        .clone();
     let node = |id: &str, mentions: serde_json::Value| {
         let metadata = serde_json::json!({
             "workspace_id": "ws",
@@ -106,13 +116,12 @@ async fn postgres_document_rollback_updates_canonical_graph_and_indexes_atomical
         .as_object()
         .unwrap()
         .clone();
-        let payload = serde_json::json!({
-            "id": id,
-            "name": id,
-            "doc_id": "doc-remove",
-            "mentions": mentions,
-            "metadata": metadata
-        });
+        let mut payload = node_template.clone();
+        payload["id"] = serde_json::json!(id);
+        payload["name"] = serde_json::json!(id);
+        payload["doc_id"] = serde_json::json!("doc-remove");
+        payload["mentions"] = mentions;
+        payload["metadata"] = serde_json::Value::Object(metadata);
         GraphMutation {
             scope: scope.clone(),
             table: "gke_nodes".to_owned(),
@@ -129,21 +138,21 @@ async fn postgres_document_rollback_updates_canonical_graph_and_indexes_atomical
             embedding_dim: 2,
         }
     };
-    let edge_payload = serde_json::json!({
-        "id": "edge-remove",
-        "relation": "supports",
-        "source_ids": ["node-remove"],
-        "target_ids": ["node-keep"],
-        "source_edge_ids": [],
-        "target_edge_ids": [],
-        "doc_id": "doc-remove",
-        "mentions": [{"spans": [{"doc_id": "doc-remove"}]}],
-        "metadata": {
-            "workspace_id": "ws",
-            "graph_space": "facts",
-            "lifecycle_status": "active"
-        }
-    });
+    let mut edge_payload = fixture["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["kind"] == "edge")
+        .unwrap()["payload"]
+        .clone();
+    edge_payload["id"] = serde_json::json!("edge-remove");
+    edge_payload["doc_id"] = serde_json::json!("doc-remove");
+    edge_payload["source_ids"] = serde_json::json!(["node-remove"]);
+    edge_payload["target_ids"] = serde_json::json!(["node-keep"]);
+    edge_payload["mentions"] = serde_json::json!([{"spans": [{"doc_id": "doc-remove"}]}]);
+    edge_payload["metadata"]["workspace_id"] = serde_json::json!("ws");
+    edge_payload["metadata"]["graph_space"] = serde_json::json!("facts");
+    edge_payload["metadata"]["lifecycle_status"] = serde_json::json!("active");
     let edge = GraphMutation {
         scope: scope.clone(),
         table: "gke_edges".to_owned(),
@@ -936,6 +945,10 @@ async fn node_index_operations_match_shared_python_fixture() -> PostgresStoreRes
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn graph_mutations_materialize_node_docs_in_the_same_transaction() -> PostgresStoreResult<()>
 {
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/node-doc-index-v1.json"
+    ))
+    .expect("shared node-doc index fixture");
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = test_schema("node_docs_projection");
@@ -946,18 +959,19 @@ async fn graph_mutations_materialize_node_docs_in_the_same_transaction() -> Post
         .create_graph_schema(3, GraphTableNames::default())
         .await?;
     let scope = kogwistar_store::GraphScope {
-        namespace: format!("node-docs-{}", std::process::id()),
+        namespace: contract["namespace"].as_str().unwrap().to_owned(),
         workspace_id: None,
         graph_space: None,
     };
-    let node_id = "node-docs-native";
+    let node_id = contract["node_id"].as_str().unwrap();
     let mutation = |event_id: &str, op: &str, mention_ids: &[&str]| {
-        let document = serde_json::json!({
-            "id": node_id,
-            "mentions": mention_ids.iter().map(|doc_id| {
-                serde_json::json!({"spans": [{"doc_id": doc_id}]})
-            }).collect::<Vec<_>>()
-        });
+        let mut document = contract["document"].clone();
+        document["mentions"] = serde_json::Value::Array(
+            mention_ids
+                .iter()
+                .map(|doc_id| serde_json::json!({"spans": [{"doc_id": doc_id}]}))
+                .collect(),
+        );
         GraphMutation {
             scope: scope.clone(),
             table: "gke_nodes".to_owned(),
@@ -994,8 +1008,8 @@ async fn graph_mutations_materialize_node_docs_in_the_same_transaction() -> Post
             .await
             .map_err(backend)?;
     assert_eq!(rows.len(), 2);
-    assert_eq!(rows[0].get::<_, String>(0), "node-docs-native::doc-a");
-    assert_eq!(rows[1].get::<_, String>(0), "node-docs-native::doc-b");
+    assert_eq!(rows[0].get::<_, String>(0), "node-雪::doc-a");
+    assert_eq!(rows[1].get::<_, String>(0), "node-雪::doc-b");
     let projection = store
         .graph_projection_records(GraphProjectionRead {
             scope: scope.clone(),
@@ -1024,7 +1038,7 @@ async fn graph_mutations_materialize_node_docs_in_the_same_transaction() -> Post
         .await
         .map_err(backend)?;
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<_, String>(0), "node-docs-native::doc-c");
+    assert_eq!(rows[0].get::<_, String>(0), "node-雪::doc-c");
 
     store
         .apply_graph_mutation(mutation("node-docs-tombstone", "TOMBSTONE", &["doc-c"]))

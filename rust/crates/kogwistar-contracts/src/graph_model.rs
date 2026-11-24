@@ -4753,7 +4753,7 @@ mod tests {
         );
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture; python=tests/core/test_graph_model_adapter.py#test_graph_model_capability_contract_matches_shared_fixture; fixture=contracts/golden/graph-model-capabilities-v1.json; rust_test=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture; python=tests/core/test_graph_model_adapter.py#test_graph_model_capability_contract_matches_shared_fixture; fixture=contracts/golden/graph-model-capabilities-v1.json; rust_test=rust/crates/kogwistar-contracts/src/graph_model.rs#graph_model_capabilities_match_shared_cross_language_fixture; python_test=tests/core/test_graph_model_adapter.py#test_graph_model_capability_contract_matches_shared_fixture
     #[test]
     fn graph_model_capabilities_match_shared_cross_language_fixture() {
         let fixture: Value = serde_json::from_str(include_str!(concat!(

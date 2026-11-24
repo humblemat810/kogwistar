@@ -3876,7 +3876,7 @@ mod tests {
     }
 
     #[test]
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract; fixture=contracts/golden/graph-mutation-scope-memory-v1.json
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract; fixture=contracts/golden/graph-mutation-scope-memory-v1.json; rust_test=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python_test=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract
     fn memory_mutation_scope_matches_shared_python_contract() {
         block_on(async {
             let fixture: Value = serde_json::from_str(include_str!(concat!(

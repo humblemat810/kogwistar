@@ -36,7 +36,7 @@ pub(crate) fn node_document_ids(document: &Value) -> BTreeSet<String> {
     ids
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/graph/indexing/references.rs#sync_graph_node_docs; python=kogwistar/engine_core/subsystems/write.py#WriteSubsystem.index_node_docs; fixture=contracts/golden/node-doc-index-v1.json; python_test=tests/core/test_rust_postgres_transaction_session.py#test_python_node_docs_metadata_preserves_namespace
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/graph/indexing/references.rs#sync_graph_node_docs; python=kogwistar/engine_core/subsystems/write.py#WriteSubsystem.index_node_docs; fixture=contracts/golden/node-doc-index-v1.json; rust_test=rust/crates/kogwistar-store-postgres/src/tests/graph.rs#graph_mutations_materialize_node_docs_in_the_same_transaction; python_test=tests/core/test_rust_postgres_transaction_session.py#test_python_node_docs_metadata_preserves_namespace
 pub(crate) async fn sync_graph_node_docs<C>(
     client: &C,
     tables: &Tables,
