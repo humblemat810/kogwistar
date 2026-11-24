@@ -1636,6 +1636,15 @@ fn lift_graph_pointer_mentions(
         let end_char = pointer["end_char"]
             .as_i64()
             .ok_or_else(|| "pointer end_char must be an integer".to_owned())?;
+        let excerpt = pointer
+            .get("verbatim_text")
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| "pointer verbatim_text must be a string".to_owned())
+            })
+            .transpose()?
+            .unwrap_or_default();
         mentions.push(json!({
             "doc_id": doc_id,
             "collection_page_url": format!("doc://{doc_id}"),
@@ -1643,7 +1652,7 @@ fn lift_graph_pointer_mentions(
             "insertion_method": insertion_method,
             "start_char": start_char,
             "end_char": if end_char == -1 { 1_000_000_000_i64 } else { end_char },
-            "excerpt": pointer["verbatim_text"].as_str().unwrap_or_default().chars().take(400).collect::<String>(),
+            "excerpt": excerpt.chars().take(400).collect::<String>(),
         }));
     }
     entity.insert("mentions".to_owned(), Value::Array(mentions));

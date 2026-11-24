@@ -26,10 +26,30 @@
         "metadata": {
           "pointers": [null]
         }
+      },
+      {
+        "id": "node-non-string-excerpt",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer excerpt must be text",
+        "metadata": {
+          "pointers": [
+            {
+              "source_cluster_id": "cluster-1",
+              "start_char": 0,
+              "end_char": 4,
+              "verbatim_text": 123
+            }
+          ]
+        }
       }
     ]
   },
   "status": 200,
   "ok": false,
-  "node_error_ids": ["node-incomplete-pointer", "node-null-pointer"]
+  "node_error_ids": [
+    "node-incomplete-pointer",
+    "node-null-pointer",
+    "node-non-string-excerpt"
+  ]
 }
