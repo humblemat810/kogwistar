@@ -38,6 +38,33 @@
 | DLFC-17 | GOAL-08 | NOT STARTED | Transport/CI cells: HTTP, MCP, SSE/notifications, and CLI where inventoried compare protocol/auth/stream ordering; exact selectors run in supported CPython 3.12–3.14 and PyPy 3.11 CI lanes. |
 | DLFC-18 | GOAL-09 | NOT STARTED | Representative performance cells: resource-matched Python-native and Rust-native end-to-end cases across selected high-value operations/backends; publish warm-up, throughput, tail latency, RSS, variation, and seam counts. Pass only declared per-workload thresholds; make no universal speed claim. |
 
+### DLFC-11 Syscall Result/Error Closure Checklist
+
+This checklist decomposes the existing DLFC-11 acceptance without changing
+the 18-tasklet denominator. Existing focused tests are evidence, not closure:
+each operation closes only after Python/Rust results and applicable errors are
+compared on every supported backend, or unsupported backends are already
+proven fail-closed by DLFC-12. Keep Rust-only fields only when documented as an
+intentional additive contract; normalize volatile audit values only.
+
+| Operation | Existing evidence | Remaining closure check | Status |
+| --- | --- | --- | --- |
+| `create_conversation` | Shared result fixture on in-memory and PostgreSQL. | Compare normalized success/error payloads and durable creation effects on all supported backends. | NOT STARTED |
+| `send_message` | Shared success/replay fixture; invalid-input fixture; focused memory, Chroma, and PostgreSQL tests. | Compare the same success, replay, conflict, invalid-input and durable-effect contract across supported backends; explicitly disposition additive replay fields. | IN PROGRESS |
+| `receive_message` | Shared wire fixture on Python/Rust in-memory paths. | Compare empty, populated, missing-ID and visibility/error outcomes on each supported backend. | IN PROGRESS |
+| `invoke_tool` | Shared invalid-tool fixture and in-memory built-in transcript reader. | Compare authorized tool result, denial, unknown-tool error and no-effect behavior on each supported backend. | NOT STARTED |
+| `mount_memory` | Shared result fixture and focused ACL tests, including Chroma composition. | Compare success, denied/missing snapshot errors and disclosure boundaries on each supported backend. | NOT STARTED |
+| `request_approval` | Shared success and invalid-input fixtures on memory, Chroma and PostgreSQL paths. | Compare all grant/revoke/deny/invalid branches and stable audit projection across supported backends. | IN PROGRESS |
+| `checkpoint` | Shared persisted-checkpoint fixture and focused scope/missing-step tests. | Compare success, missing-step, scope-denial and step-sequence normalization on each supported backend. | NOT STARTED |
+| `project_view` | Shared resource snapshot fixture and focused authority checks. | Compare required resource shape, scope filtering and errors on each supported backend. | NOT STARTED |
+| `spawn_process` | Shared run-cancel/lifecycle fields and focused admission tests. | Compare admission result, authorization/error behavior and durable run effect on each supported backend. | NOT STARTED |
+| `terminate_process` | Shared run-cancel fixture and focused cancellation tests. | Compare cancellation result, repeated cancellation, authorization/errors and durable terminal effect on each supported backend. | NOT STARTED |
+| `resume` | Shared resume result fixture and focused suspended-run continuation tests. | Compare synchronous result, invalid/not-resumable errors, persisted continuation and final state on each supported backend. | NOT STARTED |
+
+Statuses above describe the dedicated cross-backend closure oracle, not whether
+any narrower test exists. This subchecklist is progress detail for DLFC-11;
+do not count its rows again in the 18-item summary.
+
 ### DLFC-12 Syscall / Backend Cell Ledger
 
 This finite 11-operation × 4-backend ledger makes the currently known support
