@@ -145,6 +145,26 @@
     }
 
     #[test]
+    fn document_graph_validation_ignores_extra_top_level_field() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-graph-validation-extra-field-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body, fixture["response"]);
+    }
+
+    #[test]
     fn internal_document_projection_reuses_wire_contract_and_write_authority() {
         let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
         let request = |principal: Value| ApiEffectRequest {

@@ -38,3 +38,15 @@ def test_python_document_graph_validation_wrong_type_matches_shared_fixture() ->
     assert response.status_code == 422
     assert response.headers["content-type"].startswith("application/json")
     assert response.json()["detail"] == fixture["python_detail"]
+
+
+def test_python_document_graph_validation_ignores_extra_top_level_field() -> None:
+    fixture_path = _FIXTURE.with_name("document-graph-validation-extra-field-v1.json")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    response = TestClient(app).post(
+        "/api/document.validate_graph",
+        json=fixture["request"],
+    )
+
+    assert response.status_code == 200
+    assert response.json() == fixture["response"]
