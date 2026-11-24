@@ -622,6 +622,34 @@
             .await;
         assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
 
+        let error_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-invoke-tool-errors-v1.json"
+        ))
+        .unwrap();
+        for case in error_fixture["cases"].as_array().unwrap() {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
+                    body: serde_json::to_vec(&case["request"]).unwrap(),
+                    principal: principal(&["invoke_tool", "read_graph"]),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                case["http_status"].as_u64().unwrap() as u16,
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body).unwrap(),
+                case["response"],
+                "{}",
+                case["name"]
+            );
+        }
+
         let response = service
             .execute(invoke(&["invoke_tool", "read_graph"]))
             .await;

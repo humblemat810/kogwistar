@@ -487,17 +487,22 @@
             serde_json::from_slice::<Value>(&denied_model_tool.body).unwrap()["code"],
             "KOGWISTAR_CAPABILITY_FORBIDDEN"
         );
+        let invoke_error_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-invoke-tool-errors-v1.json"
+        ))
+        .unwrap();
+        let unknown_tool_case = invoke_error_fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "unknown-tool")
+            .unwrap();
         let unsupported_tool = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
                 path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
-                body: serde_json::to_vec(&json!({
-                    "version": "v1",
-                    "op": "invoke_tool",
-                    "args": {"tool_name": "not_registered"}
-                }))
-                .unwrap(),
+                body: serde_json::to_vec(&unknown_tool_case["request"]).unwrap(),
                 principal: json!({
                     "sub": "alice",
                     "role": "rw",
@@ -509,12 +514,12 @@
             .await;
         assert_eq!(
             unsupported_tool.status,
-            StatusCode::NOT_FOUND.as_u16(),
+            unknown_tool_case["http_status"].as_u64().unwrap() as u16,
             "unknown built-in tools must fail explicitly, not silently fall back"
         );
         assert_eq!(
-            serde_json::from_slice::<Value>(&unsupported_tool.body).unwrap()["code"],
-            "KOGWISTAR_TOOL_NOT_FOUND"
+            serde_json::from_slice::<Value>(&unsupported_tool.body).unwrap(),
+            unknown_tool_case["response"]
         );
         let invoke_audit_response = service
             .execute(ApiEffectRequest {

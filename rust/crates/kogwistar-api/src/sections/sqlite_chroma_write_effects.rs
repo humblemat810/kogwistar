@@ -27,10 +27,9 @@ impl SqliteRunApplicationService {
             .filter(|name| !name.is_empty())
             .map(str::to_ascii_lowercase)
         else {
-            return effect_error(
+            return json_effect(
                 StatusCode::BAD_REQUEST,
-                "KOGWISTAR_INVALID_REQUEST",
-                "tool_name is required",
+                json!({"detail": "tool_name is required"}),
             );
         };
 
@@ -217,10 +216,9 @@ impl SqliteRunApplicationService {
                 json!({"tool_name": tool_name, "snapshot": snapshot})
             }
             _ => {
-                return effect_error(
+                return json_effect(
                     StatusCode::NOT_FOUND,
-                    "KOGWISTAR_TOOL_NOT_FOUND",
-                    format!("unknown built-in tool: {tool_name}"),
+                    json!({"detail": format!("'unknown tool: {tool_name}'")}),
                 );
             }
         };
