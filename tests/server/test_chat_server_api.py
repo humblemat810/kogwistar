@@ -5650,9 +5650,23 @@ def test_workflow_design_node_delete_matches_shared_contract(
             json={"designer_id": contract["designer_id"]},
             headers=headers,
         )
+        repeated_delete = client.request(
+            "DELETE",
+            f"/api/workflow/design/{contract['workflow_id']}/nodes/"
+            f"{contract['node_id']}",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
+        history = client.get(
+            f"/api/workflow/design/{contract['workflow_id']}/history",
+            headers=headers,
+        )
 
     assert response.status_code == contract["success_status"], response.text
+    assert repeated_delete.status_code == 404, repeated_delete.text
     body = response.json()
+    assert history.status_code == 200, history.text
+    assert history.json()["current_version"] == body["version"]
     for field, expected in contract["fixed_response_fields"].items():
         assert body[field] == expected
     for field in contract["integer_response_fields"]:

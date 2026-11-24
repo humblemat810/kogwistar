@@ -365,6 +365,25 @@
             let field = field.as_str().unwrap();
             assert!(node_delete.get(field).is_none(), "field {field}");
         }
+        let repeated_node_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-node-delete-contract/nodes/node-delete-contract",
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_node_delete.status(), StatusCode::NOT_FOUND);
+        let history_after_repeated_delete = public_call!(
+            "GET",
+            "/api/workflow/design/wf-node-delete-contract/history",
+            json!({})
+        );
+        assert_eq!(history_after_repeated_delete.status(), StatusCode::OK);
+        let history_after_repeated_delete: Value = serde_json::from_slice(
+            &to_bytes(history_after_repeated_delete.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(history_after_repeated_delete["current_version"], node_delete["version"]);
         let redo_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-redo-http-v1.json"
