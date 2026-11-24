@@ -583,6 +583,12 @@
                 "conversation_start",
                 json!({"user_id": "bob", "status": "active"}),
             ),
+            (
+                "start-empty",
+                "conversation-empty",
+                "conversation_start",
+                json!({"user_id": "alice", "status": "active"}),
+            ),
         ] {
             let mut metadata = Map::new();
             metadata.insert("entity_type".to_owned(), json!(entity_type));
@@ -613,7 +619,7 @@
                 ("acl_mode", json!("private")),
                 (
                     "owner_id",
-                    json!(if conversation_id == "conversation-1" {
+                    json!(if conversation_id == "conversation-1" || conversation_id == "conversation-empty" {
                         "alice"
                     } else {
                         "bob"
@@ -850,6 +856,11 @@
                     "start_node_id": "start-1",
                     "status": "active",
                     "turn_count": 2
+                }, {
+                    "id": "conversation-empty",
+                    "start_node_id": "start-empty",
+                    "status": "active",
+                    "turn_count": 0
                 }]
             })
         );
@@ -1043,6 +1054,31 @@
             })
             .await;
         assert_eq!(missing_conversation.status, StatusCode::NOT_FOUND.as_u16());
+        let empty_conversation = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": "conversation-empty"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(empty_conversation.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&empty_conversation.body).unwrap()["result"]["messages"],
+            json!([])
+        );
 
         let invoke_transcript_response = service
             .execute(ApiEffectRequest {

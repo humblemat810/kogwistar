@@ -846,6 +846,28 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
         );
     }
     add_node(
+        "start-empty",
+        json!({
+            "entity_type":"conversation_start",
+            "conversation_id":"c-empty",
+            "user_id":"reader-1",
+            "status":"active"
+        }),
+        scope.clone(),
+    );
+    add_node(
+        "acl-start-empty",
+        json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"conversation",
+            "acl_target_grain":"node",
+            "acl_target_entity_id":"start-empty",
+            "acl_version":1,
+            "acl_mode":"public"
+        }),
+        scope.clone(),
+    );
+    add_node(
         "turn-private",
         json!({
             "entity_type":"conversation_turn",
@@ -1020,6 +1042,25 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
         ))
         .await;
     assert_eq!(missing_conversation.status, StatusCode::NOT_FOUND.as_u16());
+    let empty_conversation = service
+        .execute(request(
+            json!({"conversation_id":"c-empty"}),
+            json!({
+                "sub":"reader-1",
+                "role":"ro",
+                "storage_ns":"scope-a",
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation",
+                "ns":["conversation"],
+                "capabilities":["read_graph"]
+            }),
+        ))
+        .await;
+    assert_eq!(empty_conversation.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&empty_conversation.body).unwrap()["result"]["messages"],
+        json!([])
+    );
     let private_conversation = service
         .execute(request(
             json!({"conversation_id":"c-hidden"}),

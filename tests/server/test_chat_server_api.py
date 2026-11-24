@@ -2477,6 +2477,7 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 "ns": ["conversation", "workflow"],
                 "capabilities": [
                     "send_message",
+                    "create_conversation",
                     "spawn_process",
                     "read_graph",
                     "invoke_tool",
@@ -2617,6 +2618,41 @@ def test_conversation_syscalls_use_python_postgres_backend(
             assert received_turn["role"] == "user"
             assert received_turn["entity_type"] == "conversation_turn"
             assert received_turn["content"] == "hello from Python PostgreSQL backend"
+
+            empty_created = client.post(
+                "/api/syscall/v1/create_conversation",
+                json={
+                    "version": "v1",
+                    "op": "create_conversation",
+                    "args": {
+                        "conversation_id": "conv-empty-test",
+                        "user_id": "alice",
+                    },
+                },
+                headers=headers,
+            )
+            assert empty_created.status_code == 200, empty_created.text
+            empty_received = client.post(
+                "/api/syscall/v1/receive_message",
+                json={
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": "conv-empty-test"},
+                },
+                headers=headers,
+            )
+            assert empty_received.status_code == 200, empty_received.text
+            assert empty_received.json()["result"]["messages"] == []
+            unknown_received = client.post(
+                "/api/syscall/v1/receive_message",
+                json={
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": "conv-unknown-test"},
+                },
+                headers=headers,
+            )
+            assert unknown_received.status_code == 404, unknown_received.text
 
             conversation_service = ConversationService.from_engine(
                 conversation_engine,
