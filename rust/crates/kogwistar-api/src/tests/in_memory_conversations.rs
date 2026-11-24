@@ -976,7 +976,9 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
         "../../../../../contracts/golden/receive-message-result-v1.json"
     ))
     .unwrap();
+    assert_eq!(response["version"], "v1");
     assert_eq!(response["op"], "receive_message");
+    assert_eq!(response["status"], "ok");
     assert_eq!(response["result"], contract);
 
     use axum::body::{Body, to_bytes};
