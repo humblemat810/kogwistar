@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Goal Closure Checklist
 
-**Updated:** 2026-11-23  
+**Updated:** 2026-11-24  
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
 **Status summary:** **6 bounded criteria PASS; 1 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
@@ -42,6 +42,31 @@ the assertion is sufficient or currently passing.
 | Transport | For HTTP, MCP, and CLI surfaces, compare wire status/envelope, schemas, auth propagation, streaming/notification order where applicable, and malformed protocol behavior. Do not infer one transport from another. |
 | Native isolation | For Rust-native claims, run ingress-to-persistence while Python worker/adaptor entry points are instrumented to fail; prove zero Python handoff. Separately prove Python-only mode does not import/call Rust. |
 | Regression and CI selection | Run exact selectors in supported CPython 3.12–3.14 / PyPy 3.11 lanes as applicable, with live backend gates marked explicit. A locally passing selector not selected by CI is not a closed CI gate. |
+
+## Test-First Entry Cases For Open Goals
+
+These are the first small executable cases to run or reuse before production
+changes for each open coarse goal. They are not whole-goal passing evidence;
+do not change a goal status until the wider acceptance matrix passes. Reuse
+existing fixtures and helpers; add no new framework or checklist rows. When a
+later slice selects a new operation/backend cell, add its focused failing test
+before changing production code.
+
+| Goal | First cases | Minimum assertion |
+| --- | --- | --- |
+| GOAL-06: public operation parity | Reuse Python `tests/server/test_chat_server_api.py::test_document_validate_graph_matches_shared_success_contract` and `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_http_error_matches_shared_fixture`; Rust `tests::document_validation::document_validate_graph_http_route_matches_shared_success_contract` and `::document_graph_validation_missing_nodes_matches_python_error_detail`. | Shared success/error fixtures; compare wire status and stable body fields. For each newly selected mutation/authority cell, first add same-request Python/Rust test plus no-effect assertion on denial/failure. These starter cases do not cover all inventory operations. |
+| GOAL-08: behavioral compatibility | Reuse `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract`; `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_workflow_success_matches_rust_durable_successor_admission` and `::test_python_suspend_resume_matches_rust_durable_ordered_history`. | Compare bidirectional persisted state and normalized ordered runtime history for fixed IDs; preserve transaction owner and assert no undeclared language handoff. Extend only when selecting another backend/behavior cell. |
+| GOAL-09: seam-free performance | Reuse `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_runner_compares_python_mixed_and_rust_http_modes` and `::test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch`; current bounded run details are recorded under DLFC-18. | Same trace, resource verification, equal final digest, and pure-path zero FFI. Before claiming the gate, add/run enough representative samples and apply declared per-workload thresholds; current two-sample smoke is insufficient. |
+
+TDD order per goal: land these few focused test cases first, run them, then
+change only code needed to pass. Build/live-backend integration comes after
+unit cases; never infer full goal closure from these starter cases alone.
+
+Starter selectors verified 2026-11-24: Python **8 passed** across HTTP
+success/error, SQLite bidirectional handoff, runtime success/suspend-resume,
+and endpoint report verification; Rust API **2 passed** for the shared HTTP
+success/error fixtures. These verify the starter cases only; GOAL-06/08 remain
+OPEN and GOAL-09 remains PARTIAL.
 
 Completion rule: GOAL-06 requires every inventory operation × declared backend
 pair to be `tested` or explicitly `unsupported` with a passing fail-closed
