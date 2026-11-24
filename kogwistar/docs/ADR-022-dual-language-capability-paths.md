@@ -93,6 +93,19 @@ A domain-specific endpoint may adapt its request into the common graph
 mutation contract, but must not create a role-specific graph model or imply
 that one backend's transaction guarantees apply to another.
 
+### Translation must not invent behavior
+
+The existing Python contract is the translation baseline. A Rust port must not
+add ordering, stable tie-breaking, sorting, validation strictness, retries, or
+other observable guarantees solely because they are convenient to implement
+or test. Such additions can change compatibility and add runtime cost. Preserve
+backend-native result order unless the Python contract or an approved shared
+contract requires ordering. Tests may canonicalize copied results before
+cross-language comparison; they must assert public ordering only when that
+ordering is already part of the contract. Any intentional behavior change
+requires a separate contract decision and release note, not a parity-test
+assumption.
+
 The Rust PostgreSQL service defaults to the Python Wisdom schema mapping:
 `<base>_wisdom`, matching
 `ServerStorageSettings.schema_for("wisdom")` in
