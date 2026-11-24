@@ -960,11 +960,11 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     ))
     .unwrap();
     let mut submit_arguments = submit_contract["arguments"].clone();
-    submit_arguments["user_id"] = json!("alice");
+    submit_arguments["user_id"] = json!("caller-controlled-owner");
     let submit_token = encode(
         &Header::new(Algorithm::HS256),
         &json!({
-            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "sub":"alice", "user_id":"alice", "role":"rw", "ns":["workflow"],
             "capabilities":["spawn_process", "workflow.run.write"],
             "iss":"local", "exp":4102444800_u64
         }),
