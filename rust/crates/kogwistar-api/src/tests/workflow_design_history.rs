@@ -571,6 +571,28 @@
             let field = field.as_str().unwrap();
             assert!(edge_upsert.get(field).is_none(), "field {field}");
         }
+        let repeated_edge_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-edge-contract/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-contract",
+                "src":"start",
+                "dst":"end",
+                "is_default":true
+            })
+        );
+        assert_eq!(repeated_edge_upsert.status(), StatusCode::OK);
+        let repeated_edge_upsert: Value = serde_json::from_slice(
+            &to_bytes(repeated_edge_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            repeated_edge_upsert["version"],
+            edge_upsert_contract["version"].as_i64().unwrap() + 1
+        );
         for body in [
             json!({"designer_id":"alice","node_id":"start","label":"Start","op":"increment-counter","start":true,"metadata":{"wf_executor_target":"rust-native"}}),
             json!({"designer_id":"alice","node_id":"end","label":"End","op":"emit-result","terminal":true,"metadata":{"wf_executor_target":"rust-native"}}),
