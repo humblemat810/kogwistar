@@ -22,11 +22,26 @@
 
 ## Pivoted Test-Case Status
 
-One row per named test selector; repeated goal IDs make progress visible by case instead of hiding it in a composite goal row. This is a view of existing goal evidence, not a new completion denominator. Suite-level aggregate mentions are not expanded into invented cases. `PASS` means cited run is recorded as passing; `IN PROGRESS` means some mapped cases pass while coverage remains; `NOT STARTED` means no complete selector/evidence exists for that cell. Keep goal-level status in the summary above. Open work items without a test selector are not test cases and remain in the fine checklist, not this table.
+One row per unique test case: this is the case-level status view, not a new completion denominator. Current case view: **88 PASS / 15 NOT YET VERIFIED / 103 cases**. Repeated goal IDs show which cases support each goal. Duplicate selectors formerly listed in both status tables are merged here. `PASS` means cited run is recorded as passing; `NOT YET VERIFIED` means no current passing evidence is recorded; it does not assert the test or implementation is absent. Keep overall goal status in the summary above. Open work without a concrete selector remains in the fine checklist, not this table.
 
 | Goal | Test case / selector | Status | Evidence or gap |
 | --- | --- | --- | --- |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust` | NOT YET VERIFIED | Python-only path does not load Rust. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker` | NOT YET VERIFIED | Rust-native request reaches persistence without Python worker. |
+| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_cross_implementation_acquire_race_grants_one_owner_only` | NOT YET VERIFIED | One SQLite transaction owner across implementations. |
+| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_direct_native_python_overlap_fails_before_database_mutation` | NOT YET VERIFIED | Overlap rejected before mutation. |
+| GOAL-02 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback` | NOT YET VERIFIED | Retry, namespace, and rollback integrity. |
+| GOAL-02 | `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission` | NOT YET VERIFIED | Authorization denied before run admission. |
 | GOAL-03 | `postgres_agentic_answer_workflow_executes_durably_without_python_worker` | PASS | Live pgvector, 1 passed; authenticated ingress through durable run/turn/lane state, no Python worker. |
+| GOAL-03 | `tests::in_memory_provider_events::in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together` | NOT YET VERIFIED | Native graph, ACL, index, and lane commit path. |
+| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract` | NOT YET VERIFIED | Bidirectional queue persistence. |
+| GOAL-04 | `tests/core/test_rust_store_projection_differential.py::test_sqlite_named_projections_python_and_rust_interoperate` | NOT YET VERIFIED | Bidirectional named-projection persistence. |
+| GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server` | NOT YET VERIFIED | Python Chroma projection read/reconciliation by Rust server. |
+| GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_rust_graph_mutation_is_readable_by_python_over_chroma` | NOT YET VERIFIED | Rust graph mutation visible through Python Chroma path. |
+| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_postgres_python_rust_queue_differential_live` | NOT YET VERIFIED | Live PostgreSQL cross-language queue parity. |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where` | NOT YET VERIFIED | Parameterized backend collection CRUD/filter contract. |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_in_memory_semantic_query_excludes_pending_embedding` | NOT YET VERIFIED | In-memory semantic query visibility. |
+| GOAL-05 | `tests/core/test_async_backend_invariants.py::test_async_pg_backend_invariants` | NOT YET VERIFIED | Async PostgreSQL backend invariants. |
 | GOAL-06 | `test_public_http_and_mcp_tasklets_name_executable_tests` | PASS | Manifest selector-mapping check passed; proves selectors exist, not behavior parity. |
 | GOAL-06 | `test_dual_language_surface_inventory_is_current` | PASS | Inventory-to-route/MCP mapping passed. |
 | GOAL-06 | `test_syscall_backend_ledger_matches_surface_inventory` | PASS | 11 syscalls × 4 backends resolved, 44 cells. |
@@ -96,6 +111,13 @@ One row per named test selector; repeated goal IDs make progress visible by case
 | GOAL-06 | `test_mcp_workflow_dead_letter_replay_dispatches_effect_once` | PASS | Python MCP dispatches scheduler resume once and reports no replay on retry. Focused run: 1 passed. Python scheduler is stubbed. |
 | GOAL-06 | `sqlite_run_service_handles_get_events_and_cancel` | PASS | Rust checks workflow-step inspection fields/result, run checkpoints, workflow catalog, exact dead-letter listing response, lane progress, run-event polling, and SSE replay with `after_seq=0`; seeded `run-1` event matches the Python oracle (`seq=1`, `run.started`, `{"source":"test"}`, required fields/timestamp type); focused Cargo test: 1 passed. Also covers MCP dead-letter requeue. |
 | GOAL-06 | `runtime_step_inspection_matches_shared_python_projection_fixture` | PASS | Rust runtime-inspection projection matches every common field in `workflow-step-inspection-v1.json`; focused Cargo test: 1 passed. |
+| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_rejects_null_nodes` | PASS | Shared fixture verifies null `nodes` is rejected with Python validation detail. |
+| GOAL-06 | `tests::document_validation::document_graph_validation_rejects_null_nodes` | PASS | Same request; Rust status and legacy error fields match fixture. |
+| GOAL-06 | `tests/server/test_chat_server_api.py::test_workflow_design_node_upsert_requires_write_graph_before_effect` | PASS | Shared fixture tests missing capability, wrong namespace, and read-only role; all return 403 before mutation handler call. |
+| GOAL-06 | `tests::workflow_design_node_upsert_http_denial_matches_python_before_effect` | PASS | Same three request/claims cases; Axum/JWT returns 403 and each SQLite event log stays empty. |
+| GOAL-06 | `tests/server/test_chat_server_api.py::test_conversation_list_http_denials_precede_service_read` | PASS | Shared `conversation-list-denied-http-v1.json`: wrong namespace returns 403; JWT `sub` without `user_id` returns 401; service-read spy remains untouched. |
+| GOAL-06 | `tests::conversation_list_http_denials_precede_storage_read` | PASS | Same shared denial cases; wrong namespace returns 403 and `sub`-only identity returns 401 with unreachable PostgreSQL, proving rejection precedes storage access. |
+| GOAL-06 | `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` | PASS | Live disposable PostgreSQL authorized conversation-list/detail/transcript route test passed after aligning its token with Python's required `user_id` claim. |
 | GOAL-06 | `test_workflow_lane_progress_matches_shared_contract` | PASS | Python `GET /api/workflow/lane/progress` checks shared fixture total, item count/key set, expected values, and timestamp type; focused pytest: 1 passed. |
 | GOAL-06 | `test_chat_rest_events_poll_matches_rust_seeded_contract` | PASS | Python seeds the same `run-1`/`run.started` event as Rust; checks sequence, payload, required field set, and timestamp type; focused pytest: 1 passed. |
 | GOAL-06 | `test_chat_rest_sse_matches_rust_seeded_contract` | PASS | Python `GET /api/runs/run-1/events?after_seq=0` matches Rust seeded replay: status/media type, event ID/name, run ID, event type, required data fields, and payload marker; focused pytest: 1 passed. |
@@ -103,6 +125,10 @@ One row per named test selector; repeated goal IDs make progress visible by case
 | GOAL-06 | `test_workflow_catalog_ops_matches_shared_contract` | PASS | Python `GET /api/workflow/catalog/ops` response equals `workflow-catalog-ops-http-v1.json`; focused pytest: 1 passed. |
 | GOAL-06 | `test_d3_bundle_route_matches_shared_rust_contract_and_escapes_inline_json` | PASS | Python `GET /viz/d3.bundle` consumes the shared fixture, checks embedded payload/metadata, and rejects unsafe script fragments; focused pytest: 1 passed. |
 | GOAL-06 | `d3_bundle_route_matches_shared_python_contract` | PASS | Rust `GET /viz/d3.bundle` uses the same fixture and checks status, content type, payload escaping, and forbidden fragments; focused Cargo test: 1 passed. |
+| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_transport_contract_subset_runs_in_supported_interpreter_matrix` | PASS | Guards explicit transport selectors in CPython 3.12–3.14 and PyPy 3.11 CI lanes. |
+| GOAL-08 | `tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence` | PASS | Authenticated HTTP event-agent route emits ordered SSE durable/delta events; interpreter-matrix subset has no Chroma dependency. |
+| GOAL-08 | `tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture` | PASS | Streamable MCP initialize/session/tool-call over `/mcp`; included in interpreter-matrix subset. |
+| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token` | PASS | Python CLI HTTP client auth/header contract; included in interpreter-matrix subset. |
 
 ## Full-Parity Test Matrix
 
@@ -126,70 +152,6 @@ the assertion is sufficient or currently passing.
 | Transport | For HTTP, MCP, and CLI surfaces, compare wire status/envelope, schemas, auth propagation, streaming/notification order where applicable, and malformed protocol behavior. Do not infer one transport from another. |
 | Native isolation | For Rust-native claims, run ingress-to-persistence while Python worker/adaptor entry points are instrumented to fail; prove zero Python handoff. Separately prove Python-only mode does not import/call Rust. |
 | Regression and CI selection | Run exact selectors in supported CPython 3.12–3.14 / PyPy 3.11 lanes as applicable, with live backend gates marked explicit. A locally passing selector not selected by CI is not a closed CI gate. |
-
-## Executable Test Cases By Goal
-
-One selector per row. `PASS` means this selector has an explicit passing run in
-the status table above; `NOT RECORDED` means the existing crosswalk cites the
-test, but this checklist has no selector-specific passing-run evidence. This
-is an evidence view, not a new denominator. Broader open matrix obligations
-remain below.
-
-| Goal | Test case / selector | Status | Assertion scope |
-| --- | --- | --- | --- |
-| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust` | NOT RECORDED | Python-only path does not load Rust. |
-| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker` | NOT RECORDED | Rust-native request reaches persistence without Python worker. |
-| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_cross_implementation_acquire_race_grants_one_owner_only` | NOT RECORDED | One SQLite transaction owner across implementations. |
-| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_direct_native_python_overlap_fails_before_database_mutation` | NOT RECORDED | Overlap rejected before mutation. |
-| GOAL-02 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback` | NOT RECORDED | Retry, namespace, and rollback integrity. |
-| GOAL-02 | `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission` | NOT RECORDED | Authorization denied before run admission. |
-| GOAL-03 | `tests::postgres_agentic_answer::postgres_agentic_answer_workflow_executes_durably_without_python_worker` | PASS | Live PostgreSQL native ingress through durable workflow; no Python worker. |
-| GOAL-03 | `tests::in_memory_provider_events::in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together` | NOT RECORDED | Native graph, ACL, index, and lane commit path. |
-| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract` | NOT RECORDED | Bidirectional queue persistence. |
-| GOAL-04 | `tests/core/test_rust_store_projection_differential.py::test_sqlite_named_projections_python_and_rust_interoperate` | NOT RECORDED | Bidirectional named-projection persistence. |
-| GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server` | NOT RECORDED | Python Chroma projection read/reconciliation by Rust server. |
-| GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_rust_graph_mutation_is_readable_by_python_over_chroma` | NOT RECORDED | Rust graph mutation visible through Python Chroma path. |
-| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_postgres_python_rust_queue_differential_live` | NOT RECORDED | Live PostgreSQL cross-language queue parity. |
-| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where` | NOT RECORDED | Parameterized backend collection CRUD/filter contract. |
-| GOAL-05 | `tests/core/test_backend_contract.py::test_in_memory_semantic_query_excludes_pending_embedding` | NOT RECORDED | In-memory semantic query visibility. |
-| GOAL-05 | `tests/core/test_async_backend_invariants.py::test_async_pg_backend_invariants` | NOT RECORDED | Async PostgreSQL backend invariants. |
-| GOAL-06 | `tests/core/test_rust_port_contract_manifest.py::test_public_http_and_mcp_tasklets_name_executable_tests` | PASS | HTTP/MCP inventory tasklets resolve to executable selectors. |
-| GOAL-06 | `tests/server/test_chat_server_api.py::test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP success contract. |
-| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_http_error_matches_shared_fixture` | PASS | Python missing-field error fixture. |
-| GOAL-06 | `tests::document_validation::document_validate_graph_http_route_matches_shared_success_contract` | PASS | Rust HTTP success contract. |
-| GOAL-06 | `tests::document_validation::document_graph_validation_missing_nodes_matches_python_error_detail` | PASS | Rust/Python validation error detail. |
-| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_wrong_type_matches_shared_fixture` | PASS | Python wrong-type rejection fixture. |
-| GOAL-06 | `tests::document_validation::document_graph_validation_wrong_nodes_type_matches_shared_contract` | PASS | Rust wrong-type rejection fixture. |
-| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_ignores_extra_top_level_field` | PASS | Unknown top-level field ignored; shared success body returned. |
-| GOAL-06 | `tests::document_validation::document_graph_validation_ignores_extra_top_level_field` | PASS | Same request and response fixture as Python. |
-| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_rejects_null_nodes` | PASS | Shared fixture verifies null `nodes` is rejected with Python validation detail. |
-| GOAL-06 | `tests::document_validation::document_graph_validation_rejects_null_nodes` | PASS | Same request; Rust status and legacy error fields match fixture. |
-| GOAL-06 | `tests/server/test_chat_server_api.py::test_workflow_design_node_upsert_requires_write_graph_before_effect` | PASS | Shared fixture tests missing capability, wrong namespace, and read-only role; all return 403 before mutation handler call. |
-| GOAL-06 | `tests::workflow_design_node_upsert_http_denial_matches_python_before_effect` | PASS | Same three request/claims cases; Axum/JWT returns 403 and each SQLite event log stays empty. |
-| GOAL-06 | `tests/server/test_chat_server_api.py::test_conversation_list_http_denials_precede_service_read` | PASS | Shared `conversation-list-denied-http-v1.json`: wrong namespace returns 403; JWT `sub` without `user_id` returns 401; service-read spy remains untouched. |
-| GOAL-06 | `tests::conversation_list_http_denials_precede_storage_read` | PASS | Same shared denial cases; wrong namespace returns 403 and `sub`-only identity returns 401 with unreachable PostgreSQL, proving rejection precedes storage access. |
-| GOAL-06 | `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` | PASS | Live disposable PostgreSQL authorized conversation-list/detail/transcript route test passed after aligning its token with Python's required `user_id` claim. |
-| GOAL-06 | `tests/server/test_chat_server_api.py::test_run_steps_matches_shared_rust_projection_fixture` | PASS | Same seed as Rust; compares normalized step fields, result, and trace context. |
-| GOAL-06 | `tests::runtime_step_inspection_matches_shared_python_projection_fixture` | PASS | Same seed as Python; compares normalized runtime-inspection response to shared fixture. |
-| GOAL-07 | `tests/core/test_pypy_ci_contract.py::test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | Declared interpreter matrix. |
-| GOAL-07 | `tests/core/test_pypy_ci_contract.py::test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips` | PASS | Required PyPy mixed-worker backend CI selection. |
-| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_transport_contract_subset_runs_in_supported_interpreter_matrix` | PASS | Guards that the explicit transport selector step remains in CPython 3.12–3.14 and PyPy 3.11 CI lanes. |
-| GOAL-08 | `tests/server/test_chat_server_api.py::test_server_health_matches_shared_contract` | PASS | Python HTTP health contract; included in the four-interpreter protocol subset. |
-| GOAL-08 | `tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence` | PASS | Authenticated HTTP event-agent route emits ordered SSE durable/delta events; included in the four-interpreter protocol subset without Chroma dependency. |
-| GOAL-08 | `tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture` | PASS | Real Streamable MCP initialize/session/tool-call over `/mcp`; included in the four-interpreter protocol subset. |
-| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token` | PASS | Python CLI HTTP client auth/header contract; included in the four-interpreter protocol subset. |
-| GOAL-08 | `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_workflow_success_matches_rust_durable_successor_admission` | PASS | Fixed-trace successful workflow parity. |
-| GOAL-08 | `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_suspend_resume_matches_rust_durable_ordered_history` | PASS | Suspend/resume ordered history parity. |
-| GOAL-08 | `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_workflow_failure_matches_rust_durable_state_and_step_event` | PASS | Failure state and step-event parity. |
-| GOAL-08 | `tests/core/test_sqlite_context_invariant.py::test_native_transaction_id_cannot_cross_contexts` | PASS | Transaction ownership isolation. |
-| GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_runner_compares_python_mixed_and_rust_http_modes` | PASS | Python and Rust HTTP benchmark paths execute. |
-| GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch` | PASS | Rejects cross-mode final-state mismatch. |
-| GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_report_verifier_rejects_ffi_in_pure_mode` | PASS | Rejects FFI use in pure-language modes. |
-
-`NOT RECORDED` is not a failing test or a claim that implementation is absent;
-it marks missing per-selector run evidence. It must not be promoted to `PASS`
-without recording a passing run. This table preserves the prior test inventory
-while making test-level status visible; it adds no goal or checklist item.
 
 ## Test-First Entry Cases For Open Goals
 
