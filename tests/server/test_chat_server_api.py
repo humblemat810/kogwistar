@@ -5508,6 +5508,84 @@ def test_workflow_design_empty_graph_matches_shared_contract(
     assert response.json() == contract["response_body"]
 
 
+def test_workflow_design_nonempty_graph_matches_shared_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-graph-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="rw", ns="workflow", username="alice")
+        path = f"/api/workflow/design/{contract['workflow_id']}"
+        for node in contract["node_requests"]:
+            response = client.post(
+                f"{path}/nodes",
+                json={"designer_id": "alice", **node},
+                headers=headers,
+            )
+            assert response.status_code == 200, response.text
+        response = client.post(
+            f"{path}/edges",
+            json={"designer_id": "alice", **contract["edge_request"]},
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        graph = client.get(
+            f"{path}/graph",
+            params={"refresh": str(contract["refresh"]).lower()},
+            headers=headers,
+        )
+
+    assert graph.status_code == contract["success_status"], graph.text
+    body = graph.json()
+    expected = contract["expected"]
+    for field in (
+        "current_version",
+        "active_tip_version",
+        "can_undo",
+        "can_redo",
+    ):
+        assert body[field] == expected[field]
+
+    nodes = {node["id"]: node for node in body["nodes"]}
+    assert len(nodes) == len(expected["nodes"])
+    for item in expected["nodes"]:
+        node = nodes[item["id"]]
+        assert node["label"] == item["label"]
+        for field in (
+            "entity_type",
+            "workflow_id",
+            "wf_op",
+            "wf_start",
+            "wf_terminal",
+            "wf_fanout",
+        ):
+            assert node["metadata"][field] == item[field]
+
+    edges = {edge["id"]: edge for edge in body["edges"]}
+    assert len(edges) == len(expected["edges"])
+    for item in expected["edges"]:
+        edge = edges[item["id"]]
+        for field in ("source_ids", "target_ids", "relation"):
+            assert edge[field] == item[field]
+        for field in (
+            "entity_type",
+            "workflow_id",
+            "wf_predicate",
+            "wf_priority",
+            "wf_is_default",
+            "wf_multiplicity",
+        ):
+            assert edge["metadata"][field] == item[field]
+
+
 def test_workflow_design_empty_history_matches_shared_contract(
     monkeypatch, engine_triplet
 ):

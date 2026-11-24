@@ -1,0 +1,69 @@
+{
+  "contract_version": 1,
+  "success_status": 200,
+  "workflow_id": "wf-graph-contract",
+  "refresh": true,
+  "node_requests": [
+    {
+      "node_id": "start",
+      "label": "Start",
+      "op": "start",
+      "start": true
+    },
+    {
+      "node_id": "finish",
+      "label": "Finish",
+      "op": "emit-result",
+      "terminal": true
+    }
+  ],
+  "edge_request": {
+    "edge_id": "start-finish",
+    "src": "start",
+    "dst": "finish",
+    "relation": "wf_next",
+    "is_default": true
+  },
+  "expected": {
+    "current_version": 3,
+    "active_tip_version": 3,
+    "can_undo": true,
+    "can_redo": false,
+    "nodes": [
+      {
+        "id": "start",
+        "label": "Start",
+        "entity_type": "workflow_node",
+        "workflow_id": "wf-graph-contract",
+        "wf_op": "start",
+        "wf_start": true,
+        "wf_terminal": false,
+        "wf_fanout": false
+      },
+      {
+        "id": "finish",
+        "label": "Finish",
+        "entity_type": "workflow_node",
+        "workflow_id": "wf-graph-contract",
+        "wf_op": "emit-result",
+        "wf_start": false,
+        "wf_terminal": true,
+        "wf_fanout": false
+      }
+    ],
+    "edges": [
+      {
+        "id": "start-finish",
+        "source_ids": ["start"],
+        "target_ids": ["finish"],
+        "relation": "wf_next",
+        "entity_type": "workflow_edge",
+        "workflow_id": "wf-graph-contract",
+        "wf_predicate": null,
+        "wf_priority": 100,
+        "wf_is_default": true,
+        "wf_multiplicity": "one"
+      }
+    ]
+  }
+}

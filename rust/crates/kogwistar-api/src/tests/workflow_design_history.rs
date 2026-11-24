@@ -197,6 +197,91 @@
                     .unwrap()
             }};
         }
+        let graph_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-graph-http-v1.json"
+        )))
+        .unwrap();
+        let graph_workflow_id = graph_contract["workflow_id"].as_str().unwrap();
+        for node in graph_contract["node_requests"].as_array().unwrap() {
+            let mut body = node.clone();
+            body["designer_id"] = json!("alice");
+            let response = public_call!(
+                "POST",
+                format!("/api/workflow/design/{graph_workflow_id}/nodes"),
+                body
+            );
+            assert_eq!(response.status().as_u16(), graph_contract["success_status"]);
+        }
+        let mut edge_body = graph_contract["edge_request"].clone();
+        edge_body["designer_id"] = json!("alice");
+        let edge_response = public_call!(
+            "POST",
+            format!("/api/workflow/design/{graph_workflow_id}/edges"),
+            edge_body
+        );
+        assert_eq!(edge_response.status().as_u16(), graph_contract["success_status"]);
+        let graph_response = public_call!(
+            "GET",
+            format!("/api/workflow/design/{graph_workflow_id}/graph?refresh=true"),
+            json!({})
+        );
+        assert_eq!(graph_response.status(), StatusCode::OK);
+        let graph: Value = serde_json::from_slice(
+            &to_bytes(graph_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        let expected = &graph_contract["expected"];
+        for field in [
+            "current_version",
+            "active_tip_version",
+            "can_undo",
+            "can_redo",
+        ] {
+            assert_eq!(graph[field], expected[field], "field {field}");
+        }
+        let actual_nodes = graph["nodes"].as_array().unwrap();
+        let expected_nodes = expected["nodes"].as_array().unwrap();
+        assert_eq!(actual_nodes.len(), expected_nodes.len());
+        for item in expected_nodes {
+            let actual = actual_nodes
+                .iter()
+                .find(|node| node["id"] == item["id"])
+                .expect("expected graph node is present");
+            assert_eq!(actual["label"], item["label"]);
+            for field in [
+                "entity_type",
+                "workflow_id",
+                "wf_op",
+                "wf_start",
+                "wf_terminal",
+                "wf_fanout",
+            ] {
+                assert_eq!(actual["metadata"][field], item[field], "node field {field}");
+            }
+        }
+        let actual_edges = graph["edges"].as_array().unwrap();
+        let expected_edges = expected["edges"].as_array().unwrap();
+        assert_eq!(actual_edges.len(), expected_edges.len());
+        for item in expected_edges {
+            let actual = actual_edges
+                .iter()
+                .find(|edge| edge["id"] == item["id"])
+                .expect("expected graph edge is present");
+            for field in ["source_ids", "target_ids", "relation"] {
+                assert_eq!(actual[field], item[field], "edge field {field}");
+            }
+            for field in [
+                "entity_type",
+                "workflow_id",
+                "wf_predicate",
+                "wf_priority",
+                "wf_is_default",
+                "wf_multiplicity",
+            ] {
+                assert_eq!(actual["metadata"][field], item[field], "edge field {field}");
+            }
+        }
         let trigger_connection = rusqlite::Connection::open(&path).unwrap();
         trigger_connection
             .execute_batch(
