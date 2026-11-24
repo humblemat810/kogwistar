@@ -173,6 +173,11 @@ remain below.
 | GOAL-06 | `tests::runtime_step_inspection_matches_shared_python_projection_fixture` | PASS | Same seed as Python; compares normalized runtime-inspection response to shared fixture. |
 | GOAL-07 | `tests/core/test_pypy_ci_contract.py::test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | Declared interpreter matrix. |
 | GOAL-07 | `tests/core/test_pypy_ci_contract.py::test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips` | PASS | Required PyPy mixed-worker backend CI selection. |
+| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_transport_contract_subset_runs_in_supported_interpreter_matrix` | PASS | Guards that the explicit transport selector step remains in CPython 3.12–3.14 and PyPy 3.11 CI lanes. |
+| GOAL-08 | `tests/server/test_chat_server_api.py::test_server_health_matches_shared_contract` | PASS | Python HTTP health contract; included in the four-interpreter protocol subset. |
+| GOAL-08 | `tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence` | PASS | Authenticated HTTP event-agent route emits ordered SSE durable/delta events; included in the four-interpreter protocol subset without Chroma dependency. |
+| GOAL-08 | `tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture` | PASS | Real Streamable MCP initialize/session/tool-call over `/mcp`; included in the four-interpreter protocol subset. |
+| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token` | PASS | Python CLI HTTP client auth/header contract; included in the four-interpreter protocol subset. |
 | GOAL-08 | `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_workflow_success_matches_rust_durable_successor_admission` | PASS | Fixed-trace successful workflow parity. |
 | GOAL-08 | `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_suspend_resume_matches_rust_durable_ordered_history` | PASS | Suspend/resume ordered history parity. |
 | GOAL-08 | `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_workflow_failure_matches_rust_durable_state_and_step_event` | PASS | Failure state and step-event parity. |

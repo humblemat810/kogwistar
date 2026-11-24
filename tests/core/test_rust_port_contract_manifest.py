@@ -468,6 +468,30 @@ def test_rust_ci_keeps_the_native_api_dependency_closure_python_free() -> None:
     assert "(kogwistar-python|pyo3(-[^ ]+)?|pythonize|cpython|rust-cpython(-[^ ]+)?) v" in workflow
 
 
+def test_python_transport_contract_subset_runs_in_supported_interpreter_matrix() -> None:
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    ci_job = workflow.split("\n  ci:", maxsplit=1)[1].split("\n  lint:", maxsplit=1)[0]
+
+    for version in (
+        'python-version: "3.12"',
+        'python-version: "3.13"',
+        'python-version: "3.14"',
+        "python-version: pypy-3.11-",
+    ):
+        assert version in ci_job
+
+    transport_step = ci_job.split(
+        "- name: Verify Python protocol transport subset", maxsplit=1
+    )[1]
+    for selector in (
+        "tests/server/test_chat_server_api.py::test_server_health_matches_shared_contract",
+        "tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence",
+        "tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture",
+        "tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token",
+    ):
+        assert selector in transport_step
+
+
 def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
     rust_test_step = workflow.split("- name: Test Rust workspace", maxsplit=1)[1].split(
