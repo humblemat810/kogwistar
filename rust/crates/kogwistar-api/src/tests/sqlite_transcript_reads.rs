@@ -1012,6 +1012,9 @@
             .await;
         assert_eq!(response.status, StatusCode::OK.as_u16());
         let response: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(response["version"], "v1");
+        assert_eq!(response["op"], "receive_message");
+        assert_eq!(response["status"], "ok");
         assert_eq!(response["result"], fixture);
 
         drop(graph);
