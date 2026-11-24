@@ -1817,15 +1817,10 @@ fn request_approval_syscall(
         );
     }
     if !matches!(action.as_str(), "grant" | "revoke") {
-        return json_effect(
-            StatusCode::OK,
-            json!({
-                "version": input.version,
-                "op": input.op,
-                "status": "ok",
-                "result": {"status":"requested", "reason": input.args.get("reason").and_then(Value::as_str).unwrap_or("approval pending")},
-                "error": null,
-            }),
+        return syscall_success(
+            &input.version,
+            &input.op,
+            json!({"status":"requested", "reason": input.args.get("reason").and_then(Value::as_str).unwrap_or("approval pending")}),
         );
     }
     let capability = input
@@ -1879,10 +1874,7 @@ fn request_approval_syscall(
             "revocation": capability_snapshot(&request.principal, &state),
         })
     };
-    json_effect(
-        StatusCode::OK,
-        json!({"version":input.version,"op":input.op,"status":"ok","result":payload,"error":null}),
-    )
+    syscall_success(&input.version, &input.op, payload)
 }
 
 fn syscall_read_effect(

@@ -8,6 +8,13 @@ fn json_effect(status: StatusCode, value: Value) -> ApiEffectResponse {
     }
 }
 
+fn syscall_success(version: &str, op: &str, result: Value) -> ApiEffectResponse {
+    json_effect(
+        StatusCode::OK,
+        json!({"version": version, "op": op, "status": "ok", "result": result, "error": null}),
+    )
+}
+
 fn syscall_step_seq(value: &Value) -> Option<i64> {
     value
         .as_i64()
@@ -1231,10 +1238,7 @@ fn syscall_result(version: &str, op: &str, response: ApiEffectResponse) -> ApiEf
             .entry("user_turn_node_id".to_owned())
             .or_insert(turn_node_id);
     }
-    json_effect(
-        StatusCode::OK,
-        json!({"version": version, "op": op, "status": "ok", "result": result, "error": null}),
-    )
+    syscall_success(version, op, result)
 }
 
 fn syscall_audit(shared: &SharedCapabilityState, version: &str, op: &str, status: &str) {
