@@ -51,6 +51,8 @@ One row per named test selector; repeated goal IDs make progress visible by case
 | GOAL-06 | `in_memory_send_message_admits_turn_and_run_atomically` | PASS | Rust invalid-input and atomic admission case passed. |
 | GOAL-06 | `test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP success contract passed. |
 | GOAL-06 | `test_python_document_graph_validation_http_error_matches_shared_fixture` | PASS | Python HTTP error fixture case passed. |
+| GOAL-06 | `test_python_document_graph_validation_wrong_type_matches_shared_fixture` | PASS | Python HTTP rejects wrong-type `nodes` with the shared Pydantic detail fixture; focused pytest: 1 passed. |
+| GOAL-06 | `document_graph_validation_wrong_nodes_type_matches_shared_contract` | PASS | Rust rejects wrong-type `nodes` with the shared legacy error fixture; focused Cargo test: 1 passed. |
 | GOAL-06 | `test_server_health_matches_shared_contract` | PASS | Python `GET /health` checks success status and common health fields against `contracts/golden/health-v1.json`; focused pytest: 1 passed. |
 | GOAL-06 | `health_route_matches_shared_python_contract` | PASS | Rust `GET /health` checks same shared fixture fields and types; focused Cargo test: 1 passed. |
 | GOAL-06 | `test_conversation_list_is_user_scoped_and_has_stable_response_shape` | PASS | Python `GET /api/conversations` verifies owner filtering and exact response/row field sets against `conversation-list-http-v1.json`; focused pytest: 1 passed. |
@@ -151,9 +153,11 @@ remain below.
 | GOAL-05 | `tests/core/test_async_backend_invariants.py::test_async_pg_backend_invariants` | NOT RECORDED | Async PostgreSQL backend invariants. |
 | GOAL-06 | `tests/core/test_rust_port_contract_manifest.py::test_public_http_and_mcp_tasklets_name_executable_tests` | PASS | HTTP/MCP inventory tasklets resolve to executable selectors. |
 | GOAL-06 | `tests/server/test_chat_server_api.py::test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP success contract. |
-| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_http_error_matches_shared_fixture` | NOT RECORDED | Python HTTP validation error fixture. |
+| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_http_error_matches_shared_fixture` | PASS | Python missing-field error fixture. |
 | GOAL-06 | `tests::document_validation::document_validate_graph_http_route_matches_shared_success_contract` | PASS | Rust HTTP success contract. |
 | GOAL-06 | `tests::document_validation::document_graph_validation_missing_nodes_matches_python_error_detail` | PASS | Rust/Python validation error detail. |
+| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_wrong_type_matches_shared_fixture` | PASS | Python wrong-type rejection fixture. |
+| GOAL-06 | `tests::document_validation::document_graph_validation_wrong_nodes_type_matches_shared_contract` | PASS | Rust wrong-type rejection fixture. |
 | GOAL-06 | `tests/server/test_chat_server_api.py::test_run_steps_matches_shared_rust_projection_fixture` | PASS | Same seed as Rust; compares normalized step fields, result, and trace context. |
 | GOAL-06 | `tests::runtime_step_inspection_matches_shared_python_projection_fixture` | PASS | Same seed as Python; compares normalized runtime-inspection response to shared fixture. |
 | GOAL-07 | `tests/core/test_pypy_ci_contract.py::test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | Declared interpreter matrix. |

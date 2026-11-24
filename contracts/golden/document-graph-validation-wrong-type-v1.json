@@ -1,0 +1,19 @@
+{
+  "contract_version": "v1",
+  "request": {
+    "doc_id": "doc-invalid-nodes-type",
+    "nodes": "not-a-list"
+  },
+  "python_detail": [
+    {
+      "type": "list_type",
+      "loc": ["body", "nodes"],
+      "msg": "Input should be a valid list",
+      "input": "not-a-list"
+    }
+  ],
+  "rust_legacy_fields": {
+    "code": "KOGWISTAR_INVALID_REQUEST",
+    "message": "invalid type: string \"not-a-list\", expected a sequence"
+  }
+}
