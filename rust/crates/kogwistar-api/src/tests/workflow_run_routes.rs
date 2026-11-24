@@ -1031,15 +1031,22 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     assert_eq!(persisted_submit.conversation_id, "conversation-contract");
     assert_eq!(persisted_submit.user_id.as_deref(), Some("alice"));
     assert_eq!(persisted_submit.status, "queued");
-    assert!(!kogwistar_store::ServerRunReadStore::server_run_events(
+    let submit_events = kogwistar_store::ServerRunReadStore::server_run_events(
         &service.store,
         submitted_run_id,
         0,
         100,
     )
     .await
-    .unwrap()
-    .is_empty());
+    .unwrap();
+    let created_event = submit_events.first().expect("durable run.created event");
+    assert_eq!(created_event.seq, 1);
+    assert_eq!(created_event.event_type, "run.created");
+    let created_payload: Value = serde_json::from_str(&created_event.payload_json).unwrap();
+    assert_eq!(created_payload["run_id"], submitted_run_id);
+    assert_eq!(created_payload["workflow_id"], "workflow-contract");
+    assert_eq!(created_payload["conversation_id"], "conversation-contract");
+    assert_eq!(created_payload["status"], "queued");
 
     let mcp_denied = app
         .clone()
