@@ -512,6 +512,8 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
     async fn sqlite_chroma_invoke_list_transcript_reads_live_graph() {
+        use kogwistar_store::{GraphEntityKind, GraphRecord, GraphWriteStore};
+
         let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
             .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
         let suffix = uuid::Uuid::new_v4().simple().to_string();
@@ -522,10 +524,10 @@
         let service = open_sqlite_application_service(
             &path,
             Some(SqliteChromaGraphConfig {
-                endpoint,
+                endpoint: endpoint.clone(),
                 metric: DistanceMetric::Cosine,
-                node_collection,
-                edge_collection,
+                node_collection: node_collection.clone(),
+                edge_collection: edge_collection.clone(),
             }),
         )
         .await
@@ -535,7 +537,6 @@
                 "sub":"list-owner",
                 "role":"rw",
                 "storage_ns":namespace,
-                "workspace_id":"workspace-a",
                 "graph_space":"conversation",
                 "ns":["conversation"],
                 "capabilities":capabilities
@@ -563,7 +564,46 @@
             "{}",
             String::from_utf8_lossy(&created.body)
         );
-
+        let created_payload: Value = serde_json::from_slice(&created.body).unwrap();
+        let start_node_id = created_payload["result"]["start_node_id"]
+            .as_str()
+            .unwrap();
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            kogwistar_store_chroma::ChromaStoreConfig {
+                endpoint: endpoint.clone(),
+                collection: node_collection,
+                metric: DistanceMetric::Cosine,
+                ..Default::default()
+            },
+            kogwistar_store_chroma::ChromaStoreConfig {
+                endpoint,
+                collection: edge_collection,
+                metric: DistanceMetric::Cosine,
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        graph
+            .upsert_graph_record_of_kind(
+                &namespace,
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: start_node_id.to_owned(),
+                    document: Some("conversation start".to_owned()),
+                    metadata: serde_json::from_value(json!({
+                        "entity_type":"conversation_start",
+                        "conversation_id":conversation_id,
+                        "user_id":"list-owner",
+                        "lifecycle_status":"active",
+                        "graph_space":"conversation"
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
         let invoke = |capabilities: &[&str]| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
@@ -585,7 +625,12 @@
         let response = service
             .execute(invoke(&["invoke_tool", "read_graph"]))
             .await;
-        assert_eq!(response.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            response.status,
+            StatusCode::OK.as_u16(),
+            "{}",
+            String::from_utf8_lossy(&response.body),
+        );
         let payload: Value = serde_json::from_slice(&response.body).unwrap();
         let result = &payload["result"];
         let fixture: Value = serde_json::from_str(include_str!(

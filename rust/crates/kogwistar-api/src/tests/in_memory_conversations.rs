@@ -1246,6 +1246,28 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
         &service.store,
         vec![
             snapshot_mutation(
+                "c1-start",
+                json!({
+                    "entity_type":"conversation_start",
+                    "conversation_id":"c1",
+                    "user_id":"alice",
+                    "status":"active"
+                }),
+                "conversation start".to_owned(),
+            ),
+            snapshot_mutation(
+                "acl-c1-start",
+                json!({
+                    "entity_type":"acl_record",
+                    "acl_truth_graph":"conversation",
+                    "acl_target_grain":"node",
+                    "acl_target_entity_id":"c1-start",
+                    "acl_version":1,
+                    "acl_mode":"public"
+                }),
+                "conversation ACL".to_owned(),
+            ),
+            snapshot_mutation(
                 memory_fixture["snapshot_node_id"].as_str().unwrap(),
                 snapshot_metadata,
                 memory_fixture.to_string(),
