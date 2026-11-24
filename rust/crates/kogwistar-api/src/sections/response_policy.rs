@@ -1233,7 +1233,7 @@ fn syscall_result(version: &str, op: &str, response: ApiEffectResponse) -> ApiEf
     }
     json_effect(
         StatusCode::OK,
-        json!({"version": version, "op": op, "status": "ok", "result": result}),
+        json!({"version": version, "op": op, "status": "ok", "result": result, "error": null}),
     )
 }
 

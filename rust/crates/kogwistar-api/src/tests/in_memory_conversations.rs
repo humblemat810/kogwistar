@@ -81,6 +81,7 @@ async fn in_memory_create_conversation_is_atomic_and_matches_shared_contract() {
     assert_eq!(response.status, StatusCode::OK.as_u16());
     let response: Value = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(response["op"], "create_conversation");
+    assert!(response.get("error").is_some_and(Value::is_null));
     assert_eq!(response["result"], body);
 
     let scope = GraphScope {
