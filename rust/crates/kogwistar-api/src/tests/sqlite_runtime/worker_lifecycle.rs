@@ -239,6 +239,29 @@
         let run_id = spawned["result"]["run_id"].as_str().unwrap();
         assert!(service.store.get_server_run(run_id).unwrap().is_some());
 
+        let denied_termination = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":run_id}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"chroma-lifecycle-owner", "role":"rw", "ns":"workflow",
+                "capabilities":["workflow.run.read"]
+            }),
+        });
+        assert_eq!(denied_termination.status, StatusCode::FORBIDDEN.as_u16());
+        assert!(!service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .unwrap()
+            .cancel_requested);
+
         let terminated = service.execute_sync(ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
@@ -249,7 +272,7 @@
                 "args":{"run_id":run_id}
             }))
             .unwrap(),
-            principal,
+            principal: principal.clone(),
         });
         assert_eq!(terminated.status, StatusCode::OK.as_u16());
         let terminated: Value = serde_json::from_slice(&terminated.body).unwrap();
@@ -272,6 +295,26 @@
             .unwrap()
             .unwrap()
             .cancel_requested);
+        let repeated_termination = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":run_id}
+            }))
+            .unwrap(),
+            principal: principal.clone(),
+        });
+        assert_eq!(repeated_termination.status, StatusCode::OK.as_u16());
+        let repeated_termination: Value =
+            serde_json::from_slice(&repeated_termination.body).unwrap();
+        assert!(cancel_contract["accepted_run_statuses"]
+            .as_array()
+            .unwrap()
+            .contains(&repeated_termination["result"]["status"]));
+        assert_eq!(repeated_termination["result"]["cancel_requested"], true);
         drop(service);
         std::fs::remove_file(path).unwrap();
     }

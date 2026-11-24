@@ -532,6 +532,25 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         .unwrap()
         .contains(&terminated["result"]["status"]));
     assert_eq!(terminated["result"]["status"], "cancelled");
+    let repeated_termination = service.execute(ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"syscall-v1",
+            "args":{"run_id":"memory-syscall-run"}
+        }))
+        .unwrap(),
+        principal: json!({
+            "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
+            "capabilities":["workflow.run.write"]
+        }),
+    })
+    .await;
+    assert_eq!(repeated_termination.status, StatusCode::OK.as_u16());
+    let repeated_termination: Value = serde_json::from_slice(&repeated_termination.body).unwrap();
+    assert_eq!(repeated_termination["result"]["status"], "cancelled");
+    assert_eq!(repeated_termination["result"]["cancel_requested"], true);
 
     let checkpoint = service.execute(ApiEffectRequest {
         contract_version: 1,

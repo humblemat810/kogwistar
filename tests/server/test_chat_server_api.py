@@ -2509,6 +2509,23 @@ def test_conversation_syscalls_use_python_postgres_backend(
             algorithm=TEST_JWT_ALG,
         )
         headers = {"Authorization": f"Bearer {token}"}
+        denied_termination_token = jwt.encode(
+            {
+                "sub": "alice",
+                "user_id": "alice",
+                "role": "rw",
+                "ns": ["workflow"],
+                "capabilities": ["workflow.run.read"],
+                "iat": now,
+                "exp": now + 3600,
+                "iss": "local",
+            },
+            TEST_JWT_SECRET,
+            algorithm=TEST_JWT_ALG,
+        )
+        denied_termination_headers = {
+            "Authorization": f"Bearer {denied_termination_token}"
+        }
         workflow_id = "wf.postgres-syscall-lifecycle"
         identity = claims_ctx.set(
             {
@@ -2879,6 +2896,18 @@ def test_conversation_syscalls_use_python_postgres_backend(
             run_id = spawned_result["run_id"]
             assert registry.get_run(run_id) is not None
 
+            denied_termination = client.post(
+                "/api/syscall/v1/terminate_process",
+                json={
+                    "version": "v1",
+                    "op": "terminate_process",
+                    "args": {"run_id": run_id},
+                },
+                headers=denied_termination_headers,
+            )
+            assert denied_termination.status_code == 403
+            assert registry.get_run(run_id)["cancel_requested"] is False
+
             terminated = client.post(
                 "/api/syscall/v1/terminate_process",
                 json={
@@ -2908,6 +2937,18 @@ def test_conversation_syscalls_use_python_postgres_backend(
             assert registry.get_run(run_id)["cancel_requested"] is True
             final_run = _wait_for_status(client, run_id, headers, {"cancelled"})
             assert final_run["status"] == "cancelled"
+            repeated_termination = client.post(
+                "/api/syscall/v1/terminate_process",
+                json={
+                    "version": "v1",
+                    "op": "terminate_process",
+                    "args": {"run_id": run_id},
+                },
+                headers=headers,
+            )
+            assert repeated_termination.status_code == 200
+            assert repeated_termination.json()["result"]["status"] == "cancelled"
+            assert repeated_termination.json()["result"]["cancel_requested"] is True
 
         result = first.json()["result"]
         assert result["status"] == "queued"
@@ -3202,6 +3243,25 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
             for field, value in submit_contract["expected_common_values"].items():
                 assert spawned_result[field] == value
 
+            denied_headers = _token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                username="memory-workflow-owner",
+                capabilities="workflow.run.read",
+            )
+            denied_termination = client.post(
+                "/api/syscall/v1/terminate_process",
+                json={
+                    "version": "v1",
+                    "op": "terminate_process",
+                    "args": {"run_id": spawned_result["run_id"]},
+                },
+                headers=denied_headers,
+            )
+            assert denied_termination.status_code == 403
+            assert registry.get_run(spawned_result["run_id"])["cancel_requested"] is False
+
             terminated = client.post(
                 "/api/syscall/v1/terminate_process",
                 json={
@@ -3234,6 +3294,18 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
                 final_run = registry.get_run(spawned_result["run_id"])
             assert final_run is not None
             assert final_run["status"] == "cancelled"
+            repeated_termination = client.post(
+                "/api/syscall/v1/terminate_process",
+                json={
+                    "version": "v1",
+                    "op": "terminate_process",
+                    "args": {"run_id": spawned_result["run_id"]},
+                },
+                headers=headers,
+            )
+            assert repeated_termination.status_code == 200
+            assert repeated_termination.json()["result"]["status"] == "cancelled"
+            assert repeated_termination.json()["result"]["cancel_requested"] is True
     finally:
         for engine in engines:
             engine.close()

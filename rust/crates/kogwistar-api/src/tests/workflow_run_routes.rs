@@ -719,6 +719,32 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .unwrap()
         .is_some());
 
+    let denied_termination = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":syscall_run_id}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"alice", "role":"rw", "ns":["workflow"],
+                "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(denied_termination.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(!service
+        .store
+        .get_server_run(syscall_run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .cancel_requested);
+
     let terminated = service
         .execute(ApiEffectRequest {
             contract_version: 1,
@@ -730,7 +756,7 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
                 "args":{"run_id":syscall_run_id}
             }))
             .unwrap(),
-            principal: syscall_principal,
+            principal: syscall_principal.clone(),
         })
         .await;
     assert_eq!(terminated.status, StatusCode::OK.as_u16());
@@ -758,6 +784,28 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .unwrap()
         .unwrap()
         .cancel_requested);
+    let repeated_termination = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":syscall_run_id}
+            }))
+            .unwrap(),
+            principal: syscall_principal,
+        })
+        .await;
+    assert_eq!(repeated_termination.status, StatusCode::OK.as_u16());
+    let repeated_termination: Value =
+        serde_json::from_slice(&repeated_termination.body).unwrap();
+    assert!(cancel_contract["accepted_run_statuses"]
+        .as_array()
+        .unwrap()
+        .contains(&repeated_termination["result"]["status"]));
+    assert_eq!(repeated_termination["result"]["cancel_requested"], true);
 }
 
 #[tokio::test]
