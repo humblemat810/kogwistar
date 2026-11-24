@@ -5586,10 +5586,24 @@ def test_workflow_design_node_upsert_repeated_request_creates_next_python_versio
         path = f"/api/workflow/design/{contract['workflow_id']}/nodes"
         first = client.post(path, json=body, headers=headers)
         second = client.post(path, json=body, headers=headers)
+        updated = client.post(
+            path, json={**body, "label": "Updated start"}, headers=headers
+        )
+        graph = client.get(
+            f"/api/workflow/design/{contract['workflow_id']}/graph",
+            headers=headers,
+        )
 
     assert first.status_code == second.status_code == contract["success_status"]
     assert first.json()["version"] == 1
     assert second.json()["version"] == 2
+    assert updated.status_code == contract["success_status"], updated.text
+    assert updated.json()["version"] == 3
+    assert graph.status_code == 200, graph.text
+    nodes = graph.json()["nodes"]
+    assert len(nodes) == 1
+    assert nodes[0]["id"] == contract["node_id"]
+    assert nodes[0]["label"] == "Updated start"
 
 
 def test_workflow_design_node_upsert_requires_write_graph_before_effect(

@@ -311,6 +311,40 @@
         .unwrap();
         assert_eq!(node_upsert["version"], 1);
         assert_eq!(repeated_node_upsert["version"], 2);
+        let updated_node_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-node-contract/nodes",
+            json!({
+                "designer_id":"alice",
+                "node_id":"node-contract",
+                "label":"Updated start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(updated_node_upsert.status(), StatusCode::OK);
+        let updated_node_upsert: Value = serde_json::from_slice(
+            &to_bytes(updated_node_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_node_upsert["version"], 3);
+        let updated_graph = public_call!(
+            "GET",
+            "/api/workflow/design/wf-node-contract/graph",
+            json!({})
+        );
+        assert_eq!(updated_graph.status(), StatusCode::OK);
+        let updated_graph: Value = serde_json::from_slice(
+            &to_bytes(updated_graph.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_graph["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(updated_graph["nodes"][0]["id"], "node-contract");
+        assert_eq!(updated_graph["nodes"][0]["label"], "Updated start");
         let node_delete_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-node-delete-http-v1.json"

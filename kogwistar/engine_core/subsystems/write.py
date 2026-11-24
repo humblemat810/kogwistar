@@ -1607,7 +1607,7 @@ class WriteSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                     payload=payload if isinstance(payload, dict) else {},
                     required=True,
                 )
-                run_awaitable_blocking(self._e.backend.node_add(
+                run_awaitable_blocking(self._e.backend.node_upsert(
                     ids=[node.safe_get_id()],
                     documents=[doc],
                     embeddings=[_required_embedding(node.embedding)]
