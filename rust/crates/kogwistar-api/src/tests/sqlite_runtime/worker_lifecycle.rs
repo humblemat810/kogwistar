@@ -459,7 +459,7 @@
             )
             .unwrap();
 
-        let request = |username: &str| ApiEffectRequest {
+        let request = |username: &str, run_id: &str| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
             path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
@@ -468,7 +468,7 @@
                 "op":"mount_memory",
                 "args":{
                     "conversation_id":conversation_id,
-                    "run_id":"memory-run",
+                    "run_id":run_id,
                     "stage":"draft_answer"
                 }
             })
@@ -484,7 +484,7 @@
                 "capabilities":["project_view"]
             }),
         };
-        let owner = service.execute(request("memory-owner")).await;
+        let owner = service.execute(request("memory-owner", "memory-run")).await;
         assert_eq!(owner.status, StatusCode::OK.as_u16());
         let owner: Value = serde_json::from_slice(&owner.body).unwrap();
         assert_eq!(owner["result"]["snapshot_node_id"], fixture["snapshot_node_id"]);
@@ -492,7 +492,15 @@
         assert_eq!(owner["result"]["metadata"], fixture["metadata"]);
         assert_eq!(owner["result"]["properties"], fixture["properties"]);
 
-        let outsider = service.execute(request("unrelated-reader")).await;
+        let missing_snapshot = service
+            .execute(request("memory-owner", "missing-memory-run"))
+            .await;
+        assert_eq!(missing_snapshot.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&missing_snapshot.body).contains(snapshot_id));
+
+        let outsider = service
+            .execute(request("unrelated-reader", "memory-run"))
+            .await;
         assert_eq!(outsider.status, StatusCode::NOT_FOUND.as_u16());
         assert!(!String::from_utf8_lossy(&outsider.body).contains(snapshot_id));
         drop(graph);

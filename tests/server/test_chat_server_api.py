@@ -1969,6 +1969,18 @@ def test_mount_memory_syscall_uses_python_backend(monkeypatch, tmp_path, backend
             assert mounted.status_code == 200, mounted.text
             assert mounted.json()["result"]["snapshot_node_id"] == snapshot_id
 
+            missing_snapshot_request = {
+                **request,
+                "args": {**request["args"], "run_id": "missing-memory-run"},
+            }
+            missing_snapshot = client.post(
+                "/api/syscall/v1/mount_memory",
+                json=missing_snapshot_request,
+                headers=owner_headers,
+            )
+            assert missing_snapshot.status_code == 404, missing_snapshot.text
+            assert snapshot_id not in missing_snapshot.text
+
             outsider = client.post(
                 "/api/syscall/v1/mount_memory",
                 json=request,
@@ -2697,6 +2709,22 @@ def test_conversation_syscalls_use_python_postgres_backend(
             )
             assert mounted.status_code == 200, mounted.text
             assert mounted.json()["result"]["snapshot_node_id"] == snapshot_id
+
+            missing_snapshot = client.post(
+                "/api/syscall/v1/mount_memory",
+                json={
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": conversation_id,
+                        "run_id": "missing-postgres-run",
+                        "stage": "final",
+                    },
+                },
+                headers=headers,
+            )
+            assert missing_snapshot.status_code == 404, missing_snapshot.text
+            assert snapshot_id not in missing_snapshot.text
 
             invoked = client.post(
                 "/api/syscall/v1/invoke_tool",

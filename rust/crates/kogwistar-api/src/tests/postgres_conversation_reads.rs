@@ -193,6 +193,37 @@
         assert_eq!(syscall_payload["status"], "ok");
         assert_eq!(syscall_payload["result"], expected);
 
+        let missing_snapshot_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "missing-run",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            missing_snapshot_response.status,
+            StatusCode::NOT_FOUND.as_u16()
+        );
+        assert!(!String::from_utf8_lossy(&missing_snapshot_response.body)
+            .contains("snapshot-1"));
+
         let private_syscall_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,

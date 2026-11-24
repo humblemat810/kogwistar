@@ -338,6 +338,18 @@ async fn in_memory_mount_memory_matches_shared_contract_and_authority() {
     assert_eq!(mounted["op"], "mount_memory");
     assert_eq!(mounted["status"], "ok");
     assert_eq!(mounted["result"], memory_fixture);
+
+    let missing_snapshot = service
+        .execute(request(
+            &["project_view"],
+            "conversation",
+            json!({
+                "conversation_id":memory_fixture["conversation_id"],
+                "run_id":"missing-memory-run"
+            }),
+        ))
+        .await;
+    assert_eq!(missing_snapshot.status, StatusCode::NOT_FOUND.as_u16());
 }
 
 #[tokio::test]
