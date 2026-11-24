@@ -639,6 +639,7 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         assert_eq!(envelope["version"], case["request"]["version"]);
         assert_eq!(envelope["op"], case["request"]["op"]);
         assert_eq!(envelope["status"], "ok");
+        assert!(envelope["error"].is_null());
         let result = &envelope["result"];
         assert_eq!(result["status"], case["result_status"]);
         let entries = result[case["snapshot_field"].as_str().unwrap()]
@@ -671,23 +672,23 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(approval["op"], "request_approval");
     assert_eq!(approval["status"], "blocked");
     assert_eq!(approval["error"]["reason"], "test");
+    let requested_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-request-approval-unrecognized-v1.json"
+    ))
+    .unwrap();
     let requested_approval = service.execute(ApiEffectRequest {
         contract_version: 1,
         method: "POST".to_owned(),
         path_and_query: "/api/syscall/v1/request_approval".to_owned(),
-        body: serde_json::to_vec(&json!({
-            "version":"syscall-v1", "args":{"action":"unrecognized"}
-        })).unwrap(),
+        body: serde_json::to_vec(&requested_contract["request"]).unwrap(),
         principal: json!({
             "sub":"syscall-owner", "role":"rw", "ns":["workflow"],
             "capabilities":[]
         }),
     }).await;
-    assert_eq!(requested_approval.status, StatusCode::OK.as_u16());
+    assert_eq!(requested_approval.status, requested_contract["http_status"]);
     let requested_approval: Value = serde_json::from_slice(&requested_approval.body).unwrap();
-    assert_eq!(requested_approval["status"], "ok");
-    assert_eq!(requested_approval["result"]["status"], "requested");
-    assert_eq!(requested_approval["result"]["reason"], "approval pending");
+    assert_eq!(requested_approval, requested_contract["response"]);
     let invalid_contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/syscall-request-approval-invalid-v1.json"
     ))

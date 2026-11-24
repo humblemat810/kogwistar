@@ -2251,6 +2251,7 @@ def test_request_approval_syscall_uses_python_backend(monkeypatch, tmp_path, bac
                 assert payload["version"] == case["request"]["version"]
                 assert payload["op"] == case["request"]["op"]
                 assert payload["status"] == "ok"
+                assert payload["error"] is None
                 result = payload["result"]
                 assert result["status"] == case["result_status"], case["name"]
                 entries = result[case["snapshot_field"]][case["entries_field"]]

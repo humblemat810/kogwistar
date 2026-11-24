@@ -555,6 +555,26 @@ def test_syscall_request_approval_is_blocked_contract(monkeypatch, engine_triple
         assert resp.status_code == contract["http_status"]
         assert resp.json() == contract["response"]
 
+    requested_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/syscall-request-approval-unrecognized-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    with TestClient(server.app) as client:
+        response = client.post(
+            "/api/syscall/v1/request_approval",
+            json=requested_contract["request"],
+            headers=_token_header(
+                client,
+                role="rw",
+                ns="workflow",
+                capabilities="",
+            ),
+        )
+        assert response.status_code == requested_contract["http_status"]
+        assert response.json() == requested_contract["response"]
+
 
 def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet
@@ -981,21 +1001,19 @@ def test_syscall_request_approval_branches(monkeypatch, engine_triplet):
         assert denied_payload["status"] == "blocked"
         assert denied_payload["error"]["reason"] == "manual deny"
 
+        requested_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/syscall-request-approval-unrecognized-v1.json"
+            ).read_text(encoding="utf-8")
+        )
         requested = client.post(
             "/api/syscall/v1/request_approval",
-            json={
-                "version": "v1",
-                "op": "request_approval",
-                "args": {"action": "unrecognized"},
-            },
+            json=requested_contract["request"],
             headers=_token_header(client, role="rw", ns="workflow", capabilities=""),
         )
-        assert requested.status_code == 200, requested.text
-        assert requested.json()["status"] == "ok"
-        assert requested.json()["result"] == {
-            "status": "requested",
-            "reason": "approval pending",
-        }
+        assert requested.status_code == requested_contract["http_status"], requested.text
+        assert requested.json() == requested_contract["response"]
 
         invalid_contract = json.loads(
             (

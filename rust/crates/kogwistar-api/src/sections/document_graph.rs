@@ -1824,6 +1824,7 @@ fn request_approval_syscall(
                 "op": input.op,
                 "status": "ok",
                 "result": {"status":"requested", "reason": input.args.get("reason").and_then(Value::as_str).unwrap_or("approval pending")},
+                "error": null,
             }),
         );
     }
@@ -1880,7 +1881,7 @@ fn request_approval_syscall(
     };
     json_effect(
         StatusCode::OK,
-        json!({"version":input.version,"op":input.op,"status":"ok","result":payload}),
+        json!({"version":input.version,"op":input.op,"status":"ok","result":payload,"error":null}),
     )
 }
 
