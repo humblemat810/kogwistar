@@ -2478,9 +2478,8 @@
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/runs/run-1/events")
+                    .uri("/api/runs/run-1/events?after_seq=0")
                     .header("x-kogwistar-roles", "reader")
-                    .header("last-event-id", "0")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2502,7 +2501,7 @@
             .lines()
             .find_map(|line| line.strip_prefix("id: "))
             .expect("SSE event ID");
-        assert!(event_id.parse::<u64>().is_ok());
+        assert_eq!(event_id, "1");
         let data_line = sse_body
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
@@ -2517,6 +2516,7 @@
         }
         assert_eq!(data["run_id"], "run-1");
         assert_eq!(data["event_type"], event_name);
+        assert_eq!(data["source"], "test");
 
         let workflow_sse = app
             .clone()

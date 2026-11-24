@@ -4705,6 +4705,47 @@ def test_chat_rest_sse_reconnects_cleanly_after_terminal_run(
         assert body == ""
 
 
+def test_chat_rest_sse_matches_rust_seeded_contract(monkeypatch, engine_triplet):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _, registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/run-events-sse-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    registry.create_run(
+        run_id="run-1",
+        conversation_id="conversation-1",
+        workflow_id="workflow-1",
+        user_id="user-1",
+        user_turn_node_id="turn-1",
+        status="running",
+    )
+    registry.append_event("run-1", "run.started", {"source": "test"})
+    registry.update_status(run_id="run-1", status="succeeded", finished=True)
+
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="ro", ns="conversation", username="user-1")
+        with client.stream(
+            "GET", "/api/runs/run-1/events?after_seq=0", headers=headers, timeout=5
+        ) as response:
+            assert response.status_code == contract["success_status"]
+            assert response.headers["content-type"].startswith(contract["media_type"])
+            body = "".join(response.iter_text())
+
+    lines = body.splitlines()
+    assert f"event: {contract['event_name']}" in lines
+    assert "id: 1" in lines
+    data = json.loads(next(line[6:] for line in lines if line.startswith("data: ")))
+    assert set(contract["required_data_fields"]).issubset(data)
+    assert data["run_id"] == "run-1"
+    assert data["event_type"] == contract["event_name"]
+    assert data["source"] == "test"
+
+
 def test_chat_rest_debug_rag_workflow_returns_seeded_knowledge(
     monkeypatch, engine_triplet
 ):
