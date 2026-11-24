@@ -236,8 +236,72 @@
         )
         .unwrap();
         assert!(rolled_back_graph["nodes"].as_array().unwrap().is_empty());
+        for (node_id, label) in [("start", "Start"), ("end", "End")] {
+            let response = public_call!(
+                "POST",
+                "/api/workflow/design/wf-failure-edge/nodes",
+                json!({
+                    "designer_id":"alice",
+                    "node_id":node_id,
+                    "label":label
+                })
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let edge_graph_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge/graph",
+            json!({})
+        );
+        let edge_graph_before: Value = serde_json::from_slice(
+            &to_bytes(edge_graph_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         trigger_connection
-            .execute_batch("DROP TRIGGER reject_design_control_event")
+            .execute_batch(
+                "CREATE TRIGGER reject_design_edge_control_event
+                 BEFORE INSERT ON entity_events
+                 WHEN NEW.namespace = 'wf_design:wf-failure-edge'
+                   AND NEW.entity_kind = 'design_control'
+                 BEGIN SELECT RAISE(ABORT, 'injected edge design-control failure'); END;",
+            )
+            .unwrap();
+        let failed_edge = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-edge/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-1",
+                "src":"start",
+                "dst":"end"
+            })
+        );
+        assert!(!failed_edge.status().is_success());
+        let edge_graph_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge/graph",
+            json!({})
+        );
+        let edge_graph_after: Value = serde_json::from_slice(
+            &to_bytes(edge_graph_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(edge_graph_after["nodes"], edge_graph_before["nodes"]);
+        assert_eq!(edge_graph_after["edges"], edge_graph_before["edges"]);
+        assert_eq!(
+            edge_graph_after["current_version"],
+            edge_graph_before["current_version"]
+        );
+        assert_eq!(edge_graph_after["current_seq"], edge_graph_before["current_seq"]);
+        trigger_connection
+            .execute_batch(
+                "DROP TRIGGER reject_design_control_event;
+                 DROP TRIGGER reject_design_edge_control_event;",
+            )
             .unwrap();
         drop(trigger_connection);
         let empty_graph_contract: Value = serde_json::from_str(include_str!(concat!(
