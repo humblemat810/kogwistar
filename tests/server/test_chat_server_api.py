@@ -2263,6 +2263,20 @@ def test_request_approval_syscall_uses_python_backend(monkeypatch, tmp_path, bac
                 ]
                 assert subject_entries == [expected_entry], case["name"]
 
+            unrecognized_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-request-approval-unrecognized-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            unrecognized = client.post(
+                "/api/syscall/v1/request_approval",
+                json=unrecognized_contract["request"],
+                headers=headers,
+            )
+            assert unrecognized.status_code == unrecognized_contract["http_status"]
+            assert unrecognized.json() == unrecognized_contract["response"]
+
             denied = client.post(
                 "/api/syscall/v1/request_approval",
                 json=contract["cases"][0]["request"],

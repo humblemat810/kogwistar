@@ -331,6 +331,7 @@
             assert_eq!(payload["version"], case["request"]["version"]);
             assert_eq!(payload["op"], case["request"]["op"]);
             assert_eq!(payload["status"], "ok");
+            assert!(payload["error"].is_null());
             let result = &payload["result"];
             assert_eq!(result["status"], case["result_status"]);
             assert!(result[case["snapshot_field"].as_str().unwrap()]
@@ -339,6 +340,33 @@
                 .unwrap()
                 .contains(&case["expected_entry"]));
         }
+        let unrecognized_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-request-approval-unrecognized-v1.json"
+        ))
+        .unwrap();
+        let unrecognized = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                body: serde_json::to_vec(&unrecognized_fixture["request"]).unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "workflow",
+                    "storage_ns": "conversation",
+                    "capabilities": ["approve_action", "project_view", "read_security_scope"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            unrecognized.status,
+            unrecognized_fixture["http_status"].as_u64().unwrap() as u16
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&unrecognized.body).unwrap(),
+            unrecognized_fixture["response"]
+        );
         let denied_model_tool = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
