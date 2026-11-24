@@ -5581,6 +5581,14 @@ async def test_mcp_workflow_run_submit_denies_missing_capabilities_before_admiss
         assert "403" in denied.content[0].text
 
     assert submissions == []
+    assert (
+        service.run_registry.meta_store.list_server_runs(
+            workflow_id="unauthorized-submit-workflow",
+            conversation_id="unauthorized-submit-conversation",
+            limit=20,
+        )
+        == []
+    )
 
 
 @pytest.mark.asyncio
