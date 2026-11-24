@@ -5625,6 +5625,47 @@ def test_workflow_design_node_upsert_repeated_request_creates_next_python_versio
     assert nodes[0]["label"] == "Updated start"
 
 
+def test_workflow_design_node_upsert_rolls_back_graph_when_control_event_fails(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    design = service._workflow_design
+
+    def fail_control_event(**_kwargs):
+        raise RuntimeError("injected design-control failure")
+
+    monkeypatch.setattr(design, "_append_design_control_event", fail_control_event)
+
+    identity = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "role": "rw",
+            "capabilities": ["workflow.design.write", "write_graph"],
+            "sub": "alice",
+        }
+    )
+    try:
+        with pytest.raises(RuntimeError, match="injected design-control failure"):
+            service.workflow_design_upsert_node(
+                workflow_id="atomic-node-upsert",
+                designer_id="alice",
+                node_id="node-1",
+                label="Must roll back",
+            )
+    finally:
+        claims_ctx.reset(identity)
+
+    graph = design.workflow_design_graph("atomic-node-upsert", refresh=True)
+    history = design.workflow_design_history(workflow_id="atomic-node-upsert")
+    assert graph["nodes"] == []
+    assert graph["edges"] == []
+    assert history["current_version"] == 0
+    assert history["current_seq"] == 0
+
+
 def test_workflow_design_node_upsert_requires_write_graph_before_effect(
     monkeypatch, engine_triplet
 ):

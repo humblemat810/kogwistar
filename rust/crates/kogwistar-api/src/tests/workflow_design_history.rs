@@ -197,6 +197,49 @@
                     .unwrap()
             }};
         }
+        let trigger_connection = rusqlite::Connection::open(&path).unwrap();
+        trigger_connection
+            .execute_batch(
+                "CREATE TRIGGER reject_design_control_event
+                 BEFORE INSERT ON entity_events
+                 WHEN NEW.namespace = 'wf_design:wf-failure-atomic'
+                   AND NEW.entity_kind = 'design_control'
+                 BEGIN SELECT RAISE(ABORT, 'injected design-control failure'); END;",
+            )
+            .unwrap();
+        let failed_mutation = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-atomic/nodes",
+            json!({
+                "designer_id":"alice",
+                "node_id":"node-1",
+                "label":"Must roll back",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert!(!failed_mutation.status().is_success());
+        assert!(store
+            .replay_raw_events("wf_design:wf-failure-atomic", 0, usize::MAX)
+            .unwrap()
+            .is_empty());
+        let rolled_back_graph = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-atomic/graph",
+            json!({})
+        );
+        assert_eq!(rolled_back_graph.status(), StatusCode::OK);
+        let rolled_back_graph: Value = serde_json::from_slice(
+            &to_bytes(rolled_back_graph.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(rolled_back_graph["nodes"].as_array().unwrap().is_empty());
+        trigger_connection
+            .execute_batch("DROP TRIGGER reject_design_control_event")
+            .unwrap();
+        drop(trigger_connection);
         let empty_graph_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-empty-graph-http-v1.json"
