@@ -257,6 +257,10 @@
             "../../../../../../contracts/golden/run-cancel-v1.json"
         ))
         .unwrap();
+        for field in cancel_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(terminated["result"].get(field).is_some(), "missing {field}");
+        }
         assert!(cancel_contract["accepted_run_statuses"]
             .as_array()
             .unwrap()

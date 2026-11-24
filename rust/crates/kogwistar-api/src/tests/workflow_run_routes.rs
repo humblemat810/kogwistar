@@ -738,6 +738,18 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     assert_eq!(terminated["version"], "v1");
     assert_eq!(terminated["op"], "terminate_process");
     assert_eq!(terminated["status"], "ok");
+    let cancel_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-cancel-v1.json"
+    ))
+    .unwrap();
+    for field in cancel_contract["required_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
+        assert!(terminated["result"].get(field).is_some(), "missing {field}");
+    }
+    assert!(cancel_contract["accepted_run_statuses"]
+        .as_array()
+        .unwrap()
+        .contains(&terminated["result"]["status"]));
     assert_eq!(terminated["result"]["cancel_requested"], true);
     assert!(service
         .store

@@ -2889,7 +2889,22 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 headers=headers,
             )
             assert terminated.status_code == 200, terminated.text
-            assert terminated.json()["result"]["cancel_requested"] is True
+            cancel_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/run-cancel-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            terminated_result = terminated.json()["result"]
+            assert all(
+                field in terminated_result
+                for field in cancel_contract["required_fields"]
+            )
+            assert (
+                terminated_result["status"]
+                in cancel_contract["accepted_run_statuses"]
+            )
+            assert terminated_result["cancel_requested"] is True
             assert registry.get_run(run_id)["cancel_requested"] is True
             final_run = _wait_for_status(client, run_id, headers, {"cancelled"})
             assert final_run["status"] == "cancelled"
