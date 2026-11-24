@@ -340,6 +340,64 @@
                 .unwrap()
                 .contains(&case["expected_entry"]));
         }
+        let denied_approval = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "request_approval",
+                    "args": {"action": "deny", "reason": "postgres deny branch"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "workflow",
+                    "storage_ns": "conversation",
+                    "capabilities": ["approve_action", "project_view", "read_security_scope"]
+                }),
+            })
+            .await;
+        assert_eq!(denied_approval.status, StatusCode::OK.as_u16());
+        let denied_payload: Value = serde_json::from_slice(&denied_approval.body).unwrap();
+        assert_eq!(denied_payload["status"], "blocked");
+        assert_eq!(denied_payload["error"]["reason"], "postgres deny branch");
+
+        let invalid_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-request-approval-invalid-v1.json"
+        ))
+        .unwrap();
+        for case in invalid_contract["cases"].as_array().unwrap() {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                    body: serde_json::to_vec(&case["request"]).unwrap(),
+                    principal: json!({
+                        "sub": "alice",
+                        "role": "rw",
+                        "ns": "workflow",
+                        "storage_ns": "conversation",
+                        "capabilities": ["approve_action", "project_view", "read_security_scope"]
+                    }),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                case["http_status"].as_u64().unwrap() as u16,
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body).unwrap(),
+                case["response"],
+                "{}",
+                case["name"]
+            );
+        }
         let unrecognized_fixture: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/syscall-request-approval-unrecognized-v1.json"
         ))

@@ -2760,6 +2760,34 @@ def test_conversation_syscalls_use_python_postgres_backend(
                     case["entries_field"]
                 ]
 
+            denied_approval = client.post(
+                "/api/syscall/v1/request_approval",
+                json={
+                    "version": "v1",
+                    "op": "request_approval",
+                    "args": {"action": "deny", "reason": "postgres deny branch"},
+                },
+                headers=approval_headers,
+            )
+            assert denied_approval.status_code == 200, denied_approval.text
+            assert denied_approval.json()["status"] == "blocked"
+            assert denied_approval.json()["error"]["reason"] == "postgres deny branch"
+
+            invalid_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-request-approval-invalid-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            for case in invalid_contract["cases"]:
+                invalid_response = client.post(
+                    "/api/syscall/v1/request_approval",
+                    json=case["request"],
+                    headers=approval_headers,
+                )
+                assert invalid_response.status_code == case["http_status"], case["name"]
+                assert invalid_response.json() == case["response"], case["name"]
+
             spawned = client.post(
                 "/api/syscall/v1/spawn_process",
                 json={
