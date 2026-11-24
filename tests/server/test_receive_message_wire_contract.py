@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Span
@@ -128,6 +130,33 @@ def test_python_receive_message_applies_engine_acl_before_projection(
                         user_id="owner",
                     )
                 )
+            engine.write.add_node(
+                ConversationNode(
+                    id="turn-hidden-conversation",
+                    label="Hidden conversation turn",
+                    type="entity",
+                    summary="must not leak",
+                    mentions=[
+                        Grounding(
+                            spans=[Span.from_dummy_for_conversation("c-hidden")]
+                        )
+                    ],
+                    doc_id="conv:c-hidden",
+                    metadata={
+                        "entity_type": "conversation_turn",
+                        "conversation_id": "c-hidden",
+                        "in_conversation_chain": True,
+                        "visibility": "private",
+                        "owner_agent_id": "owner",
+                        "security_scope": "tenant-a",
+                        "level_from_root": 0,
+                    },
+                    role="user",
+                    turn_index=1,
+                    conversation_id="c-hidden",
+                    user_id="owner",
+                )
+            )
         finally:
             claims_ctx.reset(owner_claims)
 
@@ -139,6 +168,8 @@ def test_python_receive_message_applies_engine_acl_before_projection(
                 "conversation_id": "c1",
                 "messages": queries.list_transcript("c1"),
             }
+            with pytest.raises(KeyError, match="Unknown conversation_id: c-hidden"):
+                queries.list_transcript("c-hidden")
         finally:
             claims_ctx.reset(reader_claims)
     finally:
