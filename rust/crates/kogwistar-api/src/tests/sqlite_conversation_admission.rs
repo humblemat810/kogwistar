@@ -1199,6 +1199,10 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     }
     assert_eq!(direct_run_status_body["run_id"], run_id);
     assert_eq!(direct_run_status_body["status"], "succeeded");
+    assert_eq!(direct_run_status_body["cancel_requested"], false);
+    assert!(direct_run_status_body["error"].is_null());
+    assert!(direct_run_status_body["created_at_ms"].is_i64());
+    assert!(direct_run_status_body["updated_at_ms"].is_i64());
     let terminal_statuses = run_status_contract["terminal_statuses"]
         .as_array()
         .unwrap();
