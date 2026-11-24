@@ -439,9 +439,24 @@ async fn sqlite_mcp_run_submit_persists_admission() {
         .unwrap();
     let payload: Value = serde_json::from_str(message).unwrap();
     assert_ne!(payload["result"]["isError"], true, "{payload}");
-    let run_id = payload["result"]["structuredContent"]["run_id"]
+    let result = &payload["result"]["structuredContent"];
+    let expected = &contract["result"];
+    for field in [
+        "conversation_id",
+        "workflow_id",
+        "turn_node_id",
+        "status",
+        "priority_class",
+        "token_budget",
+        "time_budget_ms",
+        "admission",
+    ] {
+        assert_eq!(result[field], expected[field], "field {field}");
+    }
+    let run_id = result["run_id"]
         .as_str()
         .unwrap();
+    assert!(!run_id.is_empty());
 
     let reopened = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
     let persisted = reopened.get_server_run(run_id).unwrap().unwrap();
