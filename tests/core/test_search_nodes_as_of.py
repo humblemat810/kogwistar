@@ -251,12 +251,18 @@ def test_chroma_backend_default_metric_preserves_cosine_distance_compatibility()
     assert similarity_from_distance(0.25, metric="cosine", distance_kind="distance") == 0.75
 
 
-@pytest.mark.ci
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+)
 def test_search_nodes_as_of_scored_exposes_normalized_similarity_and_threshold(
-    tmp_path,
+    backend_kind, tmp_path
 ):
     eng, _ = _make_engine_pair(
-        backend_kind="fake",
+        backend_kind=backend_kind,
         tmp_path=tmp_path,
         sa_engine=None,
         pg_schema=None,
@@ -287,7 +293,7 @@ def test_search_nodes_as_of_scored_exposes_normalized_similarity_and_threshold(
         assert [hit.node.id for hit in hits] == ["N_SCORED"]
         assert hits[0].metric == "cosine"
         assert hits[0].distance_kind == "distance"
-        assert hits[0].raw_distance == pytest.approx(0.0)
+        assert hits[0].raw_distance == pytest.approx(0.0, abs=1e-7)
         assert hits[0].similarity == pytest.approx(1.0)
 
         assert eng.search_nodes_as_of_scored(
