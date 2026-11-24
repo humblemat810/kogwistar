@@ -157,6 +157,33 @@ def test_python_receive_message_applies_engine_acl_before_projection(
                     user_id="owner",
                 )
             )
+            engine.write.add_node(
+                ConversationNode(
+                    id="public-conversation-start",
+                    label="Public conversation start",
+                    type="entity",
+                    summary="public marker",
+                    mentions=[
+                        Grounding(
+                            spans=[Span.from_dummy_for_conversation("c-public")]
+                        )
+                    ],
+                    doc_id="conv:c-public",
+                    metadata={
+                        "entity_type": "conversation_start",
+                        "conversation_id": "c-public",
+                        "in_conversation_chain": True,
+                        "visibility": "public",
+                        "owner_agent_id": "other-owner",
+                        "security_scope": "tenant-a",
+                        "level_from_root": 0,
+                    },
+                    role="user",
+                    turn_index=0,
+                    conversation_id="c-public",
+                    user_id="other-owner",
+                )
+            )
         finally:
             claims_ctx.reset(owner_claims)
 
@@ -170,6 +197,7 @@ def test_python_receive_message_applies_engine_acl_before_projection(
             }
             with pytest.raises(KeyError, match="Unknown conversation_id: c-hidden"):
                 queries.list_transcript("c-hidden")
+            assert queries.list_transcript("c-public") == []
         finally:
             claims_ctx.reset(reader_claims)
     finally:
