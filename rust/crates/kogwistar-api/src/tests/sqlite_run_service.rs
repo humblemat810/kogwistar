@@ -1095,6 +1095,7 @@
                 assert!(value["result"]["state"].is_object());
             }
         }
+        // PYTHON_PARITY_NOTE_V1: MCP dead-letter replay requeues once; a retry does not dispatch again. rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letter_replay_dispatches_effect_once
         store
             .project_lane_message(dead_lane("dead-mcp-message", "dead-mcp-run"))
             .unwrap();

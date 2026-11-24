@@ -3587,6 +3587,46 @@ async def test_mcp_workflow_dead_letter_replay_matches_shared_contract(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_dead_letter_replay_dispatches_effect_once(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    run_id = "dead-letter-mcp-replay"
+    dead = {"run_id": run_id, "status": "dead-letter"}
+    dead_letters = [dead]
+    resumed: list[str] = []
+
+    monkeypatch.setattr(service.scheduler, "dead_letter", lambda: list(dead_letters))
+
+    def resume(requested_run_id: str) -> None:
+        resumed.append(requested_run_id)
+        dead_letters.clear()
+
+    monkeypatch.setattr(service.scheduler, "resume", resume)
+
+    with _claims(
+        "rw", "workflow", scope_parts={"capabilities": ["service.manage"]}
+    ):
+        first = _structured(
+            await server.mcp.call_tool(
+                "workflow.dead_letter_replay", {"run_id": run_id}
+            )
+        )
+        retry = _structured(
+            await server.mcp.call_tool(
+                "workflow.dead_letter_replay", {"run_id": run_id}
+            )
+        )
+
+    assert first == {"run_id": run_id, "replayed": True, "dead_letter": dead}
+    assert retry == {"run_id": run_id, "replayed": False}
+    assert resumed == [run_id]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_dead_letter_replay_denies_without_dispatch(
     monkeypatch, engine_triplet
 ):
