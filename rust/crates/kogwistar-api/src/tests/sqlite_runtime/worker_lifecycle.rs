@@ -223,6 +223,19 @@
         });
         assert_eq!(spawned.status, StatusCode::OK.as_u16());
         let spawned: Value = serde_json::from_slice(&spawned.body).unwrap();
+        let submit_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-run-submit-http-v1.json"
+        ))
+        .unwrap();
+        let spawned_result = &spawned["result"];
+        assert!(submit_contract["required_common_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|field| spawned_result.get(field.as_str().unwrap()).is_some()));
+        for (field, value) in submit_contract["expected_common_values"].as_object().unwrap() {
+            assert_eq!(&spawned_result[field], value, "field {field}");
+        }
         let run_id = spawned["result"]["run_id"].as_str().unwrap();
         assert!(service.store.get_server_run(run_id).unwrap().is_some());
 

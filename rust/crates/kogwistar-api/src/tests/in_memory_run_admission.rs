@@ -452,6 +452,19 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
     assert_eq!(spawned["op"], "spawn_process");
     assert_eq!(spawned["status"], "ok");
     assert_eq!(spawned["result"]["run_id"], "memory-syscall-run");
+    let submit_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-submit-http-v1.json"
+    ))
+    .unwrap();
+    let spawned_result = &spawned["result"];
+    assert!(submit_contract["required_common_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|field| spawned_result.get(field.as_str().unwrap()).is_some()));
+    for (field, value) in submit_contract["expected_common_values"].as_object().unwrap() {
+        assert_eq!(&spawned_result[field], value, "field {field}");
+    }
 
     for op in [
         "terminate_process",

@@ -698,6 +698,19 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     assert_eq!(spawned["version"], "v1");
     assert_eq!(spawned["op"], "spawn_process");
     assert_eq!(spawned["status"], "ok");
+    let submit_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-submit-http-v1.json"
+    ))
+    .unwrap();
+    let spawned_result = &spawned["result"];
+    assert!(submit_contract["required_common_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|field| spawned_result.get(field.as_str().unwrap()).is_some()));
+    for (field, value) in submit_contract["expected_common_values"].as_object().unwrap() {
+        assert_eq!(&spawned_result[field], value, "field {field}");
+    }
     let syscall_run_id = spawned["result"]["run_id"].as_str().unwrap();
     assert!(service
         .store

@@ -2863,7 +2863,20 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 headers=headers,
             )
             assert spawned.status_code == 200, spawned.text
-            run_id = spawned.json()["result"]["run_id"]
+            spawned_result = spawned.json()["result"]
+            submit_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/workflow-run-submit-http-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            assert all(
+                field in spawned_result
+                for field in submit_contract["required_common_fields"]
+            )
+            for field, value in submit_contract["expected_common_values"].items():
+                assert spawned_result[field] == value
+            run_id = spawned_result["run_id"]
             assert registry.get_run(run_id) is not None
 
             terminated = client.post(
@@ -3161,6 +3174,18 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
             assert spawned.status_code == 200, spawned.text
             spawned_result = spawned.json()["result"]
             assert spawned_result["workflow_id"] == workflow_id
+            submit_contract = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/workflow-run-submit-http-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            assert all(
+                field in spawned_result
+                for field in submit_contract["required_common_fields"]
+            )
+            for field, value in submit_contract["expected_common_values"].items():
+                assert spawned_result[field] == value
 
             terminated = client.post(
                 "/api/syscall/v1/terminate_process",
