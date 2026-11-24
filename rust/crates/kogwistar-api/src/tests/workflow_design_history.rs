@@ -627,6 +627,41 @@
             repeated_edge_upsert["version"],
             edge_upsert_contract["version"].as_i64().unwrap() + 1
         );
+        let updated_edge_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-edge-contract/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-contract",
+                "src":"start",
+                "dst":"end",
+                "relation":"wf_custom",
+                "is_default":true
+            })
+        );
+        assert_eq!(updated_edge_upsert.status(), StatusCode::OK);
+        let updated_edge_upsert: Value = serde_json::from_slice(
+            &to_bytes(updated_edge_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_edge_upsert["version"], 5);
+        let updated_edge_graph = public_call!(
+            "GET",
+            "/api/workflow/design/wf-edge-contract/graph",
+            json!({})
+        );
+        assert_eq!(updated_edge_graph.status(), StatusCode::OK);
+        let updated_edge_graph: Value = serde_json::from_slice(
+            &to_bytes(updated_edge_graph.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_edge_graph["edges"].as_array().unwrap().len(), 1);
+        assert_eq!(updated_edge_graph["edges"][0]["id"], "edge-contract");
+        assert_eq!(updated_edge_graph["edges"][0]["relation"], "wf_custom");
         for body in [
             json!({"designer_id":"alice","node_id":"start","label":"Start","op":"increment-counter","start":true,"metadata":{"wf_executor_target":"rust-native"}}),
             json!({"designer_id":"alice","node_id":"end","label":"End","op":"emit-result","terminal":true,"metadata":{"wf_executor_target":"rust-native"}}),

@@ -5368,12 +5368,29 @@ def test_workflow_design_edge_upsert_matches_shared_contract(
         }
         response = client.post(edge_path, json=edge_body, headers=headers)
         repeated_response = client.post(edge_path, json=edge_body, headers=headers)
+        updated_response = client.post(
+            edge_path,
+            json={**edge_body, "relation": "wf_custom"},
+            headers=headers,
+        )
+        graph = client.get(
+            f"/api/workflow/design/{contract['workflow_id']}/graph",
+            headers=headers,
+        )
 
     assert response.status_code == contract["success_status"], response.text
     body = response.json()
     repeated_body = repeated_response.json()
+    updated_body = updated_response.json()
     assert body["version"] == contract["version"]
     assert repeated_body["version"] == contract["version"] + 1
+    assert updated_response.status_code == contract["success_status"]
+    assert updated_body["version"] == contract["version"] + 2
+    assert graph.status_code == 200, graph.text
+    edges = graph.json()["edges"]
+    assert len(edges) == 1
+    assert edges[0]["id"] == contract["edge_id"]
+    assert edges[0]["relation"] == "wf_custom"
     for field, expected in contract["fixed_response_fields"].items():
         assert body[field] == expected
     for field in contract["integer_response_fields"]:
