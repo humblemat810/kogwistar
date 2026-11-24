@@ -22,7 +22,7 @@
 
 ## Pivoted Test-Case Status
 
-One row per named test selector or fine-gate cell; repeated goal IDs make progress visible by case instead of hiding it in a composite goal row. This is a view of existing goal evidence, not a new completion denominator. Suite-level aggregate mentions are not expanded into invented cases. `PASS` means cited run is recorded as passing; `IN PROGRESS` means some mapped cases pass while coverage remains; `NOT STARTED` means no complete selector/evidence exists for that cell. Keep goal-level status in the summary above.
+One row per named test selector; repeated goal IDs make progress visible by case instead of hiding it in a composite goal row. This is a view of existing goal evidence, not a new completion denominator. Suite-level aggregate mentions are not expanded into invented cases. `PASS` means cited run is recorded as passing; `IN PROGRESS` means some mapped cases pass while coverage remains; `NOT STARTED` means no complete selector/evidence exists for that cell. Keep goal-level status in the summary above. Open work items without a test selector are not test cases and remain in the fine checklist, not this table.
 
 | Goal | Test case / selector | Status | Evidence or gap |
 | --- | --- | --- | --- |
@@ -63,24 +63,14 @@ One row per named test selector or fine-gate cell; repeated goal IDs make progre
 | GOAL-06 | `postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` | PASS | Live pgvector Rust test passed: nonterminal REST/MCP/syscall cancellation persists `run.cancelling`; denied calls are effect-free; terminal syscall retry adds no event. |
 | GOAL-06 | `sqlite_syscall_spawn_and_terminate_use_authoritative_run_service` | PASS | Rust SQLite metadata syscall appends one `run.cancelling` event before cancellation; terminal retry appends none. Focused Rust test: 1 passed. |
 | GOAL-06 | `sqlite_chroma_syscall_spawn_and_terminate_use_authoritative_run_service` | PASS | Rust SQLite+Chroma syscall test verifies one `run.cancelling` event and no extra event on terminal retry; live-Chroma focused test passed. |
-| GOAL-06 | `in_memory_workflow_syscalls_use_native_run_handlers` | PASS | Rust in-memory syscall authority/result contract; focused rerun passed. |
 | GOAL-06 | `test_run_lifecycle_syscalls_use_python_backend[in_memory]` | PASS | Python in-memory syscall persists `run.cancelling`; terminal retry leaves event history unchanged. Focused case passed. |
 | GOAL-06 | `test_run_lifecycle_syscalls_use_python_backend[chroma]` | PASS | Python SQLite+Chroma syscall persists `run.cancelling`; terminal retry leaves event history unchanged. Focused case passed. |
 | GOAL-06 | `test_conversation_syscalls_use_python_postgres_backend` | PASS | Python PostgreSQL syscall cancellation exposes `run.cancelling`; terminal retry leaves SSE history unchanged. Live testcontainers: 1 passed. |
 | GOAL-06 | `in_memory_workflow_cancel_mcp_reaches_authorized_store_effect` | PASS | Focused rerun passed; authorized cancel emits `run.cancelling`, denied cancel is effect-free, terminal retry adds no event. |
-| GOAL-06 | `test_mcp_workflow_runtime_submit_cancel` / `sqlite_mcp_run_submit_persists_admission` | PASS | Python and Rust SQLite MCP paths both consume `workflow-run-submit-mcp-v1.json`; forged caller `user_id` is replaced by fixture's authenticated owner in the persisted run. Python also checks cancellation persistence and duplicate-free terminal retry. Focused runs: 1 Python + 1 Rust passed. Python test workflow-access callback is stubbed; neither case replaces authorization coverage. |
-| GOAL-06 | `test_mcp_workflow_dead_letter_replay_dispatches_effect_once` / `sqlite_run_service_handles_get_events_and_cancel` | PASS | Python MCP dispatches scheduler resume once and reports no replay on retry; Rust MCP moves dead-letter lane to `pending`. Focused Python and Rust runs: 1 passed each. Python scheduler is stubbed; Rust verifies durable SQLite effect. |
-| GOAL-06 | `sqlite_mcp_run_submit_persists_admission` | PASS | Focused rerun passed; authorized cancel persists `run.cancelling`; terminal retry adds no event. |
-| GOAL-06 | DLFC-03: HTTP success-contract parity cells | NOT STARTED | Python selector per applicable operation/backend: not complete. Rust counterpart selector per cell: not complete. |
-| GOAL-06 | DLFC-04: HTTP invalid-input and no-side-effect cells | NOT STARTED | Python/Rust paired rejection and no-effect selectors remain to implement for the applicable inventory. |
-| GOAL-06 | DLFC-05: HTTP authorization/scope and deny-before-effect cells | NOT STARTED | Paired Python/Rust authority selectors remain incomplete across applicable scope/backend cells. |
-| GOAL-06 | DLFC-06: HTTP read-semantics cells | NOT STARTED | Paired selectors for filters, ordering, limits, hydration, lifecycle, provenance, and not-found remain incomplete. |
-| GOAL-06 | DLFC-07: HTTP mutation/retry/rollback cells | NOT STARTED | Paired selectors for durable state, events, retries, and failure atomicity remain incomplete. |
-| GOAL-06 | DLFC-10: MCP effect/retry/backend cells | IN PROGRESS | Cancellation cases above pass on Memory, SQLite, SQLite+Chroma, and PostgreSQL in both languages. Remaining applicable MCP mutation/effect/retry cells lack paired selectors or passing evidence. |
-| GOAL-08 | DLFC-13: Durable lifecycle/replay parity | IN PROGRESS | Named SQLite, Chroma, and PostgreSQL tests pass (see fine checklist); remaining operation/backend lifecycle cells are not fully enumerated and run. |
-| GOAL-08 | DLFC-14: Runtime trace parity | IN PROGRESS | Named success, suspend/resume, retry/cancel, failure/recovery, and trace-parent tests pass; remaining event-order/backend combinations lack evidence. |
-| GOAL-08 | DLFC-17: HTTP/MCP/SSE/CLI transport parity on supported runtimes | NOT STARTED | Per-transport and runtime selectors are not yet fully mapped and verified across CPython 3.12–3.14 and PyPy 3.11. |
-| GOAL-09 | DLFC-18: Representative performance samples and per-workload thresholds | IN PROGRESS | Existing two-sample Docker smoke passes digest/zero-FFI checks; representative workload/backend samples and threshold evidence remain absent. |
+| GOAL-06 | `test_mcp_workflow_runtime_submit_cancel` | PASS | Python MCP consumes `workflow-run-submit-mcp-v1.json`; forged caller `user_id` is replaced by fixture's authenticated owner in the persisted run. Python also checks cancellation persistence and duplicate-free terminal retry. Focused run: 1 passed. Workflow-access callback is stubbed; this case does not replace authorization coverage. |
+| GOAL-06 | `sqlite_mcp_run_submit_persists_admission` | PASS | Rust SQLite MCP consumes `workflow-run-submit-mcp-v1.json`; forged caller `user_id` is replaced by fixture's authenticated owner in the persisted run. The test also verifies authorized cancellation persists `run.cancelling` and terminal retry adds no event. Focused run: 1 passed. This case does not replace authorization coverage. |
+| GOAL-06 | `test_mcp_workflow_dead_letter_replay_dispatches_effect_once` | PASS | Python MCP dispatches scheduler resume once and reports no replay on retry. Focused run: 1 passed. Python scheduler is stubbed. |
+| GOAL-06 | `sqlite_run_service_handles_get_events_and_cancel` | PASS | Rust MCP moves dead-letter lane to `pending`; focused SQLite test: 1 passed and verifies durable effect. |
 
 ## Full-Parity Test Matrix
 
