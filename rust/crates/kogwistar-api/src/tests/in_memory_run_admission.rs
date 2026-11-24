@@ -895,7 +895,7 @@ async fn in_memory_project_view_syscall_is_reachable_through_authenticated_http(
     }
 }
 
-// PYTHON_PARITY_NOTE_V1: MCP cancel reaches the in-memory effect; denied capability preserves state and terminal retry adds no event. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
+// PYTHON_PARITY_NOTE_V1: MCP submit/cancel reach in-memory effects; denied submit/cancel leave no mutation and terminal retry adds no event. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
 #[tokio::test]
 async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     use axum::body::{Body, to_bytes};
@@ -906,29 +906,6 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
 
     let secret = "in-memory-workflow-cancel-mcp-secret";
     let service = InMemoryGraphApplicationService::default();
-    let admitted = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/workflow/runs".to_owned(),
-            body: serde_json::to_vec(&json!({
-                "run_id":"memory-mcp-cancel-run",
-                "workflow_id":"memory-mcp-cancel-workflow",
-                "conversation_id":"memory-mcp-cancel-conversation",
-                "expected_run_owner_id":"alice",
-                "initial_state":{"seed":1},
-                "node_ops":{"start":"noop"},
-                "node_executor_targets":{"start":"rust-native"}
-            }))
-            .unwrap(),
-            principal: json!({
-                "sub":"alice", "role":"rw", "ns":["workflow"],
-                "capabilities":["spawn_process", "workflow.run.write"]
-            }),
-        })
-        .await;
-    assert_eq!(admitted.status, StatusCode::ACCEPTED.as_u16());
-
     let token = |capabilities: Vec<&str>| {
         encode(
             &Header::new(Algorithm::HS256),
@@ -955,7 +932,7 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
         },
         Arc::new(service.clone()),
     );
-    let call = |jwt: String| {
+    let call = |tool_name: &str, arguments: Value, jwt: String| {
         Request::builder()
             .method("POST")
             .uri("/mcp/workflow")
@@ -965,16 +942,76 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
             .body(Body::from(
                 json!({
                     "jsonrpc":"2.0", "id":"memory-cancel", "method":"tools/call",
-                    "params":{"name":"workflow.run_cancel", "arguments":{"run_id":"memory-mcp-cancel-run"}}
+                    "params":{"name":tool_name, "arguments":arguments}
                 })
                 .to_string(),
             ))
             .unwrap()
     };
 
+    let submit_args = json!({
+        "workflow_id":"memory-mcp-cancel-workflow",
+        "conversation_id":"memory-mcp-cancel-conversation",
+        "initial_state":{"seed":1}
+    });
+    let denied_submit = app
+        .clone()
+        .oneshot(call(
+            "workflow.run_submit",
+            submit_args.clone(),
+            token(vec!["workflow.run.write"]),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(denied_submit.status(), StatusCode::OK);
+    let denied_submit_wire = to_bytes(denied_submit.into_body(), 8192).await.unwrap();
+    let denied_submit_data = String::from_utf8(denied_submit_wire.to_vec()).unwrap();
+    let denied_submit_message = denied_submit_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(denied_submit_message).unwrap()["result"]["isError"],
+        true
+    );
+    assert!(
+        kogwistar_store::ServerRunReadStore::server_runs(&service.store, None, None, None, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "denied MCP submission must not admit a run"
+    );
+
+    let submitted = app
+        .clone()
+        .oneshot(call(
+            "workflow.run_submit",
+            submit_args,
+            token(vec!["spawn_process", "workflow.run.write"]),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(submitted.status(), StatusCode::OK);
+    let submitted_wire = to_bytes(submitted.into_body(), 8192).await.unwrap();
+    let submitted_data = String::from_utf8(submitted_wire.to_vec()).unwrap();
+    let submitted_message = submitted_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let submitted_value: Value = serde_json::from_str(submitted_message).unwrap();
+    assert_ne!(submitted_value["result"]["isError"], true, "{submitted_value}");
+    let run_id = submitted_value["result"]["structuredContent"]["run_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
     let denied = app
         .clone()
-        .oneshot(call(token(vec!["workflow.run.read"])))
+        .oneshot(call(
+            "workflow.run_cancel",
+            json!({"run_id":run_id}),
+            token(vec!["workflow.run.read"]),
+        ))
         .await
         .unwrap();
     assert_eq!(denied.status(), StatusCode::OK);
@@ -989,7 +1026,7 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
         true
     );
     assert_eq!(
-        kogwistar_store::ServerRunReadStore::server_run(&service.store, "memory-mcp-cancel-run")
+        kogwistar_store::ServerRunReadStore::server_run(&service.store, &run_id)
             .await
             .unwrap()
             .unwrap()
@@ -999,7 +1036,11 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
 
     let accepted = app
         .clone()
-        .oneshot(call(token(vec!["workflow.run.write"])))
+        .oneshot(call(
+            "workflow.run_cancel",
+            json!({"run_id":run_id}),
+            token(vec!["workflow.run.write"]),
+        ))
         .await
         .unwrap();
     assert_eq!(accepted.status(), StatusCode::OK);
@@ -1013,7 +1054,7 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     assert_ne!(accepted_value["result"]["isError"], true);
     let cancelled = kogwistar_store::ServerRunReadStore::server_run(
         &service.store,
-        "memory-mcp-cancel-run",
+        &run_id,
     )
     .await
     .unwrap()
@@ -1023,7 +1064,7 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
 
     let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
         &service.store,
-        "memory-mcp-cancel-run",
+        &run_id,
         0,
         100,
     )
@@ -1031,7 +1072,11 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     .unwrap()
     .len();
     let retried = app
-        .oneshot(call(token(vec!["workflow.run.write"])))
+        .oneshot(call(
+            "workflow.run_cancel",
+            json!({"run_id":run_id}),
+            token(vec!["workflow.run.write"]),
+        ))
         .await
         .unwrap();
     assert_eq!(retried.status(), StatusCode::OK);
@@ -1048,7 +1093,7 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     assert_eq!(
         kogwistar_store::ServerRunReadStore::server_run_events(
             &service.store,
-            "memory-mcp-cancel-run",
+            &run_id,
             0,
             100,
         )

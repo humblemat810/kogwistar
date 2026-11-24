@@ -2389,7 +2389,10 @@ impl ApplicationService for InMemoryGraphApplicationService {
         if surface == "workflow"
             && matches!(
                 name,
-                "workflow.run_events" | "workflow.run_resume" | "workflow.run_cancel"
+                "workflow.run_events"
+                    | "workflow.run_resume"
+                    | "workflow.run_cancel"
+                    | "workflow.run_submit"
             )
         {
             return true;
@@ -2448,6 +2451,23 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && principal_strings(principal, "ns")
                     .iter()
                     .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
+        if name == "workflow.run_submit" {
+            let effective = effective_capabilities(
+                principal,
+                &self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            return surface == "workflow"
+                && principal_role(principal) == "rw"
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && effective.contains("spawn_process")
+                && effective.contains("workflow.run.write")
                 && self.supports_mcp_tool(surface, name);
         }
         if name == "wisdom.semantic_seed_then_expand" {
