@@ -2293,6 +2293,12 @@ def test_request_approval_syscall_uses_python_backend(monkeypatch, tmp_path, bac
 
 @pytest.mark.parametrize("backend", ["in_memory", "chroma"])
 def test_send_message_syscall_uses_python_backend(monkeypatch, tmp_path, backend):
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/send-message-syscall-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -2344,20 +2350,27 @@ def test_send_message_syscall_uses_python_backend(monkeypatch, tmp_path, backend
             first = client.post(
                 "/api/syscall/v1/send_message", json=request, headers=headers
             )
-            assert first.status_code == 200, first.text
+            assert first.status_code == contract["http_status"], first.text
+            first_payload = first.json()
+            for key, value in contract["envelope"].items():
+                assert first_payload[key] == value
+            first_result = first_payload["result"]
+            assert set(contract["common_result_fields"]).issubset(first_result)
+            for key, value in contract["common_result_values"].items():
+                assert first_result[key] == value
             replay = client.post(
                 "/api/syscall/v1/send_message", json=request, headers=headers
             )
-            assert replay.status_code == 200, replay.text
-            assert replay.json() == first.json()
+            assert replay.status_code == contract["http_status"], replay.text
+            assert replay.json() == first_payload
 
             request["args"]["text"] = "changed payload"
             conflict = client.post(
                 "/api/syscall/v1/send_message", json=request, headers=headers
             )
-            assert conflict.status_code == 409
+            assert conflict.status_code == contract["conflict_status"]
 
-        result = first.json()["result"]
+        result = first_payload["result"]
         assert result["status"] == "queued"
         assert registry.get_run(result["run_id"])["user_turn_node_id"] == result[
             "user_turn_node_id"

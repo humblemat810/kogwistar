@@ -1,0 +1,26 @@
+{
+  "contract_version": 1,
+  "http_status": 200,
+  "conflict_status": 409,
+  "envelope": {
+    "version": "v1",
+    "op": "send_message",
+    "status": "ok",
+    "error": null
+  },
+  "common_result_fields": [
+    "run_id",
+    "conversation_id",
+    "workflow_id",
+    "status",
+    "user_turn_node_id"
+  ],
+  "common_result_values": {
+    "status": "queued"
+  },
+  "rust_replay_additive_result": {
+    "admission": "accepted",
+    "idempotent": true,
+    "turn_node_id": "user_turn_node_id"
+  }
+}

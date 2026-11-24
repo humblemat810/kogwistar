@@ -625,6 +625,10 @@
         let database = std::env::temp_dir().join(format!("kogwistar-send-message-{suffix}.sqlite3"));
         let auth_database = std::env::temp_dir().join(format!("kogwistar-send-auth-{suffix}.sqlite3"));
         let workflow_id = "agentic_answering.v2";
+        let response_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/send-message-syscall-result-v1.json"
+        ))
+        .unwrap();
         let workflow_contract: Value = serde_json::from_str(include_str!(
             "../../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
         ))
@@ -800,24 +804,47 @@
             principal: principal.clone(),
         };
         let first = service.execute(make_send("hello from Rust Chroma path")).await;
-        assert_eq!(first.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&first.body));
+        assert_eq!(first.status, response_contract["http_status"].as_u64().unwrap() as u16, "{}", String::from_utf8_lossy(&first.body));
         let first_payload: Value = serde_json::from_slice(&first.body).unwrap();
-        assert_eq!(first_payload["result"]["status"], "queued");
+        for (key, value) in response_contract["envelope"].as_object().unwrap() {
+            assert_eq!(first_payload[key], *value);
+        }
+        for field in response_contract["common_result_fields"].as_array().unwrap() {
+            assert!(first_payload["result"].get(field.as_str().unwrap()).is_some());
+        }
+        for (key, value) in response_contract["common_result_values"].as_object().unwrap() {
+            assert_eq!(first_payload["result"][key], *value);
+        }
         let run_id = first_payload["result"]["run_id"].as_str().unwrap();
         let user_turn_id = first_payload["result"]["turn_node_id"].as_str().unwrap();
         let event_count = service.store.replay_raw_events("conversation", 0, 100).unwrap().len();
 
         let replay = service.execute(make_send("hello from Rust Chroma path")).await;
-        assert_eq!(replay.status, StatusCode::OK.as_u16());
+        assert_eq!(replay.status, response_contract["http_status"].as_u64().unwrap() as u16);
         let replay_payload: Value = serde_json::from_slice(&replay.body).unwrap();
+        for (key, value) in response_contract["envelope"].as_object().unwrap() {
+            assert_eq!(replay_payload[key], *value);
+        }
+        for field in response_contract["common_result_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert_eq!(replay_payload["result"][field], first_payload["result"][field]);
+        }
         assert_eq!(replay_payload["result"]["run_id"], run_id);
         assert_eq!(replay_payload["result"]["turn_node_id"], user_turn_id);
         assert_eq!(replay_payload["result"]["status"], "queued");
         assert_eq!(replay_payload["result"]["idempotent"], true);
+        for (field, expected) in response_contract["rust_replay_additive_result"].as_object().unwrap() {
+            let expected = if expected.as_str() == Some("user_turn_node_id") {
+                replay_payload["result"]["user_turn_node_id"].clone()
+            } else {
+                expected.clone()
+            };
+            assert_eq!(replay_payload["result"][field], expected);
+        }
         assert_eq!(service.store.replay_raw_events("conversation", 0, 100).unwrap().len(), event_count);
 
         let conflict = service.execute(make_send("different payload")).await;
-        assert_eq!(conflict.status, StatusCode::CONFLICT.as_u16());
+        assert_eq!(conflict.status, response_contract["conflict_status"].as_u64().unwrap() as u16);
         assert_eq!(service.store.replay_raw_events("conversation", 0, 100).unwrap().len(), event_count);
         assert_eq!(
             service

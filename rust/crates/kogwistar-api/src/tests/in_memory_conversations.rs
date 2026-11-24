@@ -347,6 +347,11 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use tower::ServiceExt;
 
+    let response_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/send-message-syscall-result-v1.json"
+    ))
+    .unwrap();
+
     let workflow_contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/answer-workflow-runtime-contract-v1.json"
     ))
@@ -602,7 +607,15 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
     assert_eq!(first.status(), StatusCode::OK);
     let first: Value =
         serde_json::from_slice(&to_bytes(first.into_body(), 65_536).await.unwrap()).unwrap();
-    assert_eq!(first["op"], "send_message");
+    for (key, value) in response_contract["envelope"].as_object().unwrap() {
+        assert_eq!(first[key], *value);
+    }
+    for field in response_contract["common_result_fields"].as_array().unwrap() {
+        assert!(first["result"].get(field.as_str().unwrap()).is_some());
+    }
+    for (key, value) in response_contract["common_result_values"].as_object().unwrap() {
+        assert_eq!(first["result"][key], *value);
+    }
     let run_id = first["result"]["run_id"].as_str().unwrap();
     let turn_id = first["result"]["user_turn_node_id"].as_str().unwrap();
     let run = kogwistar_store::ServerRunReadStore::server_run(&service.store, run_id)
@@ -669,20 +682,23 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
         .await;
     assert_eq!(replay.status, StatusCode::OK.as_u16());
     let replay: Value = serde_json::from_slice(&replay.body).unwrap();
-    for field in ["version", "op", "status"] {
-        assert_eq!(replay[field], first[field], "retry changed envelope field {field}");
+    for (key, value) in response_contract["envelope"].as_object().unwrap() {
+        assert_eq!(replay[key], *value, "retry changed envelope field {key}");
     }
-    for field in [
-        "run_id",
-        "conversation_id",
-        "workflow_id",
-        "status",
-        "user_turn_node_id",
-    ] {
+    for field in response_contract["common_result_fields"].as_array().unwrap() {
+        let field = field.as_str().unwrap();
         assert_eq!(
             replay["result"][field], first["result"][field],
             "retry changed stable send_message field {field}"
         );
+    }
+    for (field, expected) in response_contract["rust_replay_additive_result"].as_object().unwrap() {
+        let expected = if expected == "user_turn_node_id" {
+            replay["result"]["user_turn_node_id"].clone()
+        } else {
+            expected.clone()
+        };
+        assert_eq!(replay["result"][field], expected);
     }
     assert_eq!(
         replay["result"]["turn_node_id"], replay["result"]["user_turn_node_id"]
@@ -697,7 +713,7 @@ async fn in_memory_send_message_admits_turn_and_run_atomically() {
     let conflict = service
         .execute(send_message("memory-send-ok", "changed input", "same-request"))
         .await;
-    assert_eq!(conflict.status, StatusCode::CONFLICT.as_u16());
+    assert_eq!(conflict.status, response_contract["conflict_status"].as_u64().unwrap() as u16);
 
     let race_turn_id = conversation_send_message_id(
         "conversation.send_message.turn",
