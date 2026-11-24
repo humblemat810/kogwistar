@@ -484,7 +484,7 @@
         std::fs::remove_file(path).unwrap();
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_conversation_reads.rs#sqlite_chroma_mount_memory_effect; python=kogwistar/server/syscall_api.py#mount_memory; fixture=contracts/golden/mount-memory-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_mount_memory_matches_shared_fixture_and_acl; python_test=tests/server/test_chat_server_api.py#test_mount_memory_syscall_uses_python_backend
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_conversation_reads.rs#sqlite_chroma_mount_memory_effect; python=kogwistar/server/syscall_api.py#mount_memory; fixture=contracts/golden/mount-memory-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_mount_memory_matches_shared_fixture_and_acl; python_test=tests/server/test_mount_memory_wire_contract.py#test_python_mount_memory_result_matches_shared_wire_fixture
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
     async fn sqlite_chroma_mount_memory_matches_shared_fixture_and_acl() {
@@ -633,7 +633,7 @@
         let _ = std::fs::remove_file(path);
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_invoke_builtin_tool_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/invoke-tool-results-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_invoke_list_transcript_reads_live_graph; python_test=tests/server/test_chat_server_api.py#test_invoke_tool_syscall_uses_python_backend
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_invoke_builtin_tool_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/invoke-tool-results-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_invoke_list_transcript_reads_live_graph; python_test=tests/server/test_syscall_api.py#test_invoke_builtin_tool_results_match_shared_contract_fixture
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
     async fn sqlite_chroma_invoke_list_transcript_reads_live_graph() {
@@ -828,7 +828,7 @@
         let _ = std::fs::remove_file(path);
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_send_message_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/conversation-create-syscall-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_send_message_is_idempotent_and_durable; python_test=tests/server/test_chat_server_api.py#test_send_message_syscall_uses_python_backend
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_chroma_send_message_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/send-message-syscall-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_send_message_is_idempotent_and_durable; python_test=tests/server/test_chat_server_api.py#test_conversation_syscalls_use_python_postgres_backend
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
     async fn sqlite_chroma_send_message_is_idempotent_and_durable() {
@@ -1437,17 +1437,22 @@
         let _ = std::fs::remove_file(path);
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#resume_runtime_run; python=kogwistar/server/chat_service_run_execution.py#_default_resume_runner; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_metadata_resume_syscall_resumes_persisted_suspended_token; python_test=tests/server/test_chat_server_api.py#test_python_resume_syscall_continues_persisted_workflow
     #[tokio::test]
     async fn sqlite_metadata_resume_syscall_resumes_persisted_suspended_token() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
+        let resume_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+        ))
+        .unwrap();
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-syscall-resume-{nonce}.sqlite3"));
         let service = SqliteRunApplicationService::open(&path).unwrap();
-        sqlite_resume_syscall_roundtrip(service, path).await;
+        sqlite_resume_syscall_roundtrip(service, path, resume_contract).await;
     }
 
     #[tokio::test]
@@ -1477,17 +1482,20 @@
         let service = SqliteRunApplicationService::open(&path)
             .unwrap()
             .with_chroma_graph(graph);
-        sqlite_resume_syscall_roundtrip(service, path).await;
-    }
-
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#SqliteRunApplicationService; python=kogwistar/server/chat_service_run_execution.py#_default_resume_runner; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_metadata_resume_syscall_resumes_persisted_suspended_token; python_test=tests/server/test_chat_server_api.py#test_python_resume_syscall_continues_persisted_workflow
-    async fn sqlite_resume_syscall_roundtrip(service: SqliteRunApplicationService, path: std::path::PathBuf) {
-        use kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE;
-
         let resume_contract: Value = serde_json::from_str(include_str!(
             "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
         ))
         .unwrap();
+        sqlite_resume_syscall_roundtrip(service, path, resume_contract).await;
+    }
+
+    async fn sqlite_resume_syscall_roundtrip(
+        service: SqliteRunApplicationService,
+        path: std::path::PathBuf,
+        resume_contract: Value,
+    ) {
+        use kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE;
+
         let run_id = "sqlite-resume-syscall-run";
         let workflow_id = "sqlite-resume-syscall-workflow";
         let conversation_id = "sqlite-resume-syscall-conversation";

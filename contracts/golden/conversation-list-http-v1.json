@@ -1,0 +1,4 @@
+{
+  "response_fields": ["conversations"],
+  "conversation_fields": ["id", "start_node_id", "status", "turn_count"]
+}

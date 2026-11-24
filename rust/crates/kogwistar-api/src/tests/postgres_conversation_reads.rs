@@ -661,7 +661,7 @@
             .unwrap();
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_api.py#create_chat_router.list_conversations+kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_conversations_for_user; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_conversation_list_is_user_scoped_and_has_stable_response_shape
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_conversations_for_user; fixture=contracts/golden/conversation-list-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_conversation_list_is_user_scoped_and_has_stable_response_shape
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available()
@@ -975,6 +975,35 @@
             .await;
         assert_eq!(list_response.status, StatusCode::OK.as_u16());
         let list: Value = serde_json::from_slice(&list_response.body).unwrap();
+        let list_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-list-http-v1.json"
+        ))
+        .unwrap();
+        let expected_fields = |key: &str| {
+            list_contract[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            list.as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected_fields("response_fields")
+        );
+        assert_eq!(
+            list["conversations"][0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected_fields("conversation_fields")
+        );
         assert_eq!(
             list,
             json!({

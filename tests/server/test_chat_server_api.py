@@ -1402,6 +1402,17 @@ def test_conversation_list_is_user_scoped_and_has_stable_response_shape(
 
         listed = client.get("/api/conversations", headers=ro_headers)
         assert listed.status_code == 200, listed.text
+        list_contract = json.loads(
+            (
+                Path(__file__).resolve().parents[2]
+                / "contracts/golden/conversation-list-http-v1.json"
+            ).read_text(encoding="utf-8")
+        )
+        assert set(listed.json()) == set(list_contract["response_fields"])
+        assert all(
+            set(conversation) == set(list_contract["conversation_fields"])
+            for conversation in listed.json()["conversations"]
+        )
         assert listed.json() == {
             "conversations": [
                 {
