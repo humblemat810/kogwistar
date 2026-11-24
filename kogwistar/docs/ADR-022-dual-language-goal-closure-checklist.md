@@ -70,7 +70,7 @@ Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL
 | GOAL-06 | `test_adr015_capability_worklist_covers_fixed_incomplete_scope` | PASS | Worklist scope cross-check passed. |
 | GOAL-06 | `test_each_capability_gate_clause_names_an_executable_test` | PASS | Gate-clause selectors verified. |
 | GOAL-06 | `test_rust_python_parity_annotations_resolve_to_shared_executable_contracts` | PASS | Source/test/fixture references resolved. |
-| GOAL-06 | `document_validate_graph_http_route_matches_shared_success_contract` | PASS | Rust shared HTTP success contract passed. |
+| GOAL-06 | `document_validate_graph_http_route_matches_shared_success_contract` | PASS | Rust Axum route consumes strengthened shared success fixture with node pointers and edge provenance; focused Cargo test passed 1. |
 | GOAL-06 | `document_graph_validation_missing_nodes_matches_python_error_detail` | PASS | Rust/Python invalid-input detail case passed. |
 | GOAL-06 | `in_memory_native_synchronous_resume_matches_shared_result_contract` | PASS | Named Rust in-memory resume result case passed. |
 | GOAL-06 | `in_memory_native_run_admission_is_authenticated_and_atomic` | PASS | Named admission/authority case passed. |
@@ -85,7 +85,7 @@ Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL
 | GOAL-06 | `in_memory_invoke_builtin_tools_match_shared_contract_and_authority` | PASS | Rust invoke-tool contract/authority case passed. |
 | GOAL-06 | `test_syscall_send_message_invalid_inputs_match_shared_contract` | PASS | Python invalid-input/no-admission case passed. |
 | GOAL-06 | `in_memory_send_message_admits_turn_and_run_atomically` | PASS | Rust invalid-input and atomic admission case passed. |
-| GOAL-06 | `test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP success contract passed. |
+| GOAL-06 | `test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP route consumes the same non-empty node-pointer/edge-provenance fixture; focused pytest passed 1. |
 | GOAL-06 | `test_python_document_graph_validation_http_error_matches_shared_fixture` | PASS | Python HTTP error fixture case passed. |
 | GOAL-06 | `test_python_document_graph_validation_wrong_type_matches_shared_fixture` | PASS | Python HTTP rejects wrong-type `nodes` with the shared Pydantic detail fixture; focused pytest: 1 passed. |
 | GOAL-06 | `document_graph_validation_wrong_nodes_type_matches_shared_contract` | PASS | Rust rejects wrong-type `nodes` with the shared legacy error fixture; focused Cargo test: 1 passed. |
