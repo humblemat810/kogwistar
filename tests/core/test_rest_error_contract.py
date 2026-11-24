@@ -50,3 +50,15 @@ def test_python_document_graph_validation_ignores_extra_top_level_field() -> Non
 
     assert response.status_code == 200
     assert response.json() == fixture["response"]
+
+
+def test_python_document_graph_validation_rejects_null_nodes() -> None:
+    fixture_path = _FIXTURE.with_name("document-graph-validation-null-nodes-v1.json")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    response = TestClient(app).post(
+        "/api/document.validate_graph",
+        json=fixture["request"],
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == fixture["python_detail"]
