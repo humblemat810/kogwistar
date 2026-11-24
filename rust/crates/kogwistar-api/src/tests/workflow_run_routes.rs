@@ -751,6 +751,41 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .unwrap()
         .unwrap()
         .cancel_requested);
+    let resume_errors: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/syscall-resume-errors-v1.json"
+    ))
+    .unwrap();
+    for (args, expected_status) in [
+        (json!({}), resume_errors["missing_run_id_status"].as_u64().unwrap() as u16),
+        (
+            json!({
+                "run_id":"unknown-postgres-run", "workflow_id":"unknown-workflow",
+                "conversation_id":"unknown-conversation", "turn_node_id":"unknown-turn",
+                "suspended_node_id":"unknown-node", "suspended_token_id":"unknown-token",
+                "client_result":{}
+            }),
+            resume_errors["unknown_run_id_status"].as_u64().unwrap() as u16,
+        ),
+    ] {
+        let invalid_resume = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/resume".to_owned(),
+                body: serde_json::to_vec(&json!({"version":"v1", "op":"resume", "args":args}))
+                    .unwrap(),
+                principal: syscall_principal.clone(),
+            })
+            .await;
+        assert_eq!(invalid_resume.status, expected_status);
+    }
+    assert!(!service
+        .store
+        .get_server_run(syscall_run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .cancel_requested);
 
     let denied_termination = service
         .execute(ApiEffectRequest {

@@ -268,6 +268,41 @@
             .unwrap()
             .unwrap()
             .cancel_requested);
+        let resume_errors: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/syscall-resume-errors-v1.json"
+        ))
+        .unwrap();
+        for (args, expected_status) in [
+            (
+                json!({}),
+                resume_errors["missing_run_id_status"].as_u64().unwrap() as u16,
+            ),
+            (
+                json!({
+                    "run_id":"unknown-chroma-run", "workflow_id":"unknown-workflow",
+                    "conversation_id":"unknown-conversation", "turn_node_id":"unknown-turn",
+                    "suspended_node_id":"unknown-node", "suspended_token_id":"unknown-token",
+                    "client_result":{}
+                }),
+                resume_errors["unknown_run_id_status"].as_u64().unwrap() as u16,
+            ),
+        ] {
+            let invalid_resume = service.execute_sync(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/resume".to_owned(),
+                body: serde_json::to_vec(&json!({"version":"v1", "op":"resume", "args":args}))
+                    .unwrap(),
+                principal: principal.clone(),
+            });
+            assert_eq!(invalid_resume.status, expected_status);
+        }
+        assert!(!service
+            .store
+            .get_server_run(run_id)
+            .unwrap()
+            .unwrap()
+            .cancel_requested);
 
         let denied_termination = service.execute_sync(ApiEffectRequest {
             contract_version: 1,

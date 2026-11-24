@@ -878,6 +878,23 @@ impl SqliteRunApplicationService {
                 );
             }
         };
+        match self.store.get_server_run(run_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_RUN_NOT_FOUND",
+                    format!("Unknown run_id: {run_id}"),
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        }
         match self.store.resume_recorded_runtime_token(
             run_id,
             &input.workflow_id,

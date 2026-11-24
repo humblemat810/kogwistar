@@ -4727,7 +4727,7 @@ impl InMemoryGraphApplicationService {
             "resume" => {
                 let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) else {
                     return effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     );
@@ -4931,6 +4931,23 @@ impl InMemoryGraphApplicationService {
                 );
             }
         };
+        match kogwistar_store::ServerRunReadStore::server_run(&self.store, run_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_RUN_NOT_FOUND",
+                    format!("Unknown run_id: {run_id}"),
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        }
         match self.store.resume_recorded_runtime_token(
             run_id,
             &input.workflow_id,

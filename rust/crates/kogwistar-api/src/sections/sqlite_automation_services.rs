@@ -275,7 +275,7 @@ impl SqliteRunApplicationService {
                     &["workflow.run.write"],
                 ) {
                     syscall_forbidden(op)
-                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
                     let nested = ApiEffectRequest {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
@@ -286,7 +286,7 @@ impl SqliteRunApplicationService {
                     syscall_result(&input.version, op, self.resume_runtime_run(run_id, &nested))
                 } else {
                     effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     )

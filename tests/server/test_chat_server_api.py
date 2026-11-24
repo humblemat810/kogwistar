@@ -2912,6 +2912,34 @@ def test_conversation_syscalls_use_python_postgres_backend(
                 )
                 assert invalid_termination.status_code == expected_status
             assert registry.get_run(run_id)["cancel_requested"] is False
+            resume_errors = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-resume-errors-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            for args, expected_status in (
+                ({}, resume_errors["missing_run_id_status"]),
+                (
+                    {
+                        "run_id": f"{run_id}-unknown",
+                        "workflow_id": "unknown-workflow",
+                        "conversation_id": "unknown-conversation",
+                        "turn_node_id": "unknown-turn",
+                        "suspended_node_id": "unknown-node",
+                        "suspended_token_id": "unknown-token",
+                        "client_result": {},
+                    },
+                    resume_errors["unknown_run_id_status"],
+                ),
+            ):
+                invalid_resume = client.post(
+                    "/api/syscall/v1/resume",
+                    json={"version": "v1", "op": "resume", "args": args},
+                    headers=headers,
+                )
+                assert invalid_resume.status_code == expected_status
+            assert registry.get_run(run_id)["cancel_requested"] is False
 
             denied_termination = client.post(
                 "/api/syscall/v1/terminate_process",
@@ -3223,7 +3251,7 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
                 username="memory-workflow-owner",
                 capabilities=(
                     "spawn_process,workflow.run.write,workflow.run.read,project_view,"
-                    "workflow.design.write,write_graph"
+                    "workflow.design.write,write_graph,approve_action"
                 ),
             )
             spawned = client.post(
@@ -3286,6 +3314,34 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
                     headers=headers,
                 )
                 assert invalid_termination.status_code == expected_status
+            assert registry.get_run(spawned_result["run_id"])["cancel_requested"] is False
+            resume_errors = json.loads(
+                (
+                    Path(__file__).resolve().parents[2]
+                    / "contracts/golden/syscall-resume-errors-v1.json"
+                ).read_text(encoding="utf-8")
+            )
+            for args, expected_status in (
+                ({}, resume_errors["missing_run_id_status"]),
+                (
+                    {
+                        "run_id": f"{spawned_result['run_id']}-unknown",
+                        "workflow_id": "unknown-workflow",
+                        "conversation_id": "unknown-conversation",
+                        "turn_node_id": "unknown-turn",
+                        "suspended_node_id": "unknown-node",
+                        "suspended_token_id": "unknown-token",
+                        "client_result": {},
+                    },
+                    resume_errors["unknown_run_id_status"],
+                ),
+            ):
+                invalid_resume = client.post(
+                    "/api/syscall/v1/resume",
+                    json={"version": "v1", "op": "resume", "args": args},
+                    headers=headers,
+                )
+                assert invalid_resume.status_code == expected_status
             assert registry.get_run(spawned_result["run_id"])["cancel_requested"] is False
 
             denied_termination = client.post(
@@ -3917,9 +3973,9 @@ def test_resume_route_uses_python_defaults_and_checks_namespace(
         assert len(captured_requests) == 1
 
 
-@pytest.mark.parametrize("backend", ["in_memory", "chroma"])
+@pytest.mark.parametrize("backend", ["in_memory", "chroma", "postgres"])
 def test_python_resume_syscall_continues_persisted_workflow(
-    monkeypatch, tmp_path, backend
+    monkeypatch, request, tmp_path, backend, pg_dsn, pg_schema
 ):
     resume_contract = json.loads(
         (
@@ -3944,12 +4000,42 @@ def test_python_resume_syscall_continues_persisted_workflow(
     monkeypatch.setattr(
         "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
     )
+    postgres_engine = None
+    backend_factory = None
+    if backend == "in_memory":
+        backend_factory = build_in_memory_backend
+    elif backend == "postgres":
+        if not pg_dsn or not pg_schema:
+            pytest.skip("PostgreSQL fixture is unavailable")
+        import sqlalchemy as sa
+
+        from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+        postgres_engine = sa.create_engine(pg_dsn, future=True, pool_pre_ping=True)
+
+        def cleanup_postgres_schemas():
+            cleanup_engine = sa.create_engine(pg_dsn, future=True, pool_pre_ping=True)
+            with cleanup_engine.begin() as connection:
+                for graph_type in ("knowledge", "conversation", "workflow"):
+                    connection.execute(
+                        sa.text(
+                            f'DROP SCHEMA IF EXISTS "{pg_schema}_{graph_type}" CASCADE'
+                        )
+                    )
+            cleanup_engine.dispose()
+            postgres_engine.dispose()
+
+        request.addfinalizer(cleanup_postgres_schemas)
+        backend_factory = lambda engine: PgVectorBackend(
+            engine=postgres_engine,
+            embedding_dim=384,
+            schema=f"{pg_schema}_{engine.kg_graph_type}",
+        )
+
     engines = build_engine_triplet(
         root=tmp_path / f"python-{backend}-resume",
         embedding_function=FakeEmbeddingFunction(),
-        backend_factory=(
-            build_in_memory_backend if backend == "in_memory" else None
-        ),
+        backend_factory=backend_factory,
     )
     knowledge_engine, conversation_engine, workflow_engine = engines
     service, _registry = _configure_server(
