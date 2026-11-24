@@ -331,7 +331,7 @@
             assert_eq!(payload["version"], case["request"]["version"]);
             assert_eq!(payload["op"], case["request"]["op"]);
             assert_eq!(payload["status"], "ok");
-            assert!(payload["error"].is_null());
+            assert!(payload.get("error").is_some_and(Value::is_null));
             let result = &payload["result"];
             assert_eq!(result["status"], case["result_status"]);
             assert!(result[case["snapshot_field"].as_str().unwrap()]

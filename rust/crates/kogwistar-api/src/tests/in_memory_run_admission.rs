@@ -639,7 +639,7 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
         assert_eq!(envelope["version"], case["request"]["version"]);
         assert_eq!(envelope["op"], case["request"]["op"]);
         assert_eq!(envelope["status"], "ok");
-        assert!(envelope["error"].is_null());
+        assert!(envelope.get("error").is_some_and(Value::is_null));
         let result = &envelope["result"];
         assert_eq!(result["status"], case["result_status"]);
         let entries = result[case["snapshot_field"].as_str().unwrap()]
