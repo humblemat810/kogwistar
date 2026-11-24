@@ -2254,7 +2254,13 @@ def test_request_approval_syscall_uses_python_backend(monkeypatch, tmp_path, bac
                 result = payload["result"]
                 assert result["status"] == case["result_status"], case["name"]
                 entries = result[case["snapshot_field"]][case["entries_field"]]
-                assert case["expected_entry"] in entries, case["name"]
+                expected_entry = case["expected_entry"]
+                subject_entries = [
+                    entry
+                    for entry in entries
+                    if entry.get("subject") == expected_entry["subject"]
+                ]
+                assert subject_entries == [expected_entry], case["name"]
 
             denied = client.post(
                 "/api/syscall/v1/request_approval",

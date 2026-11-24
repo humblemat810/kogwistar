@@ -645,7 +645,13 @@ async fn in_memory_workflow_syscalls_use_native_run_handlers() {
             [case["entries_field"].as_str().unwrap()]
             .as_array()
             .unwrap();
-        assert!(entries.contains(&case["expected_entry"]), "{}", case["name"]);
+        let expected_entry = &case["expected_entry"];
+        let subject_entries: Vec<Value> = entries
+            .iter()
+            .filter(|entry| entry["subject"] == expected_entry["subject"])
+            .cloned()
+            .collect();
+        assert_eq!(subject_entries, vec![expected_entry.clone()], "{}", case["name"]);
     }
 
     let approval = service.execute(ApiEffectRequest {
