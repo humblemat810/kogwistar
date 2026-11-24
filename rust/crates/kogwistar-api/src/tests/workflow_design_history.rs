@@ -475,6 +475,21 @@
             let field = field.as_str().unwrap();
             assert!(redo.get(field).is_none(), "field {field}");
         }
+        let repeated_redo = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{redo_workflow}/redo"),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_redo.status(), StatusCode::OK);
+        let repeated_redo: Value = serde_json::from_slice(
+            &to_bytes(repeated_redo.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(repeated_redo["status"], "noop");
+        assert_eq!(repeated_redo["current_version"], redo["current_version"]);
+        assert_eq!(repeated_redo["current_seq"], redo["current_seq"]);
         let undo_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-undo-http-v1.json"
@@ -526,6 +541,21 @@
             let field = field.as_str().unwrap();
             assert!(undo.get(field).is_none(), "field {field}");
         }
+        let repeated_undo = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{undo_workflow}/undo"),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_undo.status(), StatusCode::OK);
+        let repeated_undo: Value = serde_json::from_slice(
+            &to_bytes(repeated_undo.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(repeated_undo["status"], "noop");
+        assert_eq!(repeated_undo["current_version"], undo["current_version"]);
+        assert_eq!(repeated_undo["current_seq"], undo["current_seq"]);
         let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
         let call = |method: &str, path: &str, body: Value| {
             service.execute_sync(ApiEffectRequest {

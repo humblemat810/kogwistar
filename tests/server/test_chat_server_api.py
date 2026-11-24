@@ -5765,9 +5765,19 @@ def test_workflow_design_redo_matches_shared_contract(monkeypatch, engine_triple
             json={"designer_id": contract["designer_id"]},
             headers=headers,
         )
+        repeated = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/redo",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
 
     assert response.status_code == contract["success_status"], response.text
     body = response.json()
+    repeated_body = repeated.json()
+    assert repeated.status_code == contract["success_status"]
+    assert repeated_body["status"] == "noop"
+    assert repeated_body["current_version"] == body["current_version"]
+    assert repeated_body["current_seq"] == body["current_seq"]
     for field, expected in contract["fixed_response_fields"].items():
         assert body[field] == expected
     for field in contract["integer_response_fields"]:
@@ -5814,9 +5824,19 @@ def test_workflow_design_undo_matches_shared_contract(monkeypatch, engine_triple
             json={"designer_id": contract["designer_id"]},
             headers=headers,
         )
+        repeated = client.post(
+            f"/api/workflow/design/{contract['workflow_id']}/undo",
+            json={"designer_id": contract["designer_id"]},
+            headers=headers,
+        )
 
     assert response.status_code == contract["success_status"], response.text
     body = response.json()
+    repeated_body = repeated.json()
+    assert repeated.status_code == contract["success_status"]
+    assert repeated_body["status"] == "noop"
+    assert repeated_body["current_version"] == body["current_version"]
+    assert repeated_body["current_seq"] == body["current_seq"]
     for field, expected in contract["fixed_response_fields"].items():
         assert body[field] == expected
     for field in contract["integer_response_fields"]:
