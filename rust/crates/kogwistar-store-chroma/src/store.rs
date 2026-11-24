@@ -1021,8 +1021,7 @@ mod tests {
     use super::normalize_chroma_distance;
     use crate::ChromaStoreConfig;
     use kogwistar_store::{
-        DistanceMetric, GraphEntityKind, GraphReadStore, VectorQuery,
-        similarity_from_distance,
+        DistanceMetric, GraphEntityKind, GraphReadStore, VectorQuery, similarity_from_distance,
     };
     use serde_json::{Value, json};
     use std::time::Duration;
