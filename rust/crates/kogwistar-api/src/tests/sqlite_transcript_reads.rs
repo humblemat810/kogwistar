@@ -251,6 +251,15 @@
             .execute(request("receive_message", json!({"conversation_id":"missing"}), principal.clone()))
             .await;
         assert_eq!(unknown_conversation.status, StatusCode::NOT_FOUND.as_u16());
+        let foreign_conversation = service
+            .execute(request("receive_message", json!({"conversation_id":"c-foreign"}), principal.clone()))
+            .await;
+        assert_eq!(foreign_conversation.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&foreign_conversation.body).unwrap()["result"]["messages"],
+            json!([]),
+            "public non-turn node makes conversation visible, but is not a transcript message"
+        );
         let empty_transcript = service
             .execute(request("receive_message", json!({"conversation_id":"c-empty"}), principal.clone()))
             .await;
@@ -442,7 +451,7 @@
                 .collect::<Vec<_>>()
         };
         let receive_audit = audit_for("receive_message");
-        assert_eq!(receive_audit.len(), 6);
+        assert_eq!(receive_audit.len(), 7);
         assert_eq!(
             receive_audit
                 .iter()
