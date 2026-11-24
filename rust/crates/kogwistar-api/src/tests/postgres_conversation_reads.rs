@@ -497,6 +497,20 @@
             .iter()
             .find(|case| case["name"] == "unknown-tool")
             .unwrap();
+        let graph_ids_before_unknown_tool = service
+            .conversation_store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 1_000,
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<BTreeSet<_>>();
         let unsupported_tool = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -520,6 +534,25 @@
         assert_eq!(
             serde_json::from_slice::<Value>(&unsupported_tool.body).unwrap(),
             unknown_tool_case["response"]
+        );
+        let graph_ids_after_unknown_tool = service
+            .conversation_store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 1_000,
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            graph_ids_after_unknown_tool,
+            graph_ids_before_unknown_tool,
+            "unknown tool must not change the graph projection"
         );
         let invoke_audit_response = service
             .execute(ApiEffectRequest {

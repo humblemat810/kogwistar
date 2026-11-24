@@ -633,6 +633,14 @@ def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engin
                 / "contracts/golden/syscall-invoke-tool-errors-v1.json"
             ).read_text(encoding="utf-8")
         )
+        graph_ids_before_errors = {
+            node.id
+            for node in conversation_engine.read.get_nodes(
+                where={"conversation_id": created["conversation_id"]},
+                node_type=ConversationNode,
+                limit=1_000,
+            )
+        }
         for case in error_contract["cases"]:
             error_response = client.post(
                 "/api/syscall/v1/invoke_tool",
@@ -641,6 +649,15 @@ def test_syscall_invoke_tool_list_transcript_returns_messages(monkeypatch, engin
             )
             assert error_response.status_code == case["http_status"], case["name"]
             assert error_response.json() == case["response"], case["name"]
+        graph_ids_after_errors = {
+            node.id
+            for node in conversation_engine.read.get_nodes(
+                where={"conversation_id": created["conversation_id"]},
+                node_type=ConversationNode,
+                limit=1_000,
+            )
+        }
+        assert graph_ids_after_errors == graph_ids_before_errors
 
 
 def test_syscall_receive_message_matches_shared_wire_fixture():

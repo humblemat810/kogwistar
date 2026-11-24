@@ -626,6 +626,18 @@
             "../../../../../../contracts/golden/syscall-invoke-tool-errors-v1.json"
         ))
         .unwrap();
+        let graph_ids_before_errors = graph
+            .graph_records_of_kind_bounded(
+                &namespace,
+                GraphEntityKind::Node,
+                &kogwistar_store::MetadataFilter::default(),
+                100,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<std::collections::BTreeSet<_>>();
         for case in error_fixture["cases"].as_array().unwrap() {
             let response = service
                 .execute(ApiEffectRequest {
@@ -649,6 +661,19 @@
                 case["name"]
             );
         }
+        let graph_ids_after_errors = graph
+            .graph_records_of_kind_bounded(
+                &namespace,
+                GraphEntityKind::Node,
+                &kogwistar_store::MetadataFilter::default(),
+                100,
+            )
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(graph_ids_after_errors, graph_ids_before_errors);
 
         let response = service
             .execute(invoke(&["invoke_tool", "read_graph"]))

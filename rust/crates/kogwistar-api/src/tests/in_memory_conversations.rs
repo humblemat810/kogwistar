@@ -1383,6 +1383,20 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
         "../../../../../contracts/golden/syscall-invoke-tool-errors-v1.json"
     ))
     .unwrap();
+    let graph_before_errors = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope: snapshot_scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: usize::MAX,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.id)
+        .collect::<BTreeSet<_>>();
     for case in error_fixture["cases"].as_array().unwrap() {
         let response = service
             .execute(ApiEffectRequest {
@@ -1397,6 +1411,21 @@ async fn in_memory_invoke_builtin_tools_match_shared_contract_and_authority() {
         let body: Value = serde_json::from_slice(&response.body).unwrap();
         assert_eq!(body, case["response"], "{}", case["name"]);
     }
+    let graph_after_errors = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope: snapshot_scope,
+            table: "gke_nodes".to_owned(),
+            ids: None,
+            metadata: MetadataFilter::default(),
+            limit: usize::MAX,
+        })
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|record| record.id)
+        .collect::<BTreeSet<_>>();
+    assert_eq!(graph_after_errors, graph_before_errors);
 }
 
 #[tokio::test]
