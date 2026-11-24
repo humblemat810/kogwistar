@@ -364,6 +364,95 @@ async fn workflow_run_submit_checks_both_capabilities_before_admission() {
     remove_test_sqlite(&sqlite_path);
 }
 
+// PYTHON_PARITY_NOTE_V1: SQLite MCP submit persists the admitted run; Python counterpart verifies the same public contract and authorization. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-submit-mcp-v1.json
+#[tokio::test]
+async fn sqlite_mcp_run_submit_persists_admission() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let path = std::env::temp_dir().join(format!(
+        "kogwistar-sqlite-mcp-submit-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let service = SqliteRunApplicationService::open(&path).unwrap();
+    let secret = b"sqlite-mcp-submit-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["spawn_process", "workflow.run.write"],
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-submit-mcp-v1.json"
+    ))
+    .unwrap();
+    let mut arguments = contract["arguments"].clone();
+    arguments["user_id"] = json!("alice");
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"sqlite-submit", "method":"tools/call",
+                        "params":{"name":contract["tool"], "arguments":arguments}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 8192).await.unwrap();
+    let data = String::from_utf8(body.to_vec()).unwrap();
+    let message = data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let payload: Value = serde_json::from_str(message).unwrap();
+    assert_ne!(payload["result"]["isError"], true, "{payload}");
+    let run_id = payload["result"]["structuredContent"]["run_id"]
+        .as_str()
+        .unwrap();
+
+    let reopened = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+    let persisted = reopened.get_server_run(run_id).unwrap().unwrap();
+    assert_eq!(persisted.workflow_id, "workflow-contract");
+    assert_eq!(persisted.conversation_id, "conversation-contract");
+    assert_eq!(persisted.status, "queued");
+
+    drop(reopened);
+    drop(service);
+    remove_test_sqlite(&path);
+}
+
 #[tokio::test]
 async fn run_evidence_checks_authority_before_run_lookup() {
     let sqlite_path = std::env::temp_dir().join(format!(
