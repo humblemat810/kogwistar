@@ -410,6 +410,60 @@ async fn sqlite_mcp_run_submit_persists_admission() {
     .unwrap();
     let mut arguments = contract["arguments"].clone();
     arguments["user_id"] = json!("caller-controlled-owner");
+
+    let submit_without_spawn_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "user_id":"alice", "role":"rw", "ns":["workflow"],
+            "capabilities":["workflow.run.write"],
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let denied_submit = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header(
+                    "authorization",
+                    format!("Bearer {submit_without_spawn_token}"),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"sqlite-submit-denied", "method":"tools/call",
+                        "params":{"name":contract["tool"], "arguments":arguments.clone()}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_submit.status(), StatusCode::OK);
+    let denied_submit_body = to_bytes(denied_submit.into_body(), 8192).await.unwrap();
+    let denied_submit_data = String::from_utf8(denied_submit_body.to_vec()).unwrap();
+    let denied_submit_message = denied_submit_data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let denied_submit_payload: Value = serde_json::from_str(denied_submit_message).unwrap();
+    assert_eq!(
+        denied_submit_payload["result"]["isError"],
+        true,
+        "{denied_submit_payload}"
+    );
+    let after_denied_submit = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+    assert!(after_denied_submit
+        .list_server_runs(None, Some("workflow-contract"), Some("conversation-contract"), 20)
+        .unwrap()
+        .is_empty());
+    drop(after_denied_submit);
+
     let response = app
         .clone()
         .oneshot(
