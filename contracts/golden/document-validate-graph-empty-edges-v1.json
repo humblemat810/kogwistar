@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "request": {
+    "doc_id": "doc-empty-edges",
+    "nodes": []
+  },
+  "status": 200,
+  "response": {
+    "ok": true,
+    "node_errors": {},
+    "edge_errors": {}
+  }
+}

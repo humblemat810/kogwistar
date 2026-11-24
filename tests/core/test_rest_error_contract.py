@@ -62,3 +62,15 @@ def test_python_document_graph_validation_rejects_null_nodes() -> None:
 
     assert response.status_code == 422
     assert response.json()["detail"] == fixture["python_detail"]
+
+
+def test_python_document_graph_validation_defaults_omitted_edges_to_empty() -> None:
+    fixture_path = _FIXTURE.with_name("document-validate-graph-empty-edges-v1.json")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    response = TestClient(app).post(
+        "/api/document.validate_graph",
+        json=fixture["request"],
+    )
+
+    assert response.status_code == fixture["status"]
+    assert response.json() == fixture["response"]
