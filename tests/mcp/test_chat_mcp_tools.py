@@ -3590,40 +3590,63 @@ async def test_mcp_workflow_dead_letter_replay_matches_shared_contract(
 async def test_mcp_workflow_dead_letter_replay_dispatches_effect_once(
     monkeypatch, engine_triplet
 ):
+    import asyncio
+    import threading
+
     engine, conversation_engine, workflow_engine = engine_triplet
     service = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
     run_id = "dead-letter-mcp-replay"
-    dead = {"run_id": run_id, "status": "dead-letter"}
-    dead_letters = [dead]
-    resumed: list[str] = []
+    attempts = 0
+    replay_completed = threading.Event()
 
-    monkeypatch.setattr(service.scheduler, "dead_letter", lambda: list(dead_letters))
+    def fail_once() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("initial attempt fails")
+        replay_completed.set()
 
-    def resume(requested_run_id: str) -> None:
-        resumed.append(requested_run_id)
-        dead_letters.clear()
-
-    monkeypatch.setattr(service.scheduler, "resume", resume)
+    admission = service.scheduler.submit(
+        run_id=run_id,
+        priority_class="foreground",
+        start_fn=fail_once,
+        max_retries=0,
+    )
+    assert admission["admission"] == "accepted"
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and not service.scheduler.dead_letter():
+        time.sleep(0.01)
+    dead_rows = [row for row in service.scheduler.dead_letter() if row["run_id"] == run_id]
+    assert dead_rows, "initial failed attempt did not enter dead-letter queue"
+    dead = dead_rows[0]
+    assert attempts == 1
 
     with _claims(
         "rw", "workflow", scope_parts={"capabilities": ["service.manage"]}
     ):
-        first = _structured(
-            await server.mcp.call_tool(
-                "workflow.dead_letter_replay", {"run_id": run_id}
+        results = await asyncio.gather(
+            *(
+                server.mcp.call_tool(
+                    "workflow.dead_letter_replay", {"run_id": run_id}
+                )
+                for _ in range(2)
             )
         )
-        retry = _structured(
-            await server.mcp.call_tool(
-                "workflow.dead_letter_replay", {"run_id": run_id}
-            )
-        )
+        responses = [_structured(result) for result in results]
 
-    assert first == {"run_id": run_id, "replayed": True, "dead_letter": dead}
-    assert retry == {"run_id": run_id, "replayed": False}
-    assert resumed == [run_id]
+    outcomes = sorted(response["replayed"] for response in responses)
+    assert outcomes == [False, True]
+    assert all(response["run_id"] == run_id for response in responses)
+    assert next(response for response in responses if response["replayed"]) == {
+        "run_id": run_id,
+        "replayed": True,
+        "dead_letter": dead,
+    }
+    assert replay_completed.wait(timeout=5.0)
+    assert attempts == 2
+    assert all(row["run_id"] != run_id for row in service.scheduler.dead_letter())
 
 
 @pytest.mark.asyncio
@@ -3645,8 +3668,8 @@ async def test_mcp_workflow_dead_letter_replay_denies_without_dispatch(
     scheduler_calls: list[str] = []
     monkeypatch.setattr(
         service.scheduler,
-        "dead_letter",
-        lambda: scheduler_calls.append("read") or [],
+        "replay_dead_letter",
+        lambda run_id: scheduler_calls.append(run_id),
     )
 
     with _claims(

@@ -1099,7 +1099,57 @@
         store
             .project_lane_message(dead_lane("dead-mcp-message", "dead-mcp-run"))
             .unwrap();
-        let replay = app
+        let (replay, competing_replay) = tokio::join!(
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"dead-replay-a","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
+                    ))
+                    .unwrap(),
+            ),
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"dead-replay-b","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
+                    ))
+                    .unwrap(),
+            ),
+        );
+        let replay = serde_json::from_slice::<Value>(
+            &to_bytes(replay.unwrap().into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        let competing_replay = serde_json::from_slice::<Value>(
+            &to_bytes(competing_replay.unwrap().into_body(), 16_384)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let mut replay_outcomes = [
+            replay["result"]["replayed"].as_bool().unwrap(),
+            competing_replay["result"]["replayed"].as_bool().unwrap(),
+        ];
+        replay_outcomes.sort_unstable();
+        assert_eq!(replay_outcomes, [false, true]);
+        assert_eq!(replay["result"]["run_id"], "dead-mcp-run");
+        assert_eq!(competing_replay["result"]["run_id"], "dead-mcp-run");
+        assert_eq!(
+            store
+                .get_projected_lane_message("dead-mcp-message")
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+        let replay_retry = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -1108,16 +1158,17 @@
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"dead-replay","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
+                        r#"{"jsonrpc":"2.0","id":"dead-replay-retry","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
                     ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        let replay =
-            serde_json::from_slice::<Value>(&to_bytes(replay.into_body(), 16_384).await.unwrap())
-                .unwrap();
-        assert_eq!(replay["result"]["replayed"], true);
+        let replay_retry = serde_json::from_slice::<Value>(
+            &to_bytes(replay_retry.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replay_retry["result"]["replayed"], false);
         assert_eq!(
             store
                 .get_projected_lane_message("dead-mcp-message")

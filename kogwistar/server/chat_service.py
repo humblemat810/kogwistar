@@ -1281,11 +1281,10 @@ class ChatRunService:
             ["service.manage"],
             approval_message="Replaying dead letters requires service.manage capability",
         )
-        dead = [row for row in self.scheduler.dead_letter() if str(row.get("run_id") or "") == str(run_id)]
-        if not dead:
+        dead = self.scheduler.replay_dead_letter(str(run_id))
+        if dead is None:
             return {"run_id": run_id, "replayed": False}
-        self.scheduler.resume(run_id)
-        return {"run_id": run_id, "replayed": True, "dead_letter": dead[0]}
+        return {"run_id": run_id, "replayed": True, "dead_letter": dead}
 
     def message_queue_snapshot(self, *, inbox_id: str | None = None) -> dict[str, Any]:
         self._require_capability(

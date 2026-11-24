@@ -26,6 +26,12 @@ class _QueuedRun:
     backoff_s: float = field(default=0.0, compare=False)
 
 
+@dataclass
+class _DeadLetter:
+    details: dict[str, Any]
+    item: _QueuedRun
+
+
 class RunScheduler:
     def __init__(
         self,
@@ -50,7 +56,7 @@ class RunScheduler:
         self._closed = False
         self._dispatch_not_before = 0.0
         self._dispatch_window_s = 0.02
-        self._dead_letter: list[dict[str, Any]] = []
+        self._dead_letter: list[_DeadLetter] = []
         self._timeline: list[dict[str, Any]] = []
         self._paused: set[str] = set()
         self._pause_requested: set[str] = set()
@@ -311,13 +317,16 @@ class RunScheduler:
                             )
                         else:
                             self._dead_letter.append(
-                                {
-                                    "run_id": item.run_id,
-                                    "priority_class": item.priority_class,
-                                    "error": str(exc),
-                                    "retry_count": item.retry_count,
-                                    "max_retries": item.max_retries,
-                                }
+                                _DeadLetter(
+                                    details={
+                                        "run_id": item.run_id,
+                                        "priority_class": item.priority_class,
+                                        "error": str(exc),
+                                        "retry_count": item.retry_count,
+                                        "max_retries": item.max_retries,
+                                    },
+                                    item=item,
+                                )
                             )
                             self._timeline.append(
                                 {
@@ -348,7 +357,59 @@ class RunScheduler:
 
     def dead_letter(self) -> list[dict[str, Any]]:
         with self._cv:
-            return list(self._dead_letter)
+            return [dict(entry.details) for entry in self._dead_letter]
+
+    def replay_dead_letter(self, run_id: str) -> dict[str, Any] | None:
+        with self._cv:
+            index = next(
+                (
+                    index
+                    for index, entry in enumerate(self._dead_letter)
+                    if entry.item.run_id == run_id
+                ),
+                None,
+            )
+            if index is None:
+                return None
+
+            entry = self._dead_letter[index]
+            item = entry.item
+            class_cap = self.max_active_by_class.get(item.priority_class)
+            class_inflight = self._active_by_class.get(item.priority_class, 0) + (
+                self._queued_by_class.get(item.priority_class, 0)
+            )
+            if len(self._queue) >= self.max_queue or (
+                class_cap is not None and class_inflight >= class_cap
+            ):
+                raise RuntimeError("Cannot replay dead letter: scheduler capacity is full")
+
+            self._dead_letter.pop(index)
+            self._seq += 1
+            heapq.heappush(
+                self._queue,
+                _QueuedRun(
+                    (_PRIORITY_RANK.get(item.priority_class, 1), self._seq, 0),
+                    run_id=item.run_id,
+                    priority_class=item.priority_class,
+                    start_fn=item.start_fn,
+                    retry_count=0,
+                    max_retries=item.max_retries,
+                ),
+            )
+            self._queued_by_class[item.priority_class] = (
+                self._queued_by_class.get(item.priority_class, 0) + 1
+            )
+            self._timeline.append(
+                {
+                    "ts_ms": int(time.time() * 1000),
+                    "event": "dead_letter_replay_queued",
+                    "run_id": item.run_id,
+                }
+            )
+            if self._active < self.max_active and self._dispatch_not_before <= 0:
+                self._dispatch_not_before = time.time() + self._dispatch_window_s
+            self._cv.notify_all()
+            return dict(entry.details)
 
     def snapshot(self) -> dict[str, Any]:
         with self._cv:
