@@ -168,6 +168,7 @@ remain below.
 | GOAL-06 | `tests::workflow_design_node_upsert_http_denial_matches_python_before_effect` | PASS | Same three request/claims cases; Axum/JWT returns 403 and each SQLite event log stays empty. |
 | GOAL-06 | `tests/server/test_chat_server_api.py::test_conversation_list_http_denials_precede_service_read` | PASS | Shared `conversation-list-denied-http-v1.json`: wrong namespace returns 403; JWT `sub` without `user_id` returns 401; service-read spy remains untouched. |
 | GOAL-06 | `tests::conversation_list_http_denials_precede_storage_read` | PASS | Same shared denial cases; wrong namespace returns 403 and `sub`-only identity returns 401 with unreachable PostgreSQL, proving rejection precedes storage access. |
+| GOAL-06 | `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` | PASS | Live disposable PostgreSQL authorized conversation-list/detail/transcript route test passed after aligning its token with Python's required `user_id` claim. |
 | GOAL-06 | `tests/server/test_chat_server_api.py::test_run_steps_matches_shared_rust_projection_fixture` | PASS | Same seed as Rust; compares normalized step fields, result, and trace context. |
 | GOAL-06 | `tests::runtime_step_inspection_matches_shared_python_projection_fixture` | PASS | Same seed as Python; compares normalized runtime-inspection response to shared fixture. |
 | GOAL-07 | `tests/core/test_pypy_ci_contract.py::test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | Declared interpreter matrix. |

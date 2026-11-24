@@ -967,6 +967,7 @@
                 body: Vec::new(),
                 principal: json!({
                     "sub": "alice",
+                    "user_id": "alice",
                     "role": "ro",
                     "ns": "conversation",
                     "storage_ns": "conversation",
