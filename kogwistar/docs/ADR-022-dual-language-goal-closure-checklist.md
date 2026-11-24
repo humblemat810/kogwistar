@@ -60,7 +60,13 @@ One row per named test selector or bounded unimplemented test group; this is a v
 | GOAL-09 | `test_endpoint_runner_compares_python_mixed_and_rust_http_modes` | PASS | Benchmark runner executes both modes; not a performance threshold result. |
 | GOAL-09 | `test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch` | PASS | Digest-mismatch rejection case passed. |
 | GOAL-09 | `test_endpoint_report_verifier_rejects_ffi_in_pure_mode` | PASS | Both pure modes enforce zero FFI; workload remains a smoke, not representative gate closure. |
-| GOAL-06 | `postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` | PASS | Live disposable pgvector rerun passed: nonterminal REST cancel and MCP retry each append `run.cancelling`; denied cancel is effect-free; terminal retry adds no event. |
+| GOAL-06 | `postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` | PASS | Live pgvector Rust test passed: nonterminal REST/MCP/syscall cancellation persists `run.cancelling`; denied calls are effect-free; terminal syscall retry adds no event. |
+| GOAL-06 | `sqlite_syscall_spawn_and_terminate_use_authoritative_run_service` | PASS | Rust SQLite metadata syscall appends one `run.cancelling` event before cancellation; terminal retry appends none. Focused Rust test: 1 passed. |
+| GOAL-06 | `sqlite_chroma_syscall_spawn_and_terminate_use_authoritative_run_service` | PASS | Rust SQLite+Chroma syscall test verifies one `run.cancelling` event and no extra event on terminal retry; live-Chroma focused test passed. |
+| GOAL-06 | `in_memory_workflow_syscalls_use_native_run_handlers` | PASS | Rust in-memory syscall authority/result contract; focused rerun passed. |
+| GOAL-06 | `test_run_lifecycle_syscalls_use_python_backend[in_memory]` | PASS | Python in-memory syscall persists `run.cancelling`; terminal retry leaves event history unchanged. Focused case passed. |
+| GOAL-06 | `test_run_lifecycle_syscalls_use_python_backend[chroma]` | PASS | Python SQLite+Chroma syscall persists `run.cancelling`; terminal retry leaves event history unchanged. Focused case passed. |
+| GOAL-06 | `test_conversation_syscalls_use_python_postgres_backend` | PASS | Python PostgreSQL syscall cancellation exposes `run.cancelling`; terminal retry leaves SSE history unchanged. Live testcontainers: 1 passed. |
 | GOAL-06 | `in_memory_workflow_cancel_mcp_reaches_authorized_store_effect` | PASS | Focused rerun passed; authorized cancel emits `run.cancelling`, denied cancel is effect-free, terminal retry adds no event. |
 | GOAL-06 | `sqlite_mcp_run_submit_persists_admission` | PASS | Focused rerun passed; authorized cancel persists `run.cancelling`; terminal retry adds no event. |
 | GOAL-06 | HTTP success parity for all inventoried operations/backends | NOT STARTED | Full parameterized Python/Rust case matrix not yet implemented. |

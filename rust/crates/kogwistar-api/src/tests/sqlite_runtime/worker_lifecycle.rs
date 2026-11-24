@@ -1,3 +1,4 @@
+    // PYTHON_PARITY_NOTE_V1: Authorized syscall termination appends one run.cancelling event before applying the cancel; denied calls have no effect. rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/run-cancel-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_syscall_spawn_and_terminate_use_authoritative_run_service; python_test=tests/server/test_chat_server_api.py#test_run_lifecycle_syscalls_use_python_backend
     #[tokio::test]
     async fn sqlite_syscall_spawn_and_terminate_use_authoritative_run_service() {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -120,6 +121,18 @@
         assert_eq!(spawned["status"], "ok");
         let run_id = spawned["result"]["run_id"].as_str().unwrap();
         assert!(service.store.get_server_run(run_id).unwrap().is_some());
+        let cancel_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/run-cancel-v1.json"
+        ))
+        .unwrap();
+        let events_before_termination = kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            run_id,
+            0,
+            100,
+        )
+        .await
+        .unwrap();
         let lanes = service
             .store
             .list_projected_lane_messages(LaneMessageFilter {
@@ -154,11 +167,32 @@
                 "args":{"run_id":run_id},
             }))
             .unwrap(),
-            principal,
+            principal: principal.clone(),
         });
         assert_eq!(terminated.status, StatusCode::OK.as_u16());
         let terminated = serde_json::from_slice::<Value>(&terminated.body).unwrap();
         assert_eq!(terminated["result"]["cancel_requested"], true);
+        let events_after_termination = kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            run_id,
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+        let cancel_event = cancel_contract["nonterminal_cancel_event"]
+            .as_str()
+            .unwrap();
+        let count_cancel_events = |events: &[kogwistar_store::ServerRunEvent]| {
+            events
+                .iter()
+                .filter(|event| event.event_type == cancel_event)
+                .count()
+        };
+        assert_eq!(
+            count_cancel_events(&events_after_termination),
+            count_cancel_events(&events_before_termination) + 1
+        );
         assert!(
             service
                 .store
@@ -166,6 +200,40 @@
                 .unwrap()
                 .unwrap()
                 .cancel_requested
+        );
+        assert_eq!(
+            service
+                .store
+                .get_server_run(run_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        let repeated = service.execute_sync(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/syscall/v1/terminate_process".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "version":"v1",
+                "op":"terminate_process",
+                "args":{"run_id":run_id},
+            }))
+            .unwrap(),
+            principal,
+        });
+        assert_eq!(repeated.status, StatusCode::OK.as_u16());
+        let events_after_terminal_retry = kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            run_id,
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count_cancel_events(&events_after_terminal_retry),
+            count_cancel_events(&events_after_termination)
         );
         drop(service);
         std::fs::remove_file(path).unwrap();
@@ -326,6 +394,14 @@
             .unwrap()
             .unwrap()
             .cancel_requested);
+        let events_before_termination = kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            run_id,
+            0,
+            100,
+        )
+        .await
+        .unwrap();
 
         let terminated = service.execute_sync(ApiEffectRequest {
             contract_version: 1,
@@ -354,6 +430,27 @@
             .unwrap()
             .contains(&terminated["result"]["status"]));
         assert_eq!(terminated["result"]["cancel_requested"], true);
+        let events_after_termination = kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            run_id,
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+        let cancel_event = cancel_contract["nonterminal_cancel_event"]
+            .as_str()
+            .unwrap();
+        let count_cancel_events = |events: &[kogwistar_store::ServerRunEvent]| {
+            events
+                .iter()
+                .filter(|event| event.event_type == cancel_event)
+                .count()
+        };
+        assert_eq!(
+            count_cancel_events(&events_after_termination),
+            count_cancel_events(&events_before_termination) + 1
+        );
         assert!(service
             .store
             .get_server_run(run_id)
@@ -380,6 +477,27 @@
             .unwrap()
             .contains(&repeated_termination["result"]["status"]));
         assert_eq!(repeated_termination["result"]["cancel_requested"], true);
+        assert_eq!(
+            service
+                .store
+                .get_server_run(run_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            "cancelled"
+        );
+        let events_after_terminal_retry = kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            run_id,
+            0,
+            100,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            count_cancel_events(&events_after_terminal_retry),
+            count_cancel_events(&events_after_termination)
+        );
         drop(service);
         std::fs::remove_file(path).unwrap();
     }

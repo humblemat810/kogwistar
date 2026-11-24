@@ -2993,6 +2993,9 @@ def test_conversation_syscalls_use_python_postgres_backend(
             assert registry.get_run(run_id)["cancel_requested"] is True
             final_run = _wait_for_status(client, run_id, headers, {"cancelled"})
             assert final_run["status"] == "cancelled"
+            events_after_termination = _collect_sse_events(client, run_id, headers)
+            event_names = [name for name, _payload in events_after_termination]
+            assert cancel_contract["nonterminal_cancel_event"] in event_names
             repeated_termination = client.post(
                 "/api/syscall/v1/terminate_process",
                 json={
@@ -3005,6 +3008,7 @@ def test_conversation_syscalls_use_python_postgres_backend(
             assert repeated_termination.status_code == 200
             assert repeated_termination.json()["result"]["status"] == "cancelled"
             assert repeated_termination.json()["result"]["cancel_requested"] is True
+            assert _collect_sse_events(client, run_id, headers) == events_after_termination
 
         result = first.json()["result"]
         assert result["status"] == "queued"
@@ -3367,6 +3371,9 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
             assert denied_termination.status_code == 403
             assert registry.get_run(spawned_result["run_id"])["cancel_requested"] is False
 
+            events_before_termination = registry.list_events(
+                spawned_result["run_id"], limit=100
+            )
             terminated = client.post(
                 "/api/syscall/v1/terminate_process",
                 json={
@@ -3399,6 +3406,11 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
                 final_run = registry.get_run(spawned_result["run_id"])
             assert final_run is not None
             assert final_run["status"] == "cancelled"
+            events_after_termination = registry.list_events(
+                spawned_result["run_id"], limit=100
+            )
+            event_names = [event["event_type"] for event in events_after_termination]
+            assert cancel_contract["nonterminal_cancel_event"] in event_names
             repeated_termination = client.post(
                 "/api/syscall/v1/terminate_process",
                 json={
@@ -3411,6 +3423,9 @@ def test_run_lifecycle_syscalls_use_python_backend(monkeypatch, tmp_path, backen
             assert repeated_termination.status_code == 200
             assert repeated_termination.json()["result"]["status"] == "cancelled"
             assert repeated_termination.json()["result"]["cancel_requested"] is True
+            assert registry.list_events(
+                spawned_result["run_id"], limit=100
+            ) == events_after_termination
     finally:
         for engine in engines:
             engine.close()

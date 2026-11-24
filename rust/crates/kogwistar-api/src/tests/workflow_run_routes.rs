@@ -816,7 +816,7 @@ fn rust_run_evidence_projection_matches_shared_v1_contract() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
-// PYTHON_PARITY_NOTE_V1: PostgreSQL MCP submit persists the queued run/effect event; denied submit/cancel leave state unchanged; each authorized nonterminal cancel appends run.cancelling; terminal retries add no event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
+// PYTHON_PARITY_NOTE_V1: PostgreSQL REST/MCP/syscall cancellation preserves scope; denied calls leave state unchanged, authorized nonterminal termination appends run.cancelling, terminal retries add no event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel+tests/server/test_chat_server_api.py#test_conversation_syscalls_use_python_postgres_backend; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
 async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -1330,6 +1330,18 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .unwrap()
         .cancel_requested);
 
+    let cancel_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-cancel-v1.json"
+    ))
+    .unwrap();
+    let events_before_termination = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        syscall_run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap();
     let denied_termination = service
         .execute(ApiEffectRequest {
             contract_version: 1,
@@ -1375,10 +1387,6 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
     assert_eq!(terminated["version"], "v1");
     assert_eq!(terminated["op"], "terminate_process");
     assert_eq!(terminated["status"], "ok");
-    let cancel_contract: Value = serde_json::from_str(include_str!(
-        "../../../../../contracts/golden/run-cancel-v1.json"
-    ))
-    .unwrap();
     for field in cancel_contract["required_fields"].as_array().unwrap() {
         let field = field.as_str().unwrap();
         assert!(terminated["result"].get(field).is_some(), "missing {field}");
@@ -1388,6 +1396,27 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .unwrap()
         .contains(&terminated["result"]["status"]));
     assert_eq!(terminated["result"]["cancel_requested"], true);
+    let events_after_termination = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        syscall_run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+    let cancel_event = cancel_contract["nonterminal_cancel_event"]
+        .as_str()
+        .unwrap();
+    let count_cancel_events = |events: &[kogwistar_store::ServerRunEvent]| {
+        events
+            .iter()
+            .filter(|event| event.event_type == cancel_event)
+            .count()
+    };
+    assert_eq!(
+        count_cancel_events(&events_after_termination),
+        count_cancel_events(&events_before_termination) + 1
+    );
     assert!(service
         .store
         .get_server_run(syscall_run_id)
@@ -1417,6 +1446,18 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         .unwrap()
         .contains(&repeated_termination["result"]["status"]));
     assert_eq!(repeated_termination["result"]["cancel_requested"], true);
+    let events_after_terminal_retry = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        syscall_run_id,
+        0,
+        100,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        count_cancel_events(&events_after_terminal_retry),
+        count_cancel_events(&events_after_termination)
+    );
 }
 
 #[tokio::test]

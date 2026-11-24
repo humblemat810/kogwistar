@@ -92,24 +92,59 @@ impl SqliteRunApplicationService {
                 ) {
                     syscall_forbidden(op)
                 } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
-                    match self.store.request_server_run_cancel(run_id) {
-                        Ok(()) => match self.store.get_server_run(run_id) {
-                            Ok(Some(run)) => syscall_result(
+                    match self.store.get_server_run(run_id) {
+                        Ok(Some(run))
+                            if matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled") =>
+                        {
+                            syscall_result(
                                 &input.version,
                                 op,
                                 json_effect(StatusCode::ACCEPTED, server_run_value(run)),
-                            ),
-                            Ok(None) => effect_error(
-                                StatusCode::NOT_FOUND,
-                                "KOGWISTAR_RUN_NOT_FOUND",
-                                format!("Unknown run_id: {run_id}"),
-                            ),
+                            )
+                        }
+                        Ok(Some(_)) => match self.store.append_server_run_event(
+                            run_id,
+                            "run.cancelling",
+                            json!({"run_id": run_id, "status": "cancelling"}).to_string(),
+                        ) {
+                            Ok(_) => match self.store.request_server_run_cancel(run_id) {
+                                Ok(()) => match self.store.get_server_run(run_id) {
+                                    Ok(Some(run)) => syscall_result(
+                                        &input.version,
+                                        op,
+                                        json_effect(
+                                            StatusCode::ACCEPTED,
+                                            server_run_value(run),
+                                        ),
+                                    ),
+                                    Ok(None) => effect_error(
+                                        StatusCode::NOT_FOUND,
+                                        "KOGWISTAR_RUN_NOT_FOUND",
+                                        format!("Unknown run_id: {run_id}"),
+                                    ),
+                                    Err(error) => effect_error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "KOGWISTAR_STORE_ERROR",
+                                        error.to_string(),
+                                    ),
+                                },
+                                Err(error) => effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_STORE_ERROR",
+                                    error.to_string(),
+                                ),
+                            },
                             Err(error) => effect_error(
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 "KOGWISTAR_STORE_ERROR",
                                 error.to_string(),
                             ),
                         },
+                        Ok(None) => effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Unknown run_id: {run_id}"),
+                        ),
                         Err(error) => effect_error(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "KOGWISTAR_STORE_ERROR",
