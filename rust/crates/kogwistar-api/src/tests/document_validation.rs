@@ -239,6 +239,26 @@
     }
 
     #[test]
+    fn document_graph_validation_preserves_integer_string_pointer_coercion() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-integer-string-pointer-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body, fixture["response"]);
+    }
+
+    #[test]
     fn internal_document_projection_reuses_wire_contract_and_write_authority() {
         let capabilities = Arc::new(Mutex::new(CapabilityState::default()));
         let request = |principal: Value| ApiEffectRequest {

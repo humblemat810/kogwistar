@@ -1549,6 +1549,12 @@ fn default_document_insertion_method() -> String {
     "document_parser_v1".to_owned()
 }
 
+fn graph_pointer_integer(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+}
+
 fn graph_validation_error(message: impl Into<String>) -> String {
     json!([{"type":"value_error","msg":message.into()}]).to_string()
 }
@@ -1630,12 +1636,14 @@ fn lift_graph_pointer_mentions(
         let source_cluster_id = pointer["source_cluster_id"]
             .as_str()
             .ok_or_else(|| "pointer source_cluster_id must be a string".to_owned())?;
-        let start_char = pointer["start_char"]
-            .as_i64()
+        let start_char = graph_pointer_integer(&pointer["start_char"])
             .ok_or_else(|| "pointer start_char must be an integer".to_owned())?;
-        let end_char = pointer["end_char"]
-            .as_i64()
+        let raw_end_char = &pointer["end_char"];
+        let end_char = graph_pointer_integer(raw_end_char)
             .ok_or_else(|| "pointer end_char must be an integer".to_owned())?;
+        if end_char == -1 && raw_end_char.as_i64() != Some(-1) {
+            return Err("pointer end_char must use numeric -1 for the open-ended sentinel".to_owned());
+        }
         let excerpt = pointer
             .get("verbatim_text")
             .map(|value| {
@@ -1651,7 +1659,7 @@ fn lift_graph_pointer_mentions(
             "document_page_url": format!("doc://{doc_id}#{source_cluster_id}"),
             "insertion_method": insertion_method,
             "start_char": start_char,
-            "end_char": if end_char == -1 { 1_000_000_000_i64 } else { end_char },
+            "end_char": if raw_end_char.as_i64() == Some(-1) { 1_000_000_000_i64 } else { end_char },
             "excerpt": excerpt.chars().take(400).collect::<String>(),
         }));
     }
