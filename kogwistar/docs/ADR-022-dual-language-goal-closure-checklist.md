@@ -76,7 +76,8 @@ One row per named test selector; repeated goal IDs make progress visible by case
 | GOAL-06 | `test_mcp_workflow_runtime_submit_cancel` | PASS | Python MCP consumes `workflow-run-submit-mcp-v1.json`; forged caller `user_id` is replaced by fixture's authenticated owner in the persisted run. Python also checks cancellation persistence and duplicate-free terminal retry. Focused run: 1 passed. Workflow-access callback is stubbed; this case does not replace authorization coverage. |
 | GOAL-06 | `sqlite_mcp_run_submit_persists_admission` | PASS | Rust SQLite MCP consumes `workflow-run-submit-mcp-v1.json`; forged caller `user_id` is replaced by fixture's authenticated owner in the persisted run. The test also verifies authorized cancellation persists `run.cancelling` and terminal retry adds no event. Focused run: 1 passed. This case does not replace authorization coverage. |
 | GOAL-06 | `test_mcp_workflow_dead_letter_replay_dispatches_effect_once` | PASS | Python MCP dispatches scheduler resume once and reports no replay on retry. Focused run: 1 passed. Python scheduler is stubbed. |
-| GOAL-06 | `sqlite_run_service_handles_get_events_and_cancel` | PASS | Rust MCP moves dead-letter lane to `pending`; focused SQLite test: 1 passed and verifies durable effect. |
+| GOAL-06 | `sqlite_run_service_handles_get_events_and_cancel` | PASS | Rust SQLite routes compare `/api/workflow/catalog/ops` exactly with `workflow-catalog-ops-http-v1.json` and MCP dead-letter replay moves lane to `pending`; focused Rust test: 1 passed. |
+| GOAL-06 | `test_workflow_catalog_ops_matches_shared_contract` | PASS | Python `GET /api/workflow/catalog/ops` response equals `workflow-catalog-ops-http-v1.json`; focused pytest: 1 passed. |
 
 ## Full-Parity Test Matrix
 
