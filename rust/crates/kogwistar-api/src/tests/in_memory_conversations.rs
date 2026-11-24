@@ -981,6 +981,22 @@ async fn in_memory_receive_message_matches_shared_python_contract() {
     assert_eq!(response["status"], "ok");
     assert_eq!(response["result"], contract);
 
+    let missing_conversation = service
+        .execute(request(
+            json!({"conversation_id":"missing"}),
+            json!({
+                "sub":"reader-1",
+                "role":"ro",
+                "storage_ns":"scope-a",
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation",
+                "ns":["conversation"],
+                "capabilities":["read_graph"]
+            }),
+        ))
+        .await;
+    assert_eq!(missing_conversation.status, StatusCode::NOT_FOUND.as_u16());
+
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};

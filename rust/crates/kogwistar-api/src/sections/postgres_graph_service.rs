@@ -1649,6 +1649,21 @@ impl PostgresRunApplicationService {
                     error,
                 )
             })?;
+        let conversation_exists = visible_nodes.iter().any(|record| {
+            conversation_record_string(record, "conversation_id").as_deref()
+                == Some(input.conversation_id.as_str())
+                && !matches!(
+                    conversation_record_string(record, "lifecycle_status").as_deref(),
+                    Some("tombstoned" | "deleted")
+                )
+        });
+        if !conversation_exists {
+            return Err(effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                format!("Unknown conversation_id: {}", input.conversation_id),
+            ));
+        }
         conversation_transcript_from_visible_records(
             &visible_nodes,
             &input.conversation_id,

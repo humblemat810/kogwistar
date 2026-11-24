@@ -35,6 +35,21 @@ impl SqliteRunApplicationService {
             Err(response) => return response,
         };
         let nodes = graph_snapshot.nodes();
+        let conversation_exists = nodes.iter().any(|record| {
+            conversation_record_string(record, "conversation_id").as_deref()
+                == Some(conversation_id)
+                && !matches!(
+                    conversation_record_string(record, "lifecycle_status").as_deref(),
+                    Some("tombstoned" | "deleted")
+                )
+        });
+        if !conversation_exists {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                format!("Unknown conversation_id: {conversation_id}"),
+            );
+        }
         let transcript =
             match conversation_transcript_from_visible_records(nodes, conversation_id, 10_000) {
                 Ok(transcript) => transcript,

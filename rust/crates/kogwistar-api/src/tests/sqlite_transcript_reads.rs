@@ -54,6 +54,7 @@
                         ("start", json!({"entity_type":"conversation_start","conversation_id":"c1","user_id":"reader-1","status":"active"})),
                         ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
                         ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
+                        ("empty-marker", json!({"entity_type":"context_snapshot","conversation_id":"c-empty"})),
                         ("turn-private", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":3,"role":"assistant","summary":"private"})),
                         ("turn-other-workspace", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":4,"role":"assistant","summary":"other workspace","workspace_id":"workspace-b"})),
                         ("turn-other-graph-space", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":5,"role":"assistant","summary":"other graph space","graph_space":"knowledge"})),
@@ -136,6 +137,7 @@
             ("start", "public", None),
             ("turn-1", "public", None),
             ("turn-2", "public", None),
+            ("empty-marker", "public", None),
             ("turn-private", "private", Some("someone-else")),
             ("snapshot", "public", None),
             ("snapshot-private", "private", Some("someone-else")),
@@ -245,8 +247,12 @@
         assert_eq!(response["result"]["messages"][0]["node_id"], "turn-1");
         assert_eq!(response["result"]["messages"][1]["node_id"], "turn-2");
 
-        let empty_transcript = service
+        let unknown_conversation = service
             .execute(request("receive_message", json!({"conversation_id":"missing"}), principal.clone()))
+            .await;
+        assert_eq!(unknown_conversation.status, StatusCode::NOT_FOUND.as_u16());
+        let empty_transcript = service
+            .execute(request("receive_message", json!({"conversation_id":"c-empty"}), principal.clone()))
             .await;
         assert_eq!(empty_transcript.status, StatusCode::OK.as_u16());
         assert_eq!(
@@ -436,13 +442,13 @@
                 .collect::<Vec<_>>()
         };
         let receive_audit = audit_for("receive_message");
-        assert_eq!(receive_audit.len(), 5);
+        assert_eq!(receive_audit.len(), 6);
         assert_eq!(
             receive_audit
                 .iter()
                 .filter(|event| event["status"] == "error")
                 .count(),
-            3
+            4
         );
         let mount_audit = audit_for("mount_memory");
         assert_eq!(mount_audit.len(), 3);

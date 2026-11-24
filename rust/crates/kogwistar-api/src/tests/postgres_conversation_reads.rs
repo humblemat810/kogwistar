@@ -1022,6 +1022,28 @@
         assert_eq!(receive_payload["status"], "ok");
         assert_eq!(receive_payload["result"], expected_receive);
 
+        let missing_conversation = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"receive_message",
+                    "args":{"conversation_id":"missing"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"alice",
+                    "role":"ro",
+                    "ns":"conversation",
+                    "storage_ns":"conversation",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(missing_conversation.status, StatusCode::NOT_FOUND.as_u16());
+
         let invoke_transcript_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -1143,9 +1165,9 @@
                 .unwrap();
         assert_eq!(http_audit, audit);
 
-        for (bearer, expected_status, expect_empty) in [
-            (&foreign_owner_token, StatusCode::OK, true),
-            (&wrong_namespace_token, StatusCode::FORBIDDEN, false),
+        for (bearer, expected_status) in [
+            (&foreign_owner_token, StatusCode::NOT_FOUND),
+            (&wrong_namespace_token, StatusCode::FORBIDDEN),
         ] {
             let denied = app
                 .clone()
@@ -1172,11 +1194,6 @@
             let body = String::from_utf8_lossy(&body);
             assert!(!body.contains("first"), "denied response leaked user turn: {body}");
             assert!(!body.contains("second"), "denied response leaked assistant turn: {body}");
-            if expect_empty {
-                let payload: Value = serde_json::from_str(&body).unwrap();
-                assert_eq!(payload["status"], "ok");
-                assert_eq!(payload["result"]["messages"], json!([]));
-            }
         }
 
         let mcp_audit = app

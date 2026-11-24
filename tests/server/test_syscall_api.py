@@ -779,6 +779,32 @@ def test_syscall_receive_message_missing_id_matches_shared_error_fixture():
     assert response.json() == fixture["body"]
 
 
+def test_syscall_receive_message_unknown_conversation_is_not_found():
+    def list_transcript(conversation_id: str) -> list[dict[str, object]]:
+        raise KeyError(f"Unknown conversation_id: {conversation_id}")
+
+    router = create_syscall_router(
+        get_service=lambda: SimpleNamespace(list_transcript=list_transcript),
+        require_role=lambda _role: None,
+        require_namespace=lambda _namespace: None,
+        conversation_namespace="conversation",
+        workflow_namespaces={"workflow"},
+    )
+    app = FastAPI()
+    app.include_router(router)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/syscall/v1/receive_message",
+            json={
+                "version": "v1",
+                "op": "receive_message",
+                "args": {"conversation_id": "missing"},
+            },
+        )
+
+    assert response.status_code == 404
+
+
 @pytest.mark.parametrize(
     ("role_allowed", "namespace_allowed", "checks"),
     [

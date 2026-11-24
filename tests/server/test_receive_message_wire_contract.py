@@ -53,6 +53,23 @@ def test_python_receive_message_result_matches_shared_wire_fixture() -> None:
     assert result == fixture
 
 
+def test_python_receive_message_returns_empty_for_existing_conversation_without_turns(
+    monkeypatch,
+) -> None:
+    node = SimpleNamespace(
+        id="snapshot-1",
+        metadata={"entity_type": "context_snapshot", "conversation_id": "c-empty"},
+    )
+    monkeypatch.setattr(
+        _ConversationQueryService,
+        "_conversation_nodes",
+        lambda _self, conversation_id: [node] if conversation_id == "c-empty" else [],
+    )
+    queries = _ConversationQueryService(cast(Any, SimpleNamespace()))
+
+    assert queries.list_transcript("c-empty") == []
+
+
 def test_python_receive_message_applies_engine_acl_before_projection(
     tmp_path: Path,
 ) -> None:
