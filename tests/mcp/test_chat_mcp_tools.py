@@ -5408,6 +5408,15 @@ async def test_mcp_chat_submit_cancel_and_workflow_diagnostics(
 
 @pytest.mark.asyncio
 async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+
     cancel_contract = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -5421,7 +5430,7 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
         ).read_text(encoding="utf-8")
     )
     engine, conversation_engine, workflow_engine = engine_triplet
-    _configure_server(
+    service = _configure_server(
         monkeypatch,
         engine,
         conversation_engine,
@@ -5429,34 +5438,51 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
         _success_runner,
         runtime_runner=_runtime_cancel_runner,
     )
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda _workflow_id, _role: None,
+    )
 
-    with _claims("rw", "conversation"):
+    with _claims(
+        "rw", "conversation", scope_parts={"user_id": "authenticated-owner"}
+    ):
         created = _structured(
             await server.mcp.call_tool("conversation.create", {"user_id": "u-wf-mcp"})
         )
         conversation_id = created["conversation_id"]
 
-    with _claims("rw", "workflow"):
+    with _claims("rw", "workflow", scope_parts={"user_id": "authenticated-owner"}):
         submitted = _structured(
-            await server.mcp.call_tool(
+            await workflow_mcp.call_tool(
                 "workflow.run_submit",
                 {
                     "workflow_id": "wf.runtime.mcp.cancel",
                     "conversation_id": conversation_id,
                     "initial_state": {"counter": 1},
+                    "user_id": "caller-controlled-owner",
                 },
             )
         )
         run_id = submitted["run_id"]
+        stored_run = server.run_registry.get_run(run_id)
+        assert stored_run is not None
+        assert stored_run["user_id"] == "authenticated-owner"
         cancelling = _structured(
-            await server.mcp.call_tool("workflow.run_cancel", {"run_id": run_id})
+            await workflow_mcp.call_tool("workflow.run_cancel", {"run_id": run_id})
         )
         assert cancelling["status"] == "cancelling"
 
         deadline = time.time() + 10.0
         while time.time() < deadline:
             status = _structured(
-                await server.mcp.call_tool("workflow.run_status", {"run_id": run_id})
+                await workflow_mcp.call_tool("workflow.run_status", {"run_id": run_id})
             )
             if status["status"] == "cancelled":
                 break
@@ -5468,18 +5494,18 @@ async def test_mcp_workflow_runtime_submit_cancel(monkeypatch, engine_triplet):
         assert status["terminal"] is True
 
         events = _structured(
-            await server.mcp.call_tool("workflow.run_events", {"run_id": run_id})
+            await workflow_mcp.call_tool("workflow.run_events", {"run_id": run_id})
         )
         names = [str(evt.get("event_type") or "") for evt in events.get("events", [])]
         assert cancel_contract["nonterminal_cancel_event"] in names
         assert "run.cancelled" in names
 
         retried = _structured(
-            await server.mcp.call_tool("workflow.run_cancel", {"run_id": run_id})
+            await workflow_mcp.call_tool("workflow.run_cancel", {"run_id": run_id})
         )
         assert retried["status"] == "cancelled"
         replayed_events = _structured(
-            await server.mcp.call_tool("workflow.run_events", {"run_id": run_id})
+            await workflow_mcp.call_tool("workflow.run_events", {"run_id": run_id})
         )
         replayed_names = [
             str(evt.get("event_type") or "") for evt in replayed_events.get("events", [])
