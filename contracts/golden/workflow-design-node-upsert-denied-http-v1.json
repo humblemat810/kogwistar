@@ -38,6 +38,25 @@
         "exp": 4102444800
       },
       "status": 403
+    },
+    {
+      "case": "read_only_role",
+      "workflow_id": "wf-node-upsert-read-only",
+      "path": "/api/workflow/design/wf-node-upsert-read-only/nodes",
+      "request": {
+        "designer_id": "alice",
+        "node_id": "node-read-only",
+        "label": "Denied"
+      },
+      "claims": {
+        "sub": "alice",
+        "role": "ro",
+        "roles": ["reader", "ro"],
+        "ns": "workflow",
+        "capabilities": ["workflow.design.write", "write_graph"],
+        "exp": 4102444800
+      },
+      "status": 403
     }
   ]
 }
