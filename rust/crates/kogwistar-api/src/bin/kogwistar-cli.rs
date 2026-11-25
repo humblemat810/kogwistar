@@ -496,6 +496,28 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
                 format!("/api/workflow/messages/repair-orphans?{inbox_query}limit={limit}"),
             )
         }
+        "workflow.dead_letters" => {
+            validate_options(&options, &["--base-url", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(100);
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/dead-letters?limit={limit}"),
+            )
+        }
+        "workflow.capabilities_snapshot" => {
+            validate_options(&options, &["--base-url", "--subject"]);
+            let subject_query = options
+                .get("--subject")
+                .map(|subject| format!("?subject={subject}"))
+                .unwrap_or_default();
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/capabilities{subject_query}"),
+            )
+        }
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);
             let run_id = required_option(&options, "--run-id");

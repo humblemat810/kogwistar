@@ -2971,6 +2971,65 @@ def test_python_cli_workflow_repairs_match_rust_http_contract(
     }
 
 
+@pytest.mark.parametrize(
+    ("command", "args", "path", "params"),
+    [
+        (
+            "workflow.dead_letters",
+            ["--limit", "33"],
+            "/api/workflow/dead-letters",
+            {"limit": 33},
+        ),
+        (
+            "workflow.capabilities_snapshot",
+            ["--subject", "alice"],
+            "/api/workflow/capabilities",
+            {"subject": "alice"},
+        ),
+    ],
+)
+def test_python_cli_workflow_queue_reads_match_rust_http_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    params: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": f"http://rust-server{path}",
+        "params": params,
+    }
+
+
+def test_python_cli_workflow_blocked_runs_is_declared_but_not_dispatched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    requests: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: requests.append(kwargs) or {},
+    )
+    with pytest.raises(SystemExit) as error:
+        main(["api", "workflow", "workflow.blocked_runs", "--base-url", "http://rust-server"])
+
+    assert error.value.code == 2
+    assert requests == []
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

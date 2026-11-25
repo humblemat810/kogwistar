@@ -922,6 +922,71 @@ fn workflow_message_orphans_repair_command_preserves_python_query_contract() {
 }
 
 #[test]
+fn workflow_blocked_runs_command_rejects_unimplemented_python_operation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args(["api", "workflow", "workflow.blocked_runs"])
+        .output()
+        .expect("run unsupported workflow command");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("usage: kogwistar-cli")
+    );
+}
+
+#[test]
+fn workflow_dead_letters_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.dead_letters",
+                "--limit",
+                "33",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/dead-letters?limit=33 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_capabilities_snapshot_command_preserves_python_optional_subject() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.capabilities_snapshot",
+                "--subject",
+                "alice",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"subject":"alice","capabilities":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/capabilities?subject=alice HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"subject": "alice", "capabilities": []}),
+    );
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {
