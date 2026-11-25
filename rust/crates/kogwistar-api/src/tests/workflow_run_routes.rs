@@ -1863,6 +1863,10 @@ async fn postgres_conversation_run_routes_enforce_conversation_scope() {
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-evidence-v1.json"
+    ))
+    .unwrap();
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = format!("rust_run_evidence_{}", uuid::Uuid::new_v4().simple());
@@ -1951,7 +1955,7 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
         workspace_id: None,
         graph_space: None,
     };
-    let snapshot_id = "snapshot|evidence-run|5";
+    let snapshot_id = expected["snapshot_node_id"].as_str().unwrap();
     let mut snapshot_metadata = Map::new();
     for (key, value) in [
         ("entity_type", json!("context_snapshot")),
@@ -2133,10 +2137,6 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
     let payload =
         serde_json::from_slice::<Value>(&to_bytes(response.into_body(), 8192).await.unwrap())
             .unwrap();
-    let expected: Value = serde_json::from_str(include_str!(
-        "../../../../../contracts/golden/run-evidence-v1.json"
-    ))
-    .unwrap();
     assert_eq!(payload, expected);
 
     let mcp_response = app
