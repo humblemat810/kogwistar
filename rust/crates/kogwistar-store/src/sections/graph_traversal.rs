@@ -24,6 +24,82 @@ pub fn resolve_graph_node_redirect_id(rid: &str, nodes: &[GraphRecord]) -> Optio
     resolve_graph_entity_redirect_id(rid, nodes)
 }
 
+/// Resolve a node against a historical instant, matching Python
+/// `ReadSubsystem._resolve_node_as_of`. `nodes` must be a scope-filtered
+/// snapshot that includes any redirect targets; authorization remains caller-owned.
+pub fn resolve_graph_node_as_of_id(
+    rid: &str,
+    nodes: &[GraphRecord],
+    as_of_ts: &str,
+    follow_redirects: bool,
+    max_redirect_hops: usize,
+) -> Result<Option<String>, &'static str> {
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+    fn parse_timestamp(raw: &str) -> Option<OffsetDateTime> {
+        let value = raw.trim();
+        if value.is_empty() {
+            return None;
+        }
+        let normalized = value.replace(' ', "T");
+        OffsetDateTime::parse(&normalized, &Rfc3339)
+            .or_else(|_| OffsetDateTime::parse(&format!("{normalized}+00:00"), &Rfc3339))
+            .ok()
+    }
+
+    let as_of = parse_timestamp(as_of_ts).ok_or("invalid as-of timestamp")?;
+    let mut current_id = rid.trim().to_owned();
+    if current_id.is_empty() {
+        return Ok(None);
+    }
+    let mut visited = BTreeSet::new();
+    let mut hops = 0;
+
+    loop {
+        if !visited.insert(current_id.clone()) {
+            return Ok(None);
+        }
+        let Some(current) = nodes.iter().find(|node| node.id == current_id) else {
+            return Ok(None);
+        };
+        let metadata = &current.metadata;
+        let effective_from = metadata
+            .get("effective_from")
+            .and_then(Value::as_str)
+            .and_then(parse_timestamp);
+        let deleted_at = metadata
+            .get("deleted_at")
+            .and_then(Value::as_str)
+            .and_then(parse_timestamp);
+        let active = metadata
+            .get("lifecycle_status")
+            .and_then(Value::as_str)
+            .unwrap_or("active")
+            != "tombstoned";
+        if effective_from.is_none_or(|effective| effective <= as_of)
+            && (active || deleted_at.is_some_and(|deleted| deleted > as_of))
+        {
+            return Ok(Some(current_id));
+        }
+        if !follow_redirects || !deleted_at.is_some_and(|deleted| deleted <= as_of) {
+            return Ok(None);
+        }
+        let Some(redirect) = metadata
+            .get("redirect_to_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            return Ok(None);
+        };
+        hops += 1;
+        if hops > max_redirect_hops {
+            return Ok(None);
+        }
+        current_id = redirect.to_owned();
+    }
+}
+
 /// Resolve an edge ID to its active redirect target from an edge snapshot.
 /// The supplied records must be edges; callers remain responsible for ACL checks.
 pub fn resolve_graph_edge_redirect_id(rid: &str, edges: &[GraphRecord]) -> Option<String> {

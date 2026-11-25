@@ -774,6 +774,94 @@ fn node_redirect_resolution_matches_python_lifecycle_modes() {
 }
 
 #[test]
+fn node_as_of_resolution_matches_python_lifecycle_boundaries() {
+    let as_of = "2026-01-02T00:00:00Z";
+    let mut old = node_record("old");
+    old.metadata
+        .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+    old.metadata
+        .insert("deleted_at".to_owned(), json!("2026-01-02T00:00:00Z"));
+    old.metadata
+        .insert("redirect_to_id".to_owned(), json!("current"));
+    let current = node_record("current");
+
+    assert_eq!(
+        resolve_graph_node_as_of_id("old", &[old.clone(), current.clone()], as_of, true, 16),
+        Ok(Some("current".to_owned())),
+        "redirect applies at the deletion instant"
+    );
+    assert_eq!(
+        resolve_graph_node_as_of_id(
+            "old",
+            &[old.clone(), current.clone()],
+            "2026-01-02T01:00:00+01:00",
+            true,
+            16
+        ),
+        Ok(Some("current".to_owned())),
+        "offset timestamps compare as the same UTC instant"
+    );
+
+    let before = "2026-01-01T23:59:59Z";
+    assert_eq!(
+        resolve_graph_node_as_of_id("old", &[old.clone(), current.clone()], before, true, 16),
+        Ok(Some("old".to_owned())),
+        "tombstone remains historically visible before deletion"
+    );
+
+    let mut future = node_record("future");
+    future
+        .metadata
+        .insert("effective_from".to_owned(), json!("2026-01-03T00:00:00Z"));
+    assert_eq!(
+        resolve_graph_node_as_of_id("future", &[future], as_of, true, 16),
+        Ok(None),
+        "future-effective node is absent"
+    );
+
+    assert_eq!(
+        resolve_graph_node_as_of_id("old", &[old.clone()], as_of, true, 16),
+        Ok(None),
+        "missing redirect target fails closed"
+    );
+    assert_eq!(
+        resolve_graph_node_as_of_id("old", &[old.clone(), current.clone()], as_of, false, 16),
+        Ok(None),
+        "disabled redirect following excludes tombstoned node"
+    );
+    assert_eq!(
+        resolve_graph_node_as_of_id("old", &[old.clone(), current.clone()], as_of, true, 0),
+        Ok(None),
+        "redirect hop limit is enforced"
+    );
+    let mut cycle_a = node_record("cycle-a");
+    cycle_a
+        .metadata
+        .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+    cycle_a
+        .metadata
+        .insert("deleted_at".to_owned(), json!("2026-01-01T00:00:00Z"));
+    cycle_a
+        .metadata
+        .insert("redirect_to_id".to_owned(), json!("cycle-b"));
+    let mut cycle_b = cycle_a.clone();
+    cycle_b.id = "cycle-b".to_owned();
+    cycle_b
+        .metadata
+        .insert("redirect_to_id".to_owned(), json!("cycle-a"));
+    assert_eq!(
+        resolve_graph_node_as_of_id("cycle-a", &[cycle_a, cycle_b], as_of, true, 16),
+        Ok(None),
+        "redirect cycle fails closed"
+    );
+    assert_eq!(
+        resolve_graph_node_as_of_id("old", &[old, current], "not-a-timestamp", true, 16),
+        Err("invalid as-of timestamp"),
+        "invalid as-of time is reported, not treated as empty results"
+    );
+}
+
+#[test]
 fn edge_redirect_resolution_matches_python_lifecycle_modes() {
     let mut redirected = edge_record("old-edge", json!({"source_ids": [], "target_ids": []}));
     redirected
