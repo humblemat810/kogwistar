@@ -16,14 +16,14 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .mixed_mcp_benchmark import run_benchmark
+    from .mixed_mcp_benchmark import MCP_BENCHMARK_STORAGE_BACKEND, run_benchmark
     from .mixed_runtime_container_benchmark import (
         _cgroup_value,
         _installed_packages,
         _verify_cgroup_limits,
     )
 except ImportError:
-    from mixed_mcp_benchmark import run_benchmark
+    from mixed_mcp_benchmark import MCP_BENCHMARK_STORAGE_BACKEND, run_benchmark
     from mixed_runtime_container_benchmark import (
         _cgroup_value,
         _installed_packages,
@@ -69,6 +69,8 @@ def _verify_endpoint_reports(
         errors.append("report count does not match requested item sizes")
 
     for size, report in zip(items, reports, strict=False):
+        if report.get("storage_backend") != MCP_BENCHMARK_STORAGE_BACKEND:
+            errors.append(f"{size}: unsupported or missing storage_backend")
         if report.get("items") != size:
             errors.append(f"{size}: report item count differs")
         if (
@@ -377,12 +379,15 @@ def _verify_concurrent_endpoint_reports(
         if (
             not isinstance(concurrent, dict)
             or concurrent.get("schema") != "kogwistar-mixed-mcp-concurrent-report/v3"
+            or concurrent.get("storage_backend") != MCP_BENCHMARK_STORAGE_BACKEND
             or concurrent.get("items") != concurrent_items
             or concurrent.get("samples_per_mode") != samples
             or concurrent.get("warmup_samples_per_mode") != 1
             or concurrent.get("workers") != {"writers": 1, "readers": 4}
         ):
-            errors.append(f"{size}: concurrent trace metadata is missing or invalid")
+            errors.append(
+                f"{size}: concurrent trace metadata or storage_backend is missing or invalid"
+            )
             continue
 
         run_id = concurrent.get("run_id")
@@ -636,6 +641,13 @@ def main() -> int:
     result = {
         "schema": "kogwistar-resource-matched-endpoint-report/v1",
         "status": "complete",
+        "storage_backends": sorted(
+            {
+                report["storage_backend"]
+                for report in reports
+                if isinstance(report.get("storage_backend"), str)
+            }
+        ),
         "modes": list(modes),
         "items": args.items,
         "samples_per_mode": args.samples,

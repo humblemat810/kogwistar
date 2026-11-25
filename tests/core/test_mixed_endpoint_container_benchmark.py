@@ -81,6 +81,7 @@ def _fake_endpoint_run(output, *, items: int, samples: int, modes: tuple[str, ..
         "run_id": run_id,
         "trace_sha256": trace_sha,
         "items": items,
+        "storage_backend": "sqlite_event_projection",
         "samples_per_mode": samples,
         "warmup_samples_per_mode": 1,
         "state_digest_equal": True,
@@ -142,6 +143,7 @@ def _fake_concurrent_report(output, *, items: int, samples: int):
     return {
         "schema": "kogwistar-mixed-mcp-concurrent-report/v3",
         "run_id": run_id,
+        "storage_backend": "sqlite_event_projection",
         "items": items,
         "samples_per_mode": samples,
         "warmup_samples_per_mode": 1,
@@ -175,16 +177,45 @@ def test_concurrent_endpoint_report_verifier_rejects_mismatched_state(tmp_path) 
     output = tmp_path / "results"
     concurrent = _fake_concurrent_report(output / "2", items=2, samples=2)
     concurrent["mixes"]["balanced"]["modes"]["rust_native_http"]["state_digest"] = "wrong"
-    verification = mixed_endpoint_container_benchmark._verify_concurrent_endpoint_reports(
-        [{"run_id": "fixture-run", "concurrent": concurrent}],
-        output=output,
-        items=[2],
-        samples=2,
-        concurrent_items=2,
+    verification = (
+        mixed_endpoint_container_benchmark._verify_concurrent_endpoint_reports(
+            [{"run_id": "fixture-run", "concurrent": concurrent}],
+            output=output,
+            items=[2],
+            samples=2,
+            concurrent_items=2,
+        )
     )
 
     assert verification["passed"] is False
     assert any("digest" in error for error in verification["errors"])
+
+
+@pytest.mark.parametrize(
+    "storage_backend", (None, "postgres_pgvector", "chroma_sqlite_metadata")
+)
+def test_concurrent_verifier_rejects_missing_or_misclaimed_backend(
+    tmp_path, storage_backend: str | None
+) -> None:
+    output = tmp_path / "results"
+    concurrent = _fake_concurrent_report(output / "2", items=2, samples=2)
+    if storage_backend is None:
+        concurrent.pop("storage_backend")
+    else:
+        concurrent["storage_backend"] = storage_backend
+
+    verification = (
+        mixed_endpoint_container_benchmark._verify_concurrent_endpoint_reports(
+            [{"run_id": "fixture-run", "concurrent": concurrent}],
+            output=output,
+            items=[2],
+            samples=2,
+            concurrent_items=2,
+        )
+    )
+
+    assert verification["passed"] is False
+    assert any("storage_backend" in error for error in verification["errors"])
 
 
 @pytest.mark.ci
@@ -262,6 +293,7 @@ def test_endpoint_runner_compares_python_mixed_and_rust_http_modes(
     assert not list(tmp_path.rglob("*.sqlite3"))
     report = json.loads((tmp_path / "endpoint-report.v1.json").read_text())
     assert report["status"] == "complete"
+    assert report["storage_backends"] == ["sqlite_event_projection"]
     assert report["modes"] == ["http", "rust_authority_http", "rust_native"]
     assert report["state_digest_equal"] is True
     assert report["verification"]["passed"] is True
@@ -296,6 +328,34 @@ def test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch(tmp_path) -
     assert (
         "2: canonical state digests differ or are incomplete" in verification["errors"]
     )
+
+
+@pytest.mark.parametrize(
+    "storage_backend", (None, "postgres_pgvector", "chroma_sqlite_metadata")
+)
+def test_endpoint_report_verifier_rejects_missing_or_misclaimed_storage_backend(
+    tmp_path, storage_backend: str | None
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    if storage_backend is None:
+        report.pop("storage_backend")
+    else:
+        report["storage_backend"] = storage_backend
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any("storage_backend" in error for error in verification["errors"])
 
 
 def test_endpoint_performance_gate_rejects_rust_native_throughput_regression(

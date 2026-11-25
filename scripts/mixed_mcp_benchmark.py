@@ -28,6 +28,7 @@ from typing import Any, TypeVar, cast
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 _NATIVE_BINARY_READY = False
+MCP_BENCHMARK_STORAGE_BACKEND = "sqlite_event_projection"
 DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
 AVAILABLE_MODES = (
     *DEFAULT_MODES,
@@ -2803,6 +2804,7 @@ def _run_concurrent_mcp_profiles(
     return {
         "schema": "kogwistar-mixed-mcp-concurrent-report/v3",
         "run_id": run_id,
+        "storage_backend": MCP_BENCHMARK_STORAGE_BACKEND,
         "items": items,
         "samples_per_mode": samples,
         "warmup_samples_per_mode": 1,
@@ -2971,6 +2973,7 @@ def run_benchmark(
     report = {
         "schema": "kogwistar-mixed-mcp-report/v3",
         "run_id": run_id,
+        "storage_backend": MCP_BENCHMARK_STORAGE_BACKEND,
         "trace_path": str(trace_path),
         "trace_sha256": trace_sha256,
         "items": items,
