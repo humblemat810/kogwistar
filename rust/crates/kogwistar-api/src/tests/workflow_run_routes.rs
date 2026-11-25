@@ -1114,6 +1114,164 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
 }
 
 #[tokio::test]
+async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-status-v1.json"
+    ))
+    .unwrap();
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-run-status-http-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let service = Arc::new(SqliteRunApplicationService::open(&sqlite_path).unwrap());
+    let terminal_statuses = contract["terminal_statuses"].as_array().unwrap();
+    let statuses = ["queued", "running", "succeeded", "failed", "cancelled"];
+
+    for status in statuses {
+        let run_id = format!("run-status-{status}");
+        service
+            .store
+            .create_server_run(kogwistar_store::ServerRunCreate {
+                run_id: run_id.clone(),
+                conversation_id: "conversation-status-contract".to_owned(),
+                workflow_id: "workflow-status-contract".to_owned(),
+                user_id: Some("user-status-contract".to_owned()),
+                user_turn_node_id: "turn-status-contract".to_owned(),
+                status: "queued".to_owned(),
+            })
+            .unwrap();
+
+        if status != "queued" {
+            service
+                .store
+                .update_server_run(
+                    &run_id,
+                    kogwistar_store::ServerRunUpdate {
+                        status: status.to_owned(),
+                        assistant_turn_node_id: (status == "succeeded")
+                            .then(|| "assistant-turn-status-contract".to_owned()),
+                        result_json: (status == "succeeded")
+                            .then(|| r#"{"answer":"done"}"#.to_owned()),
+                        error_json: (status == "failed")
+                            .then(|| r#"{"code":"E_TEST","message":"failed"}"#.to_owned()),
+                        started_at_ms: Some(3),
+                        finished_at_ms: terminal_statuses
+                            .iter()
+                            .any(|terminal| terminal == status)
+                            .then_some(4),
+                        cancel_requested: Some(false),
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    let secret = b"run-status-contract-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "user-status-contract",
+            "user_id": "user-status-contract",
+            "role": "ro",
+            "ns": ["conversation"],
+            "capabilities": ["workflow.run.read"],
+            "iss": "local",
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        service.clone(),
+    );
+    for status in statuses {
+        let run_id = format!("run-status-{status}");
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/runs/{run_id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16,
+            "run state {status}"
+        );
+        let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        for field in contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(body.get(field).is_some(), "{status} missing {field}");
+        }
+        assert_eq!(body["run_id"], run_id);
+        assert_eq!(body["status"], status);
+        assert_eq!(body["conversation_id"], "conversation-status-contract");
+        assert_eq!(body["workflow_id"], "workflow-status-contract");
+        assert_eq!(body["user_id"], "user-status-contract");
+        assert_eq!(body["user_turn_node_id"], "turn-status-contract");
+        assert_eq!(body["cancel_requested"], false);
+        assert_eq!(body["terminal"], terminal_statuses.contains(&json!(status)));
+        assert_eq!(
+            body["assistant_turn_node_id"],
+            if status == "succeeded" {
+                json!("assistant-turn-status-contract")
+            } else {
+                Value::Null
+            }
+        );
+        assert_eq!(
+            body["result"],
+            if status == "succeeded" {
+                json!({"answer":"done"})
+            } else {
+                Value::Null
+            }
+        );
+        assert_eq!(
+            body["error"],
+            if status == "failed" {
+                json!({"code":"E_TEST","message":"failed"})
+            } else {
+                Value::Null
+            }
+        );
+        let stored = service.store.get_server_run(&run_id).unwrap().unwrap();
+        assert_eq!(body["started_at_ms"], json!(stored.started_at_ms));
+        assert_eq!(body["finished_at_ms"], json!(stored.finished_at_ms));
+        assert!(body["created_at_ms"].is_i64());
+        assert!(body["updated_at_ms"].is_i64());
+    }
+
+    drop(app);
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+}
+
+#[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 // PYTHON_PARITY_NOTE_V1: PostgreSQL REST/MCP/syscall cancellation preserves scope; denied calls leave state unchanged, authorized nonterminal termination appends run.cancelling, terminal retries add no event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel+tests/server/test_chat_server_api.py#test_conversation_syscalls_use_python_postgres_backend; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
 async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
