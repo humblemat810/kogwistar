@@ -76,8 +76,31 @@ def test_sqlite_python_rust_bidirectional_run_registry_and_atomic_batch(tmp_path
     assert python.list_server_run_events("py")[0]["payload"] == {"x": 1}
     assert _sqlite(path, {"kind": "update_server_run", "run_id": "py", "status": "succeeded", "result_json": ' {"result": 1} ', "error_json": None, "assistant_turn_node_id": None, "started_at_ms": None, "finished_at_ms": 7}) is None
     assert _sqlite(path, {"kind": "get_server_run", "run_id": "py"})["result"] == {"result": 1}
+    python_read = python.get_server_run("py")
+    assert python_read is not None
+    assert python_read["status"] == "succeeded"
+    assert python_read["result"] == {"result": 1}
+    assert python_read["error"] is None
     with sqlite3.connect(path) as conn:
         assert conn.execute("SELECT result_json, error_json FROM server_runs WHERE run_id = 'py'").fetchone() == (' {"result": 1} ', None)
+    assert _sqlite(path, _create("rust-roundtrip")) is None
+    python.update_server_run(
+        run_id="rust-roundtrip",
+        status="failed",
+        assistant_turn_node_id="assistant-roundtrip",
+        result_json=' {"partial": true} ',
+        error_json=' {"code": "E_ROUNDTRIP"} ',
+        started_at_ms=5,
+        finished_at_ms=9,
+    )
+    rust_read = _sqlite(path, {"kind": "get_server_run", "run_id": "rust-roundtrip"})
+    assert rust_read["status"] == "failed"
+    assert rust_read["assistant_turn_node_id"] == "assistant-roundtrip"
+    assert rust_read["result"] == {"partial": True}
+    assert rust_read["error"] == {"code": "E_ROUNDTRIP"}
+    assert rust_read["started_at_ms"] == 5
+    assert rust_read["finished_at_ms"] == 9
+    assert rust_read["terminal"] is True
     assert _sqlite(path, {"kind": "request_server_run_cancel", "run_id": "py"}) is None
     assert _sqlite(path, {"kind": "get_server_run", "run_id": "py"})["status"] == "succeeded"
     assert _sqlite(path, {"kind": "request_server_run_cancel", "run_id": "rust-z"}) is None
