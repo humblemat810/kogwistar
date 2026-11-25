@@ -2058,6 +2058,178 @@ async def test_mcp_workflow_run_resume_denies_missing_write_capability_before_ef
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
+    monkeypatch, engine_triplet
+):
+    from kogwistar.runtime.models import RunSuccess, RunSuspended
+    from kogwistar.runtime.resolvers import MappingStepResolver
+    from kogwistar.runtime.runtime import WorkflowRuntime
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    workflow_id = "mcp-resume-integration-workflow"
+    run_id = "mcp-resume-integration-run"
+    conversation_id = "mcp-resume-integration-conversation"
+    turn_node_id = "mcp-resume-integration-turn"
+    owner = "mcp-resume-integration-owner"
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub=owner,
+        scope_parts={"capabilities": ["workflow.design.write", "write_graph"]},
+    ):
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            node_id="start",
+            label="Start",
+            op="mcp-resume-start",
+            start=True,
+        )
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            node_id="approval",
+            label="Wait for approval",
+            op="mcp-resume-approval",
+        )
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            node_id="finish",
+            label="Finish",
+            op="mcp-resume-finish",
+            terminal=True,
+        )
+        service.workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            edge_id="start-approval",
+            src="start",
+            dst="approval",
+            relation="wf_next",
+            is_default=True,
+        )
+        service.workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id=owner,
+            edge_id="approval-finish",
+            src="approval",
+            dst="finish",
+            relation="wf_next",
+            is_default=True,
+        )
+
+    resolver = MappingStepResolver()
+
+    @resolver.register("mcp-resume-start")
+    def _start(_context):
+        return RunSuccess(state_update=[("u", {"started": True})])
+
+    @resolver.register("mcp-resume-approval")
+    def _approval(_context):
+        return RunSuspended(resume_payload={"question": "approve?"})
+
+    @resolver.register("mcp-resume-finish")
+    def _finish(context):
+        return RunSuccess(
+            state_update=[
+                ("u", {"finished": True, "approved": context.state_view.get("approved")})
+            ]
+        )
+
+    monkeypatch.setattr("kogwistar.conversation.resolvers.default_resolver", resolver)
+    runtime = WorkflowRuntime(
+        workflow_engine=workflow_engine,
+        conversation_engine=conversation_engine,
+        step_resolver=resolver,
+        predicate_registry={},
+        checkpoint_every_n_steps=1,
+    )
+    suspended = runtime.run(
+        workflow_id=workflow_id,
+        conversation_id=conversation_id,
+        turn_node_id=turn_node_id,
+        initial_state={
+            "conversation_id": conversation_id,
+            "user_id": owner,
+            "turn_node_id": turn_node_id,
+            "turn_index": 0,
+            "role": "user",
+            "user_text": "approve",
+            "mem_id": "memory",
+        },
+        run_id=run_id,
+    )
+    assert suspended.status == "suspended"
+
+    checkpoints = conversation_engine.read.get_nodes(
+        where={"$and": [{"entity_type": "workflow_checkpoint"}, {"run_id": run_id}]}
+    )
+    assert checkpoints
+    latest = max(
+        checkpoints,
+        key=lambda node: int(getattr(node, "metadata", {}).get("step_seq", -1)),
+    )
+    state = latest.metadata["state_json"]
+    if isinstance(state, str):
+        state = json.loads(state)
+    suspended_node_id, _, suspended_token_id, _ = state["_rt_join"]["suspended"][0]
+
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda _workflow_id, _role: None,
+    )
+    with _claims(
+        "rw",
+        "workflow",
+        sub=owner,
+        scope_parts={"capabilities": ["workflow.run.write", "approve_action"]},
+    ):
+        result = await workflow_mcp.call_tool(
+            "workflow.run_resume",
+            {
+                "run_id": run_id,
+                "suspended_node_id": suspended_node_id,
+                "suspended_token_id": suspended_token_id,
+                "client_result": {
+                    "status": "success",
+                    "state_update": [["u", {"approved": True}]],
+                },
+                "workflow_id": workflow_id,
+                "conversation_id": conversation_id,
+                "turn_node_id": turn_node_id,
+                "user_id": owner,
+            },
+        )
+
+    payload = _structured(result)
+    assert result.is_error is False
+    assert payload["workflow_status"] == "succeeded"
+    assert payload["final_state"]["started"] is True
+    assert payload["final_state"]["approved"] is True
+    assert payload["final_state"]["finished"] is True
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_replay_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
