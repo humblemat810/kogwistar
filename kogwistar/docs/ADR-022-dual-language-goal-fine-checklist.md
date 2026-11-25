@@ -201,6 +201,14 @@ these existing focused selectors.
 
 ## Coarse Mapping
 
+DLFC-10 additive evidence (2026-11-26): Rust authenticated MCP `workflow.run_resume`
+continues a persisted SQLite suspended run and returns the shared resume-result
+contract after the external worker completes the resumed lane. Test:
+`tests::sqlite_runtime_worker_lifecycle::sqlite_metadata_mcp_resume_continues_persisted_suspended_token`
+(focused Cargo test: **1 passed**). This extends backend coverage only; DLFC-10
+remains IN PROGRESS because retry and the remaining MCP effect/backend matrix
+are not closed.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

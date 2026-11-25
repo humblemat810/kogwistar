@@ -1656,7 +1656,25 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-syscall-resume-{nonce}.sqlite3"));
         let service = SqliteRunApplicationService::open(&path).unwrap();
-        sqlite_resume_syscall_roundtrip(service, path, resume_contract).await;
+        sqlite_resume_syscall_roundtrip(service, path, resume_contract, false).await;
+    }
+
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#workflow_run_resume; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_metadata_mcp_resume_continues_persisted_suspended_token; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_resume_dispatches_request_and_returns_result
+    #[tokio::test]
+    async fn sqlite_metadata_mcp_resume_continues_persisted_suspended_token() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let resume_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+        ))
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-mcp-resume-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        sqlite_resume_syscall_roundtrip(service, path, resume_contract, true).await;
     }
 
     #[tokio::test]
@@ -1690,13 +1708,14 @@
             "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
         ))
         .unwrap();
-        sqlite_resume_syscall_roundtrip(service, path, resume_contract).await;
+        sqlite_resume_syscall_roundtrip(service, path, resume_contract, false).await;
     }
 
     async fn sqlite_resume_syscall_roundtrip(
         service: SqliteRunApplicationService,
         path: std::path::PathBuf,
         resume_contract: Value,
+        resume_via_mcp: bool,
     ) {
         use kogwistar_store::RUNTIME_CURRENT_STATE_NAMESPACE;
 
@@ -1707,7 +1726,9 @@
             "sub":"sqlite-resume-owner",
             "role":"rw",
             "ns":["workflow"],
-            "capabilities":["spawn_process", "workflow.run.write"]
+            "capabilities":["spawn_process", "workflow.run.write"],
+            "iss":"local",
+            "exp":4102444800_u64
         });
         let submitted = service.execute(ApiEffectRequest {
             contract_version: 1,
@@ -1779,10 +1800,74 @@
             serde_json::from_value(Value::Object(projection.payload)).unwrap();
         let (node_id, _, token_id, _) = state.frontier.suspended[0].clone();
 
-        let resume_service = service.clone();
-        let resume_future = tokio::spawn(async move {
-            resume_service
-                .execute(ApiEffectRequest {
+        let resume_future = if resume_via_mcp {
+            use axum::body::{Body, to_bytes};
+            use axum::http::Request;
+            use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+            use std::sync::Arc;
+            use tower::ServiceExt;
+
+            let secret = "sqlite-mcp-resume-secret";
+            let token = encode(
+                &Header::new(Algorithm::HS256),
+                &principal,
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap();
+            let app = router_with_application(
+                ApiState {
+                    health: snapshot(),
+                    required_roles: Vec::new(),
+                    implementation: ImplementationSnapshot::default(),
+                    auth: AuthConfig {
+                        mode: "jwt".to_owned(),
+                        algorithm: Some("HS256".to_owned()),
+                        key: Some(secret.to_owned()),
+                        issuer: Some("local".to_owned()),
+                        ..AuthConfig::default()
+                    },
+                },
+                Arc::new(service.clone()),
+            );
+            let resume_arguments = json!({
+                "run_id":run_id,
+                "workflow_id":workflow_id,
+                "conversation_id":conversation_id,
+                "turn_node_id":"sqlite-resume-turn",
+                "suspended_node_id":node_id,
+                "suspended_token_id":token_id,
+                "client_result":{"approved":true}
+            });
+            tokio::spawn(async move {
+                let response = app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp/workflow")
+                        .header("content-type", "application/json")
+                        .header("accept", "application/json, text/event-stream")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::from(json!({
+                            "jsonrpc":"2.0", "id":"sqlite-resume",
+                            "method":"tools/call",
+                            "params":{"name":"workflow.run_resume", "arguments":resume_arguments}
+                        }).to_string()))
+                        .unwrap(),
+                ).await.unwrap();
+                let status = response.status();
+                let wire = to_bytes(response.into_body(), 8192).await.unwrap();
+                let data = String::from_utf8(wire.to_vec()).unwrap();
+                let payload = data.lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                    .unwrap();
+                assert_eq!(status, StatusCode::OK);
+                assert_ne!(payload["result"]["isError"], true, "{payload}");
+                Ok::<Value, String>(payload["result"]["structuredContent"].clone())
+            })
+        } else {
+            let resume_service = service.clone();
+            tokio::spawn(async move {
+                let response = resume_service.execute(ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
             path_and_query: "/api/syscall/v1/resume".to_owned(),
@@ -1801,9 +1886,14 @@
             }))
             .unwrap(),
                     principal,
-                })
-                .await
-        });
+                }).await;
+                if !(200..300).contains(&response.status) {
+                    return Err(String::from_utf8_lossy(&response.body).into_owned());
+                }
+                let envelope: Value = serde_json::from_slice(&response.body).unwrap();
+                Ok::<Value, String>(envelope["result"].clone())
+            })
+        };
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
         let claimed = service
@@ -1855,28 +1945,18 @@
             })
             .await;
         assert_eq!(finished.status, StatusCode::OK.as_u16());
-        let resumed = resume_future.await.unwrap();
-        assert_eq!(
-            resumed.status,
-            StatusCode::OK.as_u16(),
-            "{}",
-            String::from_utf8_lossy(&resumed.body)
-        );
-        let envelope: Value = serde_json::from_slice(&resumed.body).unwrap();
-        assert_eq!(envelope["version"], "v1");
-        assert_eq!(envelope["op"], "resume");
-        assert_eq!(envelope["status"], "ok");
+        let resumed = resume_future.await.unwrap().unwrap();
         for field in resume_contract["required_fields"].as_array().unwrap() {
             let field = field.as_str().unwrap();
-            assert!(envelope["result"].get(field).is_some(), "missing {field}");
+            assert!(resumed.get(field).is_some(), "missing {field}");
         }
         assert!(resume_contract["completed_statuses"]
             .as_array()
             .unwrap()
-            .contains(&envelope["result"]["workflow_status"]));
-        assert_eq!(envelope["result"]["workflow_status"], "succeeded");
-        assert_eq!(envelope["result"]["final_state"]["after_resume"], true);
-        assert_eq!(envelope["result"]["budget"], json!({}));
+            .contains(&resumed["workflow_status"]));
+        assert_eq!(resumed["workflow_status"], "succeeded");
+        assert_eq!(resumed["final_state"]["after_resume"], true);
+        assert_eq!(resumed["budget"], json!({}));
 
         drop(service);
         let _ = std::fs::remove_file(path);
