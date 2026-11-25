@@ -504,42 +504,67 @@ async fn workflow_run_submit_enforces_configured_workflow_acl() {
         );
     }
 
-    let mcp_denied = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/mcp/workflow")
-                .header("content-type", "application/json")
-                .header("accept", "application/json, text/event-stream")
-                .header("authorization", format!("Bearer {token}"))
-                .body(Body::from(
-                    json!({
-                        "jsonrpc":"2.0", "id":"acl-denied", "method":"tools/call",
-                        "params":{"name":"workflow.run_submit", "arguments":{
-                            "workflow_id":"read-only",
-                            "conversation_id":"workflow-acl-conversation"
-                        }}
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    let mcp_body = to_bytes(mcp_denied.into_body(), 8192).await.unwrap();
-    let mcp_text = String::from_utf8(mcp_body.to_vec()).unwrap();
-    let mcp_message = mcp_text
-        .lines()
-        .find_map(|line| line.strip_prefix("data: "))
-        .unwrap();
-    let mcp_payload: Value = serde_json::from_str(mcp_message).unwrap();
-    assert_eq!(mcp_payload["result"]["isError"], true, "{mcp_payload}");
-    assert!(service
-        .store
-        .list_server_runs(None, Some("read-only"), Some("workflow-acl-conversation"), 20)
-        .unwrap()
-        .is_empty());
+    for (request_id, workflow_id, expected_error) in [
+        ("mcp-no-acl", "no-acl", true),
+        ("mcp-read-only", "read-only", true),
+        ("mcp-writable", "writable", false),
+    ] {
+        let conversation_id = format!("{request_id}-conversation");
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0", "id":request_id, "method":"tools/call",
+                            "params":{"name":"workflow.run_submit", "arguments":{
+                                "workflow_id":workflow_id,
+                                "conversation_id":conversation_id
+                            }}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mcp_body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let mcp_text = String::from_utf8(mcp_body.to_vec()).unwrap();
+        let mcp_message = mcp_text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let mcp_payload: Value = serde_json::from_str(mcp_message).unwrap();
+        if expected_error {
+            assert_eq!(
+                mcp_payload["result"]["isError"], true,
+                "{request_id}: {mcp_payload}"
+            );
+        } else {
+            assert_eq!(
+                mcp_payload["result"]["structuredContent"]["admission"], "accepted",
+                "{request_id}: {mcp_payload}"
+            );
+        }
+        assert_eq!(
+            service
+                .store
+                .list_server_runs(None, Some(workflow_id), Some(&conversation_id), 20)
+                .unwrap()
+                .len(),
+            usize::from(!expected_error),
+            "{request_id}"
+        );
+    }
 
+    drop(app);
+    drop(memory_service);
+    drop(postgres_service);
     drop(service);
     remove_test_sqlite(&sqlite_path);
     remove_test_sqlite(&auth_path);
