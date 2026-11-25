@@ -439,6 +439,45 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
             Some(body),
         );
     }
+    if command == "workflow.capability_approve" || command == "workflow.capability_revoke" {
+        let approve = command == "workflow.capability_approve";
+        if approve {
+            validate_options(
+                &options,
+                &["--base-url", "--action", "--capabilities", "--subject"],
+            );
+        } else {
+            validate_options(&options, &["--base-url", "--capability", "--subject"]);
+        }
+        let subject = options
+            .get("--subject")
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null);
+        let body = if approve {
+            let capabilities =
+                serde_json::from_str::<Value>(required_option(&options, "--capabilities"))
+                    .unwrap_or_else(|error| {
+                        eprintln!("invalid JSON for --capabilities: {error}");
+                        std::process::exit(2);
+                    });
+            json!({
+                "action": required_option(&options, "--action"),
+                "capabilities": capabilities,
+                "subject": subject,
+            })
+        } else {
+            json!({
+                "capability": required_option(&options, "--capability"),
+                "subject": subject,
+            })
+        };
+        let endpoint = if approve { "approve" } else { "revoke" };
+        return request_json(
+            reqwest::Method::POST,
+            format!("{base_url}/api/workflow/capabilities/{endpoint}"),
+            Some(body),
+        );
+    }
     let (method, path) = match command.as_str() {
         "workflow.process_table" => {
             validate_options(
@@ -601,6 +640,16 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
             (
                 reqwest::Method::GET,
                 format!("/api/workflow/dead-letters?limit={limit}"),
+            )
+        }
+        "workflow.dead_letter_replay" => {
+            validate_options(&options, &["--base-url", "--run-id"]);
+            (
+                reqwest::Method::POST,
+                format!(
+                    "/api/workflow/dead-letters/{}/replay",
+                    required_option(&options, "--run-id")
+                ),
             )
         }
         "workflow.capabilities_snapshot" => {

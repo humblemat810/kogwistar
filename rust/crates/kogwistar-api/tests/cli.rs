@@ -1042,6 +1042,93 @@ fn workflow_service_declare_command_preserves_python_payload_contract() {
 }
 
 #[test]
+fn workflow_dead_letter_replay_command_preserves_python_endpoint_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.dead_letter_replay",
+                "--run-id",
+                "run-32",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"replayed":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/dead-letters/run-32/replay HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"replayed": true}));
+}
+
+#[test]
+fn workflow_capability_approve_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.capability_approve",
+                "--action",
+                "workflow.run.submit",
+                "--capabilities",
+                "[\"workflow.run.submit\",\"read_graph\"]",
+                "--subject",
+                "alice",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"approved":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/capabilities/approve HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "action": "workflow.run.submit",
+            "capabilities": ["workflow.run.submit", "read_graph"],
+            "subject": "alice",
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"approved": true}));
+}
+
+#[test]
+fn workflow_capability_revoke_command_preserves_python_nullable_subject() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.capability_revoke",
+                "--capability",
+                "read_graph",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"revoked":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/capabilities/revoke HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"capability": "read_graph", "subject": null})
+    );
+    assert_cli_json(&output, serde_json::json!({"revoked": true}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {

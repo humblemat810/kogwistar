@@ -3085,6 +3085,89 @@ def test_python_cli_workflow_service_declare_matches_rust_payload_contract(
     }
 
 
+@pytest.mark.parametrize(
+    ("command", "args", "path", "body"),
+    [
+        (
+            "workflow.capability_approve",
+            [
+                "--action",
+                "workflow.run.submit",
+                "--capabilities",
+                '["workflow.run.submit","read_graph"]',
+                "--subject",
+                "alice",
+            ],
+            "/api/workflow/capabilities/approve",
+            {
+                "action": "workflow.run.submit",
+                "capabilities": ["workflow.run.submit", "read_graph"],
+                "subject": "alice",
+            },
+        ),
+        (
+            "workflow.capability_revoke",
+            ["--capability", "read_graph"],
+            "/api/workflow/capabilities/revoke",
+            {"capability": "read_graph", "subject": None},
+        ),
+    ],
+)
+def test_python_cli_workflow_capability_mutations_match_rust_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server{path}",
+        "json_body": body,
+    }
+
+
+def test_python_cli_workflow_dead_letter_replay_matches_rust_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.dead_letter_replay",
+                "--run-id",
+                "run-32",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/dead-letters/run-32/replay",
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
