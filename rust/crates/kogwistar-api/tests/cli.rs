@@ -689,6 +689,73 @@ fn workflow_tool_audit_command_preserves_python_query_contract() {
 }
 
 #[test]
+fn workflow_service_list_command_preserves_python_default_limit() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            ["api", "workflow", "workflow.service_list", "--base-url"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([base])
+                .collect()
+        },
+        r#"{"services":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/services?limit=200 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"services": []}));
+}
+
+#[test]
+fn workflow_service_get_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_get",
+                "--service-id",
+                "svc-17",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-17","enabled":true}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/services/svc-17 HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"service_id": "svc-17", "enabled": true}),
+    );
+}
+
+#[test]
+fn workflow_service_events_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_events",
+                "--service-id",
+                "svc-18",
+                "--limit",
+                "29",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"events":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/services/svc-18/events?limit=29 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"events": []}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {

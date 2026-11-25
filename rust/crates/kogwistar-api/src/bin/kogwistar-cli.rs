@@ -382,6 +382,39 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
                 format!("/api/workflow/tools/audit?{conversation_query}limit={limit}"),
             )
         }
+        "workflow.service_list" => {
+            validate_options(&options, &["--base-url", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(200);
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/services?limit={limit}"),
+            )
+        }
+        "workflow.service_get" => {
+            validate_options(&options, &["--base-url", "--service-id"]);
+            (
+                reqwest::Method::GET,
+                format!(
+                    "/api/workflow/services/{}",
+                    required_option(&options, "--service-id")
+                ),
+            )
+        }
+        "workflow.service_events" => {
+            validate_options(&options, &["--base-url", "--service-id", "--limit"]);
+            let service_id = required_option(&options, "--service-id");
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(500);
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/services/{service_id}/events?limit={limit}"),
+            )
+        }
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);
             let run_id = required_option(&options, "--run-id");
