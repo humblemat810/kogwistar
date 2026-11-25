@@ -1521,6 +1521,33 @@ def test_dual_language_goal_case_table_matches_pivot_rows() -> None:
     )
 
 
+def test_dual_language_goal_fine_summary_matches_tasklet_rows() -> None:
+    path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    checklist = path.read_text(encoding="utf-8")
+    rows = [line for line in checklist.splitlines() if line.startswith("| DLFC-")]
+    statuses = [line.strip("|").split("|")[2].strip() for line in rows]
+    counts = {
+        status: statuses.count(status)
+        for status in ("PASS", "IN PROGRESS", "NOT STARTED", "FAIL", "BLOCKED")
+    }
+    summary = re.search(
+        r"\*\*Progress:\*\* \*\*(\d+)/(\d+) tasklets PASS \([^)]+\); "
+        r"(\d+) IN PROGRESS; (\d+) NOT STARTED; (\d+) FAIL; (\d+) BLOCKED\.?\*\*",
+        checklist,
+    )
+
+    assert summary is not None
+    assert len(rows) == 18
+    assert tuple(map(int, summary.groups())) == (
+        counts["PASS"],
+        len(rows),
+        counts["IN PROGRESS"],
+        counts["NOT STARTED"],
+        counts["FAIL"],
+        counts["BLOCKED"],
+    )
+
+
 def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() -> None:
     checklist = (
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
