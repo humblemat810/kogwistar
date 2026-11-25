@@ -2929,6 +2929,48 @@ def test_python_cli_workflow_service_actions_match_rust_http_contract(
     }
 
 
+@pytest.mark.parametrize(
+    ("command", "args", "path", "params"),
+    [
+        (
+            "workflow.services_repair",
+            ["--limit", "37"],
+            "/api/workflow/services/repair",
+            {"limit": 37},
+        ),
+        (
+            "workflow.message_orphans_repair",
+            ["--inbox-id", "inbox-23", "--limit", "18"],
+            "/api/workflow/messages/repair-orphans",
+            {"inbox_id": "inbox-23", "limit": 18},
+        ),
+    ],
+)
+def test_python_cli_workflow_repairs_match_rust_http_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    params: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server{path}",
+        "params": params,
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

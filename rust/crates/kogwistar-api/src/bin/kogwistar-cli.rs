@@ -470,6 +470,32 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
                 format!("/api/workflow/services/{service_id}/{action}"),
             )
         }
+        "workflow.services_repair" => {
+            validate_options(&options, &["--base-url", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(10000);
+            (
+                reqwest::Method::POST,
+                format!("/api/workflow/services/repair?limit={limit}"),
+            )
+        }
+        "workflow.message_orphans_repair" => {
+            validate_options(&options, &["--base-url", "--inbox-id", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(100);
+            let inbox_query = options
+                .get("--inbox-id")
+                .map(|inbox_id| format!("inbox_id={inbox_id}&"))
+                .unwrap_or_default();
+            (
+                reqwest::Method::POST,
+                format!("/api/workflow/messages/repair-orphans?{inbox_query}limit={limit}"),
+            )
+        }
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);
             let run_id = required_option(&options, "--run-id");

@@ -872,6 +872,56 @@ fn workflow_service_trigger_command_preserves_python_payload_contract() {
 }
 
 #[test]
+fn workflow_services_repair_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.services_repair",
+                "--limit",
+                "37",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"repaired":2}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/repair?limit=37 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"repaired": 2}));
+}
+
+#[test]
+fn workflow_message_orphans_repair_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.message_orphans_repair",
+                "--inbox-id",
+                "inbox-23",
+                "--limit",
+                "18",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"repaired":1}"#,
+    );
+    assert!(request.starts_with(
+        "POST /api/workflow/messages/repair-orphans?inbox_id=inbox-23&limit=18 HTTP/1.1\r\n"
+    ));
+    assert_cli_json(&output, serde_json::json!({"repaired": 1}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {
