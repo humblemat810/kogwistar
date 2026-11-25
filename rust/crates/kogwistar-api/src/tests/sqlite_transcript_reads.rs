@@ -771,6 +771,19 @@
         assert_eq!(conversations["conversations"].as_array().unwrap().len(), 1);
         assert_eq!(conversations["conversations"][0]["id"], "c1");
         assert_eq!(conversations["conversations"][0]["turn_count"], 2);
+        let mut no_graph_capability = principal.clone();
+        no_graph_capability["capabilities"] = json!([]);
+        let no_graph_capability_list = service
+            .execute(read_request("/api/conversations", no_graph_capability))
+            .await;
+        assert_eq!(
+            no_graph_capability_list.status,
+            StatusCode::OK.as_u16(),
+            "conversation listing follows Python role/namespace/identity policy"
+        );
+        let no_graph_capability_list: Value =
+            serde_json::from_slice(&no_graph_capability_list.body).unwrap();
+        assert_eq!(no_graph_capability_list, conversations);
         assert!(service.supports_http_operation("GET", "/api/conversations/c1"));
         assert!(service.supports_http_operation("GET", "/api/conversations"));
 

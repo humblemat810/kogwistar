@@ -1831,7 +1831,7 @@ impl PostgresRunApplicationService {
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#conversation_list_effect; python=kogwistar/server/auth_middleware.py#get_current_user_id; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_read_authorization.rs#conversation_list_http_denials_precede_storage_read; python_test=tests/server/test_chat_server_api.py#test_conversation_list_http_denials_precede_service_read
+    // PYTHON_PARITY_V1: require ro/rw role, conversation namespace, and user identity; owner and ACL filters scope results. rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#conversation_list_effect; python=kogwistar/server/chat_api.py#create_chat_router.list_conversations; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_read_authorization.rs#conversation_list_http_denials_precede_storage_read; python_test=tests/server/test_chat_server_api.py#test_conversation_list_http_denials_precede_service_read
     async fn conversation_list_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let namespaces = principal_strings(&request.principal, "ns");
         let namespaces = if namespaces.is_empty() {
@@ -1847,13 +1847,6 @@ impl PostgresRunApplicationService {
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_NAMESPACE_FORBIDDEN",
                 "Conversation reads require conversation namespace",
-            );
-        }
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation reads require read_graph capability",
             );
         }
         let user_id = request

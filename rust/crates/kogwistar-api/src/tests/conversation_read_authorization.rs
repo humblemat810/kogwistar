@@ -142,7 +142,7 @@
     }
 
     #[tokio::test]
-    async fn conversation_list_route_checks_namespace_capability_and_identity_before_storage() {
+    async fn conversation_list_route_checks_namespace_and_identity_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "conversation_list_auth_contract",
@@ -161,10 +161,6 @@
                 StatusCode::FORBIDDEN,
             ),
             (
-                json!({"sub": "alice", "ns": "conversation", "capabilities": []}),
-                StatusCode::FORBIDDEN,
-            ),
-            (
                 json!({"ns": "conversation", "capabilities": ["read_graph"]}),
                 StatusCode::UNAUTHORIZED,
             ),
@@ -172,6 +168,40 @@
             let response = service.execute(make_request(principal)).await;
             assert_eq!(response.status, expected_status.as_u16());
         }
+    }
+
+    #[tokio::test]
+    async fn conversation_list_without_read_graph_capability_reaches_storage_like_python() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_list_optional_read_capability",
+        )
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "user_id": "alice",
+                    "role": "ro",
+                    "ns": ["conversation"],
+                    "capabilities": []
+                }),
+            })
+            .await;
+
+        assert_eq!(
+            response.status,
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            "authorization should pass; only the deliberately unavailable database should fail"
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_STORE_ERROR"
+        );
     }
 
     #[tokio::test]
