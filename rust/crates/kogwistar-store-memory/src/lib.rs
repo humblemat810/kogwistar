@@ -3355,6 +3355,66 @@ mod tests {
     }
 
     #[test]
+    fn graph_vector_query_as_of_preserves_backend_order_and_redirect_scores() {
+        let store = InMemoryStore::new();
+        let mut old_nearest = record("old-nearest", "team", &[1.0, 0.0]);
+        old_nearest
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        old_nearest
+            .metadata
+            .insert("deleted_at".to_owned(), json!("2026-01-01T00:00:00Z"));
+        old_nearest
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("current"));
+        let mut old_next = record("old-next", "team", &[0.8, 0.6]);
+        old_next
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        old_next
+            .metadata
+            .insert("deleted_at".to_owned(), json!("2026-01-01T00:00:00Z"));
+        old_next
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("current"));
+        for node in [
+            old_nearest,
+            record("current", "team", &[0.5, 0.8660254]),
+            record("live", "team", &[0.0, 1.0]),
+            old_next,
+        ] {
+            block_on(store.upsert_graph_record_of_kind("as-of-query", GraphEntityKind::Node, node))
+                .unwrap();
+        }
+
+        let hits = block_on(store.vector_query_nodes_as_of(
+            "as-of-query",
+            &VectorQuery {
+                embedding: vec![1.0, 0.0],
+                limit: 10,
+                metadata: MetadataFilter::default(),
+                metric: DistanceMetric::Cosine,
+            },
+            "2026-01-02T00:00:00Z",
+            true,
+            16,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["current", "live"]
+        );
+        assert_eq!(
+            hits[0].distance, 0.0,
+            "redirect keeps source candidate score"
+        );
+        assert!((hits[1].distance - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn numeric_lte_vector_filter_is_applied_before_top_n() {
         let store = InMemoryStore::new();
         for (id, level, embedding) in [

@@ -24,6 +24,58 @@ pub fn resolve_graph_node_redirect_id(rid: &str, nodes: &[GraphRecord]) -> Optio
     resolve_graph_entity_redirect_id(rid, nodes)
 }
 
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
+fn parse_lifecycle_timestamp(raw: &str) -> Option<OffsetDateTime> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let normalized = value.replace(' ', "T");
+    OffsetDateTime::parse(&normalized, &Rfc3339)
+        .or_else(|_| OffsetDateTime::parse(&format!("{normalized}+00:00"), &Rfc3339))
+        .ok()
+}
+
+fn node_visible_as_of(node: &GraphRecord, as_of: OffsetDateTime) -> bool {
+    let effective_from = node
+        .metadata
+        .get("effective_from")
+        .and_then(Value::as_str)
+        .and_then(parse_lifecycle_timestamp);
+    if effective_from.is_some_and(|effective| effective > as_of) {
+        return false;
+    }
+    let active = node
+        .metadata
+        .get("lifecycle_status")
+        .and_then(Value::as_str)
+        .unwrap_or("active");
+    active != "tombstoned"
+        || node
+            .metadata
+            .get("deleted_at")
+            .and_then(Value::as_str)
+            .and_then(parse_lifecycle_timestamp)
+            .is_some_and(|deleted| deleted > as_of)
+}
+
+fn node_redirect_target_as_of(node: &GraphRecord, as_of: OffsetDateTime) -> Option<&str> {
+    let deleted_at = node
+        .metadata
+        .get("deleted_at")
+        .and_then(Value::as_str)
+        .and_then(parse_lifecycle_timestamp)?;
+    if deleted_at > as_of {
+        return None;
+    }
+    node.metadata
+        .get("redirect_to_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+}
+
 /// Resolve a node against a historical instant, matching Python
 /// `ReadSubsystem._resolve_node_as_of`. `nodes` must be a scope-filtered
 /// snapshot that includes any redirect targets; authorization remains caller-owned.
@@ -34,20 +86,7 @@ pub fn resolve_graph_node_as_of_id(
     follow_redirects: bool,
     max_redirect_hops: usize,
 ) -> Result<Option<String>, &'static str> {
-    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-
-    fn parse_timestamp(raw: &str) -> Option<OffsetDateTime> {
-        let value = raw.trim();
-        if value.is_empty() {
-            return None;
-        }
-        let normalized = value.replace(' ', "T");
-        OffsetDateTime::parse(&normalized, &Rfc3339)
-            .or_else(|_| OffsetDateTime::parse(&format!("{normalized}+00:00"), &Rfc3339))
-            .ok()
-    }
-
-    let as_of = parse_timestamp(as_of_ts).ok_or("invalid as-of timestamp")?;
+    let as_of = parse_lifecycle_timestamp(as_of_ts).ok_or("invalid as-of timestamp")?;
     let mut current_id = rid.trim().to_owned();
     if current_id.is_empty() {
         return Ok(None);
@@ -62,34 +101,13 @@ pub fn resolve_graph_node_as_of_id(
         let Some(current) = nodes.iter().find(|node| node.id == current_id) else {
             return Ok(None);
         };
-        let metadata = &current.metadata;
-        let effective_from = metadata
-            .get("effective_from")
-            .and_then(Value::as_str)
-            .and_then(parse_timestamp);
-        let deleted_at = metadata
-            .get("deleted_at")
-            .and_then(Value::as_str)
-            .and_then(parse_timestamp);
-        let active = metadata
-            .get("lifecycle_status")
-            .and_then(Value::as_str)
-            .unwrap_or("active")
-            != "tombstoned";
-        if effective_from.is_none_or(|effective| effective <= as_of)
-            && (active || deleted_at.is_some_and(|deleted| deleted > as_of))
-        {
+        if node_visible_as_of(current, as_of) {
             return Ok(Some(current_id));
         }
-        if !follow_redirects || !deleted_at.is_some_and(|deleted| deleted <= as_of) {
+        if !follow_redirects {
             return Ok(None);
         }
-        let Some(redirect) = metadata
-            .get("redirect_to_id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-        else {
+        let Some(redirect) = node_redirect_target_as_of(current, as_of) else {
             return Ok(None);
         };
         hops += 1;
@@ -98,6 +116,69 @@ pub fn resolve_graph_node_as_of_id(
         }
         current_id = redirect.to_owned();
     }
+}
+
+/// Search node vectors at a historical instant, preserving backend candidate
+/// order and source distances while resolving tombstone redirects. The caller
+/// remains responsible for applying ACLs to resolved records.
+pub async fn graph_vector_query_nodes_as_of<S: GraphReadStore + ?Sized>(
+    store: &S,
+    namespace: &str,
+    query: &VectorQuery,
+    as_of_ts: &str,
+    follow_redirects: bool,
+    max_redirect_hops: usize,
+) -> StoreResult<Vec<VectorMatch>> {
+    let as_of = parse_lifecycle_timestamp(as_of_ts).ok_or_else(|| StoreError::Backend {
+        backend: "graph-read".to_owned(),
+        message: "invalid as-of timestamp".to_owned(),
+    })?;
+    let candidates = store
+        .vector_query_of_kind(namespace, GraphEntityKind::Node, query)
+        .await?;
+    let mut hits = Vec::with_capacity(candidates.len());
+    let mut seen = BTreeSet::new();
+
+    for candidate in candidates {
+        let mut current = candidate.record.clone();
+        let mut visited = BTreeSet::new();
+        let mut hops = 0;
+        let resolved = loop {
+            if !visited.insert(current.id.clone()) {
+                break None;
+            }
+            if node_visible_as_of(&current, as_of) {
+                break Some(current);
+            }
+            if !follow_redirects {
+                break None;
+            }
+            let Some(target) = node_redirect_target_as_of(&current, as_of) else {
+                break None;
+            };
+            hops += 1;
+            if hops > max_redirect_hops {
+                break None;
+            }
+            let Some(next) = store
+                .graph_record_of_kind(namespace, GraphEntityKind::Node, target)
+                .await?
+            else {
+                break None;
+            };
+            current = next;
+        };
+        let Some(record) = resolved else {
+            continue;
+        };
+        if seen.insert(record.id.clone()) {
+            hits.push(VectorMatch {
+                record,
+                distance: candidate.distance,
+            });
+        }
+    }
+    Ok(hits)
 }
 
 /// Resolve an edge ID to its active redirect target from an edge snapshot.
