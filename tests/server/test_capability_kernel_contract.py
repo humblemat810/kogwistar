@@ -580,6 +580,27 @@ def test_capability_kernel_materialize_includes_parent_minus_revoked_plus_subjec
     assert effective == ("project_view", "read_security_scope")
 
 
+def test_capability_subject_falls_back_to_actor_id_claim():
+    from kogwistar.server.chat_service import ChatRunService
+
+    service = object.__new__(ChatRunService)
+    token = claims_ctx.set({"actor_id": "Actor-Only"})
+    try:
+        subject = service._capability_subject()
+        assert subject == "Actor-Only"
+        kernel = CapabilityKernel()
+        kernel.grant(
+            subject=subject,
+            action="workflow.run.write",
+            capabilities=["workflow.run.write"],
+        )
+        assert "workflow.run.write" in kernel.materialize_capabilities(
+            subject=subject
+        )
+    finally:
+        claims_ctx.reset(token)
+
+
 
 def test_submit_workflow_run_requires_both_spawn_and_workflow_run_write(monkeypatch, engine_triplet):
     engine, conversation_engine, workflow_engine = engine_triplet

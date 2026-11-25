@@ -591,7 +591,7 @@ fn graph_acl_principal_from_claims(
 }
 
 fn principal_subject(principal: &Value) -> String {
-    ["sub", "user_id", "agent_id"]
+    ["sub", "user_id", "agent_id", "actor_id"]
         .into_iter()
         .find_map(|name| principal.get(name).and_then(Value::as_str))
         .map(str::trim)

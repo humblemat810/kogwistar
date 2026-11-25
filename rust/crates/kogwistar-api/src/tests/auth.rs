@@ -1,4 +1,19 @@
     #[test]
+    fn actor_id_only_principal_uses_python_capability_subject_fallback() {
+        let principal = json!({"actor_id":"Actor-Only", "capabilities":[]});
+        let mut state = CapabilityState::default();
+        state.approvals.insert(
+            (
+                "actor-only".to_owned(),
+                "workflow.run.write".to_owned(),
+            ),
+            BTreeSet::from(["workflow.run.write".to_owned()]),
+        );
+
+        assert!(effective_capabilities(&principal, &state).contains("workflow.run.write"));
+    }
+
+    #[test]
     fn delegated_capabilities_are_attenuated_and_reserved_state_wins() {
         let shared = Arc::new(Mutex::new(CapabilityState::default()));
         let principal = json!({
