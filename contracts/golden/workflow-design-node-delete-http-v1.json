@@ -14,6 +14,11 @@
     "can_undo": true,
     "can_redo": false
   },
+  "expected_tombstone_payload": {
+    "entity_id": "node-delete-contract",
+    "reason": "workflow_design_delete",
+    "deleted_by": "alice"
+  },
   "integer_response_fields": ["seq"],
   "absent_response_fields": []
 }

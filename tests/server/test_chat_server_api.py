@@ -5469,6 +5469,16 @@ def test_workflow_design_edge_delete_matches_shared_contract(
     assert response.status_code == contract["success_status"], response.text
     assert repeated_delete.status_code == 404, repeated_delete.text
     body = response.json()
+    node_tombstone = next(
+        event
+        for event in workflow_engine.meta_sqlite.iter_entity_events(
+            namespace=f"wf_design:{contract['workflow_id']}", from_seq=1
+        )
+        if event[1] == "node"
+        and event[2] == contract["node_id"]
+        and event[3] == "TOMBSTONE"
+    )
+    assert json.loads(node_tombstone[4]) == contract["expected_tombstone_payload"]
     assert history.status_code == 200, history.text
     assert history.json()["current_version"] == body["version"]
     for field, expected in contract["fixed_response_fields"].items():

@@ -874,6 +874,21 @@
                 .unwrap(),
         )
         .unwrap();
+        let node_delete_events = store
+            .replay_raw_events("wf_design:wf-node-delete-contract", 0, usize::MAX)
+            .unwrap();
+        let node_tombstone = node_delete_events
+            .iter()
+            .find(|event| {
+                event.entity_kind == "node"
+                    && event.entity_id == "node-delete-contract"
+                    && event.op == "TOMBSTONE"
+            })
+            .expect("node delete persists a canonical tombstone");
+        assert_eq!(
+            serde_json::from_str::<Value>(&node_tombstone.payload_json).unwrap(),
+            node_delete_contract["expected_tombstone_payload"]
+        );
         for (field, expected) in node_delete_contract["fixed_response_fields"]
             .as_object()
             .unwrap()
