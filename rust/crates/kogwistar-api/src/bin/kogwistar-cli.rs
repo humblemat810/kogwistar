@@ -478,6 +478,23 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
             Some(body),
         );
     }
+    if command == "workflow.design_undo" || command == "workflow.design_redo" {
+        validate_options(&options, &["--base-url", "--workflow-id", "--designer-id"]);
+        let action = if command == "workflow.design_undo" {
+            "undo"
+        } else {
+            "redo"
+        };
+        let body = json!({"designer_id": required_option(&options, "--designer-id")});
+        return request_json(
+            reqwest::Method::POST,
+            format!(
+                "{base_url}/api/workflow/design/{}/{action}",
+                required_option(&options, "--workflow-id")
+            ),
+            Some(body),
+        );
+    }
     let (method, path) = match command.as_str() {
         "workflow.process_table" => {
             validate_options(
@@ -649,6 +666,16 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
                 format!(
                     "/api/workflow/dead-letters/{}/replay",
                     required_option(&options, "--run-id")
+                ),
+            )
+        }
+        "workflow.design_history" => {
+            validate_options(&options, &["--base-url", "--workflow-id"]);
+            (
+                reqwest::Method::GET,
+                format!(
+                    "/api/workflow/design/{}/history",
+                    required_option(&options, "--workflow-id")
                 ),
             )
         }

@@ -3168,6 +3168,57 @@ def test_python_cli_workflow_dead_letter_replay_matches_rust_contract(
     }
 
 
+@pytest.mark.parametrize(
+    ("command", "args", "method", "path", "body"),
+    [
+        (
+            "workflow.design_history",
+            ["--workflow-id", "wf-41"],
+            "GET",
+            "/api/workflow/design/wf-41/history",
+            None,
+        ),
+        (
+            "workflow.design_undo",
+            ["--workflow-id", "wf-42", "--designer-id", "designer-a"],
+            "POST",
+            "/api/workflow/design/wf-42/undo",
+            {"designer_id": "designer-a"},
+        ),
+        (
+            "workflow.design_redo",
+            ["--workflow-id", "wf-43", "--designer-id", "designer-b"],
+            "POST",
+            "/api/workflow/design/wf-43/redo",
+            {"designer_id": "designer-b"},
+        ),
+    ],
+)
+def test_python_cli_workflow_design_history_actions_match_rust_contract(
+    command: str,
+    args: list[str],
+    method: str,
+    path: str,
+    body: dict[str, object] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    expected: dict[str, object] = {"method": method, "url": f"http://rust-server{path}"}
+    if body is not None:
+        expected["json_body"] = body
+    assert observed == expected
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

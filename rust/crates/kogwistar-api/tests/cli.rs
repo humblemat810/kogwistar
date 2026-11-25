@@ -1129,6 +1129,89 @@ fn workflow_capability_revoke_command_preserves_python_nullable_subject() {
 }
 
 #[test]
+fn workflow_design_history_command_preserves_python_endpoint_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_history",
+                "--workflow-id",
+                "wf-41",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/design/wf-41/history HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_design_undo_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_undo",
+                "--workflow-id",
+                "wf-42",
+                "--designer-id",
+                "designer-a",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"undone":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-42/undo HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-a"})
+    );
+    assert_cli_json(&output, serde_json::json!({"undone": true}));
+}
+
+#[test]
+fn workflow_design_redo_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_redo",
+                "--workflow-id",
+                "wf-43",
+                "--designer-id",
+                "designer-b",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"redone":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-43/redo HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-b"})
+    );
+    assert_cli_json(&output, serde_json::json!({"redone": true}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {
