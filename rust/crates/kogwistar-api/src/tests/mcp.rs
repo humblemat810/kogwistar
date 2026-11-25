@@ -454,6 +454,12 @@
             uuid::Uuid::new_v4().simple()
         ));
         let ready_path_literal = serde_json::to_string(&ready_path.to_string_lossy()).unwrap();
+        let stream_ready_path = std::env::temp_dir().join(format!(
+            "kogwistar-mcp-sdk-get-stream-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let stream_ready_path_literal =
+            serde_json::to_string(&stream_ready_path.to_string_lossy()).unwrap();
         let script = format!(
             r#"
 import asyncio
@@ -464,6 +470,7 @@ from mcp.client.streamable_http import streamable_http_client
 
 ENDPOINT = {endpoint:?}
 READY = Path({ready_path_literal})
+READY_STREAM = Path({stream_ready_path_literal})
 received = asyncio.Event()
 received_notifications = []
 
@@ -484,6 +491,14 @@ async def record_session(response):
     session_id = response.headers.get("mcp-session-id")
     if session_id:
         READY.write_text(session_id, encoding="utf-8")
+    if (
+        response.request.method == "GET"
+        and response.headers.get("content-type", "").startswith("text/event-stream")
+    ):
+        READY_STREAM.write_text(
+            response.headers.get("mcp-session-id") or "",
+            encoding="utf-8",
+        )
 
 async def main():
     async with httpx.AsyncClient(
@@ -529,6 +544,22 @@ asyncio.run(main())
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         };
+        let stream_deadline = Instant::now() + Duration::from_secs(25);
+        while !stream_ready_path.exists() {
+            if child.try_wait().unwrap().is_some() || Instant::now() >= stream_deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                let _ = std::fs::remove_file(&ready_path);
+                let _ = std::fs::remove_file(&stream_ready_path);
+                server.abort();
+                panic!(
+                    "Python SDK failed before server-initiated stream readiness; stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         let session_owner = json!({
             "sub": "anonymous",
             "role": "ro",
@@ -578,6 +609,7 @@ asyncio.run(main())
         }
         let output = child.wait_with_output().unwrap();
         let _ = std::fs::remove_file(&ready_path);
+        let _ = std::fs::remove_file(&stream_ready_path);
         server.abort();
         assert!(
             output.status.success(),
