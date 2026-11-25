@@ -2305,6 +2305,74 @@ def test_python_cli_http_client_sends_optional_bearer_token(
     assert seen["authorization"] == "Bearer secret-test-token"
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            [
+                "conversation.create",
+                "--user-id",
+                "alice",
+                "--conversation-id",
+                "c-2",
+                "--start-node-id",
+                "n-start",
+            ],
+            {
+                "method": "POST",
+                "url": "http://rust-server/api/conversations",
+                "json_body": {
+                    "user_id": "alice",
+                    "conversation_id": "c-2",
+                    "start_node_id": "n-start",
+                },
+            },
+        ),
+        (
+            [
+                "conversation.ask",
+                "--conversation-id",
+                "c-3",
+                "--text",
+                "hello",
+            ],
+            {
+                "method": "POST",
+                "url": "http://rust-server/api/conversations/c-3/turns:answer",
+                "json_body": {
+                    "text": "hello",
+                    "user_id": None,
+                    "workflow_id": "agentic_answering.v2",
+                },
+            },
+        ),
+        (
+            ["conversation.run_status", "--run-id", "r-4"],
+            {"method": "GET", "url": "http://rust-server/api/runs/r-4"},
+        ),
+        (
+            ["conversation.cancel_run", "--run-id", "r-5"],
+            {"method": "POST", "url": "http://rust-server/api/runs/r-5/cancel"},
+        ),
+    ],
+)
+def test_python_cli_conversation_operations_match_rust_http_contract(
+    command: list[str], expected: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert main(["api", "conversation", *command, "--base-url", "http://rust-server"]) == 0
+    assert observed == expected
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
