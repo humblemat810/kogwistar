@@ -5542,6 +5542,21 @@ def test_workflow_design_nonempty_graph_matches_shared_contract(
             params={"refresh": str(contract["refresh"]).lower()},
             headers=headers,
         )
+        deleted_edge = client.request(
+            "DELETE",
+            f"{path}/edges/{contract['delete_edge_request']['edge_id']}",
+            json={"designer_id": "alice"},
+            headers=headers,
+        )
+        graph_after_edge_delete = client.get(
+            f"{path}/graph?refresh=true",
+            headers=headers,
+        )
+        restored_edge = client.post(
+            f"{path}/edges",
+            json={"designer_id": "alice", **contract["edge_request"]},
+            headers=headers,
+        )
         deleted = client.request(
             "DELETE",
             f"{path}/nodes/{contract['delete_request']['node_id']}",
@@ -5595,6 +5610,22 @@ def test_workflow_design_nonempty_graph_matches_shared_contract(
         ):
             assert edge["metadata"][field] == item[field]
 
+    assert deleted_edge.status_code == contract["success_status"], deleted_edge.text
+    assert graph_after_edge_delete.status_code == contract["success_status"]
+    edge_deleted_body = graph_after_edge_delete.json()
+    expected_edge_deleted = contract["expected_after_edge_delete"]
+    for field in (
+        "current_version",
+        "active_tip_version",
+        "can_undo",
+        "can_redo",
+    ):
+        assert edge_deleted_body[field] == expected_edge_deleted[field]
+    assert {node["id"] for node in edge_deleted_body["nodes"]} == set(
+        expected_edge_deleted["node_ids"]
+    )
+    assert edge_deleted_body["edges"] == expected_edge_deleted["edges"]
+    assert restored_edge.status_code == contract["success_status"], restored_edge.text
     assert deleted.status_code == contract["success_status"], deleted.text
     assert graph_after_delete.status_code == contract["success_status"]
     deleted_body = graph_after_delete.json()

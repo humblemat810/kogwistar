@@ -24,6 +24,9 @@
     "relation": "wf_next",
     "is_default": true
   },
+  "delete_edge_request": {
+    "edge_id": "start-finish"
+  },
   "delete_request": {
     "node_id": "start"
   },
@@ -70,8 +73,8 @@
     ]
   },
   "expected_after_delete": {
-    "current_version": 4,
-    "active_tip_version": 4,
+    "current_version": 6,
+    "active_tip_version": 6,
     "can_undo": true,
     "can_redo": false,
     "nodes": [
@@ -86,6 +89,14 @@
         "wf_fanout": false
       }
     ],
+    "edges": []
+  },
+  "expected_after_edge_delete": {
+    "current_version": 4,
+    "active_tip_version": 4,
+    "can_undo": true,
+    "can_redo": false,
+    "node_ids": ["start", "finish"],
     "edges": []
   }
 }

@@ -282,6 +282,72 @@
                 assert_eq!(actual["metadata"][field], item[field], "edge field {field}");
             }
         }
+        let delete_edge_response = public_call!(
+            "DELETE",
+            format!(
+                "/api/workflow/design/{graph_workflow_id}/edges/{}",
+                graph_contract["delete_edge_request"]["edge_id"]
+                    .as_str()
+                    .unwrap()
+            ),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(
+            delete_edge_response.status().as_u16(),
+            graph_contract["success_status"]
+        );
+        let graph_after_edge_delete = public_call!(
+            "GET",
+            format!("/api/workflow/design/{graph_workflow_id}/graph?refresh=true"),
+            json!({})
+        );
+        assert_eq!(graph_after_edge_delete.status(), StatusCode::OK);
+        let graph_after_edge_delete: Value = serde_json::from_slice(
+            &to_bytes(graph_after_edge_delete.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let expected_after_edge_delete = &graph_contract["expected_after_edge_delete"];
+        for field in [
+            "current_version",
+            "active_tip_version",
+            "can_undo",
+            "can_redo",
+        ] {
+            assert_eq!(
+                graph_after_edge_delete[field], expected_after_edge_delete[field],
+                "post-edge-delete field {field}"
+            );
+        }
+        let actual_node_ids = graph_after_edge_delete["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_node_ids = expected_after_edge_delete["node_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node_id| node_id.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_node_ids, expected_node_ids);
+        assert_eq!(
+            graph_after_edge_delete["edges"],
+            expected_after_edge_delete["edges"]
+        );
+        let mut restored_edge = graph_contract["edge_request"].clone();
+        restored_edge["designer_id"] = json!("alice");
+        let restored_edge_response = public_call!(
+            "POST",
+            format!("/api/workflow/design/{graph_workflow_id}/edges"),
+            restored_edge
+        );
+        assert_eq!(
+            restored_edge_response.status().as_u16(),
+            graph_contract["success_status"]
+        );
         let delete_response = public_call!(
             "DELETE",
             format!(
