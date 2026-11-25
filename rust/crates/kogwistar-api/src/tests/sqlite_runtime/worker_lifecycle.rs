@@ -1711,6 +1711,41 @@
         sqlite_resume_syscall_roundtrip(service, path, resume_contract, false).await;
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#workflow_run_resume; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_mcp_resume_continues_persisted_suspended_token; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_resume_dispatches_request_and_returns_result
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_mcp_resume_continues_persisted_suspended_token() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let config = |kind: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: format!("mcp-resume-{kind}-{suffix}"),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            config("nodes"),
+            config("edges"),
+        )
+        .await
+        .unwrap();
+        let path = std::env::temp_dir().join(format!("kogwistar-mcp-resume-chroma-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_chroma_graph(graph);
+        let resume_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+        ))
+        .unwrap();
+        sqlite_resume_syscall_roundtrip(service, path, resume_contract, true).await;
+    }
+
     async fn sqlite_resume_syscall_roundtrip(
         service: SqliteRunApplicationService,
         path: std::path::PathBuf,
