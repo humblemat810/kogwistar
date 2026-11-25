@@ -1251,6 +1251,7 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
 
 #[tokio::test]
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#server_run_value; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/run-status-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_run_status_http_route_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api.py#test_run_status_route_matches_shared_v1_contract
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#server_run_value; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/run-status-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_run_status_http_route_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api.py#test_run_detail_uses_python_defaults_and_checks_namespace
 async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -1402,6 +1403,36 @@ async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
         assert!(body["created_at_ms"].is_i64());
         assert!(body["updated_at_ms"].is_i64());
     }
+
+    let wrong_scope_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "user-status-contract",
+            "user_id": "user-status-contract",
+            "role": "ro",
+            "ns": ["wisdom"],
+            "capabilities": [],
+            "iss": "local",
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/runs/run-status-succeeded")
+                .header("authorization", format!("Bearer {wrong_scope_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status().as_u16(), 403);
+    let denied_body = to_bytes(denied.into_body(), 65_536).await.unwrap();
+    assert!(!String::from_utf8_lossy(&denied_body).contains("run-status-succeeded"));
 
     drop(app);
     drop(service);
