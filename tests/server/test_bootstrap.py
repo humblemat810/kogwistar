@@ -5,6 +5,7 @@ import os
 import pytest
 
 from kogwistar.server.bootstrap import load_server_storage_settings
+from kogwistar.server.bootstrap import build_graph_engine
 
 pytestmark = pytest.mark.ci
 
@@ -60,6 +61,41 @@ def test_load_server_storage_settings_pg_uses_schema_suffixes():
     assert settings.index_dir == os.path.join(root, "index")
     assert settings.schema_for("knowledge") == "tenant_knowledge"
     assert settings.schema_for("workflow") == "tenant_workflow"
+
+
+def test_load_server_storage_settings_reads_server_acl_opt_in():
+    assert load_server_storage_settings({}).acl_enabled is False
+    settings = load_server_storage_settings({"KOGWISTAR_SERVER_ACL_ENABLED": "1"})
+
+    assert settings.acl_enabled is True
+
+
+def test_build_graph_engine_propagates_server_acl_opt_in(monkeypatch, tmp_path):
+    from kogwistar.server.bootstrap import ServerStorageSettings
+
+    captured: dict[str, object] = {}
+
+    class FakeGraphKnowledgeEngine:
+        def __init__(self, **kwargs: object):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "kogwistar.server.bootstrap.GraphKnowledgeEngine",
+        FakeGraphKnowledgeEngine,
+    )
+    settings = ServerStorageSettings(
+        backend="chroma",
+        knowledge_dir=str(tmp_path / "knowledge"),
+        conversation_dir=str(tmp_path / "conversation"),
+        workflow_dir=str(tmp_path / "workflow"),
+        wisdom_dir=str(tmp_path / "wisdom"),
+        index_dir=str(tmp_path / "index"),
+        acl_enabled=True,
+    )
+
+    build_graph_engine(settings=settings, graph_type="conversation")
+
+    assert captured["acl_enabled"] is True
 
 
 def test_pg_resource_factory_resolves_engine_type_at_runtime(monkeypatch):

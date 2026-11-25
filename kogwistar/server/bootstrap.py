@@ -4,7 +4,7 @@ import importlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Literal, cast
 
 from kogwistar.engine_core.async_compat import (
@@ -37,6 +37,10 @@ def _normalize_backend_name(raw_backend: str | None) -> BackendKind:
             f"Unsupported GKE_BACKEND={value!r}; expected 'chroma' or 'pg'."
         )
     return cast(BackendKind, normalized)
+
+
+def _env_bool(values: Mapping[str, str] | os._Environ[str], name: str) -> bool:
+    return str(values.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _derive_index_dir_from_knowledge_dir(knowledge_dir: str) -> str:
@@ -80,6 +84,7 @@ class ServerStorageSettings:
     pg_schema_base: str = "gke"
     embedding_dim: int = 384
     pg_async: bool = False
+    acl_enabled: bool = False
 
     def persist_directory_for(self, graph_type: GraphType) -> str:
         mapping = {
@@ -98,6 +103,7 @@ def load_server_storage_settings(
     env: dict[str, str] | None = None,
 ) -> ServerStorageSettings:
     values = env or os.environ
+    acl_enabled = _env_bool(values, "KOGWISTAR_SERVER_ACL_ENABLED")
     backend = _normalize_backend_name(values.get("GKE_BACKEND"))
     base_persist = str(values.get("GKE_PERSIST_DIRECTORY") or "./.gke-data")
     has_shared_persist_root = bool(values.get("GKE_PERSIST_DIRECTORY"))
@@ -166,6 +172,7 @@ def load_server_storage_settings(
             workflow_dir=workflow_dir,
             wisdom_dir=wisdom_dir,
             index_dir=index_dir,
+            acl_enabled=acl_enabled,
         )
 
     pg_url = values.get("GKE_PG_URL") or values.get("DATABASE_URL")
@@ -201,6 +208,7 @@ def load_server_storage_settings(
         pg_url=str(pg_url),
         pg_schema_base=str(values.get("GKE_PG_SCHEMA") or "gke"),
         embedding_dim=int(values.get("GKE_EMBEDDING_DIM") or "384"),
+        acl_enabled=acl_enabled,
     )
 
 
@@ -315,11 +323,13 @@ def build_graph_engine(
                 kg_graph_type=graph_type,
                 embedding_function=embedding_function,
                 backend_factory=_make_backend,
+                acl_enabled=settings.acl_enabled,
             )
         return GraphKnowledgeEngine(
             persist_directory=persist_directory,
             kg_graph_type=graph_type,
             embedding_function=embedding_function,
+            acl_enabled=settings.acl_enabled,
         )
 
     if settings.pg_async:
@@ -342,6 +352,7 @@ def build_graph_engine(
             kg_graph_type=graph_type,
             embedding_function=embedding_function,
             backend=cast(StorageBackend, backend),
+            acl_enabled=settings.acl_enabled,
         )
 
     if sa_engine is None:
@@ -358,4 +369,5 @@ def build_graph_engine(
         kg_graph_type=graph_type,
         embedding_function=embedding_function,
         backend=cast(StorageBackend, backend),
+        acl_enabled=settings.acl_enabled,
     )

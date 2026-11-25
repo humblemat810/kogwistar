@@ -33,6 +33,7 @@ tests, and optional integrations.
 | `JWT_ISS` | `kogwistar.server.auth_middleware` | Optional JWT issuer check. |
 | `JWT_AUD` | `kogwistar.server.auth_middleware` | Optional JWT audience check. |
 | `KOGWISTAR_API_TOKEN` | `kogwistar.cli` | Optional bearer token sent by `kogwistar api` HTTP requests; keep secret and provide through the environment, not command-line arguments. |
+| `KOGWISTAR_SERVER_ACL_ENABLED` | `kogwistar.server.bootstrap` | Opts every server-built graph engine into ACL-aware reads/writes. Defaults off so existing deployments preserve legacy behavior; set `1`, `true`, `yes`, or `on` only when ACL records and server claims are provisioned. |
 
 ## Native Rust API Server
 
