@@ -1,0 +1,57 @@
+{
+  "contract_version": 1,
+  "workflow_id": "wf-write",
+  "expected_events": [
+    {
+      "entity_kind": "node",
+      "entity_id": "start",
+      "op": "ADD"
+    },
+    {
+      "entity_kind": "design_control",
+      "entity_id": "wf-write",
+      "op": "MUTATION_COMMITTED",
+      "payload": {
+        "action": "node_upsert",
+        "entity_id": "start",
+        "prev_version": 0,
+        "version": 1,
+        "target_seq": 1
+      }
+    },
+    {
+      "entity_kind": "node",
+      "entity_id": "end",
+      "op": "ADD"
+    },
+    {
+      "entity_kind": "design_control",
+      "entity_id": "wf-write",
+      "op": "MUTATION_COMMITTED",
+      "payload": {
+        "action": "node_upsert",
+        "entity_id": "end",
+        "prev_version": 1,
+        "version": 2,
+        "target_seq": 3
+      }
+    },
+    {
+      "entity_kind": "edge",
+      "entity_id": "edge",
+      "op": "ADD"
+    },
+    {
+      "entity_kind": "design_control",
+      "entity_id": "wf-write",
+      "op": "MUTATION_COMMITTED",
+      "payload": {
+        "action": "edge_upsert",
+        "entity_id": "edge",
+        "prev_version": 2,
+        "version": 3,
+        "target_seq": 5
+      }
+    }
+  ]
+}

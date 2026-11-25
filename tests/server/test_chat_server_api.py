@@ -6035,6 +6035,79 @@ def test_workflow_design_edge_delete_rolls_back_when_control_event_fails(
     assert history_after["current_seq"] == history_before["current_seq"]
 
 
+def test_workflow_design_mutations_match_shared_event_contract(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-mutation-events-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    workflow_id = fixture["workflow_id"]
+    identity = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "role": "rw",
+            "capabilities": ["workflow.design.write", "write_graph"],
+            "sub": "alice",
+        }
+    )
+    try:
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id="alice",
+            node_id="start",
+            label="Start",
+            op="start",
+            start=True,
+        )
+        service.workflow_design_upsert_node(
+            workflow_id=workflow_id,
+            designer_id="alice",
+            node_id="end",
+            label="End",
+            op="emit-result",
+            terminal=True,
+        )
+        service.workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id="alice",
+            edge_id="edge",
+            src="start",
+            dst="end",
+            is_default=True,
+        )
+    finally:
+        claims_ctx.reset(identity)
+
+    events = list(
+        workflow_engine.meta_sqlite.iter_entity_events(
+            namespace=f"wf_design:{workflow_id}", from_seq=1
+        )
+    )
+    actual = []
+    for event in events:
+        item = {
+            "entity_kind": event[1],
+            "entity_id": event[2],
+            "op": event[3],
+        }
+        if event[1] == "design_control":
+            payload = json.loads(event[4])
+            item["payload"] = {
+                key: payload[key]
+                for key in fixture["expected_events"][len(actual)]["payload"]
+            }
+        actual.append(item)
+
+    assert actual == fixture["expected_events"]
+
+
 def test_workflow_design_node_upsert_requires_write_graph_before_effect(
     monkeypatch, engine_triplet
 ):

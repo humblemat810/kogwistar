@@ -1313,20 +1313,24 @@
         let events = store
             .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
             .unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .map(|event| (event.entity_kind.as_str(), event.op.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                ("node", "ADD"),
-                ("design_control", "MUTATION_COMMITTED"),
-                ("node", "ADD"),
-                ("design_control", "MUTATION_COMMITTED"),
-                ("edge", "ADD"),
-                ("design_control", "MUTATION_COMMITTED"),
-            ]
-        );
+        let event_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-mutation-events-v1.json"
+        )))
+        .unwrap();
+        let expected_events = event_contract["expected_events"].as_array().unwrap();
+        assert_eq!(events.len(), expected_events.len());
+        for (event, expected) in events.iter().zip(expected_events) {
+            assert_eq!(event.entity_kind, expected["entity_kind"]);
+            assert_eq!(event.entity_id, expected["entity_id"]);
+            assert_eq!(event.op, expected["op"]);
+            if let Some(expected_payload) = expected["payload"].as_object() {
+                let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+                for (key, value) in expected_payload {
+                    assert_eq!(&payload[key], value, "event payload field {key}");
+                }
+            }
+        }
         let delta = store
             .get_workflow_design_delta("wf-write", 3, 1)
             .unwrap()
