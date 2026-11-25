@@ -1176,6 +1176,26 @@ fn graph_find_edges_matches_relation_document_and_label_filters() {
 }
 
 #[test]
+fn graph_find_edges_preserves_supplied_backend_order() {
+    let edges = vec![
+        edge_record("z-edge", serde_json::json!({"relation": "links"})),
+        edge_record("a-edge", serde_json::json!({"relation": "links"})),
+    ];
+
+    assert_eq!(
+        graph_find_edges_from_records(
+            &GraphFindEdgesQuery {
+                relation: Some("links".to_owned()),
+                ..Default::default()
+            },
+            &[],
+            &edges,
+        ),
+        vec!["z-edge".to_owned(), "a-edge".to_owned()]
+    );
+}
+
+#[test]
 fn graph_shortest_path_is_bounded_and_respects_document_and_tombstone_filters() {
     let nodes = vec![node_record("n1"), node_record("n2"), node_record("n3")];
     let edges = vec![

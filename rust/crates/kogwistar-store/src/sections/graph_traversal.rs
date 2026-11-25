@@ -178,7 +178,7 @@ pub fn graph_find_edges_from_records(
                 .any(|label| label.to_lowercase().contains(&needle))
         })
     };
-    let mut result = edges
+    edges
         .iter()
         .filter(|edge| !is_tombstoned(&edge.metadata))
         .filter_map(|edge| {
@@ -224,9 +224,7 @@ pub fn graph_find_edges_from_records(
             }
             Some(edge.id.clone())
         })
-        .collect::<Vec<_>>();
-    result.sort();
-    result
+        .collect::<Vec<_>>()
 }
 
 /// Find a bounded path through visible node and edge records.
