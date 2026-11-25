@@ -57,6 +57,156 @@ fn in_memory_root_graph_tool_auth_matches_python_capability_policy() {
     }
 }
 
+#[tokio::test]
+async fn in_memory_root_graph_mcp_hides_and_rejects_tools_without_read_capability() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
+    let secret = "root-graph-acl-mcp-test-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = |capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"reader",
+                "role":"ro",
+                "ns":["docs"],
+                "capabilities":capabilities,
+                "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec![],
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(InMemoryGraphApplicationService::default()),
+    );
+
+    let denied_token = token(&[]);
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":"list-denied","method":"tools/list"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let list: Value = serde_json::from_slice(
+        &to_bytes(list.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(!list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "kg_shortest_path"));
+
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-denied",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let denied: Value = serde_json::from_slice(
+        &to_bytes(denied.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(denied["error"]["code"], -32602);
+
+    let allowed_token = token(&["read_graph"]);
+    let allowed_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {allowed_token}"))
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":"list-allowed","method":"tools/list"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let allowed_list: Value = serde_json::from_slice(
+        &to_bytes(allowed_list.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(allowed_list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "kg_shortest_path"));
+
+    let allowed = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {allowed_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-allowed",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let allowed: Value = serde_json::from_slice(
+        &to_bytes(allowed.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(allowed.get("error").is_none(), "{allowed}");
+}
+
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text; fixture=contracts/golden/semantic-seed-expand-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
 #[tokio::test]
 async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp() {
