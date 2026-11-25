@@ -1185,7 +1185,7 @@ impl PostgresRunApplicationService {
                             "drop_to_seq":history["versions"].as_array().and_then(|items|items.last()).and_then(|item|item["seq"].as_i64()).unwrap_or(0)}).to_string(),
                     }).await?; }
                     let version = history["allocated_max_version"].as_i64().unwrap_or(0)+1;
-                    let entity = design_entity_event(&action, &entity_id, &before, &graph);
+                    let entity = design_entity_event(&action, &entity_id, &designer, &before, &graph);
                     let data_event = uow.append_raw_entity_event(&namespace, PostgresNewRawEntityEvent {
                         event_id:entity.event_id,entity_kind:entity.entity_kind,entity_id:entity.entity_id,op:entity.op,payload_json:entity.payload.to_string(),
                     }).await?;

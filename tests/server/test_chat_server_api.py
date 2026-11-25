@@ -6117,6 +6117,7 @@ def test_workflow_design_mutations_match_shared_event_contract(
             }
         elif event[1] == "edge" and event[3] == "TOMBSTONE":
             edge_tombstone_seq = event[0]
+            item["payload"] = json.loads(event[4])
         actual.append(item)
 
     assert actual == (

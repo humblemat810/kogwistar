@@ -58,7 +58,12 @@
     {
       "entity_kind": "edge",
       "entity_id": "edge",
-      "op": "TOMBSTONE"
+      "op": "TOMBSTONE",
+      "payload": {
+        "entity_id": "edge",
+        "reason": "workflow_design_delete",
+        "deleted_by": "alice"
+      }
     },
     {
       "entity_kind": "design_control",

@@ -205,6 +205,7 @@ fn visible_delta(before: &Value, after: &Value) -> Value {
 fn design_entity_event(
     action: &str,
     entity_id: &str,
+    designer_id: &str,
     before: &Value,
     after: &Value,
 ) -> EntityEvent {
@@ -230,12 +231,12 @@ fn design_entity_event(
         "node_delete" => (
             "node",
             "TOMBSTONE",
-            json!({"entity_id": entity_id, "reason": "workflow_design_delete"}),
+            json!({"entity_id": entity_id, "reason": "workflow_design_delete", "deleted_by": designer_id}),
         ),
         "edge_delete" => (
             "edge",
             "TOMBSTONE",
-            json!({"entity_id": entity_id, "reason": "workflow_design_delete"}),
+            json!({"entity_id": entity_id, "reason": "workflow_design_delete", "deleted_by": designer_id}),
         ),
         _ => unreachable!("known design mutation action"),
     };
