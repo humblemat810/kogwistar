@@ -134,6 +134,28 @@ def test_build_graph_engine_propagates_server_acl_opt_in_to_pg(monkeypatch, tmp_
     assert captured["acl_enabled"] is True
 
 
+def test_server_resource_builder_propagates_server_acl_opt_in(monkeypatch):
+    from kogwistar.server import resources
+    from types import SimpleNamespace
+
+    captured: dict[str, object] = {}
+
+    def fake_build_graph_engine(**kwargs: object):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(resources, "build_graph_engine", fake_build_graph_engine)
+    monkeypatch.setattr(
+        resources,
+        "storage_settings",
+        SimpleNamespace(acl_enabled=True, backend="chroma"),
+    )
+
+    resources._build_conversation_engine()
+
+    assert getattr(captured["settings"], "acl_enabled") is True
+
+
 def test_pg_resource_factory_resolves_engine_type_at_runtime(monkeypatch):
     from kogwistar.server import resources
 
