@@ -48,6 +48,29 @@ fn conversation_transcript_missing_id_matches_python_usage_error() {
     );
 }
 
+#[test]
+fn conversation_transcript_missing_option_value_is_usage_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args([
+            "api",
+            "conversation",
+            "conversation.get_transcript",
+            "--conversation-id",
+            "--base-url",
+            "http://127.0.0.1:1",
+        ])
+        .output()
+        .expect("run kogwistar-cli with a missing option value");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("--conversation-id")
+    );
+}
+
 fn run_mock_http_cli(
     arguments: impl FnOnce(String) -> Vec<String>,
     response_body: &'static str,

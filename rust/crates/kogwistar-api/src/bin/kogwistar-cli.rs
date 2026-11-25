@@ -39,6 +39,10 @@ fn option_values(args: impl Iterator<Item = String>) -> HashMap<String, String> 
         let Some(value) = args.next() else {
             usage();
         };
+        if value.starts_with("--") {
+            eprintln!("missing value for option: {option}");
+            usage();
+        }
         values.insert(option, value);
     }
     values
