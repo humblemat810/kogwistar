@@ -2350,6 +2350,12 @@ fn resource_value(
             )
         })
         .count();
+    let usage_count = usage.len();
+    let usage_by_kind = if usage_count == 0 {
+        json!({})
+    } else {
+        json!({"usage": usage_count})
+    };
     json!({
         "scheduler": {
             "max_active": active.max(1),
@@ -2373,7 +2379,7 @@ fn resource_value(
             "workspace_id": "chat-service",
             "event_count": usage.len(),
             "total_amount": total_amount,
-            "by_kind": {"usage": usage.len()},
+            "by_kind": usage_by_kind,
         },
         "budget_model": {"token_kind": "token", "time_kind": "ms", "storage_kind": "bytes"},
         "policy_infra": {"cpu_millicores": Value::Null, "memory_mb": Value::Null},

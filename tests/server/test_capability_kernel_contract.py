@@ -234,7 +234,7 @@ def test_workflow_budget_route_matches_contract_and_requires_security_scope(
         assert set(contract["required_cost_ledger_fields"]).issubset(
             payload["cost_ledger"]
         )
-        assert payload["cost_ledger"]["workspace_id"] == contract["workspace_id"]
+        assert payload["cost_ledger"] == contract["expected_cost_ledger"]
         assert payload["budget_model"] == contract["budget_model"]
 
         denied = client.get(

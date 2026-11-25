@@ -4,7 +4,12 @@
   "denied_status": 403,
   "required_fields": ["cost_ledger", "budget_model"],
   "required_cost_ledger_fields": ["workspace_id", "event_count", "total_amount", "by_kind"],
-  "workspace_id": "chat-service",
+  "expected_cost_ledger": {
+    "workspace_id": "chat-service",
+    "event_count": 0,
+    "total_amount": 0,
+    "by_kind": {}
+  },
   "budget_model": {
     "token_kind": "token",
     "time_kind": "ms",
