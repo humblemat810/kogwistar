@@ -273,6 +273,18 @@ def test_rust_postgres_historical_read_subsystem_matches_python(
             ]
 
         for reader in (python_reader, rust_reader):
+            for foreign_id in (
+                "foreign-distractor",
+                "foreign-graph-space-distractor",
+            ):
+                assert reader.get_nodes(
+                    ids=[foreign_id],
+                    where={
+                        "workspace_id": "workspace-a",
+                        "graph_space": "facts",
+                    },
+                ) == []
+
             current_hits = reader.query_nodes(
                 query_embeddings=[1.0, 0.0],
                 where={
