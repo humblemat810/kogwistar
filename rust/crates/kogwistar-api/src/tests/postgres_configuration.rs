@@ -183,11 +183,46 @@
                 method: "GET".to_owned(),
                 path_and_query: "/api/workflow/design/wf-pg-write/graph".to_owned(),
                 body: Vec::new(),
-                principal,
+                principal: principal.clone(),
             })
             .await;
         let graph: Value = serde_json::from_slice(&graph.body).unwrap();
         assert!(graph["edges"].as_array().unwrap().is_empty());
+        let redo = service
+            .execute_async(request(
+                "POST",
+                "/api/workflow/design/wf-pg-write/redo",
+                json!({"designer_id":"alice"}),
+            ))
+            .await;
+        assert_eq!(redo.status, 200);
+        let delete = service
+            .execute_async(request(
+                "DELETE",
+                "/api/workflow/design/wf-pg-write/edges/edge",
+                json!({"designer_id":"alice"}),
+            ))
+            .await;
+        assert_eq!(delete.status, 200);
+        let events = snapshot_reader
+            .replay_raw_events("wf_design:wf-pg-write", 0, usize::MAX)
+            .await
+            .unwrap();
+        let tombstone = events
+            .iter()
+            .find(|event| event.entity_kind == "edge" && event.op == "TOMBSTONE")
+            .expect("edge delete writes a canonical tombstone");
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-mutation-events-v1.json"
+        )))
+        .unwrap();
+        let expected_tombstone = &fixture["expected_edge_delete_events"][0]["payload"];
+        assert_eq!(
+            serde_json::from_str::<Value>(&tombstone.payload_json).unwrap(),
+            *expected_tombstone,
+            "PostgreSQL tombstone preserves Python-compatible deletion provenance"
+        );
         drop(service);
         let cleanup_dsn = dsn
             .strip_prefix("postgresql+psycopg://")
