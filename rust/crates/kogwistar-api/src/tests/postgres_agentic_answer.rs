@@ -1618,14 +1618,7 @@
             }
             tokio::time::sleep(RUN_STATUS_POLL_INTERVAL).await;
         }
-        eprintln!(
-            "AGENT_BENCH_SAMPLE={}",
-            serde_json::json!({
-                "request_ms": agent_request_started.elapsed().as_secs_f64() * 1_000.0,
-                "run_status_poll_interval_ms": RUN_STATUS_POLL_INTERVAL.as_millis(),
-                "run_status_poll_count": run_status_poll_count,
-            })
-        );
+        let agent_request_ms = agent_request_started.elapsed().as_secs_f64() * 1_000.0;
         let run = service
             .store
             .get_server_run(&agentic_run_id)
@@ -2460,4 +2453,19 @@
         task.await.unwrap().unwrap();
         let _ = std::fs::remove_file(auth_path);
         let _ = std::fs::remove_file(server_log_path);
+        let benchmark_sample_id = std::env::var("KOGWISTAR_AGENT_BENCH_SAMPLE_ID")
+            .unwrap_or_else(|_| "sample-1".to_owned());
+        eprintln!(
+            "AGENT_BENCH_SAMPLE={}",
+            serde_json::json!({
+                "sample_id": benchmark_sample_id,
+                "execution_mode": "rust-native-http",
+                "fixture_nodes": benchmark_fixture_size + 1,
+                "request_ms": agent_request_ms,
+                "tcp_request_ms": agent_request_ms,
+                "run_status_poll_interval_ms": RUN_STATUS_POLL_INTERVAL.as_millis(),
+                "run_status_poll_count": run_status_poll_count,
+                "canonical_state_sha256": digest,
+            })
+        );
     }

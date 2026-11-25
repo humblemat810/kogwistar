@@ -2290,6 +2290,40 @@ in 711.12 s; per-case wall 218.55 / 245.48 / 238.65 s. Rust run: **3 passed**
 in its existing fixed-resource profile. Python JUnit with captured sample
 records: `.tmp/fw19-replay-capped-container/python-tcp-junit.xml`.
 
+The benchmark hooks now emit a common machine-readable TCP sample contract:
+sample ID, execution mode, seeded fixture size, TCP request latency, polling
+interval, and canonical result digest. Python retains its separate in-process
+latency field; the comparator uses only `tcp_request_ms`. Both profiles now use
+one warm-up plus three measured samples and 100 ms polling. Rust emits a sample
+only after its durability, digest, and native-path assertions complete. The
+unit-tested verifier is `scripts/agent_request_benchmark_report.py`; it rejects
+unequal IDs/digests/poll intervals/fixture sizes, missing resource or isolation
+evidence, and fails thresholds below 0.95x throughput or above 1.10x p95. Its
+contract tests pass, but the resource-matched live run has not yet been repeated
+with this updated harness, so prior timings remain historical evidence only.
+
+On 2026-11-26, the updated sample hooks were smoke-tested against a disposable
+local pgvector:pg16 instance with 10 seeded distractors (11 total fixture
+nodes). Python and Rust each completed one authenticated TCP request; both
+reported digest `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`,
+100 ms polling, and matching `sample-1` metadata. Rust also completed its
+durability/no-Python-worker assertions. This validates the paired output
+contract only: one sample, small fixture, uncapped Windows client, so no
+latency comparison or performance-gate claim follows.
+
+For the next fixed-resource rerun, preserve each process log with `-s` /
+`--nocapture`; run Python's parametrized profile once, then run the Rust ignored
+test four times with `KOGWISTAR_AGENT_BENCH_SAMPLE_ID=warmup,sample-1,...` set
+per invocation. Set `KOGWISTAR_AGENT_BENCH_FIXTURE_SIZE=2000` for both. Supply a
+resource-evidence JSON captured from Docker inspect and container cgroup values
+to the verifier; its three profiles are `python_client`, `rust_client`, and
+`postgres`, each with `cpus` and `memory_bytes`, plus `verified: true` and a
+source description. The client profiles must match. The verifier writes a
+machine-readable report; `pass` requires matched samples, resource evidence,
+the shared digest, and both declared performance thresholds. A nonzero exit
+means either evidence is incomplete or a measured threshold failed; inspect the
+report's `status` and `errors` fields to distinguish them.
+
 #### PyPy 3.11 persistent-trace runtime parity
 
 Ran the current checkout's Python-authority SQLite trace under PyPy 3.11.17
