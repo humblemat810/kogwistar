@@ -98,6 +98,42 @@ def test_build_graph_engine_propagates_server_acl_opt_in(monkeypatch, tmp_path):
     assert captured["acl_enabled"] is True
 
 
+def test_build_graph_engine_propagates_server_acl_opt_in_to_pg(monkeypatch, tmp_path):
+    from kogwistar.server.bootstrap import ServerStorageSettings
+
+    captured: dict[str, object] = {}
+
+    class FakeGraphKnowledgeEngine:
+        def __init__(self, **kwargs: object):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "kogwistar.server.bootstrap.GraphKnowledgeEngine",
+        FakeGraphKnowledgeEngine,
+    )
+    monkeypatch.setattr(
+        "kogwistar.engine_core.postgres_backend.PgVectorBackend",
+        lambda **_kwargs: object(),
+    )
+    settings = ServerStorageSettings(
+        backend="pg",
+        knowledge_dir=str(tmp_path / "knowledge"),
+        conversation_dir=str(tmp_path / "conversation"),
+        workflow_dir=str(tmp_path / "workflow"),
+        wisdom_dir=str(tmp_path / "wisdom"),
+        index_dir=str(tmp_path / "index"),
+        acl_enabled=True,
+    )
+
+    build_graph_engine(
+        settings=settings,
+        graph_type="conversation",
+        sa_engine=object(),
+    )
+
+    assert captured["acl_enabled"] is True
+
+
 def test_pg_resource_factory_resolves_engine_type_at_runtime(monkeypatch):
     from kogwistar.server import resources
 
