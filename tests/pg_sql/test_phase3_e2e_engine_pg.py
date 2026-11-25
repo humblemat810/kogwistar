@@ -214,6 +214,19 @@ def test_rust_postgres_historical_read_subsystem_matches_python(
                 "graph_space": "facts",
             },
         ),
+        build_entity_node(
+            node_id="foreign-graph-space-distractor",
+            doc_id="foreign-graph-space-doc",
+            summary="Out-of-graph-space exact match",
+            embedding=[1.0, 0.0],
+            metadata={
+                "namespace": namespace,
+                "lifecycle_status": "active",
+                "effective_from": "1967-01-01T00:00:00Z",
+                "workspace_id": "workspace-a",
+                "graph_space": "archive",
+            },
+        ),
     )
     for node in records:
         with use_mode("backend"):
