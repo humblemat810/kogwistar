@@ -926,6 +926,43 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     assert_eq!(payload["nodes_added"], expected_body["nodes_added"]);
     assert_eq!(payload["edges_added"], expected_body["edges_added"]);
 
+    let document_tree_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/document-upsert-tree-success-v1.json"
+    )))
+    .expect("shared document tree upsert fixture");
+    let document_tree_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(
+                    &document_tree_fixture["request"],
+                )
+                .unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let document_tree_status = document_tree_response.status();
+    let document_tree_body = to_bytes(document_tree_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    assert_eq!(
+        document_tree_status,
+        StatusCode::OK,
+        "shared document tree upsert failed: {}",
+        String::from_utf8_lossy(&document_tree_body)
+    );
+    let document_tree_result: Value = serde_json::from_slice(&document_tree_body).unwrap();
+    assert_eq!(
+        document_tree_result,
+        document_tree_fixture["expected"]["body"]
+    );
+
     let mut legacy_nodes = extraction["nodes"].as_array().unwrap().clone();
     let mut legacy_edges = extraction["edges"].as_array().unwrap().clone();
     for entity in legacy_nodes.iter_mut().chain(legacy_edges.iter_mut()) {

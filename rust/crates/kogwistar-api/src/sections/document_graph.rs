@@ -1264,6 +1264,29 @@ impl SqliteRunApplicationService {
                 Ok(parsed) => parsed,
                 Err(response) => return response,
             };
+        if inserted_nodes == 0 && inserted_edges == 0 {
+            let payload: Value = serde_json::from_slice(&request.body)
+                .expect("validated document tree body");
+            let doc_id = payload["doc_id"]
+                .as_str()
+                .expect("validated document tree doc_id")
+                .to_owned();
+            return json_effect(
+                StatusCode::OK,
+                json!({
+                    "status": "ok",
+                    "inserted_nodes": 0,
+                    "inserted_edges": 0,
+                    "engine_result": {
+                        "document_id": doc_id,
+                        "node_ids": [],
+                        "edge_ids": [],
+                        "nodes_added": 0,
+                        "edges_added": 0
+                    }
+                }),
+            );
+        }
         let response = self.sqlite_public_graph_upsert_effect(&graph_request).await;
         if !(200..300).contains(&response.status) {
             return response;
