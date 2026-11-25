@@ -1500,22 +1500,24 @@ def test_dual_language_goal_case_table_matches_pivot_rows() -> None:
     parsed = [[part.strip() for part in row.strip("|").split("|")] for row in rows]
 
     assert all(len(row) == 4 for row in parsed)
-    assert all(row[2] in {"PASS", "NOT STARTED"} for row in parsed)
+    assert all(row[2] in {"PASS", "IN PROGRESS", "NOT STARTED"} for row in parsed)
     assert any(
         "test_dual_language_goal_case_table_matches_pivot_rows" in row[1]
         for row in parsed
     )
     counts = {
         status: sum(row[2] == status for row in parsed)
-        for status in ("PASS", "NOT STARTED")
+        for status in ("PASS", "IN PROGRESS", "NOT STARTED")
     }
     summary = re.search(
-        r"Current: \*\*(\d+) PASS / (\d+) NOT STARTED / (\d+) listed cases\*\*",
+        r"Current: \*\*(\d+) PASS / (\d+) IN PROGRESS / "
+        r"(\d+) NOT STARTED / (\d+) listed cases\*\*",
         section,
     )
     assert summary is not None
     assert tuple(map(int, summary.groups())) == (
         counts["PASS"],
+        counts["IN PROGRESS"],
         counts["NOT STARTED"],
         len(parsed),
     )
