@@ -76,10 +76,10 @@ fn validate_options(options: &HashMap<String, String>, allowed: &[&str]) {
 }
 
 fn required_option<'a>(options: &'a HashMap<String, String>, name: &str) -> &'a str {
-    options
-        .get(name)
-        .map(String::as_str)
-        .unwrap_or_else(|| usage())
+    options.get(name).map(String::as_str).unwrap_or_else(|| {
+        eprintln!("missing required option: {name}");
+        usage()
+    })
 }
 
 fn optional_integer(options: &HashMap<String, String>, name: &str) -> Option<i64> {

@@ -32,6 +32,22 @@ fn health_command_rejects_unsupported_backend() {
     );
 }
 
+#[test]
+fn conversation_transcript_missing_id_matches_python_usage_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args(["api", "conversation", "conversation.get_transcript"])
+        .output()
+        .expect("run kogwistar-cli with missing transcript ID");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("--conversation-id")
+    );
+}
+
 fn run_mock_http_cli(
     arguments: impl FnOnce(String) -> Vec<String>,
     response_body: &'static str,
