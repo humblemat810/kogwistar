@@ -74,6 +74,20 @@
             }
           ]
         }
+      },
+      {
+        "id": "node-object-pointer-list",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer collection must be an array",
+        "metadata": {
+          "pointers": {
+            "source_cluster_id": "cluster-1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Node"
+          }
+        }
       }
     ]
   },
@@ -84,6 +98,7 @@
     "node-null-pointer",
     "node-non-string-excerpt",
     "node-negative-start",
-    "node-reversed-span"
+    "node-reversed-span",
+    "node-object-pointer-list"
   ]
 }
