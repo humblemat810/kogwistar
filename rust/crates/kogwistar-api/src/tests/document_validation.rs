@@ -186,6 +186,88 @@
     }
 
     #[test]
+    fn document_graph_validation_rejects_non_object_items() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-non-object-items-v1.json"
+        ))
+        .expect("valid non-object item fixture");
+
+        for case in fixture["cases"].as_array().unwrap() {
+            let response = document_graph_validation_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/document.validate_graph".to_owned(),
+                body: serde_json::to_vec(&case["request"]).unwrap(),
+                principal: json!({}),
+            })
+            .unwrap();
+
+            assert_eq!(response.status, case["status"].as_u64().unwrap() as u16);
+            assert_eq!(response.content_type, "application/json");
+        }
+    }
+
+    #[test]
+    fn document_graph_validation_accepts_multimodal_only_grounding() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-multimodal-grounding-v1.json"
+        ))
+        .expect("valid multimodal grounding fixture");
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"].as_u64().unwrap() as u16);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap(),
+            fixture["response"]
+        );
+    }
+
+    #[test]
+    fn document_graph_validation_rejects_malformed_multimodal_evidence() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-multimodal-grounding-v1.json"
+        ))
+        .expect("valid multimodal grounding fixture");
+        let mut requests = Vec::new();
+        let mut invalid_digest = fixture["request"].clone();
+        invalid_digest["nodes"][0]["mentions"][0]["multimodal_spans"][0]["content_sha256"] =
+            json!("not-a-digest");
+        requests.push(invalid_digest);
+
+        let mut incompatible_locator = fixture["request"].clone();
+        incompatible_locator["nodes"][0]["mentions"][0]["multimodal_spans"][0]["locator"] =
+            json!({"kind":"temporal_interval","start_ms":0,"end_ms":1});
+        requests.push(incompatible_locator);
+
+        let mut invalid_text_spans = fixture["request"].clone();
+        invalid_text_spans["nodes"][0]["mentions"][0]["spans"] = json!("not-a-list");
+        requests.push(invalid_text_spans);
+
+        for request in requests {
+            let response = document_graph_validation_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/document.validate_graph".to_owned(),
+                body: serde_json::to_vec(&request).unwrap(),
+                principal: json!({}),
+            })
+            .unwrap();
+            let body: Value = serde_json::from_slice(&response.body).unwrap();
+
+            assert_eq!(response.status, fixture["status"].as_u64().unwrap() as u16);
+            assert_eq!(body["ok"], false);
+            assert!(body["node_errors"]["node-image-grounded"].is_string());
+        }
+    }
+
+    #[test]
     fn document_graph_validation_accepts_u64_max_pointer_offsets() {
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/document-validate-graph-u64-offset-v1.json"

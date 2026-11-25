@@ -1609,14 +1609,177 @@ fn validate_graph_mentions(value: Option<&Value>) -> Result<(), String> {
             validate_graph_span(mention)?;
             continue;
         }
-        let spans = mention
+        if mention
             .get("spans")
-            .and_then(Value::as_array)
-            .filter(|values| !values.is_empty())
-            .ok_or_else(|| "grounding spans must be a non-empty array".to_owned())?;
-        for span in spans {
-            validate_graph_span(span)?;
+            .is_some_and(|value| !value.is_null() && !value.is_array())
+        {
+            return Err("grounding spans must be an array".to_owned());
         }
+        if mention
+            .get("multimodal_spans")
+            .is_some_and(|value| !value.is_array())
+        {
+            return Err("grounding multimodal_spans must be an array".to_owned());
+        }
+        let spans = mention.get("spans").and_then(Value::as_array);
+        let multimodal_spans = mention.get("multimodal_spans").and_then(Value::as_array);
+        let has_text = spans.is_some_and(|values| !values.is_empty());
+        let has_multimodal = multimodal_spans.is_some_and(|values| !values.is_empty());
+        if !has_text && !has_multimodal {
+            return Err("grounding requires text or multimodal evidence".to_owned());
+        }
+        if let Some(spans) = spans {
+            for span in spans {
+                validate_graph_span(span)?;
+            }
+        }
+        if let Some(spans) = multimodal_spans {
+            for span in spans {
+                validate_graph_multimodal_span(span)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// Mirrors Python MultimodalSpan's source identity, digest, locator compatibility,
+// and range checks without creating a second persisted Rust representation.
+fn validate_graph_multimodal_span(value: &Value) -> Result<(), String> {
+    let span = value
+        .as_object()
+        .ok_or_else(|| "multimodal span must be an object".to_owned())?;
+    if span
+        .get("schema_version")
+        .is_some_and(|value| value.as_u64() != Some(1))
+    {
+        return Err("multimodal schema_version must be 1".to_owned());
+    }
+    for name in ["source_namespace", "resource_id", "resource_revision_id"] {
+        if !span
+            .get(name)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(format!("multimodal {name} must be a non-empty string"));
+        }
+    }
+    let digest = span
+        .get("content_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "multimodal content_sha256 must be a string".to_owned())?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("multimodal content_sha256 must be 64 hexadecimal characters".to_owned());
+    }
+    let modality = span
+        .get("modality")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "multimodal modality must be a string".to_owned())?;
+    let locator = span
+        .get("locator")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "multimodal locator must be an object".to_owned())?;
+    let kind = locator
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "multimodal locator kind must be a string".to_owned())?;
+    let compatible = match modality {
+        "text" => matches!(kind, "text_range" | "legacy"),
+        "image" => matches!(kind, "spatial_region" | "legacy"),
+        "audio" => matches!(kind, "temporal_interval" | "legacy"),
+        "video" => matches!(kind, "temporal_interval" | "spatial_region" | "video_region_track" | "legacy"),
+        "pdf_page" | "table" | "webpage" => matches!(kind, "text_range" | "spatial_region" | "legacy"),
+        "chart" => matches!(kind, "spatial_region" | "legacy"),
+        _ => false,
+    };
+    if !compatible {
+        return Err("multimodal modality and locator kind are incompatible".to_owned());
+    }
+    let integer = |key: &str| locator.get(key).and_then(graph_pointer_integer);
+    match kind {
+        "text_range" => {
+            let start = integer("start_char");
+            let end = integer("end_char");
+            if !start.is_some_and(|value| value >= 0)
+                || !end.zip(start).is_some_and(|(end, start)| end > start)
+            {
+                return Err("multimodal text range bounds are invalid".to_owned());
+            }
+            if locator.get("page_number").is_some_and(|value| {
+                !value.is_null()
+                    && !graph_pointer_integer(value).is_some_and(|page| page > 0)
+            }) {
+                return Err("multimodal text range page_number must be positive".to_owned());
+            }
+        }
+        "temporal_interval" => {
+            let start = integer("start_ms");
+            let end = integer("end_ms");
+            if !start.is_some_and(|value| value >= 0)
+                || !end.zip(start).is_some_and(|(end, start)| end > start)
+            {
+                return Err("multimodal temporal interval bounds are invalid".to_owned());
+            }
+        }
+        "spatial_region" => {
+            let coordinate_system = locator
+                .get("coordinate_system")
+                .and_then(Value::as_str)
+                .unwrap_or("normalized_0_1");
+            let number = |key: &str| {
+                locator.get(key).and_then(|value| {
+                    value
+                        .as_f64()
+                        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+                        .or_else(|| value.as_bool().map(|value| if value { 1.0 } else { 0.0 }))
+                })
+            };
+            let (Some(x), Some(y), Some(width), Some(height)) = (
+                number("x"),
+                number("y"),
+                number("width"),
+                number("height"),
+            ) else {
+                return Err("multimodal spatial region requires numeric bounds".to_owned());
+            };
+            if !matches!(coordinate_system, "normalized_0_1" | "pixels")
+                || x < 0.0
+                || y < 0.0
+                || width <= 0.0
+                || height <= 0.0
+                || (coordinate_system == "normalized_0_1" && (x + width > 1.0 || y + height > 1.0))
+            {
+                return Err("multimodal spatial region bounds are invalid".to_owned());
+            }
+        }
+        "video_region_track" => {
+            let start = integer("start_ms");
+            let end = integer("end_ms");
+            let manifest_digest = locator
+                .get("track_manifest_sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let manifest_schema_version = locator
+                .get("manifest_schema_version")
+                .map(graph_pointer_integer)
+                .unwrap_or(Some(1));
+            if !start.is_some_and(|value| value >= 0)
+                || !end.zip(start).is_some_and(|(end, start)| end > start)
+                || !manifest_schema_version.is_some_and(|version| version >= 1)
+                || !locator
+                    .get("track_manifest_ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                || manifest_digest.len() != 64
+                || !manifest_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err("multimodal video track locator is invalid".to_owned());
+            }
+        }
+        "legacy" if !locator.get("payload").is_some_and(Value::is_object) => {
+            return Err("multimodal legacy locator payload must be an object".to_owned());
+        }
+        "legacy" => {}
+        _ => return Err("multimodal locator kind is unsupported".to_owned()),
     }
     Ok(())
 }
