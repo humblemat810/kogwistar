@@ -20,6 +20,7 @@ from kogwistar.conversation.agentic_answering import (
     EvidenceSelection,
     SpanRef,
 )
+
 from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
@@ -37,6 +38,8 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
+
+AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS = 0.1
 
 pytestmark = pytest.mark.ci_full
 
@@ -442,7 +445,9 @@ def test_python_agent_postgres_2k_request_profile(
         submitted.raise_for_status()
         http_run_id = submitted.json()["run_id"]
         deadline = time.monotonic() + 300.0
+        http_run_status_poll_count = 0
         while True:
+            http_run_status_poll_count += 1
             run_response = client.get(
                 f"/api/runs/{http_run_id}", headers=headers
             )
@@ -454,7 +459,7 @@ def test_python_agent_postgres_2k_request_profile(
                 raise AssertionError(
                     f"Python HTTP answer run {http_run_id} did not terminate"
                 )
-            time.sleep(0.1)
+            time.sleep(AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS)
         http_request_ms = (time.perf_counter() - http_started) * 1_000
         assert run_state["status"] == "succeeded", run_state
         http_out = run_state["result"]
@@ -483,6 +488,10 @@ def test_python_agent_postgres_2k_request_profile(
                 "request_ms": round(request_ms, 3),
                 "http_request_boundary": "tcp_conversation_answer_to_terminal_run",
                 "http_request_ms": round(http_request_ms, 3),
+                "run_status_poll_interval_ms": int(
+                    AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS * 1_000
+                ),
+                "run_status_poll_count": http_run_status_poll_count,
                 "canonical_state_sha256": digest,
             },
             sort_keys=True,

@@ -1594,7 +1594,11 @@
         let agentic_turn_id = submission["user_turn_node_id"].as_str().unwrap().to_owned();
         let mut terminal_status = String::new();
         let mut run_response = Value::Null;
+        const RUN_STATUS_POLL_INTERVAL: std::time::Duration =
+            std::time::Duration::from_millis(100);
+        let mut run_status_poll_count = 0_u32;
         for _ in 0..300 {
+            run_status_poll_count += 1;
             let response = client
                 .get(format!("{base_url}/api/workflow/runs/{agentic_run_id}"))
                 .bearer_auth(&token)
@@ -1612,11 +1616,15 @@
             if matches!(terminal_status.as_str(), "succeeded" | "failed" | "cancelled") {
                 break;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            tokio::time::sleep(RUN_STATUS_POLL_INTERVAL).await;
         }
         eprintln!(
-            "AGENT_BENCH_REQUEST_MS={:.3}",
-            agent_request_started.elapsed().as_secs_f64() * 1_000.0
+            "AGENT_BENCH_SAMPLE={}",
+            serde_json::json!({
+                "request_ms": agent_request_started.elapsed().as_secs_f64() * 1_000.0,
+                "run_status_poll_interval_ms": RUN_STATUS_POLL_INTERVAL.as_millis(),
+                "run_status_poll_count": run_status_poll_count,
+            })
         );
         let run = service
             .store

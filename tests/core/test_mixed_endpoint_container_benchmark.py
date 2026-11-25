@@ -3,10 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
 from scripts import mixed_endpoint_container_benchmark
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _fake_endpoint_run(output, *, items: int, samples: int, modes: tuple[str, ...]):
@@ -535,3 +539,25 @@ def test_endpoint_runner_preserves_json_evidence_when_mode_fails(
     assert (tmp_path / "2" / "progress.v3.json").is_file()
     assert (tmp_path / "2" / "mcp_trace.v1.json").is_file()
     assert not list(tmp_path.rglob("*.sqlite3"))
+
+
+def test_authenticated_agent_benchmarks_share_polling_and_report_it() -> None:
+    python_source = (ROOT / "tests/workflow/test_answer_workflow_v2.py").read_text(
+        encoding="utf-8"
+    )
+    rust_source = (
+        ROOT
+        / "rust/crates/kogwistar-api/src/tests/postgres_agentic_answer.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS = 0.1" in python_source
+    assert "time.sleep(AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS)" in python_source
+    assert '"run_status_poll_interval_ms": int(' in python_source
+    assert '"run_status_poll_count": http_run_status_poll_count' in python_source
+
+    rust_profile = rust_source.split("let mut terminal_status", maxsplit=1)[1].split(
+        "let run = service", maxsplit=1
+    )[0]
+    assert "Duration::from_millis(100)" in rust_profile
+    assert '"run_status_poll_interval_ms"' in rust_profile
+    assert '"run_status_poll_count"' in rust_profile
