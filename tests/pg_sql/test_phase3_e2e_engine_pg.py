@@ -184,6 +184,8 @@ def test_rust_postgres_historical_read_subsystem_matches_python(
                 "deleted_at": "2026-01-10T00:00:00Z",
                 "redirect_to_id": "target-node",
                 "effective_from": "1967-01-01T00:00:00Z",
+                "workspace_id": "workspace-a",
+                "graph_space": "facts",
             },
         ),
         build_entity_node(
@@ -195,6 +197,21 @@ def test_rust_postgres_historical_read_subsystem_matches_python(
                 "namespace": namespace,
                 "lifecycle_status": "active",
                 "effective_from": "2016-01-01T00:00:00Z",
+                "workspace_id": "workspace-a",
+                "graph_space": "facts",
+            },
+        ),
+        build_entity_node(
+            node_id="foreign-distractor",
+            doc_id="foreign-doc",
+            summary="Out-of-scope exact match",
+            embedding=[1.0, 0.0],
+            metadata={
+                "namespace": namespace,
+                "lifecycle_status": "active",
+                "effective_from": "1967-01-01T00:00:00Z",
+                "workspace_id": "workspace-b",
+                "graph_space": "facts",
             },
         ),
     )
@@ -234,7 +251,11 @@ def test_rust_postgres_historical_read_subsystem_matches_python(
                 for hit in reader.search_nodes_as_of_scored(
                     query_embeddings=[1.0, 0.0],
                     as_of_ts=as_of,
-                    n_results=10,
+                    where={
+                        "workspace_id": "workspace-a",
+                        "graph_space": "facts",
+                    },
+                    n_results=1,
                 )
             ]
 
