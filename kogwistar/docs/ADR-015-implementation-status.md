@@ -240,7 +240,7 @@ for language purity.
 
 ### Closed local implementation and evidence backlog
 
-Only these local items remain in scope before production rollout:
+Only these local items remain in scope before the library UAT gates close:
 
 - [x] Phase 3: run fake/memory, SQLite, and PostgreSQL contract gates from the
   current candidate; prove fault rollback, lease/CAS/sequence concurrency,
