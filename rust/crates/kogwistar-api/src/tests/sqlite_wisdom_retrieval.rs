@@ -117,6 +117,60 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
         },
         Arc::new(service.clone()),
     );
+    let denied_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice", "user_id": "alice", "role": "rw", "roles": ["writer"],
+            "ns": ["wisdom"], "storage_ns": "wisdom", "graph_space": "wisdom",
+            "capabilities": ["read_graph"], "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(mcp_secret.as_bytes()),
+    )
+    .unwrap();
+    let denied_response = mcp_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0", "id": "wisdom-upsert-denied",
+                        "method": "tools/call",
+                        "params": {
+                            "name": mcp_contract["operation"],
+                            "arguments": mcp_contract["arguments"]
+                        }
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_response.status(), StatusCode::OK);
+    let denied_body = axum::body::to_bytes(denied_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let denied_wire = String::from_utf8(denied_body.to_vec()).unwrap();
+    let denied_json = denied_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("Streamable HTTP wraps the JSON-RPC denial in SSE data");
+    let denied_payload: Value = serde_json::from_str(denied_json).unwrap();
+    assert_eq!(denied_payload["result"]["isError"], true, "{denied_payload}");
+    assert_eq!(
+        denied_payload["result"]["content"][0]["text"],
+        "Tool not advertised by this application service"
+    );
+    assert!(service
+        .store
+        .replay_raw_events("wisdom", 0, 100)
+        .unwrap()
+        .is_empty(), "denied MCP call must not persist graph events");
     let mcp_response = mcp_app
         .oneshot(
             Request::builder()
