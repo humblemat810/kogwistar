@@ -14,6 +14,18 @@
     }
 
     #[test]
+    fn request_roles_match_python_scalar_role_policy() {
+        for (claims, expected) in [
+            (json!({"role":"ro", "roles":["rw", "admin"]}), vec!["ro"]),
+            (json!({"role":"admin", "roles":["rw"]}), vec!["ro"]),
+            (json!({"roles":["rw"]}), vec!["ro"]),
+            (json!({"role":"rw", "roles":["ro"]}), vec!["rw"]),
+        ] {
+            assert_eq!(roles_from_claims(&claims), expected);
+        }
+    }
+
+    #[test]
     fn delegated_capabilities_are_attenuated_and_reserved_state_wins() {
         let shared = Arc::new(Mutex::new(CapabilityState::default()));
         let principal = json!({

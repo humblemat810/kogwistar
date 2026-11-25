@@ -351,19 +351,13 @@ fn jwt_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'
 }
 
 fn roles_from_claims(claims: &Value) -> Vec<String> {
-    let mut roles = Vec::new();
-    if let Some(role) = claims.get("role").and_then(Value::as_str) {
-        roles.push(role.to_ascii_lowercase());
-    }
-    if let Some(values) = claims.get("roles").and_then(Value::as_array) {
-        roles.extend(
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_ascii_lowercase),
-        );
-    }
-    roles
+    let role = claims
+        .get("role")
+        .and_then(Value::as_str)
+        .map(|role| role.trim().to_ascii_lowercase())
+        .filter(|role| matches!(role.as_str(), "ro" | "rw"))
+        .unwrap_or_else(|| "ro".to_owned());
+    vec![role]
 }
 
 fn jwt_claims(headers: &HeaderMap, config: &AuthConfig) -> Result<Value, &'static str> {
