@@ -2758,6 +2758,55 @@ def test_python_cli_workflow_visibility_snapshot_matches_rust_http_contract(
     }
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            ["workflow.scheduler_timeline", "--run-id", "r-16", "--limit", "31"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/scheduler/timeline",
+                "params": {"run_id": "r-16", "limit": 31},
+            },
+        ),
+        (
+            ["workflow.budget_snapshot"],
+            {"method": "GET", "url": "http://rust-server/api/workflow/budget"},
+        ),
+        (
+            ["workflow.budget_history"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/budget/history",
+                "params": {"limit": 200},
+            },
+        ),
+        (
+            ["workflow.tool_audit", "--conversation-id", "c-16", "--limit", "41"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/tools/audit",
+                "params": {"conversation_id": "c-16", "limit": 41},
+            },
+        ),
+    ],
+)
+def test_python_cli_workflow_diagnostics_reads_match_rust_http_contract(
+    command: list[str],
+    expected: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert main(["api", "workflow", *command, "--base-url", "http://rust-server"]) == 0
+    assert observed == expected
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -337,6 +337,51 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
             validate_options(&options, &["--base-url"]);
             (reqwest::Method::GET, "/api/workflow/visibility".to_owned())
         }
+        "workflow.scheduler_timeline" => {
+            validate_options(&options, &["--base-url", "--run-id", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(200);
+            let run_query = options
+                .get("--run-id")
+                .map(|run_id| format!("run_id={run_id}&"))
+                .unwrap_or_default();
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/scheduler/timeline?{run_query}limit={limit}"),
+            )
+        }
+        "workflow.budget_snapshot" => {
+            validate_options(&options, &["--base-url"]);
+            (reqwest::Method::GET, "/api/workflow/budget".to_owned())
+        }
+        "workflow.budget_history" => {
+            validate_options(&options, &["--base-url", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(200);
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/budget/history?limit={limit}"),
+            )
+        }
+        "workflow.tool_audit" => {
+            validate_options(&options, &["--base-url", "--conversation-id", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(200);
+            let conversation_query = options
+                .get("--conversation-id")
+                .map(|conversation_id| format!("conversation_id={conversation_id}&"))
+                .unwrap_or_default();
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/tools/audit?{conversation_query}limit={limit}"),
+            )
+        }
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);
             let run_id = required_option(&options, "--run-id");

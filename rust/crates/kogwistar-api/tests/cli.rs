@@ -600,6 +600,95 @@ fn workflow_visibility_snapshot_command_uses_python_endpoint() {
 }
 
 #[test]
+fn workflow_scheduler_timeline_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.scheduler_timeline",
+                "--run-id",
+                "r-16",
+                "--limit",
+                "31",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(
+        request
+            .starts_with("GET /api/workflow/scheduler/timeline?run_id=r-16&limit=31 HTTP/1.1\r\n")
+    );
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_budget_snapshot_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            ["api", "workflow", "workflow.budget_snapshot", "--base-url"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([base])
+                .collect()
+        },
+        r#"{"budget":{}}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/budget HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"budget": {}}));
+}
+
+#[test]
+fn workflow_budget_history_command_preserves_python_default_limit() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            ["api", "workflow", "workflow.budget_history", "--base-url"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([base])
+                .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/budget/history?limit=200 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_tool_audit_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.tool_audit",
+                "--conversation-id",
+                "c-16",
+                "--limit",
+                "41",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"events":[]}"#,
+    );
+    assert!(
+        request.starts_with(
+            "GET /api/workflow/tools/audit?conversation_id=c-16&limit=41 HTTP/1.1\r\n"
+        )
+    );
+    assert_cli_json(&output, serde_json::json!({"events": []}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {
