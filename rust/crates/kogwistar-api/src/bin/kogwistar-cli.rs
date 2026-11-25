@@ -60,6 +60,12 @@ fn required_option<'a>(options: &'a HashMap<String, String>, name: &str) -> &'a 
         .unwrap_or_else(|| usage())
 }
 
+fn optional_integer(options: &HashMap<String, String>, name: &str) -> Option<i64> {
+    options
+        .get(name)
+        .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+}
+
 fn request_json(method: reqwest::Method, url: String, body: Option<Value>) -> ExitCode {
     let token = std::env::var("KOGWISTAR_API_TOKEN").ok();
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -210,6 +216,48 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         .or_else(|| std::env::var("KOGWISTAR_BASE_URL").ok())
         .unwrap_or_else(|| "http://127.0.0.1:8787".to_owned());
     let base_url = base_url.trim_end_matches('/');
+    if command == "workflow.run_submit" {
+        validate_options(
+            &options,
+            &[
+                "--base-url",
+                "--workflow-id",
+                "--conversation-id",
+                "--turn-node-id",
+                "--user-id",
+                "--initial-state",
+                "--priority-class",
+                "--token-budget",
+                "--time-budget-ms",
+            ],
+        );
+        let initial_state = match options.get("--initial-state") {
+            Some(value) => match serde_json::from_str::<Value>(value) {
+                Ok(state) => state,
+                Err(error) => {
+                    eprintln!("invalid JSON for --initial-state: {error}");
+                    return ExitCode::from(2);
+                }
+            },
+            None => json!({}),
+        };
+        let body = json!({
+            "workflow_id": required_option(&options, "--workflow-id"),
+            "conversation_id": required_option(&options, "--conversation-id"),
+            "turn_node_id": options.get("--turn-node-id"),
+            "user_id": options.get("--user-id"),
+            "initial_state": initial_state,
+            "priority_class": options.get("--priority-class").map(String::as_str)
+                .unwrap_or("foreground"),
+            "token_budget": optional_integer(&options, "--token-budget"),
+            "time_budget_ms": optional_integer(&options, "--time-budget-ms"),
+        });
+        return request_json(
+            reqwest::Method::POST,
+            format!("{base_url}/api/workflow/runs"),
+            Some(body),
+        );
+    }
     let (method, path) = match command.as_str() {
         "workflow.run_status" | "workflow.run_cancel" => {
             validate_options(&options, &["--base-url", "--run-id"]);

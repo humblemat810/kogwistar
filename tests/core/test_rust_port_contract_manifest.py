@@ -2422,6 +2422,89 @@ def test_python_cli_workflow_run_operations_match_rust_http_contract(
     assert observed == expected
 
 
+@pytest.mark.parametrize(
+    ("command", "expected_body"),
+    [
+        (
+            ["--workflow-id", "agent.v1", "--conversation-id", "c-9"],
+            {
+                "workflow_id": "agent.v1",
+                "conversation_id": "c-9",
+                "turn_node_id": None,
+                "user_id": None,
+                "initial_state": {},
+                "priority_class": "foreground",
+                "token_budget": None,
+                "time_budget_ms": None,
+            },
+        ),
+        (
+            [
+                "--workflow-id",
+                "agent.v1",
+                "--conversation-id",
+                "c-10",
+                "--turn-node-id",
+                "n-10",
+                "--user-id",
+                "alice",
+                "--initial-state",
+                '{"answer":7,"nested":[true]}',
+                "--priority-class",
+                "background",
+                "--token-budget",
+                "128",
+                "--time-budget-ms",
+                "5000",
+            ],
+            {
+                "workflow_id": "agent.v1",
+                "conversation_id": "c-10",
+                "turn_node_id": "n-10",
+                "user_id": "alice",
+                "initial_state": {"answer": 7, "nested": [True]},
+                "priority_class": "background",
+                "token_budget": 128,
+                "time_budget_ms": 5000,
+            },
+        ),
+    ],
+)
+def test_python_cli_workflow_run_submit_matches_rust_http_contract(
+    command: list[str],
+    expected_body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-test", "status": "queued"}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_submit",
+                *command,
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/runs",
+        "json_body": expected_body,
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

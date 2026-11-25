@@ -348,3 +348,99 @@ fn workflow_run_events_command_preserves_python_query_contract() {
     assert!(request.starts_with("GET /api/workflow/runs/r-8/events?after_seq=4 HTTP/1.1\r\n"));
     assert_cli_json(&output, serde_json::json!({"events": []}));
 }
+
+#[test]
+fn workflow_run_submit_command_preserves_python_payload_defaults() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_submit",
+                "--workflow-id",
+                "agent.v1",
+                "--conversation-id",
+                "c-9",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-9","status":"queued"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "workflow_id": "agent.v1",
+            "conversation_id": "c-9",
+            "turn_node_id": null,
+            "user_id": null,
+            "initial_state": {},
+            "priority_class": "foreground",
+            "token_budget": null,
+            "time_budget_ms": null
+        })
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-9", "status": "queued"}),
+    );
+}
+
+#[test]
+fn workflow_run_submit_command_preserves_python_explicit_values() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_submit",
+                "--workflow-id",
+                "agent.v1",
+                "--conversation-id",
+                "c-10",
+                "--turn-node-id",
+                "n-10",
+                "--user-id",
+                "alice",
+                "--initial-state",
+                r#"{"answer":7,"nested":[true]}"#,
+                "--priority-class",
+                "background",
+                "--token-budget",
+                "128",
+                "--time-budget-ms",
+                "5000",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-10","status":"queued"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "workflow_id": "agent.v1",
+            "conversation_id": "c-10",
+            "turn_node_id": "n-10",
+            "user_id": "alice",
+            "initial_state": {"answer": 7, "nested": [true]},
+            "priority_class": "background",
+            "token_budget": 128,
+            "time_budget_ms": 5000
+        })
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-10", "status": "queued"}),
+    );
+}
