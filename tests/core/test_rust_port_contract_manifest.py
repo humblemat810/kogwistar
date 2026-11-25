@@ -2887,6 +2887,48 @@ def test_python_cli_workflow_service_toggle_matches_rust_http_contract(
     }
 
 
+@pytest.mark.parametrize(
+    ("command", "args", "path", "body"),
+    [
+        (
+            "workflow.service_heartbeat",
+            ["--service-id", "svc-21", "--instance-id", "worker-2", "--payload", '{"load":0.4}'],
+            "/api/workflow/services/svc-21/heartbeat",
+            {"instance_id": "worker-2", "payload": {"load": 0.4}},
+        ),
+        (
+            "workflow.service_trigger",
+            ["--service-id", "svc-22", "--trigger-type", "manual", "--payload", '{"source":"cli"}'],
+            "/api/workflow/services/svc-22/trigger",
+            {"trigger_type": "manual", "payload": {"source": "cli"}},
+        ),
+    ],
+)
+def test_python_cli_workflow_service_actions_match_rust_http_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {"accepted": True},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server{path}",
+        "json_body": body,
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

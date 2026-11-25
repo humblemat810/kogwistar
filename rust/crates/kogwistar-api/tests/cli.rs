@@ -808,6 +808,70 @@ fn workflow_service_disable_command_uses_python_endpoint() {
 }
 
 #[test]
+fn workflow_service_heartbeat_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_heartbeat",
+                "--service-id",
+                "svc-21",
+                "--instance-id",
+                "worker-2",
+                "--payload",
+                r#"{"load":0.4}"#,
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"accepted":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-21/heartbeat HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"instance_id": "worker-2", "payload": {"load": 0.4}})
+    );
+    assert_cli_json(&output, serde_json::json!({"accepted": true}));
+}
+
+#[test]
+fn workflow_service_trigger_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_trigger",
+                "--service-id",
+                "svc-22",
+                "--trigger-type",
+                "manual",
+                "--payload",
+                r#"{"source":"cli"}"#,
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"accepted":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-22/trigger HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"trigger_type": "manual", "payload": {"source": "cli"}})
+    );
+    assert_cli_json(&output, serde_json::json!({"accepted": true}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {

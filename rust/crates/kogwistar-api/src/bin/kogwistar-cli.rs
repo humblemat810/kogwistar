@@ -301,6 +301,48 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
             Some(body),
         );
     }
+    if command == "workflow.service_heartbeat" || command == "workflow.service_trigger" {
+        let is_heartbeat = command == "workflow.service_heartbeat";
+        let allowed = if is_heartbeat {
+            &["--base-url", "--service-id", "--instance-id", "--payload"][..]
+        } else {
+            &["--base-url", "--service-id", "--trigger-type", "--payload"][..]
+        };
+        validate_options(&options, allowed);
+        let service_id = required_option(&options, "--service-id");
+        let payload = match options.get("--payload") {
+            Some(value) => match serde_json::from_str::<Value>(value) {
+                Ok(payload) => payload,
+                Err(error) => {
+                    eprintln!("invalid JSON for --payload: {error}");
+                    return ExitCode::from(2);
+                }
+            },
+            None => json!({}),
+        };
+        let (action, body) = if is_heartbeat {
+            (
+                "heartbeat",
+                json!({
+                    "instance_id": required_option(&options, "--instance-id"),
+                    "payload": payload,
+                }),
+            )
+        } else {
+            (
+                "trigger",
+                json!({
+                    "trigger_type": required_option(&options, "--trigger-type"),
+                    "payload": payload,
+                }),
+            )
+        };
+        return request_json(
+            reqwest::Method::POST,
+            format!("{base_url}/api/workflow/services/{service_id}/{action}"),
+            Some(body),
+        );
+    }
     let (method, path) = match command.as_str() {
         "workflow.process_table" => {
             validate_options(
