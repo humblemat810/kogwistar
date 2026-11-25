@@ -8,8 +8,8 @@
 
         implementation.implemented_route_operations = implementation.frozen_route_operations;
         assert!(!implementation.effective_server_cutover_ready());
-        assert!(PENDING_SERVER_CUTOVER_ROUTES.is_empty());
-        assert!(PENDING_SYSCALL_CUTOVER_OPS.is_empty());
+        assert!(std::hint::black_box(PENDING_SERVER_CUTOVER_ROUTES).is_empty());
+        assert!(std::hint::black_box(PENDING_SYSCALL_CUTOVER_OPS).is_empty());
     }
 
     #[test]

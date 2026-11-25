@@ -591,9 +591,9 @@ fn apply_sqlite_provider_event_acknowledgement(
             )
         })?;
     let run = uow.get_server_run(run_id)?;
-    if !run
+    if run
         .as_ref()
-        .is_some_and(|run| run.user_id.as_deref() == Some(owner_id))
+        .is_none_or(|run| run.user_id.as_deref() != Some(owner_id))
     {
         return Err(
             kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(

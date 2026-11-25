@@ -1021,9 +1021,9 @@ impl SqliteRunApplicationService {
                     ));
                 }
                 let run = uow.get_server_run(&input.handoff.run_id)?;
-                if !run
+                if run
                     .as_ref()
-                    .is_some_and(|run| run.user_id.as_deref() == Some(owner_id.as_str()))
+                    .is_none_or(|run| run.user_id.as_deref() != Some(owner_id.as_str()))
                 {
                     return Err(kogwistar_store_sqlite::SqliteStoreError::RecordedRuntimeConflict(
                         "runtime graph effect owner does not match the durable run owner".to_owned(),

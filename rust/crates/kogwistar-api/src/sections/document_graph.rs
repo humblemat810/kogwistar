@@ -232,7 +232,7 @@ fn document_tree_upsert_graph_request(
         ));
     };
     let doc_id = payload.get("doc_id").and_then(Value::as_str);
-    if !doc_id.is_some_and(|value| !value.trim().is_empty()) {
+    if doc_id.is_none_or(|value| value.trim().is_empty()) {
         return Err(effect_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "KOGWISTAR_INVALID_REQUEST",
@@ -417,7 +417,7 @@ fn graph_upsert_should_write_document(
     inline_content: Option<&str>,
     stored_content: Option<&str>,
 ) -> bool {
-    inline_content.is_some() || !stored_content.is_some_and(|content| !content.is_empty())
+    inline_content.is_some() || stored_content.is_none_or(str::is_empty)
 }
 
 fn graph_upsert_endpoint_snapshot_matches(
@@ -1720,18 +1720,17 @@ mod graph_upsert_tests {
 }
 
 fn request_approval_mutates_capabilities(input: &SyscallInput) -> bool {
-    match input
-        .args
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "grant" | "revoke" => true,
-        _ => false,
-    }
+    matches!(
+        input
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "grant" | "revoke"
+    )
 }
 
 fn request_approval_syscall_effect(
@@ -1751,7 +1750,7 @@ fn request_approval_syscall_effect(
             .args
             .get("capability")
             .and_then(Value::as_str)
-            .map_or(true, |capability| capability.trim().is_empty())
+            .is_none_or(|capability| capability.trim().is_empty())
     {
         if !syscall_allowed(request, shared, &input.op, true, &[]) {
             return syscall_forbidden(&input.op);

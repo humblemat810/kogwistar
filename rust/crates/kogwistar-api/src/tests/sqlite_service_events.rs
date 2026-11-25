@@ -800,7 +800,7 @@
             "external event",
             1_000,
         ));
-        assert!(PENDING_SYSCALL_CUTOVER_OPS.is_empty());
+        assert!(std::hint::black_box(PENDING_SYSCALL_CUTOVER_OPS).is_empty());
         assert!(!PENDING_SYSCALL_CUTOVER_OPS.contains(&"project_view"));
         assert!(!PENDING_SYSCALL_CUTOVER_OPS.contains(&"spawn_process"));
     }

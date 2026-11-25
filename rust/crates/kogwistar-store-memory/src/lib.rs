@@ -594,10 +594,10 @@ impl LaneMessageWriteStore for InMemoryStore {
         };
         if row.status != "claimed"
             || row.claimed_by.as_deref() != Some(claimed_by)
-            || !row
+            || row
                 .lease_until
                 .as_ref()
-                .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+                .is_none_or(|lease_until| timestamp_i64(lease_until) < now)
         {
             return Ok(false);
         }

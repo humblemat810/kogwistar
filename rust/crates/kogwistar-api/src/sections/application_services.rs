@@ -104,7 +104,7 @@ impl PostgresRunApplicationService {
                 "could not verify native handoff owner",
             )
         })?;
-        if !run.is_some_and(|run| run.user_id.as_deref() == Some(caller_id)) {
+        if run.is_none_or(|run| run.user_id.as_deref() != Some(caller_id)) {
             return Err(effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_RUN_OWNER_FORBIDDEN",
