@@ -185,6 +185,72 @@ async fn in_memory_root_graph_mcp_hides_and_rejects_tools_without_read_capabilit
         .iter()
         .any(|tool| tool["name"] == "kg_shortest_path"));
 
+    let legacy_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader",
+            "role":"ro",
+            "ns":["docs"],
+            "capabilities":[],
+            "caps":["read_graph"],
+            "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let legacy_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {legacy_token}"))
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":"list-legacy-capability","method":"tools/list"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let legacy_list: Value = serde_json::from_slice(
+        &to_bytes(legacy_list.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(legacy_list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "kg_shortest_path"));
+
+    let legacy_call = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {legacy_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-legacy-capability",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let legacy_call: Value = serde_json::from_slice(
+        &to_bytes(legacy_call.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(legacy_call.get("error").is_none(), "{legacy_call}");
+
     let allowed = app
         .oneshot(
             Request::builder()
