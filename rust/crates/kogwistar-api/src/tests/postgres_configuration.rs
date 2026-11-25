@@ -223,6 +223,51 @@
             *expected_tombstone,
             "PostgreSQL tombstone preserves Python-compatible deletion provenance"
         );
+
+        let node_delete_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-node-delete-http-v1.json"
+        )))
+        .unwrap();
+        let node_create = service
+            .execute_async(request(
+                "POST",
+                "/api/workflow/design/wf-node-delete-contract/nodes",
+                json!({
+                    "designer_id": node_delete_contract["designer_id"],
+                    "node_id": node_delete_contract["node_id"],
+                    "label": "Start",
+                    "op": "start",
+                    "start": true
+                }),
+            ))
+            .await;
+        assert_eq!(node_create.status, StatusCode::OK);
+        let node_delete = service
+            .execute_async(request(
+                "DELETE",
+                "/api/workflow/design/wf-node-delete-contract/nodes/node-delete-contract",
+                json!({"designer_id": node_delete_contract["designer_id"]}),
+            ))
+            .await;
+        assert_eq!(node_delete.status, node_delete_contract["success_status"]);
+        let node_events = snapshot_reader
+            .replay_raw_events("wf_design:wf-node-delete-contract", 0, usize::MAX)
+            .await
+            .unwrap();
+        let node_tombstone = node_events
+            .iter()
+            .find(|event| {
+                event.entity_kind == "node"
+                    && event.entity_id == node_delete_contract["node_id"]
+                    && event.op == "TOMBSTONE"
+            })
+            .expect("PostgreSQL node delete writes a canonical tombstone");
+        assert_eq!(
+            serde_json::from_str::<Value>(&node_tombstone.payload_json).unwrap(),
+            node_delete_contract["expected_tombstone_payload"],
+            "PostgreSQL node tombstone preserves Python-compatible deletion provenance"
+        );
         drop(service);
         let cleanup_dsn = dsn
             .strip_prefix("postgresql+psycopg://")
