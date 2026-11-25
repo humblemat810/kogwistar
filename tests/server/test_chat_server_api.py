@@ -6973,6 +6973,9 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
             assert payload["started_at_ms"] == stored["started_at_ms"]
             assert payload["finished_at_ms"] == stored["finished_at_ms"]
 
+        missing = client.get("/api/runs/missing-run-status", headers=headers)
+        assert missing.status_code == 404
+
         registry_reads = 0
 
         def unexpected_registry_read(_run_id: str):

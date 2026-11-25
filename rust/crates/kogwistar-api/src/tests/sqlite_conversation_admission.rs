@@ -1227,6 +1227,22 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         direct_run_status_body["user_turn_node_id"],
         send_response["user_turn_node_id"]
     );
+    let missing_run_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/runs/missing-run-status")
+                .header(
+                    "authorization",
+                    format!("Bearer {conversation_run_read_token}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_run_status.status(), StatusCode::NOT_FOUND);
 
     let transcript_snapshot = service
         .chroma_graph_snapshot(&request(), "conversation")
