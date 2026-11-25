@@ -1,7 +1,7 @@
 // Domain-focused tests; shared fixtures live in the parent test module.
 use super::*;
 use kogwistar_store::{
-    DistanceMetric, GraphEndpointKind, GraphIncidentEdgeRead, GraphMutation,
+    DistanceMetric, GraphEndpointKind, GraphIncidentEdgeRead, GraphMutation, GraphMutationStore,
     GraphProjectionVectorQuery, GraphRecord, GraphScope, MetadataFilter, NodeIndexStore,
     VectorCollectionStore, VectorQuery, similarity_from_distance,
 };
@@ -527,6 +527,98 @@ async fn postgres_graph_vector_metrics_match_shared_distance_and_similarity_cont
     let client = store.client().await?;
     client
         .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))
+        .await
+        .map_err(backend)?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_historical_vector_query_resolves_redirects_and_keeps_candidate_scores()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("historical_vector_query");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    let tables = Tables::new(&schema)?;
+    store.ensure_schema().await?;
+    store
+        .create_graph_schema(2, GraphTableNames::default())
+        .await?;
+    let scope = GraphScope {
+        namespace: format!("historical-vector-{}", std::process::id()),
+        workspace_id: None,
+        graph_space: None,
+    };
+
+    for (id, metadata, embedding) in [
+        (
+            "old",
+            serde_json::json!({
+                "lifecycle_status": "tombstoned",
+                "deleted_at": "2026-01-10T00:00:00Z",
+                "redirect_to_id": "target"
+            }),
+            vec![1.0, 0.0],
+        ),
+        (
+            "target",
+            serde_json::json!({"lifecycle_status": "active"}),
+            vec![0.8, 0.6],
+        ),
+    ] {
+        let metadata = metadata.as_object().unwrap().clone();
+        store
+            .apply_graph_mutation(GraphMutation {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                entity_kind: "node".to_owned(),
+                event_id: format!("historical-{id}-{}", std::process::id()),
+                op: "ADD".to_owned(),
+                payload: serde_json::json!({"id": id, "metadata": metadata}),
+                record: GraphRecord {
+                    id: id.to_owned(),
+                    document: Some(id.to_owned()),
+                    metadata,
+                    embedding: Some(embedding),
+                },
+                embedding_dim: 2,
+            })
+            .await?;
+    }
+
+    let query = GraphProjectionVectorQuery {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        query: VectorQuery {
+            embedding: vec![1.0, 0.0],
+            limit: 2,
+            metadata: MetadataFilter::default(),
+            metric: DistanceMetric::Cosine,
+        },
+        embedding_dim: 2,
+    };
+    let ordinary = store.graph_projection_vector_query(query.clone()).await?;
+    assert_eq!(ordinary[0].record.id, "target");
+    assert!(ordinary.iter().all(|hit| hit.record.id != "old"));
+
+    let before_delete = store
+        .graph_projection_vector_query_nodes_as_of(query.clone(), "2026-01-09T00:00:00Z", true, 16)
+        .await?;
+    assert_eq!(before_delete[0].record.id, "old");
+    assert_eq!(before_delete[0].distance, 0.0);
+
+    let after_delete = store
+        .graph_projection_vector_query_nodes_as_of(query, "2026-01-11T00:00:00Z", true, 16)
+        .await?;
+    assert_eq!(after_delete.len(), 1);
+    assert_eq!(after_delete[0].record.id, "target");
+    assert_eq!(after_delete[0].distance, 0.0);
+
+    store
+        .client()
+        .await?
+        .batch_execute(&format!("DROP SCHEMA {} CASCADE", tables.quoted_schema))
         .await
         .map_err(backend)?;
     Ok(())

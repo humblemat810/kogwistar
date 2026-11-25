@@ -414,6 +414,75 @@ pub struct GraphProjectionVectorQuery {
     pub embedding_dim: usize,
 }
 
+/// Resolve ranked node candidates against their scoped projections at a
+/// historical instant. Used by stores whose ordinary vector query hides
+/// tombstones; authorization remains with the caller.
+pub async fn resolve_graph_projection_vector_candidates_as_of<
+    S: GraphMutationStore + ?Sized,
+>(
+    store: &S,
+    query: &GraphProjectionVectorQuery,
+    candidates: Vec<VectorMatch>,
+    as_of_ts: &str,
+    follow_redirects: bool,
+    max_redirect_hops: usize,
+) -> StoreResult<Vec<VectorMatch>> {
+    validate_graph_projection_target(&query.table, "node")?;
+    let as_of = parse_lifecycle_timestamp(as_of_ts).ok_or_else(|| StoreError::Backend {
+        backend: "graph-read".to_owned(),
+        message: "invalid as-of timestamp".to_owned(),
+    })?;
+    let mut hits = Vec::with_capacity(candidates.len());
+    let mut seen = BTreeSet::new();
+
+    for candidate in candidates {
+        let mut current = candidate.record;
+        let mut visited = BTreeSet::new();
+        let mut hops = 0;
+        let resolved = loop {
+            if !visited.insert(current.id.clone()) {
+                break None;
+            }
+            if node_visible_as_of(&current, as_of) {
+                break Some(current);
+            }
+            if !follow_redirects {
+                break None;
+            }
+            let Some(target) = node_redirect_target_as_of(&current, as_of) else {
+                break None;
+            };
+            hops += 1;
+            if hops > max_redirect_hops {
+                break None;
+            }
+            let records = store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: query.scope.clone(),
+                    table: query.table.clone(),
+                    ids: Some(vec![target.to_owned()]),
+                    metadata: MetadataFilter::default(),
+                    limit: 1,
+                })
+                .await?;
+            let Some(next) = records.into_iter().next() else {
+                break None;
+            };
+            current = next;
+        };
+        let Some(record) = resolved else {
+            continue;
+        };
+        if seen.insert(record.id.clone()) {
+            hits.push(VectorMatch {
+                record,
+                distance: candidate.distance,
+            });
+        }
+    }
+    Ok(hits)
+}
+
 /// Narrow authoritative graph capability.  It intentionally combines event
 /// append and projection materialization so implementations with a real UoW
 /// can make both durable together.  The existing `GraphWriteStore` remains a
@@ -510,6 +579,30 @@ pub trait GraphMutationStore: Send + Sync {
         &self,
         query: GraphProjectionVectorQuery,
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
+    /// Historical node vector search over a scoped graph projection. The
+    /// backend supplies ranked candidates; lifecycle resolution preserves
+    /// their order and source scores. ACL filtering remains the caller's job.
+    fn graph_projection_vector_query_nodes_as_of(
+        &self,
+        query: GraphProjectionVectorQuery,
+        as_of_ts: &str,
+        follow_redirects: bool,
+        max_redirect_hops: usize,
+    ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send {
+        let as_of_ts = as_of_ts.to_owned();
+        async move {
+            let candidates = self.graph_projection_vector_query(query.clone()).await?;
+            resolve_graph_projection_vector_candidates_as_of(
+                self,
+                &query,
+                candidates,
+                &as_of_ts,
+                follow_redirects,
+                max_redirect_hops,
+            )
+            .await
+        }
+    }
 }
 
 /// Visit graph projection pages in stable ID order without retaining all rows.

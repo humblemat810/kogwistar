@@ -67,6 +67,28 @@ impl GraphMutationStore for PostgresStore {
             .await
             .map_err(trait_error)
     }
+
+    async fn graph_projection_vector_query_nodes_as_of(
+        &self,
+        query: GraphProjectionVectorQuery,
+        as_of_ts: &str,
+        follow_redirects: bool,
+        max_redirect_hops: usize,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        let candidates =
+            PostgresStore::graph_projection_vector_query_including_tombstones(self, query.clone())
+                .await
+                .map_err(trait_error)?;
+        kogwistar_store::resolve_graph_projection_vector_candidates_as_of(
+            self,
+            &query,
+            candidates,
+            as_of_ts,
+            follow_redirects,
+            max_redirect_hops,
+        )
+        .await
+    }
 }
 
 impl DocumentStore for PostgresStore {
