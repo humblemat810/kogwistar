@@ -1114,18 +1114,44 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
 
 #[tokio::test]
 async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use kogwistar_store::{
         LaneMessageClaimFilter, LaneMessageReadStore, LaneMessageWriteStore,
         ProjectionReadStore, RUNTIME_CURRENT_STATE_NAMESPACE,
     };
+    use std::sync::Arc;
+    use tower::ServiceExt;
 
     let service = InMemoryGraphApplicationService::default();
+    let secret = "in-memory-mcp-resume-secret";
     let principal = json!({
-        "sub":"resume-owner",
-        "role":"rw",
-        "ns":["workflow"],
-        "capabilities":["spawn_process", "workflow.run.write"]
+        "sub":"resume-owner", "role":"rw", "ns":["workflow"],
+        "capabilities":["spawn_process", "workflow.run.write", "approve_action"],
+        "iss":"local", "exp":4102444800_u64
     });
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &principal,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
     let submitted = service
         .execute(ApiEffectRequest {
             contract_version: 1,
@@ -1210,18 +1236,35 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
         "conversation_id":"memory-resume-conversation"
     }))
     .unwrap();
-    let resumed = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/workflow/runs/memory-resume-run/resume?wait_for_completion=true"
-                .to_owned(),
-            body: resume_body.clone(),
-            principal: principal.clone(),
-        })
-        .await;
-    assert_eq!(resumed.status, StatusCode::OK.as_u16());
-    let result: Value = serde_json::from_slice(&resumed.body).unwrap();
+    let mut resume_arguments: Value = serde_json::from_slice(&resume_body).unwrap();
+    resume_arguments["run_id"] = json!("memory-resume-run");
+    let call_resume = |request_id: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/mcp/workflow")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0", "id":request_id, "method":"tools/call",
+                    "params":{"name":"workflow.run_resume", "arguments":resume_arguments}
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let resumed = app.clone().oneshot(call_resume("resume-once")).await.unwrap();
+    assert_eq!(resumed.status(), StatusCode::OK);
+    let wire = to_bytes(resumed.into_body(), 8192).await.unwrap();
+    let data = String::from_utf8(wire.to_vec()).unwrap();
+    let message = data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let response: Value = serde_json::from_str(message).unwrap();
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    let result = response["result"]["structuredContent"].clone();
     let contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
     ))
@@ -1251,17 +1294,16 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     .await
     .unwrap()
     .len();
-    let retried = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/workflow/runs/memory-resume-run/resume?wait_for_completion=true"
-                .to_owned(),
-            body: resume_body,
-            principal,
-        })
-        .await;
-    assert_eq!(retried.status, StatusCode::CONFLICT.as_u16());
+    let retried = app.oneshot(call_resume("resume-retry")).await.unwrap();
+    assert_eq!(retried.status(), StatusCode::OK);
+    let wire = to_bytes(retried.into_body(), 8192).await.unwrap();
+    let data = String::from_utf8(wire.to_vec()).unwrap();
+    let message = data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap();
+    let retry_response: Value = serde_json::from_str(message).unwrap();
+    assert_eq!(retry_response["result"]["isError"], true);
     assert_eq!(
         kogwistar_store::ServerRunReadStore::server_run_events(
             &service.store,

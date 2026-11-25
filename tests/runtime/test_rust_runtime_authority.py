@@ -5076,7 +5076,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
     rust_headers = _configure_rust_runtime_test_auth(
         env,
         auth_db_path=tmp_path / "native-http-auth.sqlite3",
-        workflow_ids=(workflow_contract["workflow_id"],),
+        workflow_ids=(workflow_contract["workflow_id"], "python-worker-compatibility"),
     )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None
