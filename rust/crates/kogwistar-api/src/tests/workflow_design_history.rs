@@ -387,13 +387,55 @@
                 .unwrap(),
         )
         .unwrap();
+        for (node_id, label) in [("start", "Start"), ("end", "End")] {
+            let response = public_call!(
+                "POST",
+                "/api/workflow/design/wf-failure-edge-delete/nodes",
+                json!({"designer_id":"alice","node_id":node_id,"label":label})
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let delete_edge_seed = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-edge-delete/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-1",
+                "src":"start",
+                "dst":"end"
+            })
+        );
+        assert_eq!(delete_edge_seed.status(), StatusCode::OK);
+        let delete_edge_graph_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_edge_graph_before: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_graph_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let delete_edge_history_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/history",
+            json!({})
+        );
+        let delete_edge_history_before: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_history_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         trigger_connection
             .execute_batch(
                 "CREATE TRIGGER reject_design_control_event
                  BEFORE INSERT ON entity_events
                  WHEN NEW.namespace IN (
                    'wf_design:wf-failure-atomic',
-                   'wf_design:wf-failure-delete'
+                   'wf_design:wf-failure-delete',
+                   'wf_design:wf-failure-edge-delete'
                  )
                    AND NEW.entity_kind = 'design_control'
                  BEGIN SELECT RAISE(ABORT, 'injected design-control failure'); END;",
@@ -471,6 +513,50 @@
         assert_eq!(
             delete_history_after["current_seq"],
             delete_history_before["current_seq"]
+        );
+        let failed_edge_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-failure-edge-delete/edges/edge-1",
+            json!({"designer_id":"alice"})
+        );
+        assert!(!failed_edge_delete.status().is_success());
+        let delete_edge_graph_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_edge_graph_after: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_graph_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_edge_graph_after["nodes"],
+            delete_edge_graph_before["nodes"]
+        );
+        assert_eq!(
+            delete_edge_graph_after["edges"],
+            delete_edge_graph_before["edges"]
+        );
+        let delete_edge_history_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/history",
+            json!({})
+        );
+        let delete_edge_history_after: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_history_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_edge_history_after["current_version"],
+            delete_edge_history_before["current_version"]
+        );
+        assert_eq!(
+            delete_edge_history_after["current_seq"],
+            delete_edge_history_before["current_seq"]
         );
         for (node_id, label) in [("start", "Start"), ("end", "End")] {
             let response = public_call!(
