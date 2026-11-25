@@ -817,6 +817,57 @@ fn rust_run_evidence_projection_matches_shared_v1_contract() {
     );
 }
 
+#[test]
+fn rust_run_status_terminal_flag_matches_shared_contract() {
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-status-v1.json"
+    ))
+    .unwrap();
+    let terminal_statuses = contract["terminal_statuses"].as_array().unwrap();
+
+    for status in ["queued", "running", "succeeded", "failed", "cancelled"] {
+        let run = ServerRun {
+            run_id: "run-status-contract".to_owned(),
+            conversation_id: "conversation-status-contract".to_owned(),
+            workflow_id: "workflow-status-contract".to_owned(),
+            user_id: Some("user-status-contract".to_owned()),
+            user_turn_node_id: Some("turn-status-contract".to_owned()),
+            assistant_turn_node_id: None,
+            status: status.to_owned(),
+            cancel_requested: false,
+            result_json: None,
+            error_json: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+            started_at_ms: None,
+            finished_at_ms: None,
+        };
+        let value = server_run_value(run);
+
+        assert!(contract["required_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|field| value.get(field.as_str().unwrap()).is_some()));
+        assert_eq!(value["status"], status);
+        assert_eq!(value["run_id"], "run-status-contract");
+        assert_eq!(value["conversation_id"], "conversation-status-contract");
+        assert_eq!(value["workflow_id"], "workflow-status-contract");
+        assert_eq!(value["user_id"], "user-status-contract");
+        assert_eq!(value["user_turn_node_id"], "turn-status-contract");
+        assert_eq!(value["assistant_turn_node_id"], Value::Null);
+        assert_eq!(value["cancel_requested"], false);
+        assert_eq!(value["result"], Value::Null);
+        assert_eq!(value["error"], Value::Null);
+        assert!(value["created_at_ms"].is_i64());
+        assert!(value["updated_at_ms"].is_i64());
+        assert_eq!(
+            value["terminal"],
+            terminal_statuses.iter().any(|terminal| terminal == status)
+        );
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 // PYTHON_PARITY_NOTE_V1: PostgreSQL REST/MCP/syscall cancellation preserves scope; denied calls leave state unchanged, authorized nonterminal termination appends run.cancelling, terminal retries add no event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel+tests/server/test_chat_server_api.py#test_conversation_syscalls_use_python_postgres_backend; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
