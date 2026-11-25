@@ -2699,6 +2699,65 @@ def test_python_cli_workflow_process_table_matches_rust_http_contract(
     }
 
 
+def test_python_cli_workflow_operator_dashboard_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {"items": []},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.operator_dashboard",
+                "--limit",
+                "17",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/operator/dashboard",
+        "params": {"limit": 17},
+    }
+
+
+def test_python_cli_workflow_visibility_snapshot_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {"visible": True},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.visibility_snapshot",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/visibility",
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -322,6 +322,21 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
                 format!("/api/workflow/operator/dashboard?limit={limit}"),
             )
         }
+        "workflow.operator_dashboard" => {
+            validate_options(&options, &["--base-url", "--limit"]);
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(100);
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/operator/dashboard?limit={limit}"),
+            )
+        }
+        "workflow.visibility_snapshot" => {
+            validate_options(&options, &["--base-url"]);
+            (reqwest::Method::GET, "/api/workflow/visibility".to_owned())
+        }
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);
             let run_id = required_option(&options, "--run-id");

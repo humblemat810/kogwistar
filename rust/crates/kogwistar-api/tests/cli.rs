@@ -556,6 +556,50 @@ fn workflow_run_submit_command_preserves_python_payload_defaults() {
 }
 
 #[test]
+fn workflow_operator_dashboard_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.operator_dashboard",
+                "--limit",
+                "17",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/operator/dashboard?limit=17 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_visibility_snapshot_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.visibility_snapshot",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"visible":true}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/visibility HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"visible": true}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {
