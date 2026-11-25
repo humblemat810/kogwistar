@@ -2663,6 +2663,42 @@ def test_python_cli_workflow_resume_matches_rust_http_contract(
     }
 
 
+@pytest.mark.parametrize("limit", [100, 23])
+def test_python_cli_workflow_process_table_matches_rust_http_contract(
+    limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"items": [{"run_id": "r-15"}]}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+    command = [
+        "api",
+        "workflow",
+        "workflow.process_table",
+        "--status",
+        "completed",
+        "--workflow-id",
+        "wf-15",
+        "--conversation-id",
+        "c-15",
+    ]
+    if limit != 100:
+        command.extend(["--limit", str(limit)])
+
+    assert main([*command, "--base-url", "http://rust-server"]) == 0
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/operator/dashboard",
+        "params": {"limit": limit},
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

@@ -485,6 +485,35 @@ fn workflow_run_resume_command_preserves_python_payload_contract() {
 }
 
 #[test]
+fn workflow_process_table_command_preserves_python_dashboard_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.process_table",
+                "--status",
+                "completed",
+                "--workflow-id",
+                "wf-15",
+                "--conversation-id",
+                "c-15",
+                "--limit",
+                "23",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[{"run_id":"r-15"}]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/operator/dashboard?limit=23 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": [{"run_id": "r-15"}]}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_payload_defaults() {
     let (output, request) = run_mock_http_cli(
         |base| {

@@ -302,6 +302,26 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         );
     }
     let (method, path) = match command.as_str() {
+        "workflow.process_table" => {
+            validate_options(
+                &options,
+                &[
+                    "--base-url",
+                    "--status",
+                    "--workflow-id",
+                    "--conversation-id",
+                    "--limit",
+                ],
+            );
+            let limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(100);
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/operator/dashboard?limit={limit}"),
+            )
+        }
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);
             let run_id = required_option(&options, "--run-id");
