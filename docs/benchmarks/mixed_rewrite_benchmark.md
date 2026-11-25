@@ -2543,3 +2543,23 @@ Concurrent workload, other backends, and broader operations remain unverified;
 DLFC-18 stays open. Raw JSON and trace artifacts
 are retained locally (ignored) under
 `.tmp/mixed-runtime-followup-20261125/endpoint/`.
+
+#### Current-checkout capped SQLite endpoint recheck
+
+Re-ran the same endpoint matrix on source `de30f8665134ba091adfd21412d353b4758de1fd`
+after the earlier report, using CPython 3.15.1t with verified 2 CPU / 4 GiB
+cgroup limits, network disabled, one warm-up, and three fresh samples per mode.
+The sequential 100-record trace produced 50.97 ops/s Python HTTP and 537.63
+ops/s Rust-native HTTP (10.55x). Event-read / projection-read / write p95 ratios
+were 0.117 / 0.112 / 0.112. The balanced concurrent trace used 32 writes and
+128 reads with one writer and four readers: Python HTTP 29.69 ops/s, Rust-native
+HTTP 662.80 ops/s (22.32x); read/write p95 ratios were 0.263 / 0.154.
+
+Both traces matched the canonical digests from their earlier fixtures:
+sequential `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`,
+concurrent `1f20df0383b2a7605cd7394303d5b492de13f5abec6a6c360e9343f2afc61494`.
+The report verifies zero FFI for both pure paths, equal state, the resource caps,
+and zero validation errors. Raw report and traces are retained locally (ignored)
+under `.tmp/mixed-runtime-goal09-current-20261125/endpoint/`. This recheck
+confirms the SQLite MCP-storage performance cell only; PostgreSQL/pgvector,
+SQLite+Chroma, and authenticated workflow/graph performance remain open.
