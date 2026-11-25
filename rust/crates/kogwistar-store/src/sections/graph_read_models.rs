@@ -379,12 +379,27 @@ fn indexed_acl_usage_visible(
         entity_id.to_owned(),
         Some(versioned_item_id.to_owned()),
     );
-    if index.rules.contains_key(&versioned_key) {
-        return indexed_acl_visible(index, grain, entity_id, Some(versioned_item_id), principal);
-    }
-    // Persisted Python ACL rows used untyped mention IDs before v2. Continue
-    // reading them unless a v2 row exists for this exact graph entity.
-    indexed_acl_visible(index, grain, entity_id, Some(legacy_item_id), principal)
+    let legacy_key = (
+        grain.to_owned(),
+        entity_id.to_owned(),
+        Some(legacy_item_id.to_owned()),
+    );
+    let versioned_rule = index.rules.get(&versioned_key);
+    let legacy_rule = index.rules.get(&legacy_key);
+    // Python compares the latest v2 and legacy records by version, tombstone,
+    // then ACL mode. Prefer v2 on an exact tie, matching Python's stable max.
+    let selected = match (versioned_rule, legacy_rule) {
+        (Some(versioned), Some(legacy))
+            if (legacy.version, legacy.tombstoned, acl_rank(&legacy.mode))
+                > (versioned.version, versioned.tombstoned, acl_rank(&versioned.mode)) =>
+        {
+            legacy
+        }
+        (Some(versioned), _) => versioned,
+        (None, Some(legacy)) => legacy,
+        (None, None) => return false,
+    };
+    acl_rule_visible(selected, principal)
 }
 
 /// Filter a complete graph snapshot using the same fail-closed ACL rules as Python.

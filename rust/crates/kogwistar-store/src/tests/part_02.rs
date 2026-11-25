@@ -406,9 +406,13 @@ fn graph_node_item_usage_matches_shared_python_contract() {
                 "acl_target_grain".into(),
                 acl_record["grain"].as_str().expect("ACL grain").into(),
             );
-            record
-                .metadata
-                .insert("acl_version".into(), serde_json::json!(1));
+            record.metadata.insert(
+                "acl_version".into(),
+                acl_record
+                    .get("version")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!(1)),
+            );
             record.metadata.insert(
                 "acl_mode".into(),
                 acl_record["mode"].as_str().expect("ACL mode").into(),
