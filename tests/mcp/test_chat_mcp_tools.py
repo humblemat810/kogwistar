@@ -1997,6 +1997,67 @@ async def test_mcp_workflow_run_resume_dispatches_request_and_returns_result(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_resume_denies_missing_write_capability_before_effect(
+    monkeypatch, engine_triplet
+):
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    effects: list[Any] = []
+    monkeypatch.setattr(
+        service._run_execution,
+        "_default_resume_runner",
+        lambda request: effects.append(request) or {},
+    )
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda _workflow_id, _role: None,
+    )
+
+    with _claims(
+        "rw", "workflow", sub="authenticated-owner", scope_parts={"capabilities": []}
+    ):
+        result = await workflow_mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(
+                name="workflow.run_resume",
+                arguments={
+                    "run_id": "private-run",
+                    "suspended_node_id": "approval",
+                    "suspended_token_id": "approval-token",
+                    "client_result": {"status": "success"},
+                    "workflow_id": "private-workflow",
+                    "conversation_id": "private-conversation",
+                    "turn_node_id": "private-turn",
+                },
+            ),
+        )
+
+    assert result.is_error is True
+    assert "403:" in result.content[0].text
+    assert "workflow.run.write" in result.content[0].text
+    assert effects == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_replay_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
