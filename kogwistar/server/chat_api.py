@@ -61,6 +61,8 @@ def create_chat_router(
     conversation_namespace: object,
     workflow_namespaces: object,
     get_user_id: Callable[[], str | None] | None = None,
+    get_workspace_id: Callable[[], str | None] | None = None,
+    get_graph_space: Callable[[], str | None] | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -74,7 +76,9 @@ def create_chat_router(
                 raise HTTPException(status_code=401, detail="User Identity required")
             return {
                 "conversations": get_service()._conversation_queries.list_conversations_for_user(
-                    user_id=effective_user_id
+                    user_id=effective_user_id,
+                    workspace_id=get_workspace_id() if callable(get_workspace_id) else None,
+                    graph_space=get_graph_space() if callable(get_graph_space) else None,
                 )
             }
         except Exception as exc:  # noqa: BLE001
@@ -101,7 +105,11 @@ def create_chat_router(
         require_role("ro")
         require_namespace(conversation_namespace)
         try:
-            return get_service().get_conversation(conversation_id)
+            return get_service().get_conversation(
+                conversation_id,
+                workspace_id=get_workspace_id() if callable(get_workspace_id) else None,
+                graph_space=get_graph_space() if callable(get_graph_space) else None,
+            )
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)
 
@@ -112,7 +120,11 @@ def create_chat_router(
         try:
             return {
                 "conversation_id": conversation_id,
-                "turns": get_service().list_transcript(conversation_id),
+                "turns": get_service().list_transcript(
+                    conversation_id,
+                    workspace_id=get_workspace_id() if callable(get_workspace_id) else None,
+                    graph_space=get_graph_space() if callable(get_graph_space) else None,
+                ),
             }
         except Exception as exc:  # noqa: BLE001
             raise _as_http_error(exc)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 from kogwistar.conversation.models import ConversationNode
@@ -7,6 +8,19 @@ from kogwistar.implementation_selection import implementation_selection_bound
 from kogwistar.json_types import JsonValue
 
 from .chat_service_shared import _BaseComponent
+
+
+def _conversation_node_matches_scope(
+    metadata: Mapping[str, JsonValue],
+    *,
+    workspace_id: str | None,
+    graph_space: str | None,
+) -> bool:
+    if workspace_id is not None and metadata.get("workspace_id") != workspace_id:
+        return False
+    if graph_space is not None and metadata.get("graph_space") != graph_space:
+        return False
+    return True
 
 
 class _ConversationQueryService(_BaseComponent):
@@ -31,7 +45,13 @@ class _ConversationQueryService(_BaseComponent):
         return self.get_conversation(conv_id) | {"start_node_id": start_id}
 
     @implementation_selection_bound
-    def _conversation_nodes(self, conversation_id: str) -> list[ConversationNode]:
+    def _conversation_nodes(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> list[ConversationNode]:
         nodes: list[ConversationNode] = cast(
             list[ConversationNode],
             self._conversation_engine().read.get_nodes(
@@ -40,6 +60,15 @@ class _ConversationQueryService(_BaseComponent):
                 limit=10_000,
             ),
         )
+        nodes = [
+            node
+            for node in nodes
+            if _conversation_node_matches_scope(
+                getattr(node, "metadata", {}) or {},
+                workspace_id=workspace_id,
+                graph_space=graph_space,
+            )
+        ]
         if not nodes:
             raise KeyError(f"Unknown conversation_id: {conversation_id}")
         return nodes
@@ -59,7 +88,11 @@ class _ConversationQueryService(_BaseComponent):
 
     @implementation_selection_bound
     def list_conversations_for_user(
-        self, user_id: str
+        self,
+        user_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
     ) -> list[dict[str, JsonValue]]:
         starts = cast(
             list[ConversationNode],
@@ -77,6 +110,12 @@ class _ConversationQueryService(_BaseComponent):
 
         results: list[dict[str, JsonValue]] = []
         for start in starts:
+            if not _conversation_node_matches_scope(
+                getattr(start, "metadata", {}) or {},
+                workspace_id=workspace_id,
+                graph_space=graph_space,
+            ):
+                continue
             conv_id = getattr(start, "conversation_id", None)
             if conv_id:
                 results.append(
@@ -87,7 +126,13 @@ class _ConversationQueryService(_BaseComponent):
                             (getattr(start, "properties", {}) or {}).get("status")
                             or "active"
                         ),
-                        "turn_count": len(self.list_transcript(str(conv_id))),
+                        "turn_count": len(
+                            self.list_transcript(
+                                str(conv_id),
+                                workspace_id=workspace_id,
+                                graph_space=graph_space,
+                            )
+                        ),
                     }
                 )
         results.sort(
@@ -99,8 +144,16 @@ class _ConversationQueryService(_BaseComponent):
         return results
 
     @implementation_selection_bound
-    def get_conversation(self, conversation_id: str) -> dict[str, JsonValue]:
-        nodes = self._conversation_nodes(conversation_id)
+    def get_conversation(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> dict[str, JsonValue]:
+        nodes = self._conversation_nodes(
+            conversation_id, workspace_id=workspace_id, graph_space=graph_space
+        )
         svc = self._conversation_service()
         tail = svc.get_conversation_tail(conversation_id=conversation_id)
         starts = [
@@ -109,8 +162,14 @@ class _ConversationQueryService(_BaseComponent):
             if str((getattr(node, "metadata", {}) or {}).get("entity_type") or "")
             == "conversation_start"
         ]
-        turns = self.list_transcript(conversation_id)
+        turns = self.list_transcript(
+            conversation_id, workspace_id=workspace_id, graph_space=graph_space
+        )
         start_node = starts[0] if starts else None
+        visible_ids = {str(getattr(node, "id", "") or "") for node in nodes}
+        tail_id = str(getattr(tail, "id", "") or "")
+        if (workspace_id is not None or graph_space is not None) and tail_id not in visible_ids:
+            tail_id = ""
         return {
             "conversation_id": conversation_id,
             "user_id": str(getattr(start_node, "user_id", None) or ""),
@@ -118,13 +177,21 @@ class _ConversationQueryService(_BaseComponent):
                 (getattr(start_node, "properties", {}) or {}).get("status") or "active"
             ),
             "start_node_id": str(getattr(start_node, "id", None) or ""),
-            "tail_node_id": str(getattr(tail, "id", None) or ""),
+            "tail_node_id": tail_id,
             "turn_count": len(turns),
         }
 
     @implementation_selection_bound
-    def list_transcript(self, conversation_id: str) -> list[dict[str, JsonValue]]:
-        nodes = self._conversation_nodes(conversation_id)
+    def list_transcript(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> list[dict[str, JsonValue]]:
+        nodes = self._conversation_nodes(
+            conversation_id, workspace_id=workspace_id, graph_space=graph_space
+        )
         turns: list[dict[str, JsonValue]] = []
         for node in nodes:
             metadata = getattr(node, "metadata", {}) or {}

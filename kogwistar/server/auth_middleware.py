@@ -488,6 +488,19 @@ def get_storage_namespace() -> str:
     return ns[0] if ns else DEFAULT_STORAGE_NAMESPACE
 
 
+def get_current_workspace_id() -> str | None:
+    """Return the workspace claim used to scope graph reads, if present."""
+    claims = claims_ctx.get() or {}
+    value = claims.get("workspace_id") if "workspace_id" in claims else claims.get("workspace")
+    return value if isinstance(value, str) else None
+
+
+def get_current_graph_space() -> str | None:
+    """Return the graph-space claim used to scope graph reads, if present."""
+    value = (claims_ctx.get() or {}).get("graph_space")
+    return value if isinstance(value, str) else None
+
+
 def get_execution_namespace() -> str:
     claims = claims_ctx.get() or {}
     scope = str(claims.get("execution_ns") or "").strip().lower()

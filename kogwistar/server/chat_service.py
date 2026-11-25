@@ -489,21 +489,37 @@ class ChatRunService:
             start_node_id=start_node_id,
         )
 
-    def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+    def get_conversation(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> dict[str, Any]:
         self._require_capability(
             "read_conversation",
             ["read_graph"],
             approval_message="Reading conversation requires read_graph capability",
         )
-        return self._conversation_queries.get_conversation(conversation_id)
+        return self._conversation_queries.get_conversation(
+            conversation_id, workspace_id=workspace_id, graph_space=graph_space
+        )
 
-    def list_transcript(self, conversation_id: str) -> list[dict[str, Any]]:
+    def list_transcript(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> list[dict[str, Any]]:
         self._require_capability(
             "read_conversation",
             ["read_graph"],
             approval_message="Reading transcript requires read_graph capability",
         )
-        return self._conversation_queries.list_transcript(conversation_id)
+        return self._conversation_queries.list_transcript(
+            conversation_id, workspace_id=workspace_id, graph_space=graph_space
+        )
 
     def latest_snapshot(
         self,
