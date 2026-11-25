@@ -5846,6 +5846,85 @@ def test_workflow_design_edge_upsert_rolls_back_when_control_event_fails(
     assert history["current_seq"] == history_before["current_seq"]
 
 
+def test_workflow_design_node_delete_rolls_back_when_control_event_fails(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service, _registry = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    design = service._workflow_design
+    workflow_id = "atomic-node-delete"
+    identity = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "role": "rw",
+            "capabilities": ["workflow.design.write", "write_graph"],
+            "sub": "alice",
+        }
+    )
+    try:
+        for node_id, label in (("start", "Start"), ("end", "End")):
+            service.workflow_design_upsert_node(
+                workflow_id=workflow_id,
+                designer_id="alice",
+                node_id=node_id,
+                label=label,
+            )
+        service.workflow_design_upsert_edge(
+            workflow_id=workflow_id,
+            designer_id="alice",
+            edge_id="edge-1",
+            src="start",
+            dst="end",
+        )
+    finally:
+        claims_ctx.reset(identity)
+
+    graph_before = design.workflow_design_graph(workflow_id, refresh=True)
+    history_before = design.workflow_design_history(workflow_id=workflow_id)
+    original_append = design._append_design_control_event
+
+    def fail_node_delete_control_event(**kwargs):
+        if kwargs["payload"]["action"] == "node_delete":
+            raise RuntimeError("injected node-delete design-control failure")
+        return original_append(**kwargs)
+
+    monkeypatch.setattr(
+        design, "_append_design_control_event", fail_node_delete_control_event
+    )
+    identity = claims_ctx.set(
+        {
+            "ns": "workflow",
+            "role": "rw",
+            "capabilities": ["workflow.design.write", "write_graph"],
+            "sub": "alice",
+        }
+    )
+    try:
+        with pytest.raises(
+            RuntimeError, match="injected node-delete design-control failure"
+        ):
+            service.workflow_design_delete_node(
+                workflow_id=workflow_id,
+                node_id="start",
+                designer_id="alice",
+            )
+    finally:
+        claims_ctx.reset(identity)
+
+    graph_after = design.workflow_design_graph(workflow_id, refresh=True)
+    history_after = design.workflow_design_history(workflow_id=workflow_id)
+    assert {node["id"] for node in graph_after["nodes"]} == {
+        node["id"] for node in graph_before["nodes"]
+    }
+    assert {edge["id"] for edge in graph_after["edges"]} == {
+        edge["id"] for edge in graph_before["edges"]
+    }
+    assert history_after["current_version"] == history_before["current_version"]
+    assert history_after["current_seq"] == history_before["current_seq"]
+
+
 def test_workflow_design_node_upsert_requires_write_graph_before_effect(
     monkeypatch, engine_triplet
 ):

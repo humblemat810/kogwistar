@@ -346,11 +346,55 @@
             expected_after_delete["edges"]
         );
         let trigger_connection = rusqlite::Connection::open(&path).unwrap();
+        for (node_id, label) in [("start", "Start"), ("end", "End")] {
+            let response = public_call!(
+                "POST",
+                "/api/workflow/design/wf-failure-delete/nodes",
+                json!({"designer_id":"alice","node_id":node_id,"label":label})
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let seed_edge = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-delete/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-1",
+                "src":"start",
+                "dst":"end"
+            })
+        );
+        assert_eq!(seed_edge.status(), StatusCode::OK);
+        let delete_graph_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_graph_before: Value = serde_json::from_slice(
+            &to_bytes(delete_graph_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let delete_history_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/history",
+            json!({})
+        );
+        let delete_history_before: Value = serde_json::from_slice(
+            &to_bytes(delete_history_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         trigger_connection
             .execute_batch(
                 "CREATE TRIGGER reject_design_control_event
                  BEFORE INSERT ON entity_events
-                 WHEN NEW.namespace = 'wf_design:wf-failure-atomic'
+                 WHEN NEW.namespace IN (
+                   'wf_design:wf-failure-atomic',
+                   'wf_design:wf-failure-delete'
+                 )
                    AND NEW.entity_kind = 'design_control'
                  BEGIN SELECT RAISE(ABORT, 'injected design-control failure'); END;",
             )
@@ -384,6 +428,50 @@
         )
         .unwrap();
         assert!(rolled_back_graph["nodes"].as_array().unwrap().is_empty());
+        let failed_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-failure-delete/nodes/start",
+            json!({"designer_id":"alice"})
+        );
+        assert!(!failed_delete.status().is_success());
+        let delete_graph_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_graph_after: Value = serde_json::from_slice(
+            &to_bytes(delete_graph_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_graph_after["nodes"],
+            delete_graph_before["nodes"]
+        );
+        assert_eq!(
+            delete_graph_after["edges"],
+            delete_graph_before["edges"]
+        );
+        let delete_history_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/history",
+            json!({})
+        );
+        let delete_history_after: Value = serde_json::from_slice(
+            &to_bytes(delete_history_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_history_after["current_version"],
+            delete_history_before["current_version"]
+        );
+        assert_eq!(
+            delete_history_after["current_seq"],
+            delete_history_before["current_seq"]
+        );
         for (node_id, label) in [("start", "Start"), ("end", "End")] {
             let response = public_call!(
                 "POST",
