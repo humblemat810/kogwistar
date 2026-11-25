@@ -1,0 +1,9 @@
+{
+  "contract_version": 1,
+  "method": "GET",
+  "path": "/api/conversations/conversation-empty/turns",
+  "response": {
+    "conversation_id": "conversation-empty",
+    "turns": []
+  }
+}

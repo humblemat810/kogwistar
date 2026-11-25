@@ -1612,6 +1612,12 @@ def test_conversation_detail_uses_python_defaults_and_checks_namespace(
 def test_conversation_transcript_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
+    transcript_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-transcript-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -1634,7 +1640,7 @@ def test_conversation_transcript_uses_python_defaults_and_checks_namespace(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
     service._conversation_queries.create_conversation(
-        user_id="owner-transcript", conversation_id="conversation-transcript"
+        user_id="owner-transcript", conversation_id="conversation-empty"
     )
 
     now = int(time.time())
@@ -1657,22 +1663,19 @@ def test_conversation_transcript_uses_python_defaults_and_checks_namespace(
 
     with TestClient(server.app) as client:
         response = client.get(
-            "/api/conversations/conversation-transcript/turns",
+            transcript_contract["path"],
             headers=headers("owner-transcript", "conversation"),
         )
         assert response.status_code == 200, response.text
-        assert response.json() == {
-            "conversation_id": "conversation-transcript",
-            "turns": [],
-        }
+        assert response.json() == transcript_contract["response"]
 
         denied = client.get(
-            "/api/conversations/conversation-transcript/turns",
+            transcript_contract["path"],
             headers=headers("foreign-user", "wisdom"),
         )
         assert denied.status_code == 403
         assert "owner-transcript" not in denied.text
-        assert "conversation-transcript" not in denied.text
+        assert "conversation-empty" not in denied.text
 
 
 def test_latest_snapshot_uses_python_defaults_and_checks_namespace(

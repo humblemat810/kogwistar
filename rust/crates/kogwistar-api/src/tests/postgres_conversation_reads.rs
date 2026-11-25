@@ -662,7 +662,7 @@
             .unwrap();
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_conversations_for_user; fixture=contracts/golden/conversation-list-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_conversation_list_is_user_scoped_and_has_stable_response_shape
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_conversations_for_user+list_transcript; fixture=contracts/golden/conversation-list-http-v1.json,contracts/golden/conversation-transcript-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_conversation_list_is_user_scoped_and_has_stable_response_shape+test_conversation_transcript_uses_python_defaults_and_checks_namespace
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available()
@@ -1065,6 +1065,31 @@
                 .cloned()
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["conversation_id".to_owned(), "turns".to_owned()])
+        );
+
+        let transcript_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-transcript-http-v1.json"
+        ))
+        .unwrap();
+        let empty_transcript = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: transcript_contract["method"].as_str().unwrap().to_owned(),
+                path_and_query: transcript_contract["path"].as_str().unwrap().to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(empty_transcript.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&empty_transcript.body).unwrap(),
+            transcript_contract["response"]
         );
 
         let audit_response = service
