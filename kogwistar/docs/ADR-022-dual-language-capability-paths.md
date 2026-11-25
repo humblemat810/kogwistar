@@ -701,6 +701,17 @@ Each selectable capability must publish:
 - a measurable native-path declaration for each workload that claims one;
 - conformance fixtures for valid and invalid inputs and durable effects.
 
+### Query ordering is contract-specific
+
+Rust must not add sorting merely to make cross-language fixtures deterministic.
+Preserve ordering only where Python's public contract explicitly guarantees
+it (for example, sequence- or index-ordered history). For backend-ranked graph
+and vector queries without such a guarantee, preserve backend result order and
+aligned scores/metadata; equal-score tie order is unspecified. Tests may sort a
+copy of results for order-insensitive parity comparisons, but production
+results must not be reordered for that purpose. Explicit opt-in sorting is a
+separate behavior and must not become the default.
+
 The current crosswalk is `contracts/dual-language-capabilities-v1.json`. It
 reconciles the frozen ADR-015 capability ownership entries and Rust's pending
 REST/syscall inventory, while marking native paths and unverified mixed paths

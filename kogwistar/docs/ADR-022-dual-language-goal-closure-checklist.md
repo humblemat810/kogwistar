@@ -184,10 +184,10 @@ the assertion is sufficient or currently passing.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |
-| Contract success | Same versioned fixture/request through Python and Rust; compare normalized status, response fields, defaults, ordering, IDs, and error-free result. Ignore only declared nondeterministic fields. |
+| Contract success | Same versioned fixture/request through Python and Rust; compare normalized status, response fields, defaults, IDs, and error-free result. Compare order only where Python's contract declares it; ignore only declared nondeterministic fields. |
 | Input validation | Missing, malformed, wrong-type, unknown, and extra fields; both paths reject consistently and produce no durable side effect. Include boundary values and empty collections where accepted. |
 | Authorization | Unauthenticated, wrong role, missing capability, wrong namespace/workspace/graph-space, and ACL-hidden target; deny before protected reads or writes and assert state unchanged/no information leak. Apply only where the operation has an authority boundary. |
-| Read semantics | Same seeded state; compare filtering, pagination/limits, stable ordering, hydration, tombstone/redirect behavior, provenance, and not-found semantics. Prove ACL filtering occurs before result limits. |
+| Read semantics | Same seeded state; compare filtering, pagination/limits, hydration, tombstone/redirect behavior, provenance, and not-found semantics. Preserve backend order where Python makes no ordering promise; test-only sorting may compare unordered result sets. Prove ACL filtering occurs before result limits. |
 | Write semantics | Same request; compare canonical graph/run state and emitted event/trace fields. Verify atomic rollback on injected failure, duplicate/retry behavior, idempotency, and no partial side effects. Apply only to mutators. |
 | Persistence lifecycle | For durable operations, close/reopen each supported backend and compare read-after-write, replay/recovery, sequence/version, and Python-written ↔ Rust-read plus Rust-written ↔ Python-read fixtures. |
 | Backend applicability | Exercise every declared operation/backend pair. For unsupported pairs, assert explicit fail-closed behavior and no silent fallback; do not count dispatch presence as behavioral parity. Distinguish SQLite metadata + eventual Chroma projection from PostgreSQL and in-memory authority semantics. |
