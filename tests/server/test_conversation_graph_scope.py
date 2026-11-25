@@ -16,7 +16,13 @@ from kogwistar.server.chat_service_conversation_queries import (
 )
 from kogwistar.server.chat_api import create_chat_router
 from kogwistar.json_types import JsonValue
+from kogwistar.conversation.models import ConversationNode
+from kogwistar.conversation.service import ConversationService
+from kogwistar.engine_core.engine import GraphKnowledgeEngine
+from kogwistar.engine_core.in_memory_backend import build_in_memory_backend
+from kogwistar.engine_core.models import Grounding, Span
 from kogwistar.server.chat_service import ChatRunService
+from tests._helpers.embeddings import ConstantEmbeddingFunction
 
 
 @pytest.mark.parametrize(
@@ -274,3 +280,88 @@ def test_conversation_http_reads_forward_authenticated_graph_scope() -> None:
         ("detail", "w1", "conversation"),
         ("transcript", "w1", "conversation"),
     ]
+
+
+def test_acl_hidden_turn_is_filtered_by_python_conversation_queries(tmp_path) -> None:
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "acl-conversation"),
+        kg_graph_type="conversation",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+        backend_factory=build_in_memory_backend,
+        acl_enabled=True,
+    )
+    conversation = ConversationService.from_engine(engine)
+    owner_token = set_claims_ctx(
+        {"sub": "alice", "user_id": "alice", "ns": "conversation"}
+    )
+    try:
+        conversation_id, _start_id = conversation.create_conversation(
+            user_id="alice", conv_id="acl-scope-conversation"
+        )
+        engine.write.add_node(
+            ConversationNode(
+                id="acl-private-turn",
+                label="Private answer",
+                type="entity",
+                summary="secret answer",
+                conversation_id=conversation_id,
+                user_id="alice",
+                role="assistant",  # type: ignore[arg-type]
+                turn_index=1,
+                properties={
+                    "content": "secret answer",
+                    "entity_type": "assistant_turn",
+                },
+                mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                metadata={
+                    "level_from_root": 0,
+                    "entity_type": "assistant_turn",
+                    "in_conversation_chain": True,
+                },
+                domain_id=None,
+                canonical_entity_id=None,
+            )
+        )
+        engine.acl.record_acl(
+            grain="node",
+            truth_graph="conversation",
+            entity_id="acl-private-turn",
+            version=2,
+            mode="private",
+            owner_id="bob",
+            supersedes_version=1,
+        )
+    finally:
+        reset_claims_ctx(owner_token)
+
+    owner_token = set_claims_ctx(
+        {"sub": "alice", "user_id": "alice", "ns": "conversation"}
+    )
+    try:
+        queries = _ConversationQueryService(
+            cast(
+                ChatRunService,
+                SimpleNamespace(
+                    _conversation_engine=lambda: engine,
+                    _conversation_service=lambda: conversation,
+                ),
+            )
+        )
+        detail = queries.get_conversation(conversation_id)
+        transcript = queries.list_transcript(conversation_id)
+        assert detail["turn_count"] == 0
+        assert transcript == []
+    finally:
+        reset_claims_ctx(owner_token)
+
+    outsider_token = set_claims_ctx(
+        {"sub": "bob", "user_id": "bob", "ns": "conversation"}
+    )
+    try:
+        with pytest.raises(KeyError, match="Unknown conversation_id"):
+            queries.get_conversation(conversation_id)
+        with pytest.raises(KeyError, match="Unknown conversation_id"):
+            queries.list_transcript(conversation_id)
+    finally:
+        reset_claims_ctx(outsider_token)
+        engine.close()
