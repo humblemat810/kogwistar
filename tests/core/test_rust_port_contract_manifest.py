@@ -3030,6 +3030,61 @@ def test_python_cli_workflow_blocked_runs_is_declared_but_not_dispatched(
     assert requests == []
 
 
+def test_python_cli_workflow_service_declare_matches_rust_payload_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert main(
+        [
+            "api",
+            "workflow",
+            "workflow.service_declare",
+            "--service-id",
+            "svc-31",
+            "--service-kind",
+            "maintenance",
+            "--target-kind",
+            "workflow",
+            "--target-ref",
+            "wf-31",
+            "--target-config",
+            '{"batch":4}',
+            "--no-enabled",
+            "--autostart",
+            "--restart-policy",
+            '{"max_retries":2}',
+            "--heartbeat-ttl-ms",
+            "45000",
+            "--trigger-specs",
+            '[{"kind":"manual"}]',
+            "--base-url",
+            "http://rust-server",
+        ]
+    ) == 0
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/services",
+        "json_body": {
+            "service_id": "svc-31",
+            "service_kind": "maintenance",
+            "target_kind": "workflow",
+            "target_ref": "wf-31",
+            "target_config": {"batch": 4},
+            "enabled": False,
+            "autostart": True,
+            "restart_policy": {"max_retries": 2},
+            "heartbeat_ttl_ms": 45000,
+            "trigger_specs": [{"kind": "manual"}],
+        },
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

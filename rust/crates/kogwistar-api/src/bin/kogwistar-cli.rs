@@ -44,6 +44,28 @@ fn option_values(args: impl Iterator<Item = String>) -> HashMap<String, String> 
     values
 }
 
+fn option_values_with_boolean_flags(
+    args: impl Iterator<Item = String>,
+    boolean_flags: &[&str],
+) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    let mut args = args;
+    while let Some(option) = args.next() {
+        if !option.starts_with("--") {
+            usage();
+        }
+        if boolean_flags.contains(&option.as_str()) {
+            values.insert(option, "true".to_owned());
+            continue;
+        }
+        let Some(value) = args.next() else {
+            usage();
+        };
+        values.insert(option, value);
+    }
+    values
+}
+
 fn validate_options(options: &HashMap<String, String>, allowed: &[&str]) {
     if options
         .keys()
@@ -209,7 +231,14 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     let Some(command) = args.next() else {
         usage();
     };
-    let options = option_values(args);
+    let options = if command == "workflow.service_declare" {
+        option_values_with_boolean_flags(
+            args,
+            &["--enabled", "--no-enabled", "--autostart", "--no-autostart"],
+        )
+    } else {
+        option_values(args)
+    };
     let base_url = options
         .get("--base-url")
         .cloned()
@@ -340,6 +369,73 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         return request_json(
             reqwest::Method::POST,
             format!("{base_url}/api/workflow/services/{service_id}/{action}"),
+            Some(body),
+        );
+    }
+    if command == "workflow.service_declare" {
+        validate_options(
+            &options,
+            &[
+                "--base-url",
+                "--service-id",
+                "--service-kind",
+                "--target-kind",
+                "--target-ref",
+                "--target-config",
+                "--enabled",
+                "--no-enabled",
+                "--autostart",
+                "--no-autostart",
+                "--restart-policy",
+                "--heartbeat-ttl-ms",
+                "--trigger-specs",
+            ],
+        );
+        let parse_json_option = |name: &str| -> Value {
+            options
+                .get(name)
+                .map(|value| {
+                    serde_json::from_str::<Value>(value).unwrap_or_else(|error| {
+                        eprintln!("invalid JSON for {name}: {error}");
+                        std::process::exit(2);
+                    })
+                })
+                .unwrap_or_else(|| json!({}))
+        };
+        let enabled = options
+            .get("--no-enabled")
+            .map(|_| false)
+            .or_else(|| options.get("--enabled").map(|_| true))
+            .unwrap_or(true);
+        let autostart = options
+            .get("--no-autostart")
+            .map(|_| false)
+            .or_else(|| options.get("--autostart").map(|_| true))
+            .unwrap_or(false);
+        let body = json!({
+            "service_id": required_option(&options, "--service-id"),
+            "service_kind": required_option(&options, "--service-kind"),
+            "target_kind": required_option(&options, "--target-kind"),
+            "target_ref": required_option(&options, "--target-ref"),
+            "target_config": parse_json_option("--target-config"),
+            "enabled": enabled,
+            "autostart": autostart,
+            "restart_policy": parse_json_option("--restart-policy"),
+            "heartbeat_ttl_ms": options
+                .get("--heartbeat-ttl-ms")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(60000),
+            "trigger_specs": options
+                .get("--trigger-specs")
+                .map(|value| serde_json::from_str::<Value>(value).unwrap_or_else(|error| {
+                    eprintln!("invalid JSON for --trigger-specs: {error}");
+                    std::process::exit(2);
+                }))
+                .unwrap_or_else(|| json!([])),
+        });
+        return request_json(
+            reqwest::Method::POST,
+            format!("{base_url}/api/workflow/services"),
             Some(body),
         );
     }

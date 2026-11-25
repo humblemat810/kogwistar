@@ -987,6 +987,61 @@ fn workflow_capabilities_snapshot_command_preserves_python_optional_subject() {
 }
 
 #[test]
+fn workflow_service_declare_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_declare",
+                "--service-id",
+                "svc-31",
+                "--service-kind",
+                "maintenance",
+                "--target-kind",
+                "workflow",
+                "--target-ref",
+                "wf-31",
+                "--target-config",
+                "{\"batch\":4}",
+                "--no-enabled",
+                "--autostart",
+                "--restart-policy",
+                "{\"max_retries\":2}",
+                "--heartbeat-ttl-ms",
+                "45000",
+                "--trigger-specs",
+                "[{\"kind\":\"manual\"}]",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-31"}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/services HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "service_id": "svc-31",
+            "service_kind": "maintenance",
+            "target_kind": "workflow",
+            "target_ref": "wf-31",
+            "target_config": {"batch": 4},
+            "enabled": false,
+            "autostart": true,
+            "restart_policy": {"max_retries": 2},
+            "heartbeat_ttl_ms": 45000,
+            "trigger_specs": [{"kind": "manual"}],
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"service_id": "svc-31"}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {
