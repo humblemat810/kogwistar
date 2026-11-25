@@ -621,9 +621,19 @@ fn base_capabilities(principal: &Value) -> BTreeSet<String> {
         .or_else(|| principal.get("caps").map(|value| ("caps", value)))
         .or_else(|| capabilities.map(|value| ("capabilities", value)));
     if let Some((field, _)) = explicit {
-        return principal_strings(principal, field)
+        let raw_values = match principal.get(field) {
+            Some(Value::String(value)) => vec![value.clone()],
+            Some(Value::Array(values)) => values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        };
+        return raw_values
             .into_iter()
-            .filter(|capability| capability != "*")
+            .map(|capability| capability.trim().to_ascii_lowercase())
+            .filter(|capability| !capability.is_empty() && capability != "*")
             .collect();
     }
     if principal_role(principal) == "rw" {

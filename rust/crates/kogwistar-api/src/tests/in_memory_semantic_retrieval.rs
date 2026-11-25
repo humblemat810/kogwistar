@@ -49,6 +49,14 @@ fn in_memory_root_graph_tool_auth_matches_python_capability_policy() {
             name,
             &json!({"role":"ro", "ns":["docs"], "capabilities":[], "caps":["read_graph"]}),
         ), "empty capabilities must fall back to legacy caps for {name}");
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":["docs"], "capabilities":"read_graph,write_graph"}),
+            ),
+            "comma-delimited capability string must not grant {name}"
+        );
         assert!(service.supports_mcp_tool_for_principal(
             "root",
             name,

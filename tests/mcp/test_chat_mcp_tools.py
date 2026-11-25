@@ -4551,6 +4551,15 @@ async def test_root_graph_mcp_honors_explicit_capability_claims(monkeypatch):
             "kg_shortest_path", role="ro", namespaces={"docs"}
         )
 
+    with _claims(
+        "ro",
+        "docs",
+        scope_parts={"capabilities": "read_graph,write_graph"},
+    ):
+        assert not mcp_tools._tool_allowed(
+            "kg_shortest_path", role="ro", namespaces={"docs"}
+        )
+
     for name, capability in mcp_tools.TOOL_CAPABILITIES.items():
         role = "rw" if capability == "write_graph" else "ro"
         default_namespace = "wisdom" if name.startswith("wisdom.") else "docs"
