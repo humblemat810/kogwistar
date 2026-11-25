@@ -1535,6 +1535,12 @@ def test_conversation_create_uses_authenticated_owner_and_persists_start_node(
 def test_conversation_detail_uses_python_defaults_and_checks_namespace(
     monkeypatch, engine_triplet
 ):
+    detail_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/conversation-detail-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     for selector in (
         "KOGWISTAR_IMPL_MODE",
         "KOGWISTAR_IMPL_CONTRACTS",
@@ -1557,7 +1563,7 @@ def test_conversation_detail_uses_python_defaults_and_checks_namespace(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
     service._conversation_queries.create_conversation(
-        user_id="owner-detail", conversation_id="conversation-detail"
+        user_id="alice", conversation_id="conversation-empty", start_node_id="start-empty"
     )
 
     now = int(time.time())
@@ -1580,32 +1586,18 @@ def test_conversation_detail_uses_python_defaults_and_checks_namespace(
 
     with TestClient(server.app) as client:
         response = client.get(
-            "/api/conversations/conversation-detail",
-            headers=headers("owner-detail", "conversation"),
+            detail_contract["path"],
+            headers=headers("alice", "conversation"),
         )
         assert response.status_code == 200, response.text
-        payload = response.json()
-        assert set(payload) == {
-            "conversation_id",
-            "user_id",
-            "status",
-            "start_node_id",
-            "tail_node_id",
-            "turn_count",
-        }
-        assert payload["conversation_id"] == "conversation-detail"
-        assert payload["user_id"] == "owner-detail"
-        assert payload["status"] == "active"
-        assert payload["start_node_id"]
-        assert payload["tail_node_id"] == payload["start_node_id"]
-        assert payload["turn_count"] == 0
+        assert response.json() == detail_contract["response"]
 
         denied = client.get(
-            "/api/conversations/conversation-detail",
+            detail_contract["path"],
             headers=headers("foreign-user", "wisdom"),
         )
         assert denied.status_code == 403
-        assert "owner-detail" not in denied.text
+        assert "alice" not in denied.text
         assert "start_node_id" not in denied.text
 
 

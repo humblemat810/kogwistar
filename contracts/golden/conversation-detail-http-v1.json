@@ -1,0 +1,13 @@
+{
+  "contract_version": 1,
+  "method": "GET",
+  "path": "/api/conversations/conversation-empty",
+  "response": {
+    "conversation_id": "conversation-empty",
+    "user_id": "alice",
+    "status": "active",
+    "start_node_id": "start-empty",
+    "tail_node_id": "start-empty",
+    "turn_count": 0
+  }
+}
