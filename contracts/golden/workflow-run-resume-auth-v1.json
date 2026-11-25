@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "tool_name": "workflow.run_resume",
+  "denied_principal": {
+    "role": "rw",
+    "namespace": "workflow",
+    "capabilities": ["workflow.run.read"]
+  },
+  "required_capability": "workflow.run.write",
+  "must_not_execute": true
+}

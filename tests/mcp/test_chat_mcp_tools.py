@@ -2010,6 +2010,12 @@ async def test_mcp_workflow_run_resume_denies_missing_write_capability_before_ef
     from kogwistar.server.mcp_tools import require_ns, tool_roles
     from mcp import types
 
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-resume-auth-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     service = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -2032,13 +2038,17 @@ async def test_mcp_workflow_run_resume_denies_missing_write_capability_before_ef
         require_workflow_access=lambda _workflow_id, _role: None,
     )
 
+    denied_principal = contract["denied_principal"]
     with _claims(
-        "rw", "workflow", sub="authenticated-owner", scope_parts={"capabilities": []}
+        denied_principal["role"],
+        denied_principal["namespace"],
+        sub="authenticated-owner",
+        scope_parts={"capabilities": denied_principal["capabilities"]},
     ):
         result = await workflow_mcp._handle_call_tool(
             None,
             types.CallToolRequestParams(
-                name="workflow.run_resume",
+                name=contract["tool_name"],
                 arguments={
                     "run_id": "private-run",
                     "suspended_node_id": "approval",
@@ -2053,8 +2063,9 @@ async def test_mcp_workflow_run_resume_denies_missing_write_capability_before_ef
 
     assert result.is_error is True
     assert "403:" in result.content[0].text
-    assert "workflow.run.write" in result.content[0].text
-    assert effects == []
+    assert contract["required_capability"] in result.content[0].text
+    if contract["must_not_execute"]:
+        assert effects == []
 
 
 @pytest.mark.asyncio

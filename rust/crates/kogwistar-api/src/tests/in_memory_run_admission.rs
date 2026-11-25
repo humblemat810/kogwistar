@@ -1113,6 +1113,8 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
 }
 
 #[tokio::test]
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_resume; python_service=kogwistar/server/chat_service.py#ChatRunService.resume_run; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_synchronous_resume_matches_shared_result_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_resume_dispatches_request_and_returns_result
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_resume; python_service=kogwistar/server/chat_service.py#ChatRunService.resume_run; fixture=contracts/golden/workflow-run-resume-auth-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_native_synchronous_resume_matches_shared_result_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_resume_denies_missing_write_capability_before_effect
 async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -1238,13 +1240,13 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     .unwrap();
     let mut resume_arguments: Value = serde_json::from_slice(&resume_body).unwrap();
     resume_arguments["run_id"] = json!("memory-resume-run");
-    let call_resume = |request_id: &str| {
+    let call_resume = |request_id: &str, bearer: &str| {
         Request::builder()
             .method("POST")
             .uri("/mcp/workflow")
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
-            .header("authorization", format!("Bearer {token}"))
+            .header("authorization", format!("Bearer {bearer}"))
             .body(Body::from(
                 json!({
                     "jsonrpc":"2.0", "id":request_id, "method":"tools/call",
@@ -1254,7 +1256,69 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
             ))
             .unwrap()
     };
-    let resumed = app.clone().oneshot(call_resume("resume-once")).await.unwrap();
+    let auth_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-resume-auth-v1.json"
+    ))
+    .unwrap();
+    let denied_principal = &auth_contract["denied_principal"];
+    let denied_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"resume-owner",
+            "role":denied_principal["role"],
+            "ns":[denied_principal["namespace"]],
+            "capabilities":denied_principal["capabilities"],
+            "iss":"local",
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let before_denied = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-resume-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    let denied = app
+        .clone()
+        .oneshot(call_resume("resume-denied", &denied_token))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::OK);
+    let denied_wire = to_bytes(denied.into_body(), 8192).await.unwrap();
+    let denied_text = String::from_utf8(denied_wire.to_vec()).unwrap();
+    let denied_data = denied_text
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap_or(&denied_text);
+    let denied_response: Value = serde_json::from_str(denied_data).unwrap();
+    assert!(
+        denied_response["error"].is_object() || denied_response["result"]["isError"] == true,
+        "MCP resume denial was not reported: {denied_text}"
+    );
+    assert_eq!(
+        kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            "memory-resume-run",
+            0,
+            100,
+        )
+        .await
+        .unwrap()
+        .len(),
+        before_denied,
+        "unauthorized MCP resume must not dispatch or mutate run events"
+    );
+
+    let resumed = app
+        .clone()
+        .oneshot(call_resume("resume-once", &token))
+        .await
+        .unwrap();
     assert_eq!(resumed.status(), StatusCode::OK);
     let wire = to_bytes(resumed.into_body(), 8192).await.unwrap();
     let data = String::from_utf8(wire.to_vec()).unwrap();
@@ -1294,7 +1358,10 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     .await
     .unwrap()
     .len();
-    let retried = app.oneshot(call_resume("resume-retry")).await.unwrap();
+    let retried = app
+        .oneshot(call_resume("resume-retry", &token))
+        .await
+        .unwrap();
     assert_eq!(retried.status(), StatusCode::OK);
     let wire = to_bytes(retried.into_body(), 8192).await.unwrap();
     let data = String::from_utf8(wire.to_vec()).unwrap();
