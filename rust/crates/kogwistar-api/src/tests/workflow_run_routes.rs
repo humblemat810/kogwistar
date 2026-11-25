@@ -1250,6 +1250,7 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
 }
 
 #[tokio::test]
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#server_run_value; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/run-status-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_run_status_http_route_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api.py#test_run_status_route_matches_shared_v1_contract
 async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
