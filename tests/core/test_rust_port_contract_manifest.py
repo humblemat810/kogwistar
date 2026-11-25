@@ -3396,6 +3396,28 @@ def test_python_cli_missing_api_option_value_is_usage_error(
     assert "argument --conversation-id: expected one argument" in capsys.readouterr().err
 
 
+def test_python_cli_unknown_api_option_is_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from kogwistar.cli import main
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "api",
+                "conversation",
+                "conversation.get_transcript",
+                "--conversation-id",
+                "conversation-1",
+                "--mystery",
+                "value",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "unrecognized arguments: --mystery value" in capsys.readouterr().err
+
+
 def test_cli_parity_remains_a_server_release_gate() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))

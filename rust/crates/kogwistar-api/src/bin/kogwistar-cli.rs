@@ -71,10 +71,12 @@ fn option_values_with_boolean_flags(
 }
 
 fn validate_options(options: &HashMap<String, String>, allowed: &[&str]) {
-    if options
+    if let Some(option) = options
         .keys()
-        .any(|option| !allowed.contains(&option.as_str()))
+        .filter(|option| !allowed.contains(&option.as_str()))
+        .min()
     {
+        eprintln!("unrecognized argument: {option}");
         usage();
     }
 }
