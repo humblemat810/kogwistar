@@ -225,6 +225,7 @@
             let field = field.as_str().unwrap();
             assert!(budget["cost_ledger"].get(field).is_some(), "missing {field}");
         }
+        assert_eq!(budget["cost_ledger"]["workspace_id"], budget_contract["workspace_id"]);
         assert_eq!(budget["budget_model"], budget_contract["budget_model"]);
 
         let budget_history_contract: Value = serde_json::from_str(include_str!(

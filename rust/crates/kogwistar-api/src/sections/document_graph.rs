@@ -2370,7 +2370,7 @@ fn resource_value(
         "services": {"total_services": 0, "by_health": {}},
         "storage_usage_bytes": storage_usage_bytes,
         "cost_ledger": {
-            "workspace_id": "workflow",
+            "workspace_id": "chat-service",
             "event_count": usage.len(),
             "total_amount": total_amount,
             "by_kind": {"usage": usage.len()},
@@ -2674,6 +2674,7 @@ fn operational_effect(
         ),
         // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_monitoring.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api.py#test_runtime_resource_snapshot_reports_pressure
         "/api/workflow/resources" => json_effect(StatusCode::OK, resources),
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot; fixture=contracts/golden/workflow-budget-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_capability_kernel_contract.py#test_workflow_budget_route_matches_contract_and_requires_security_scope
         "/api/workflow/budget" => json_effect(
             StatusCode::OK,
             json!({
