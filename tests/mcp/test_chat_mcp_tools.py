@@ -1920,6 +1920,83 @@ async def test_mcp_workflow_resume_contract_denies_scope_and_missing_capability(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_resume_dispatches_request_and_returns_result(
+    monkeypatch, engine_triplet
+):
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+    from mcp import types
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    resume_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-run-resume-result-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    request = {
+        "run_id": "resume-mcp-run",
+        "suspended_node_id": "approval",
+        "suspended_token_id": "approval-token",
+        "client_result": {"status": "success", "state_update": [["u", {"approved": True}]]},
+        "workflow_id": "resume-mcp-workflow",
+        "conversation_id": "resume-mcp-conversation",
+        "turn_node_id": "resume-mcp-turn",
+        "user_id": "authenticated-owner",
+    }
+    expected = {
+        "workflow_status": "succeeded",
+        "final_state": {"approved": True},
+        "budget": {},
+    }
+    calls: list[dict[str, Any]] = []
+
+    def resume_run(**kwargs: Any) -> dict[str, Any]:
+        calls.append(kwargs)
+        return expected
+
+    monkeypatch.setattr(service, "resume_run", resume_run)
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda _workflow_id, _role: None,
+    )
+
+    with _claims(
+        "rw",
+        "workflow",
+        sub="authenticated-owner",
+        scope_parts={"capabilities": ["workflow.run.write"]},
+    ):
+        result = await workflow_mcp._handle_call_tool(
+            None,
+            types.CallToolRequestParams(name="workflow.run_resume", arguments=request),
+        )
+
+    payload = _structured(result)
+    assert result.is_error is False
+    assert calls == [request]
+    assert set(resume_contract["required_fields"]).issubset(payload)
+    assert payload == expected
+    assert payload["workflow_status"] in resume_contract["completed_statuses"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_replay_matches_shared_contract(
     monkeypatch, engine_triplet
 ):
