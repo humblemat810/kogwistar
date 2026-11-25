@@ -404,6 +404,36 @@ fn workflow_run_resume_contract_command_uses_python_endpoint() {
 }
 
 #[test]
+fn workflow_run_replay_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_replay",
+                "--run-id",
+                "r-13",
+                "--target-step-seq",
+                "8",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-13","target_step_seq":8,"state":{}}"#,
+    );
+    assert!(
+        request.starts_with("GET /api/workflow/runs/r-13/replay?target_step_seq=8 HTTP/1.1\r\n")
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-13", "target_step_seq": 8, "state": {}}),
+    );
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_payload_defaults() {
     let (output, request) = run_mock_http_cli(
         |base| {

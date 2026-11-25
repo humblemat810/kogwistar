@@ -2573,6 +2573,42 @@ def test_python_cli_workflow_resume_contract_matches_rust_http_contract(
     }
 
 
+def test_python_cli_workflow_replay_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-13", "target_step_seq": 8, "state": {}}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_replay",
+                "--run-id",
+                "r-13",
+                "--target-step-seq",
+                "8",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/runs/r-13/replay",
+        "params": {"target_step_seq": 8},
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
