@@ -407,6 +407,39 @@ async fn workflow_run_submit_enforces_configured_workflow_acl() {
     .unwrap();
     drop(auth);
 
+    let memory_service = InMemoryGraphApplicationService::default()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let postgres_service = PostgresRunApplicationService::from_dsn(
+        "postgres://unused:unused@127.0.0.1:1/unused",
+        "workflow_run_submit_acl_policy",
+    )
+    .unwrap()
+    .with_owner_auth_config(&auth_config)
+    .await
+    .unwrap();
+    let policy_services: [&dyn ApplicationService; 3] =
+        [&service, &memory_service, &postgres_service];
+    for policy_service in policy_services {
+        assert!(!policy_service
+            .workflow_run_submit_allowed("no-acl".to_owned(), Some("alice".to_owned()))
+            .await
+            .unwrap());
+        assert!(!policy_service
+            .workflow_run_submit_allowed("read-only".to_owned(), Some("alice".to_owned()))
+            .await
+            .unwrap());
+        assert!(policy_service
+            .workflow_run_submit_allowed("writable".to_owned(), Some("alice".to_owned()))
+            .await
+            .unwrap());
+        assert!(!policy_service
+            .workflow_run_submit_allowed("writable".to_owned(), None)
+            .await
+            .unwrap());
+    }
+
     let secret = b"workflow-acl-ingress-secret";
     let token = encode(
         &Header::new(Algorithm::HS256),
@@ -501,14 +534,6 @@ async fn workflow_run_submit_enforces_configured_workflow_acl() {
         .unwrap();
     let mcp_payload: Value = serde_json::from_str(mcp_message).unwrap();
     assert_eq!(mcp_payload["result"]["isError"], true, "{mcp_payload}");
-    assert!(!service
-        .workflow_run_submit_allowed("read-only".to_owned(), Some("alice".to_owned()))
-        .await
-        .unwrap());
-    assert!(service
-        .workflow_run_submit_allowed("writable".to_owned(), Some("alice".to_owned()))
-        .await
-        .unwrap());
     assert!(service
         .store
         .list_server_runs(None, Some("read-only"), Some("workflow-acl-conversation"), 20)
