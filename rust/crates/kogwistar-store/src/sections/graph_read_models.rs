@@ -206,7 +206,7 @@ fn value_strings(record: &GraphRecord, field: &str) -> BTreeSet<String> {
         .and_then(|value| value.as_array().cloned())
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|value| value.as_str().map(|item| item.to_ascii_lowercase()))
+        .filter_map(|value| value.as_str().map(str::to_owned))
         .collect()
 }
 
