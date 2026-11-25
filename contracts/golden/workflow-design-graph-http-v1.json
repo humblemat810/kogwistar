@@ -24,6 +24,9 @@
     "relation": "wf_next",
     "is_default": true
   },
+  "delete_request": {
+    "node_id": "start"
+  },
   "expected": {
     "current_version": 3,
     "active_tip_version": 3,
@@ -65,5 +68,24 @@
         "wf_multiplicity": "one"
       }
     ]
+  },
+  "expected_after_delete": {
+    "current_version": 4,
+    "active_tip_version": 4,
+    "can_undo": true,
+    "can_redo": false,
+    "nodes": [
+      {
+        "id": "finish",
+        "label": "Finish",
+        "entity_type": "workflow_node",
+        "workflow_id": "wf-graph-contract",
+        "wf_op": "emit-result",
+        "wf_start": false,
+        "wf_terminal": true,
+        "wf_fanout": false
+      }
+    ],
+    "edges": []
   }
 }

@@ -5542,6 +5542,16 @@ def test_workflow_design_nonempty_graph_matches_shared_contract(
             params={"refresh": str(contract["refresh"]).lower()},
             headers=headers,
         )
+        deleted = client.request(
+            "DELETE",
+            f"{path}/nodes/{contract['delete_request']['node_id']}",
+            json={"designer_id": "alice"},
+            headers=headers,
+        )
+        graph_after_delete = client.get(
+            f"{path}/graph?refresh=true",
+            headers=headers,
+        )
 
     assert graph.status_code == contract["success_status"], graph.text
     body = graph.json()
@@ -5584,6 +5594,33 @@ def test_workflow_design_nonempty_graph_matches_shared_contract(
             "wf_multiplicity",
         ):
             assert edge["metadata"][field] == item[field]
+
+    assert deleted.status_code == contract["success_status"], deleted.text
+    assert graph_after_delete.status_code == contract["success_status"]
+    deleted_body = graph_after_delete.json()
+    expected_deleted = contract["expected_after_delete"]
+    for field in (
+        "current_version",
+        "active_tip_version",
+        "can_undo",
+        "can_redo",
+    ):
+        assert deleted_body[field] == expected_deleted[field]
+    actual_deleted_nodes = {node["id"]: node for node in deleted_body["nodes"]}
+    assert len(actual_deleted_nodes) == len(expected_deleted["nodes"])
+    for item in expected_deleted["nodes"]:
+        node = actual_deleted_nodes[item["id"]]
+        assert node["label"] == item["label"]
+        for field in (
+            "entity_type",
+            "workflow_id",
+            "wf_op",
+            "wf_start",
+            "wf_terminal",
+            "wf_fanout",
+        ):
+            assert node["metadata"][field] == item[field]
+    assert deleted_body["edges"] == expected_deleted["edges"]
 
 
 def test_workflow_design_empty_history_matches_shared_contract(

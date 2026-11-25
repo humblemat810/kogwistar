@@ -282,6 +282,69 @@
                 assert_eq!(actual["metadata"][field], item[field], "edge field {field}");
             }
         }
+        let delete_response = public_call!(
+            "DELETE",
+            format!(
+                "/api/workflow/design/{graph_workflow_id}/nodes/{}",
+                graph_contract["delete_request"]["node_id"].as_str().unwrap()
+            ),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(
+            delete_response.status().as_u16(),
+            graph_contract["success_status"]
+        );
+        let graph_after_delete = public_call!(
+            "GET",
+            format!("/api/workflow/design/{graph_workflow_id}/graph?refresh=true"),
+            json!({})
+        );
+        assert_eq!(graph_after_delete.status(), StatusCode::OK);
+        let graph_after_delete: Value = serde_json::from_slice(
+            &to_bytes(graph_after_delete.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let expected_after_delete = &graph_contract["expected_after_delete"];
+        for field in [
+            "current_version",
+            "active_tip_version",
+            "can_undo",
+            "can_redo",
+        ] {
+            assert_eq!(
+                graph_after_delete[field], expected_after_delete[field],
+                "post-delete field {field}"
+            );
+        }
+        let deleted_nodes = graph_after_delete["nodes"].as_array().unwrap();
+        let expected_deleted_nodes = expected_after_delete["nodes"].as_array().unwrap();
+        assert_eq!(deleted_nodes.len(), expected_deleted_nodes.len());
+        for expected_node in expected_deleted_nodes {
+            let actual = deleted_nodes
+                .iter()
+                .find(|node| node["id"] == expected_node["id"])
+                .expect("expected post-delete node remains");
+            assert_eq!(actual["label"], expected_node["label"]);
+            for field in [
+                "entity_type",
+                "workflow_id",
+                "wf_op",
+                "wf_start",
+                "wf_terminal",
+                "wf_fanout",
+            ] {
+                assert_eq!(
+                    actual["metadata"][field], expected_node[field],
+                    "post-delete node field {field}"
+                );
+            }
+        }
+        assert_eq!(
+            graph_after_delete["edges"],
+            expected_after_delete["edges"]
+        );
         let trigger_connection = rusqlite::Connection::open(&path).unwrap();
         trigger_connection
             .execute_batch(
