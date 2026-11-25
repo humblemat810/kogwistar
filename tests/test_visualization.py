@@ -967,10 +967,16 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
         assert scope_edge_policy["id"] in [
             node["id"] for node in scoped_edge_payload["nodes"]
         ]
+        owner_visible_ids = {node["id"] for node in owner_d3_payload["nodes"]}
+        owner_groups = set(acl_fixture["principal"]["groups"])
         for share_policy in share_policies:
-            assert share_policy["id"] in [
-                node["id"] for node in owner_d3_payload["nodes"]
-            ]
+            expected_visible = (
+                acl_fixture["principal"]["id"]
+                in share_policy.get("shared_with_principals", [])
+            ) or bool(
+                owner_groups & set(share_policy.get("shared_with_groups", []))
+            )
+            assert (share_policy["id"] in owner_visible_ids) is expected_visible
 
         token = claims_ctx.set(
             {
@@ -989,16 +995,16 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             directly_shared_payload = json.loads(bytes(directly_shared.body))
         finally:
             claims_ctx.reset(token)
-        assert share_policies[0]["id"] in [
+        directly_shared_ids = {
             node["id"] for node in directly_shared_payload["nodes"]
-        ]
-        assert all(
-            policy["id"] not in [
-                node["id"] for node in directly_shared_payload["nodes"]
-            ]
-            for policy in share_policies
-            if policy["mode"] == "group"
-        )
+        }
+        for share_policy in share_policies:
+            expected_visible = (
+                share_policy["mode"] == "shared"
+                and acl_fixture["principal"]["id"]
+                in share_policy.get("shared_with_principals", [])
+            )
+            assert (share_policy["id"] in directly_shared_ids) is expected_visible
         assert edge_share_policies[0]["id"] in [
             node["id"] for node in directly_shared_payload["nodes"]
         ]
@@ -1024,6 +1030,17 @@ def test_visualization_uses_acl_policy_for_selected_python_graph_type(
             group_shared_payload = json.loads(bytes(group_shared.body))
         finally:
             claims_ctx.reset(token)
+        group_shared_ids = {node["id"] for node in group_shared_payload["nodes"]}
+        for share_policy in share_policies:
+            expected_visible = (
+                share_policy["mode"] == "shared"
+                and acl_fixture["principal"]["id"]
+                in share_policy.get("shared_with_principals", [])
+            ) or bool(
+                set(acl_fixture["principal"]["groups"])
+                & set(share_policy.get("shared_with_groups", []))
+            )
+            assert (share_policy["id"] in group_shared_ids) is expected_visible
         assert edge_share_policies[1]["id"] in [
             node["id"] for node in group_shared_payload["nodes"]
         ]

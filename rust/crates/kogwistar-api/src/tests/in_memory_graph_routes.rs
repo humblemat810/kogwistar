@@ -1918,7 +1918,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         );
     }
 
-    for (groups, expected_group_nodes) in [(&[][..], false), (fixture_groups.as_slice(), true)] {
+    for groups in [&[][..], fixture_groups.as_slice()] {
         let shared_response = application
             .graph_read_effect(&visualization_request(
                 acl_fixture["truth_graph"].as_str().unwrap(),
@@ -1932,7 +1932,24 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         let shared_payload: Value = serde_json::from_slice(&shared_response.body).unwrap();
         let visible_nodes = shared_payload["nodes"].to_string();
         for share_policy in &share_policies {
-            let should_be_visible = share_policy["mode"] == "shared" || expected_group_nodes;
+            let principal_id = acl_fixture["principal"]["id"].as_str().unwrap();
+            let shared_with_principals = share_policy["shared_with_principals"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_is_shared = shared_with_principals
+                .into_iter()
+                .any(|shared_principal| shared_principal == principal_id);
+            let shared_with_groups = share_policy["shared_with_groups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_matches_group = shared_with_groups
+                .into_iter()
+                .any(|shared_group| groups.iter().any(|group| group == shared_group));
+            let should_be_visible = principal_is_shared || principal_matches_group;
             assert_eq!(
                 visible_nodes.contains(share_policy["id"].as_str().unwrap()),
                 should_be_visible,
@@ -1940,7 +1957,24 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             );
         }
         for share_policy in &edge_share_policies {
-            let should_be_visible = share_policy["mode"] == "shared" || expected_group_nodes;
+            let principal_id = acl_fixture["principal"]["id"].as_str().unwrap();
+            let shared_with_principals = share_policy["shared_with_principals"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_is_shared = shared_with_principals
+                .into_iter()
+                .any(|shared_principal| shared_principal == principal_id);
+            let shared_with_groups = share_policy["shared_with_groups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_matches_group = shared_with_groups
+                .into_iter()
+                .any(|shared_group| groups.iter().any(|group| group == shared_group));
+            let should_be_visible = principal_is_shared || principal_matches_group;
             assert_eq!(
                 visible_nodes.contains(share_policy["id"].as_str().unwrap()),
                 should_be_visible,
