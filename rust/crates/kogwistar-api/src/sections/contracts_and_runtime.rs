@@ -917,6 +917,16 @@ pub trait ApplicationService: Send + Sync + 'static {
         false
     }
 
+    /// Check the authenticated actor's workflow ACL at public request ingress.
+    /// Internal runtime effects do not call this transport policy hook.
+    fn workflow_run_submit_allowed(
+        &self,
+        _workflow_id: String,
+        _user_id: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(true) })
+    }
+
     fn supports_mcp_tool_for_principal(
         &self,
         surface: &str,

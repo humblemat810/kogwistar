@@ -698,7 +698,7 @@ impl AuthStore {
         .map_err(|error| error.to_string())
     }
 
-    async fn workflow_access_allowed(
+    pub(crate) async fn workflow_access_allowed(
         &self,
         workflow_id: &str,
         user_id: &str,

@@ -2385,6 +2385,24 @@ impl ApplicationService for InMemoryGraphApplicationService {
         self.store.graph_authority_capability()
     }
 
+    fn workflow_run_submit_allowed(
+        &self,
+        workflow_id: String,
+        user_id: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            let Some(auth_store) = self.owner_auth_store.as_ref() else {
+                return Ok(true);
+            };
+            let Some(user_id) = user_id else {
+                return Ok(false);
+            };
+            auth_store
+                .workflow_access_allowed(&workflow_id, &user_id, "rw")
+                .await
+        })
+    }
+
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         if surface == "workflow"
             && matches!(

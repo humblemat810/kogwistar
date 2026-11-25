@@ -1729,6 +1729,19 @@ async fn mcp_dispatch(
             }))
             .into_response();
         };
+        if let Some(error) = workflow_run_submit_acl_error(state.application.as_ref(), &request).await
+        {
+            return Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32000,
+                    "message": "Rust application service error",
+                    "data": serde_json::from_slice::<Value>(&error.body).unwrap_or(Value::Null),
+                },
+            }))
+            .into_response();
+        }
         let response = state.application.execute(request).await;
         if !(200..300).contains(&response.status) {
             return Json(json!({
@@ -1947,16 +1960,19 @@ async fn application_effect_handler(
         path_and_query.push_str("?after_seq=");
         path_and_query.push_str(last_event_id);
     }
-    let mut response = state
-        .application
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method,
-            path_and_query,
-            body: body.to_vec(),
-            principal: request_principal(&headers, &state.api.auth),
-        })
-        .await;
+    let request = ApiEffectRequest {
+        contract_version: 1,
+        method,
+        path_and_query,
+        body: body.to_vec(),
+        principal: request_principal(&headers, &state.api.auth),
+    };
+    if let Some(error) = workflow_run_submit_acl_error(state.application.as_ref(), &request).await {
+        let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return (status, [("content-type", error.content_type)], Body::from(error.body))
+            .into_response();
+    }
+    let mut response = state.application.execute(request).await;
     if d3_bundle && (200..300).contains(&response.status) {
         response = match serde_json::from_slice::<Value>(&response.body) {
             Ok(payload) => d3_bundle_html_effect(&bundle_path_and_query, payload),
@@ -1974,6 +1990,45 @@ async fn application_effect_handler(
         Body::from(response.body),
     )
         .into_response()
+}
+
+async fn workflow_run_submit_acl_error(
+    application: &dyn ApplicationService,
+    request: &ApiEffectRequest,
+) -> Option<ApiEffectResponse> {
+    if request.method != "POST"
+        || request.path_and_query.split('?').next() != Some("/api/workflow/runs")
+    {
+        return None;
+    }
+    let body: Value = serde_json::from_slice(&request.body).ok()?;
+    let workflow_id = body
+        .get("workflow_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    let user_id = authenticated_run_owner_id(&request.principal).map(str::to_owned);
+    match application
+        .workflow_run_submit_allowed(workflow_id.to_owned(), user_id.clone())
+        .await
+    {
+        Ok(true) => None,
+        Ok(false) if user_id.is_none() => Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_RUN_OWNER_FORBIDDEN",
+            "Workflow run admission requires an authenticated owner",
+        )),
+        Ok(false) => Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_WORKFLOW_FORBIDDEN",
+            "User does not have write access to this workflow",
+        )),
+        Err(_) => Some(effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_AUTH_STORE_ERROR",
+            "Could not verify workflow access",
+        )),
+    }
 }
 
 fn public_visualization_effect(
