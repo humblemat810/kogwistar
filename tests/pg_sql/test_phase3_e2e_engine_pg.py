@@ -272,6 +272,17 @@ def test_rust_postgres_historical_read_subsystem_matches_python(
                 )
             ]
 
+        for reader in (python_reader, rust_reader):
+            current_hits = reader.query_nodes(
+                query_embeddings=[1.0, 0.0],
+                where={
+                    "workspace_id": "workspace-a",
+                    "graph_space": "facts",
+                },
+                n_results=1,
+            )[0]
+            assert [str(node.id) for node in current_hits] == ["target-node"]
+
         for as_of, expected_ids in (
             ("2010-01-09T00:00:00Z", {"old-node"}),
             ("2026-01-11T00:00:00Z", {"target-node"}),
