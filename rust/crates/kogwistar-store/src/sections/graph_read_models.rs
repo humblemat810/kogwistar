@@ -239,7 +239,7 @@ fn acl_rule_for(record: &GraphRecord, truth_graph: &str) -> Option<(GraphAclKey,
     let target_item_id = value_string(record, "acl_target_item_id")
         .filter(|target_item_id| !target_item_id.is_empty());
     let version = record_field(record, "acl_version")?.as_i64()?;
-    let mode = value_string(record, "acl_mode")?.to_ascii_lowercase();
+    let mode = value_string(record, "acl_mode")?;
     Some((
         (grain, target_id, target_item_id),
         GraphAclRule {
