@@ -1664,6 +1664,43 @@ def test_dual_language_goal_fine_summary_matches_tasklet_rows() -> None:
     )
 
 
+def test_passed_fine_gates_name_existing_executable_tests() -> None:
+    checklist = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    rows = _markdown_table_rows(checklist, "| DLFC-")
+    python_tests = {
+        name
+        for path in (ROOT / "tests").rglob("*.py")
+        for name in re.findall(
+            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+    rust_tests = {
+        name
+        for path in (ROOT / "rust" / "crates").rglob("*.rs")
+        for name in re.findall(
+            r"(?m)^\s*#\[(?:tokio::)?test\b[^\]]*\]\s*"
+            r"(?:(?:#\[[^\]]+\])\s*)*(?:async\s+)?fn\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+
+    missing_selectors = []
+    for row in rows:
+        gate_id, _goal, status, evidence = row[:4]
+        if status != "PASS":
+            continue
+        python_refs = set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence)) & python_tests
+        rust_refs = set(re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)\b", evidence)) & rust_tests
+        if not python_refs and not rust_refs:
+            missing_selectors.append(gate_id)
+    assert not missing_selectors, (
+        "PASS fine gates must name an existing executable test selector: "
+        f"{missing_selectors}"
+    )
+
+
 def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() -> None:
     checklist = (
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
