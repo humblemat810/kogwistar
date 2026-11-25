@@ -832,7 +832,8 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
             workflow_id: "workflow-status-contract".to_owned(),
             user_id: Some("user-status-contract".to_owned()),
             user_turn_node_id: Some("turn-status-contract".to_owned()),
-            assistant_turn_node_id: None,
+            assistant_turn_node_id: (status == "succeeded")
+                .then(|| "assistant-turn-status-contract".to_owned()),
             status: status.to_owned(),
             cancel_requested: false,
             result_json: (status == "succeeded")
@@ -841,8 +842,11 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
                 .then(|| r#"{"code":"E_TEST","message":"failed"}"#.to_owned()),
             created_at_ms: 1,
             updated_at_ms: 2,
-            started_at_ms: None,
-            finished_at_ms: None,
+            started_at_ms: (status != "queued").then_some(3),
+            finished_at_ms: terminal_statuses
+                .iter()
+                .any(|terminal| terminal == status)
+                .then_some(4),
         };
         let value = server_run_value(run);
 
@@ -857,7 +861,14 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
         assert_eq!(value["workflow_id"], "workflow-status-contract");
         assert_eq!(value["user_id"], "user-status-contract");
         assert_eq!(value["user_turn_node_id"], "turn-status-contract");
-        assert_eq!(value["assistant_turn_node_id"], Value::Null);
+        assert_eq!(
+            value["assistant_turn_node_id"],
+            if status == "succeeded" {
+                json!("assistant-turn-status-contract")
+            } else {
+                Value::Null
+            }
+        );
         assert_eq!(value["cancel_requested"], false);
         assert_eq!(
             value["result"],
@@ -877,6 +888,18 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
         );
         assert!(value["created_at_ms"].is_i64());
         assert!(value["updated_at_ms"].is_i64());
+        assert_eq!(
+            value["started_at_ms"],
+            if status == "queued" { Value::Null } else { json!(3) }
+        );
+        assert_eq!(
+            value["finished_at_ms"],
+            if terminal_statuses.iter().any(|terminal| terminal == status) {
+                json!(4)
+            } else {
+                Value::Null
+            }
+        );
         assert_eq!(
             value["terminal"],
             terminal_statuses.iter().any(|terminal| terminal == status)

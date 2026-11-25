@@ -6935,20 +6935,27 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
                 "user_turn_node_id": "turn-status-contract",
             }
             registry.create_run(**expected_ids, status=status)
+            expected_assistant_turn_node_id = (
+                "assistant-turn-status-contract" if status == "succeeded" else None
+            )
             expected_result = {"answer": "done"} if status == "succeeded" else None
             expected_error = (
                 {"code": "E_TEST", "message": "failed"}
                 if status == "failed"
                 else None
             )
-            if expected_result is not None or expected_error is not None:
+            if status != "queued":
                 registry.update_status(
                     expected_ids["run_id"],
                     status=status,
+                    assistant_turn_node_id=expected_assistant_turn_node_id,
                     result=expected_result,
                     error=expected_error,
-                    finished=True,
+                    started=True,
+                    finished=status in contract["terminal_statuses"],
                 )
+            stored = registry.get_run(expected_ids["run_id"])
+            assert stored is not None
             response = client.get(f"/api/runs/{expected_ids['run_id']}", headers=headers)
 
             assert response.status_code == contract["success_status"]
@@ -6958,10 +6965,13 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
             assert payload["status"] == status
             assert payload["terminal"] is (status in contract["terminal_statuses"])
             assert payload["cancel_requested"] is False
+            assert payload["assistant_turn_node_id"] == expected_assistant_turn_node_id
             assert payload["result"] == expected_result
             assert payload["error"] == expected_error
             assert isinstance(payload["created_at_ms"], int)
             assert isinstance(payload["updated_at_ms"], int)
+            assert payload["started_at_ms"] == stored["started_at_ms"]
+            assert payload["finished_at_ms"] == stored["finished_at_ms"]
 
 
 def test_get_run_keeps_registry_status_even_if_workflow_cancelled_node_exists(
