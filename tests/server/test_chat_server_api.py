@@ -6935,6 +6935,20 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
                 "user_turn_node_id": "turn-status-contract",
             }
             registry.create_run(**expected_ids, status=status)
+            expected_result = {"answer": "done"} if status == "succeeded" else None
+            expected_error = (
+                {"code": "E_TEST", "message": "failed"}
+                if status == "failed"
+                else None
+            )
+            if expected_result is not None or expected_error is not None:
+                registry.update_status(
+                    expected_ids["run_id"],
+                    status=status,
+                    result=expected_result,
+                    error=expected_error,
+                    finished=True,
+                )
             response = client.get(f"/api/runs/{expected_ids['run_id']}", headers=headers)
 
             assert response.status_code == contract["success_status"]
@@ -6944,8 +6958,8 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
             assert payload["status"] == status
             assert payload["terminal"] is (status in contract["terminal_statuses"])
             assert payload["cancel_requested"] is False
-            assert payload["result"] is None
-            assert payload["error"] is None
+            assert payload["result"] == expected_result
+            assert payload["error"] == expected_error
             assert isinstance(payload["created_at_ms"], int)
             assert isinstance(payload["updated_at_ms"], int)
 

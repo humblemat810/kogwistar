@@ -835,8 +835,10 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
             assistant_turn_node_id: None,
             status: status.to_owned(),
             cancel_requested: false,
-            result_json: None,
-            error_json: None,
+            result_json: (status == "succeeded")
+                .then(|| r#"{"answer":"done"}"#.to_owned()),
+            error_json: (status == "failed")
+                .then(|| r#"{"code":"E_TEST","message":"failed"}"#.to_owned()),
             created_at_ms: 1,
             updated_at_ms: 2,
             started_at_ms: None,
@@ -857,8 +859,22 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
         assert_eq!(value["user_turn_node_id"], "turn-status-contract");
         assert_eq!(value["assistant_turn_node_id"], Value::Null);
         assert_eq!(value["cancel_requested"], false);
-        assert_eq!(value["result"], Value::Null);
-        assert_eq!(value["error"], Value::Null);
+        assert_eq!(
+            value["result"],
+            if status == "succeeded" {
+                json!({"answer": "done"})
+            } else {
+                Value::Null
+            }
+        );
+        assert_eq!(
+            value["error"],
+            if status == "failed" {
+                json!({"code": "E_TEST", "message": "failed"})
+            } else {
+                Value::Null
+            }
+        );
         assert!(value["created_at_ms"].is_i64());
         assert!(value["updated_at_ms"].is_i64());
         assert_eq!(
