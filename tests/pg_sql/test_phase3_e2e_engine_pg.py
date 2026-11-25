@@ -158,6 +158,104 @@ def test_rust_postgres_vector_filters_match_python_backend(
     )
 
 
+def test_rust_postgres_historical_read_subsystem_matches_python(
+    sa_engine, pg_schema, pg_dsn, monkeypatch
+) -> None:
+    if sa_engine is None or pg_schema is None or pg_dsn is None:
+        pytest.skip("PostgreSQL fixtures are unavailable")
+
+    from kogwistar.engine_core.rust_postgres_session import RustEnginePostgresMetaStore
+    from kogwistar.engine_core.subsystems.read import ReadSubsystem
+    from pydantic_extension.model_slicing import use_mode
+    from tests._helpers.graph_builders import build_entity_node
+
+    backend = PgVectorBackend(engine=sa_engine, embedding_dim=2, schema=pg_schema)
+    backend.ensure_schema()
+    namespace = "historical-read-parity"
+    records = (
+        build_entity_node(
+            node_id="old-node",
+            doc_id="historical-doc",
+            summary="Historical source",
+            embedding=[1.0, 0.0],
+            metadata={
+                "namespace": namespace,
+                "lifecycle_status": "tombstoned",
+                "deleted_at": "2026-01-10T00:00:00Z",
+                "redirect_to_id": "target-node",
+                "effective_from": "1967-01-01T00:00:00Z",
+            },
+        ),
+        build_entity_node(
+            node_id="target-node",
+            doc_id="historical-doc",
+            summary="Current target",
+            embedding=[0.8, 0.6],
+            metadata={
+                "namespace": namespace,
+                "lifecycle_status": "active",
+                "effective_from": "2016-01-01T00:00:00Z",
+            },
+        ),
+    )
+    for node in records:
+        with use_mode("backend"):
+            document = node.model_dump_json()
+        backend.node_upsert(
+            ids=[node.safe_get_id()],
+            documents=[document],
+            metadatas=[dict(node.metadata)],
+            embeddings=[node.embedding],
+        )
+
+    rust_store = RustEnginePostgresMetaStore(dsn=pg_dsn, schema=pg_schema)
+    try:
+        rust_store.ensure_initialized()
+
+        def make_reader(metadata: object) -> ReadSubsystem:
+            engine = SimpleNamespace(
+                backend=backend,
+                metadata=metadata,
+                namespace=namespace,
+                kg_graph_type="knowledge",
+                embedding_profile=None,
+                _filter_items_by_resolve_mode=lambda items, _mode: items,
+                _resolve_redirect_chain=lambda *, initial_items, **_kwargs: initial_items,
+            )
+            return ReadSubsystem(engine)
+
+        python_reader = make_reader(None)
+        rust_reader = make_reader(rust_store)
+        monkeypatch.setenv("KOGWISTAR_IMPL_META_STORE", "rust")
+
+        def read(reader: ReadSubsystem, as_of: str) -> list[tuple[str, float, str]]:
+            return [
+                (str(hit.node.id), float(hit.raw_distance), hit.node.summary)
+                for hit in reader.search_nodes_as_of_scored(
+                    query_embeddings=[1.0, 0.0],
+                    as_of_ts=as_of,
+                    n_results=10,
+                )
+            ]
+
+        for as_of, expected_ids in (
+            ("2010-01-09T00:00:00Z", {"old-node"}),
+            ("2026-01-11T00:00:00Z", {"target-node"}),
+        ):
+            python_result = read(python_reader, as_of)
+            rust_result = read(rust_reader, as_of)
+            python_by_id = {row[0]: row[1:] for row in python_result}
+            rust_by_id = {row[0]: row[1:] for row in rust_result}
+            assert set(python_by_id) == expected_ids
+            assert rust_by_id.keys() == python_by_id.keys()
+            for node_id, (python_distance, python_summary) in python_by_id.items():
+                rust_distance, rust_summary = rust_by_id[node_id]
+                assert rust_summary == python_summary
+                assert rust_distance == pytest.approx(python_distance)
+    finally:
+        rust_store.close()
+
+
 def test_rust_postgres_reference_filters_match_python_backend(
     sa_engine, pg_schema, pg_dsn, monkeypatch
 ) -> None:
