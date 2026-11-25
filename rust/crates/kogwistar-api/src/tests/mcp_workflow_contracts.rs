@@ -1560,37 +1560,43 @@
             &to_bytes(list_response.into_body(), 65_536).await.unwrap(),
         )
         .unwrap();
-        assert!(!list["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|tool| tool["name"] == "workflow.capability_approve"));
+        for tool_name in [
+            "workflow.capability_approve",
+            "workflow.capability_revoke",
+        ] {
+            assert!(!list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == tool_name));
 
-        let call_response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/mcp/workflow")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {token}"))
-                    .body(Body::from(
-                        json!({
-                            "jsonrpc":"2.0",
-                            "id":2,
-                            "method":"tools/call",
-                            "params":{"name":"workflow.capability_approve","arguments":{}}
-                        })
-                        .to_string(),
-                    ))
-                    .unwrap(),
+            let call_response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp/workflow")
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::from(
+                            json!({
+                                "jsonrpc":"2.0",
+                                "id":2,
+                                "method":"tools/call",
+                                "params":{"name":tool_name,"arguments":{}}
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let call: Value = serde_json::from_slice(
+                &to_bytes(call_response.into_body(), 65_536).await.unwrap(),
             )
-            .await
             .unwrap();
-        let call: Value = serde_json::from_slice(
-            &to_bytes(call_response.into_body(), 65_536).await.unwrap(),
-        )
-        .unwrap();
-        assert_eq!(call["error"]["code"], -32602);
+            assert_eq!(call["error"]["code"], -32602, "{tool_name}");
+        }
         assert_eq!(calls.load(Ordering::Relaxed), 0);
 
         let _ = std::fs::remove_file(db_path);
