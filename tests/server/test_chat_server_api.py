@@ -6973,6 +6973,35 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
             assert payload["started_at_ms"] == stored["started_at_ms"]
             assert payload["finished_at_ms"] == stored["finished_at_ms"]
 
+        registry_reads = 0
+
+        def unexpected_registry_read(_run_id: str):
+            nonlocal registry_reads
+            registry_reads += 1
+            raise AssertionError("denied run-status request reached registry")
+
+        monkeypatch.setattr(
+            registry.meta_store, "get_server_run", unexpected_registry_read
+        )
+        denied_headers = (
+            _token_header(
+                client,
+                role="ro",
+                ns="conversation",
+                capabilities="workflow.run.read",
+            ),
+            _token_header(
+                client,
+                role="ro",
+                ns="workflow",
+                capabilities="project_view",
+            ),
+        )
+        for headers in denied_headers:
+            denied = client.get("/api/workflow/runs/private-run", headers=headers)
+            assert denied.status_code == 403
+        assert registry_reads == 0
+
 
 def test_get_run_keeps_registry_status_even_if_workflow_cancelled_node_exists(
     monkeypatch, engine_triplet
