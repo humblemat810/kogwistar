@@ -756,6 +756,58 @@ fn workflow_service_events_command_preserves_python_query_contract() {
 }
 
 #[test]
+fn workflow_service_enable_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_enable",
+                "--service-id",
+                "svc-19",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-19","enabled":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-19/enable HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"service_id": "svc-19", "enabled": true}),
+    );
+}
+
+#[test]
+fn workflow_service_disable_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_disable",
+                "--service-id",
+                "svc-20",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-20","enabled":false}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-20/disable HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"service_id": "svc-20", "enabled": false}),
+    );
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {

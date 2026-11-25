@@ -415,6 +415,19 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
                 format!("/api/workflow/services/{service_id}/events?limit={limit}"),
             )
         }
+        "workflow.service_enable" | "workflow.service_disable" => {
+            validate_options(&options, &["--base-url", "--service-id"]);
+            let service_id = required_option(&options, "--service-id");
+            let action = if command == "workflow.service_enable" {
+                "enable"
+            } else {
+                "disable"
+            };
+            (
+                reqwest::Method::POST,
+                format!("/api/workflow/services/{service_id}/{action}"),
+            )
+        }
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);
             let run_id = required_option(&options, "--run-id");

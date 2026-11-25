@@ -2848,6 +2848,45 @@ def test_python_cli_workflow_service_reads_match_rust_http_contract(
     assert observed == expected
 
 
+@pytest.mark.parametrize(
+    ("command", "endpoint"),
+    [
+        ("workflow.service_enable", "enable"),
+        ("workflow.service_disable", "disable"),
+    ],
+)
+def test_python_cli_workflow_service_toggle_matches_rust_http_contract(
+    command: str,
+    endpoint: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                command,
+                "--service-id",
+                "svc-19",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server/api/workflow/services/svc-19/{endpoint}",
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
