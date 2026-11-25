@@ -2373,6 +2373,55 @@ def test_python_cli_conversation_operations_match_rust_http_contract(
     assert observed == expected
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            ["workflow.run_status", "--run-id", "r-6"],
+            {"method": "GET", "url": "http://rust-server/api/workflow/runs/r-6"},
+        ),
+        (
+            ["workflow.run_cancel", "--run-id", "r-7"],
+            {
+                "method": "POST",
+                "url": "http://rust-server/api/workflow/runs/r-7/cancel",
+            },
+        ),
+        (
+            [
+                "workflow.run_events",
+                "--run-id",
+                "r-8",
+                "--after-seq",
+                "4",
+                "--limit",
+                "9",
+            ],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/runs/r-8/events",
+                "params": {"after_seq": 4},
+            },
+        ),
+    ],
+)
+def test_python_cli_workflow_run_operations_match_rust_http_contract(
+    command: list[str], expected: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert main(["api", "workflow", *command, "--base-url", "http://rust-server"]) == 0
+    assert observed == expected
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

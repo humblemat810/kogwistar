@@ -57,6 +57,9 @@ fn run_mock_http_cli(
             })
             .expect("CLI request arrives within two seconds");
         stream
+            .set_nonblocking(false)
+            .expect("switch accepted mock stream to blocking mode");
+        stream
             .set_read_timeout(Some(std::time::Duration::from_secs(2)))
             .expect("bound request read");
         let mut request = Vec::new();
@@ -265,4 +268,83 @@ fn conversation_cancel_run_command_posts_python_endpoint() {
         &output,
         serde_json::json!({"run_id": "r-5", "status": "cancelling"}),
     );
+}
+
+#[test]
+fn workflow_run_status_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_status",
+                "--run-id",
+                "r-6",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-6","status":"completed"}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-6 HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-6", "status": "completed"}),
+    );
+}
+
+#[test]
+fn workflow_run_cancel_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_cancel",
+                "--run-id",
+                "r-7",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-7","status":"cancelling"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs/r-7/cancel HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-7", "status": "cancelling"}),
+    );
+}
+
+#[test]
+fn workflow_run_events_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_events",
+                "--run-id",
+                "r-8",
+                "--after-seq",
+                "4",
+                "--limit",
+                "9",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"events":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-8/events?after_seq=4 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"events": []}));
 }

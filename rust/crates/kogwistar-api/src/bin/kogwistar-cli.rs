@@ -5,7 +5,7 @@ use std::process::ExitCode;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: kogwistar-cli health [backend] | api conversation <conversation.create|conversation.get_transcript|conversation.ask|conversation.run_status|conversation.cancel_run> [options]"
+        "usage: kogwistar-cli health [backend] | api conversation <conversation-command> [options] | api workflow <workflow-command> [options]"
     );
     std::process::exit(2)
 }
@@ -199,6 +199,61 @@ fn conversation_api_command(mut args: impl Iterator<Item = String>) -> ExitCode 
     request_json(method, format!("{base_url}{path}"), body)
 }
 
+fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
+    let Some(command) = args.next() else {
+        usage();
+    };
+    let options = option_values(args);
+    let base_url = options
+        .get("--base-url")
+        .cloned()
+        .or_else(|| std::env::var("KOGWISTAR_BASE_URL").ok())
+        .unwrap_or_else(|| "http://127.0.0.1:8787".to_owned());
+    let base_url = base_url.trim_end_matches('/');
+    let (method, path) = match command.as_str() {
+        "workflow.run_status" | "workflow.run_cancel" => {
+            validate_options(&options, &["--base-url", "--run-id"]);
+            let is_cancel = command == "workflow.run_cancel";
+            let run_id = required_option(&options, "--run-id");
+            (
+                if is_cancel {
+                    reqwest::Method::POST
+                } else {
+                    reqwest::Method::GET
+                },
+                if is_cancel {
+                    format!("/api/workflow/runs/{run_id}/cancel")
+                } else {
+                    format!("/api/workflow/runs/{run_id}")
+                },
+            )
+        }
+        "workflow.run_events" => {
+            validate_options(
+                &options,
+                &["--base-url", "--run-id", "--after-seq", "--limit"],
+            );
+            let run_id = required_option(&options, "--run-id");
+            let after_seq = options
+                .get("--after-seq")
+                .map(String::as_str)
+                .unwrap_or("0")
+                .parse::<i64>()
+                .unwrap_or_else(|_| usage());
+            let _limit = options
+                .get("--limit")
+                .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+                .unwrap_or(200);
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/runs/{run_id}/events?after_seq={after_seq}"),
+            )
+        }
+        _ => usage(),
+    };
+    request_json(method, format!("{base_url}{path}"), None)
+}
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
@@ -209,9 +264,11 @@ fn main() -> ExitCode {
             }
             health(backend)
         }
-        Some("api") if args.next().as_deref() == Some("conversation") => {
-            conversation_api_command(args)
-        }
+        Some("api") => match args.next().as_deref() {
+            Some("conversation") => conversation_api_command(args),
+            Some("workflow") => workflow_api_command(args),
+            _ => usage(),
+        },
         _ => usage(),
     }
 }
