@@ -1,3 +1,62 @@
+#[test]
+fn in_memory_root_graph_tool_auth_matches_python_capability_policy() {
+    let service = InMemoryGraphApplicationService::default();
+    let graph_read_tools = [
+        "kg_find_edges",
+        "kg_k_hop",
+        "kg_load_persisted",
+        "kg_neighbors",
+        "kg_propose_bruteforce",
+        "kg_shortest_path",
+        "kg_viz_cytoscape_json",
+        "kg_viz_d3_json",
+        "propose_vector",
+    ];
+
+    for name in graph_read_tools {
+        assert!(service.supports_mcp_tool("root", name), "{name}");
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":["docs"], "capabilities":[]}),
+            ),
+            "explicitly empty capabilities must deny {name}"
+        );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":["other"], "capabilities":["read_graph"]}),
+            ),
+            "wrong namespace must deny {name}"
+        );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"admin", "ns":["docs"], "capabilities":[]}),
+            ),
+            "unknown role with explicit empty capabilities must deny {name}"
+        );
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            name,
+            &json!({"role":"ro", "ns":["docs"], "capabilities":["read_graph"]}),
+        ), "authorized principal must retain {name}");
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            name,
+            &json!({"role":"ro", "ns":["docs"]}),
+        ), "legacy role-derived capability behavior changed for {name}");
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            name,
+            &json!({"role":"admin", "ns":["docs"], "capabilities":["read_graph"]}),
+        ), "unknown roles must retain Python's read-only fallback for {name}");
+    }
+}
+
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text; fixture=contracts/golden/semantic-seed-expand-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
 #[tokio::test]
 async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp() {
