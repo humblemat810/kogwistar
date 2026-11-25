@@ -758,6 +758,30 @@
         assert_eq!(detail["turn_count"], 2);
         assert!(detail.get("schema_version").is_none());
 
+        let mut no_graph_capability = principal.clone();
+        no_graph_capability["capabilities"] = json!([]);
+        let detail_without_graph_capability = service
+            .execute(read_request(
+                "/api/conversations/c1",
+                no_graph_capability.clone(),
+            ))
+            .await;
+        assert_eq!(detail_without_graph_capability.status, StatusCode::OK.as_u16());
+        let detail_without_graph_capability: Value =
+            serde_json::from_slice(&detail_without_graph_capability.body).unwrap();
+        assert_eq!(detail_without_graph_capability, detail);
+
+        let transcript_without_graph_capability = service
+            .execute(read_request(
+                "/api/conversations/c1/turns",
+                no_graph_capability,
+            ))
+            .await;
+        assert_eq!(transcript_without_graph_capability.status, StatusCode::OK.as_u16());
+        let transcript_without_graph_capability: Value =
+            serde_json::from_slice(&transcript_without_graph_capability.body).unwrap();
+        assert_eq!(transcript_without_graph_capability, transcript_payload);
+
         let conversations = service
             .execute(read_request("/api/conversations", principal.clone()))
             .await;
@@ -790,7 +814,7 @@
         let denied_detail = service
             .execute(read_request(
                 "/api/conversations/c1",
-                json!({"ns":["conversation"],"capabilities":[]}),
+                json!({"ns":["docs"],"capabilities":[]}),
             ))
             .await;
         assert_eq!(denied_detail.status, StatusCode::FORBIDDEN.as_u16());

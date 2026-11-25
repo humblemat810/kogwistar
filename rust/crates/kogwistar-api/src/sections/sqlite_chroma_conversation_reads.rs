@@ -172,13 +172,6 @@ impl SqliteRunApplicationService {
                 "Conversation transcript route was not found",
             );
         };
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation transcript reads require read_graph capability",
-            );
-        }
         let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
             Ok(records) => records,
             Err(response) => return response,
@@ -227,13 +220,6 @@ impl SqliteRunApplicationService {
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_NAMESPACE_FORBIDDEN",
                 "Conversation reads require conversation namespace",
-            );
-        }
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation reads require read_graph capability",
             );
         }
         let Some(conversation_id) = conversation_detail_id(&request.path_and_query) else {

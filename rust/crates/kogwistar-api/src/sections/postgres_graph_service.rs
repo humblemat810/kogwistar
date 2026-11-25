@@ -1924,13 +1924,6 @@ impl PostgresRunApplicationService {
                 "Conversation reads require conversation namespace",
             );
         }
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation reads require read_graph capability",
-            );
-        }
         let Some(conversation_id) = conversation_detail_id(&request.path_and_query) else {
             return effect_error(
                 StatusCode::NOT_FOUND,
@@ -1998,9 +1991,8 @@ impl PostgresRunApplicationService {
                 "Conversation transcript route was not found",
             );
         };
-        let authorization = match self.authorize_conversation_transcript(request) {
-            Ok(value) => value,
-            Err(response) => return response,
+        let authorization = ConversationTranscriptAuthorization {
+            principal: request.principal.clone(),
         };
         match self
             .conversation_transcript_projection(

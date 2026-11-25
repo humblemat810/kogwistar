@@ -1,5 +1,5 @@
     #[tokio::test]
-    async fn conversation_detail_route_checks_namespace_and_capability_before_storage() {
+    async fn conversation_detail_route_checks_namespace_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "conversation_detail_auth_contract",
@@ -25,18 +25,43 @@
             "KOGWISTAR_NAMESPACE_FORBIDDEN"
         );
 
-        let capability_denied = service
-            .execute(make_request(json!({
-                "sub": "alice",
-                "ns": "conversation",
-                "capabilities": []
-            })))
-            .await;
-        assert_eq!(capability_denied.status, StatusCode::FORBIDDEN.as_u16());
-        assert_eq!(
-            serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
-            "KOGWISTAR_CAPABILITY_FORBIDDEN"
-        );
+    }
+
+    #[tokio::test]
+    async fn conversation_detail_and_transcript_without_read_graph_reach_storage_like_python() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "conversation_reads_optional_capability",
+        )
+        .unwrap();
+
+        for path in ["/api/conversations/c-1", "/api/conversations/c-1/turns"] {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: path.to_owned(),
+                    body: Vec::new(),
+                    principal: json!({
+                        "sub": "alice",
+                        "user_id": "alice",
+                        "role": "ro",
+                        "ns": ["conversation"],
+                        "capabilities": []
+                    }),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+                "{path}: authorization should pass; only the unavailable database should fail"
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+                "KOGWISTAR_STORE_ERROR",
+                "{path}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -265,7 +290,7 @@
     }
 
     #[tokio::test]
-    async fn conversation_transcript_route_checks_namespace_and_capability_before_storage() {
+    async fn conversation_transcript_route_checks_namespace_before_storage() {
         let service = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "conversation_transcript_auth_contract",
@@ -291,17 +316,22 @@
             "KOGWISTAR_NAMESPACE_FORBIDDEN"
         );
 
-        let capability_denied = service
+        let missing_capability_reaches_storage = service
             .execute(make_request(json!({
                 "sub": "alice",
+                "user_id": "alice",
+                "role": "ro",
                 "ns": "conversation",
                 "capabilities": []
             })))
             .await;
-        assert_eq!(capability_denied.status, StatusCode::FORBIDDEN.as_u16());
         assert_eq!(
-            serde_json::from_slice::<Value>(&capability_denied.body).unwrap()["code"],
-            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+            missing_capability_reaches_storage.status,
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16()
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&missing_capability_reaches_storage.body).unwrap()["code"],
+            "KOGWISTAR_STORE_ERROR"
         );
     }
 
@@ -326,6 +356,18 @@
         let authorization = service
             .authorize_conversation_transcript(&authorized_request)
             .unwrap();
+        let missing_capability = ApiEffectRequest {
+            principal: json!({
+                "sub": "alice",
+                "ns": "conversation",
+                "capabilities": []
+            }),
+            ..authorized_request.clone()
+        };
+        assert!(matches!(
+            service.authorize_conversation_transcript(&missing_capability),
+            Err(response) if response.status == StatusCode::FORBIDDEN.as_u16()
+        ));
         let other_principal_request = ApiEffectRequest {
             principal: json!({
                 "sub": "bob",
