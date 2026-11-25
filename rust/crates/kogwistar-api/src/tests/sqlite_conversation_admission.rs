@@ -1200,9 +1200,24 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     assert_eq!(direct_run_status_body["run_id"], run_id);
     assert_eq!(direct_run_status_body["status"], "succeeded");
     assert_eq!(direct_run_status_body["cancel_requested"], false);
-    assert!(direct_run_status_body["error"].is_null());
+    assert_eq!(direct_run_status_body["user_id"], "conversation-owner");
+    assert_eq!(direct_run_status_body["assistant_turn_node_id"], assistant_id);
+    let stored_result = completed_run
+        .result_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null);
+    let stored_error = completed_run
+        .error_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null);
+    assert_eq!(direct_run_status_body["result"], stored_result);
+    assert_eq!(direct_run_status_body["error"], stored_error);
     assert!(direct_run_status_body["created_at_ms"].is_i64());
     assert!(direct_run_status_body["updated_at_ms"].is_i64());
+    assert_eq!(direct_run_status_body["started_at_ms"], json!(completed_run.started_at_ms));
+    assert_eq!(direct_run_status_body["finished_at_ms"], json!(completed_run.finished_at_ms));
     let terminal_statuses = run_status_contract["terminal_statuses"]
         .as_array()
         .unwrap();
