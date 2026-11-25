@@ -2081,7 +2081,7 @@ def test_graph_pgvector_capability_is_enabled_after_graph_conformance_passes() -
     } <= set(conformance["conformance_profiles"][capability_id])
 
 
-def test_chroma_adapter_is_python_owned_but_interop_verified() -> None:
+def test_python_chroma_facade_and_rust_chroma_service_are_distinct() -> None:
     capability_id = "chroma-adapter"
     ownership = next(
         item
@@ -2118,6 +2118,34 @@ def test_chroma_adapter_is_python_owned_but_interop_verified() -> None:
         "python-chroma-contract",
         "single-writer-and-isolated-shadow-read",
     }
+    rust_service = next(
+        item
+        for item in _manifest()["capability_ownership"]
+        if item["capability"] == "server-rest-sse-mcp-cli"
+    )
+    assert rust_service["rust_cutover_ready"] is True
+    assert rust_service["target_authoritative_writer"] == "rust"
+    rust_sqlite_service = (
+        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "sections" / "sqlite_service.rs"
+    ).read_text(encoding="utf-8")
+    assert "ChromaGraphStore::connect_entity_collections" in rust_sqlite_service
+    rust_runtime_config = (
+        ROOT
+        / "rust"
+        / "crates"
+        / "kogwistar-api"
+        / "src"
+        / "sections"
+        / "contracts_and_runtime.rs"
+    ).read_text(encoding="utf-8")
+    assert "KOGWISTAR_CHROMA_ENDPOINT" in rust_runtime_config
+    chroma_tests = (
+        ROOT / "tests" / "server" / "test_rust_api_chroma_interop_live.py"
+    ).read_text(encoding="utf-8")
+    assert "def test_rust_graph_mutation_is_readable_by_python_over_chroma" in chroma_tests
+    assert "def test_python_chroma_projection_is_read_and_reconciled_by_rust_server" in chroma_tests
+    assert "def test_python_stage1_is_promoted_by_rust_native_worker" in chroma_tests
+    assert "def test_rust_metadata_stage1_is_promoted_by_python_worker" in chroma_tests
 
 
 def test_sqlite_meta_mixed_coverage_matches_ci_runtime_matrix() -> None:

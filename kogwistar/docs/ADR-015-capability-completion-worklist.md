@@ -25,8 +25,10 @@ Docker UAT using the release candidate is its deployment-grade end-to-end
 acceptance. No separate customer traffic fleet or percentage canary is required
 to complete this worklist.
 **Excluded:** `deterministic-contracts` and `sqlite-meta` (already ready),
-`chroma-adapter` (intentionally Python-owned), downstream adopter rollout, and
-the closed ADR-022 evidence inventories.
+the Python embedded-Chroma `chroma-adapter` selector (intentionally
+Python-owned; separate Rust-server Chroma interoperability is tracked in
+`chroma_rust_interop_worklist.md`), downstream adopter rollout, and the closed
+ADR-022 evidence inventories.
 
 ## Rules
 

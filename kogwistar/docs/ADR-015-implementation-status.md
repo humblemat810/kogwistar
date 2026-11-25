@@ -75,8 +75,10 @@ graph mutation projected to Chroma and read after Python engine reopen, idempote
 retry of that mutation batch, Python readback of the three canonical SQLite events,
 Python Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1
 promotion by the Python worker. The four-test suite is now recorded as verified
-Rust↔Python interop evidence, while Chroma remains a non-authoritative eventual
-projection and therefore remains outside Rust cutover readiness.
+Rust↔Python interop evidence. Rust server has a separately selected Chroma
+GraphStore path; the Python embedded-Chroma `KOGWISTAR_IMPL_GRAPH_STORE`
+adapter remains Python-owned. Chroma is a non-authoritative eventual
+projection, so the Rust Chroma path remains opt-in rather than cutover-ready.
 The bounded Chroma completion/verification tasklets are tracked in
 [`chroma_rust_interop_worklist.md`](chroma_rust_interop_worklist.md). They may
 close on existing test evidence without code changes; closure does not change
@@ -229,11 +231,12 @@ gates remain separate evidence.
 
 `chroma-adapter` in the authority manifest refers to Python's embedded
 `persist_directory` adapter; it does not mean Rust lacks Chroma support. Rust
-also implements an HTTP `GraphReadStore`/`GraphWriteStore` adapter. In the
-SQLite+Chroma composition, SQLite remains canonical for events and index jobs;
-Chroma remains an eventual, non-transactional projection. Python and Rust
-interoperability is covered by the current-source local UAT above. This does
-not establish concurrent multi-writer guarantees or production promotion.
+server independently composes its HTTP `GraphReadStore`/`GraphWriteStore`
+adapter with SQLite metadata. In SQLite+Chroma, SQLite remains canonical for
+events and index jobs; Chroma remains an eventual, non-transactional projection.
+The current-source local UAT verifies Rust-server Chroma operation and
+bidirectional Python/Rust handoff. It does not establish concurrent multi-writer
+guarantees or make the Python embedded adapter Rust-selectable.
 LLM SDKs, OCR, LangGraph conversion, and user-authored Python callback bodies
 remain integrations/workers as allowed by ADR-015; they are not to be rewritten
 for language purity.
@@ -503,8 +506,9 @@ rollback evidence. No `0%`/`1%`/`10%`/`50%`/`100%` customer canary is required.
  authority explicitly after its evidence gates pass. It does not switch defaults,
  remove Python, or imply customer deployment. Python remains independently
  supported. Current ledger: **8/8 Rust-target capabilities ready** after merged
- candidate `2b53eab1` passed CI #859; `chroma-adapter` remains Python-owned and
- outside this denominator.
+candidate `2b53eab1` passed CI #859. The Python embedded-Chroma adapter remains
+Python-owned and outside this denominator; Rust-server Chroma interoperability
+is separately verified but is not cutover-ready.
 
 ### Historical local validation and release boundary
 
@@ -805,7 +809,9 @@ deployment canary evidence required to make Rust its live default writer.
   now routed through the coordinated native transaction owner. Derived
   node-ref/endpoint tables remain disposable Python adapters driven by native
   index jobs. `graph-pgvector` remains not ready pending capability-specific
-  production canaries. Chroma remains a Python single-writer adapter.
+  production canaries. Python `GraphKnowledgeEngine` Chroma remains a
+  single-writer adapter; Rust server uses its separate native Chroma adapter
+  with SQLite-canonical events and eventual Chroma projection.
 - Coordinated sync PostgreSQL routes base node/edge/document reads, including
   multi-ID gets with exact-equality metadata filters, through the native
   projection ABI. Rust projection reads accept legacy Python default-scope rows

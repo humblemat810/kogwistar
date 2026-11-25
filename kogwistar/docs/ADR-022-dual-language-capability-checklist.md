@@ -10,14 +10,16 @@ A `PASS` requires implementation evidence. Each row records the current gate, st
 
 DL-08C is closed: Python and Rust now have evidenced graph/vector read parity across in-memory, SQLite+Chroma, and PostgreSQL paths for ACL/scope, provenance, lifecycle/ranking, and traversal behavior. All four public graph types retain independent ACL truth and graph-space scope. Shared Python fixtures cover vector ranking and graph traversal; Rust operation-level MCP checks cover neighbors, edge search, k-hop, and shortest path across the three backends. Mutation admission and source-span authorization are covered separately per backend. Python historical/as-of redirect following remains a distinct API and is not claimed as Rust parity. See the mapped evidence in the fine worklist.
 
-Current evidence inventory: **177 items** (**177 PASS, 0 IN PROGRESS, 0 NOT STARTED, 0 FAIL, 0 BLOCKED; 100.0% PASS**). This counts status rows in this checklist, not all leaf tasklets. The separate closed fine-grained worklist records **911/911 PASS**; the 23 top-level coarse gates are **23/23 PASS**. These are bounded evidence inventories. All eight Rust-targeted manifest flags are now true; `server-rest-sse-mcp-cli` has no pending route or syscall deferrals and is readiness-gated by current Phase-5 evidence. The release gate derives `graph-pgvector`, `workflow-runtime`, and server cutover readiness independently. `chroma-adapter` remains intentionally Python-owned and is excluded from the Rust-targeted denominator. Full dual-language objective remains **NOT COMPLETE**; see the goal-closure checklist.
+Current evidence inventory: **177 items** (**177 PASS, 0 IN PROGRESS, 0 NOT STARTED, 0 FAIL, 0 BLOCKED; 100.0% PASS**). This counts status rows in this checklist, not all leaf tasklets. The separate closed fine-grained worklist records **911/911 PASS**; the 23 top-level coarse gates are **23/23 PASS**. These are bounded evidence inventories. All eight Rust-targeted manifest flags are now true; `server-rest-sse-mcp-cli` has no pending route or syscall deferrals and is readiness-gated by current Phase-5 evidence. The release gate derives `graph-pgvector`, `workflow-runtime`, and server cutover readiness independently. The `chroma-adapter` selector specifically describes Python's embedded `GraphKnowledgeEngine` adapter and remains Python-owned; separately, Rust server has an opt-in Chroma GraphStore path verified by the linked Chroma interoperability worklist. Neither implies the other, and Rust Chroma is not counted as an additional cutover-ready capability. Full dual-language objective remains **NOT COMPLETE**; see the goal-closure checklist.
 
-Python↔Rust interoperability is therefore verified for the six Rust-targeted
-capabilities named by ADR-015 and CI #859/#860, plus the bounded Chroma suite
-`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**). Chroma
-interop is now inventoried as verified; Chroma remains outside Rust cutover
-readiness because SQLite events remain canonical and Chroma remains an eventual,
-non-transactional projection.
+Python↔Rust interoperability is verified for the six Rust-targeted capabilities
+named by ADR-015 and CI #859/#860, plus the bounded Rust-server Chroma suite
+`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**). That suite
+uses Rust's native Chroma GraphStore with SQLite canonical events and Chroma as
+an eventual, non-transactional projection. The Python embedded-Chroma
+`KOGWISTAR_IMPL_GRAPH_STORE` selector remains Python-owned; these are distinct
+paths. The Chroma suite does not close universal operation parity or promote a
+ninth cutover capability.
 
 Closed fine-grained evidence inventory: [ADR-022-dual-language-capability-worklist.md](ADR-022-dual-language-capability-worklist.md). Neither ADR-022 count is an overall-goal completion percentage. ADR-015's declared capability-gate suite is currently closed; the broader dual-language objective remains **NOT COMPLETE** and its finite closure audit is [ADR-022-dual-language-goal-closure-checklist.md](ADR-022-dual-language-goal-closure-checklist.md). Do not infer full parity or goal completion from either ADR-022 percentage or ADR-015's 8/8 readiness count.
 
