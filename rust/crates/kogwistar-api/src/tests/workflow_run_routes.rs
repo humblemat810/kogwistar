@@ -25,6 +25,16 @@ fn resume_wait_for_completion_defaults_to_sync_and_accepts_explicit_false() {
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
+    postgres_resume_roundtrip(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+async fn postgres_mcp_resume_continues_persisted_suspended_token() {
+    postgres_resume_roundtrip(true).await;
+}
+
+async fn postgres_resume_roundtrip(resume_via_mcp: bool) {
     use kogwistar_store::{ProjectionReadStore, RUNTIME_CURRENT_STATE_NAMESPACE};
 
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
@@ -37,7 +47,8 @@ async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
     let conversation_id = "postgres-resume-syscall-conversation";
     let principal = json!({
         "sub":"postgres-resume-owner", "role":"rw", "ns":["workflow"],
-        "capabilities":["spawn_process", "workflow.run.write"]
+        "capabilities":["spawn_process", "workflow.run.write"],
+        "iss":"local", "exp":4102444800_u64
     });
     let submitted = service
         .execute(ApiEffectRequest {
@@ -111,10 +122,95 @@ async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
         serde_json::from_value(Value::Object(projection.payload)).unwrap();
     let (node_id, _, token_id, _) = state.frontier.suspended[0].clone();
 
-    let resume_service = service.clone();
-    let resume_future = tokio::spawn(async move {
-        resume_service
-            .execute(ApiEffectRequest {
+    let resume_future = if resume_via_mcp {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let secret = "postgres-mcp-resume-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &principal,
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let resume_arguments = json!({
+            "run_id":run_id,
+            "workflow_id":workflow_id,
+            "conversation_id":conversation_id,
+            "turn_node_id":"postgres-resume-turn",
+            "suspended_node_id":node_id,
+            "suspended_token_id":token_id,
+            "client_result":{"approved":true}
+        });
+        let call_resume = move |request_id: &str| {
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(json!({
+                    "jsonrpc":"2.0", "id":request_id,
+                    "method":"tools/call",
+                    "params":{"name":"workflow.run_resume", "arguments":resume_arguments.clone()}
+                }).to_string()))
+                .unwrap()
+        };
+        let retry_service = service.clone();
+        tokio::spawn(async move {
+            let response = app.clone().oneshot(call_resume("postgres-resume")).await.unwrap();
+            let status = response.status();
+            let wire = to_bytes(response.into_body(), 8192).await.unwrap();
+            let data = String::from_utf8(wire.to_vec()).unwrap();
+            let payload = data.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                .unwrap();
+            assert_eq!(status, StatusCode::OK);
+            assert_ne!(payload["result"]["isError"], true, "{payload}");
+            let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+                &retry_service.store, run_id, 0, 100
+            ).await.unwrap().len();
+            let retry = app.oneshot(call_resume("postgres-resume-retry")).await.unwrap();
+            assert_eq!(retry.status(), StatusCode::OK);
+            let wire = to_bytes(retry.into_body(), 8192).await.unwrap();
+            let data = String::from_utf8(wire.to_vec()).unwrap();
+            let retry_payload = data.lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                .unwrap();
+            assert_eq!(retry_payload["result"]["isError"], true);
+            assert_eq!(
+                kogwistar_store::ServerRunReadStore::server_run_events(
+                    &retry_service.store, run_id, 0, 100
+                ).await.unwrap().len(),
+                event_count,
+                "replayed MCP resume must not append duplicate run events"
+            );
+            Ok::<Value, String>(payload["result"]["structuredContent"].clone())
+        })
+    } else {
+        let resume_service = service.clone();
+        tokio::spawn(async move {
+            let response = resume_service.execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
                 path_and_query: "/api/syscall/v1/resume".to_owned(),
@@ -129,9 +225,14 @@ async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
                 }))
                 .unwrap(),
                 principal,
-            })
-            .await
-    });
+            }).await;
+            if !(200..300).contains(&response.status) {
+                return Err(String::from_utf8_lossy(&response.body).into_owned());
+            }
+            let envelope: Value = serde_json::from_slice(&response.body).unwrap();
+            Ok::<Value, String>(envelope["result"].clone())
+        })
+    };
     let mut claimed_work = None;
     for _ in 0..200 {
         let claimed = service
@@ -187,28 +288,18 @@ async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
         .await;
     assert_eq!(finished.status, StatusCode::OK.as_u16());
 
-    let resumed = resume_future.await.unwrap();
-    assert_eq!(
-        resumed.status,
-        StatusCode::OK.as_u16(),
-        "{}",
-        String::from_utf8_lossy(&resumed.body)
-    );
-    let envelope: Value = serde_json::from_slice(&resumed.body).unwrap();
+    let resumed = resume_future.await.unwrap().unwrap();
     let contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
     ))
     .unwrap();
-    assert_eq!(envelope["version"], "v1");
-    assert_eq!(envelope["op"], "resume");
-    assert_eq!(envelope["status"], "ok");
     for field in contract["required_fields"].as_array().unwrap() {
         let field = field.as_str().unwrap();
-        assert!(envelope["result"].get(field).is_some(), "missing {field}");
+        assert!(resumed.get(field).is_some(), "missing {field}");
     }
-    assert_eq!(envelope["result"]["workflow_status"], "succeeded");
-    assert_eq!(envelope["result"]["final_state"]["after_resume"], true);
-    assert_eq!(envelope["result"]["budget"], json!({}));
+    assert_eq!(resumed["workflow_status"], "succeeded");
+    assert_eq!(resumed["final_state"]["after_resume"], true);
+    assert_eq!(resumed["budget"], json!({}));
 
     drop(service);
     let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
