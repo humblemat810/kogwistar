@@ -1276,7 +1276,9 @@ mod tests {
                             )
                         })
                         .collect::<Vec<_>>();
-                    results.sort_by(|left, right| left.2.total_cmp(&right.2));
+                    // Deliberately return backend order unrelated to distance;
+                    // the adapter must not impose a ranking policy of its own.
+                    results.reverse();
                     json!({
                         "ids": [results.iter().map(|result| result.0.clone()).collect::<Vec<_>>()],
                         "documents": [results.iter().map(|result| result.0.clone()).collect::<Vec<_>>()],
@@ -1336,9 +1338,23 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            let mut matches = matches;
-            // Canonicalize only in the test; runtime preserves Chroma's order.
-            matches.sort_by(|left, right| {
+            let backend_order = vectors
+                .iter()
+                .rev()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matches
+                    .iter()
+                    .map(|item| item.record.id.as_str())
+                    .collect::<Vec<_>>(),
+                backend_order,
+                "adapter must preserve Chroma's backend order"
+            );
+
+            // Canonicalize a copy only for the order-insensitive metric fixture.
+            let mut canonical_matches = matches.clone();
+            canonical_matches.sort_by(|left, right| {
                 left.distance
                     .total_cmp(&right.distance)
                     .then_with(|| left.record.id.cmp(&right.record.id))
@@ -1351,13 +1367,13 @@ mod tests {
                 .map(|value| value.as_str().expect("expected id"))
                 .collect::<Vec<_>>();
             assert_eq!(
-                matches
+                canonical_matches
                     .iter()
                     .map(|item| item.record.id.as_str())
                     .collect::<Vec<_>>(),
                 expected_ids
             );
-            for (index, item) in matches.iter().enumerate() {
+            for (index, item) in canonical_matches.iter().enumerate() {
                 let expected_distance = case["expected_distances"][index]
                     .as_f64()
                     .expect("expected distance");
