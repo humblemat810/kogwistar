@@ -203,11 +203,11 @@ these existing focused selectors.
 
 DLFC-10 additive evidence (2026-11-26): Rust authenticated MCP `workflow.run_resume`
 continues a persisted SQLite suspended run and returns the shared resume-result
-contract after the external worker completes the resumed lane. Test:
+contract after the external worker completes the resumed lane; same-token retry
+returns a tool error without adding run events. Test:
 `tests::sqlite_runtime_worker_lifecycle::sqlite_metadata_mcp_resume_continues_persisted_suspended_token`
-(focused Cargo test: **1 passed**). This extends backend coverage only; DLFC-10
-remains IN PROGRESS because retry and the remaining MCP effect/backend matrix
-are not closed.
+(focused Cargo test: **1 passed**). This extends one backend cell only; DLFC-10
+remains IN PROGRESS because the remaining MCP effect/backend matrix is not closed.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |

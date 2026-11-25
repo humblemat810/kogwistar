@@ -1838,21 +1838,23 @@
                 "suspended_token_id":token_id,
                 "client_result":{"approved":true}
             });
+            let call_resume = move |request_id: &str| {
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(json!({
+                        "jsonrpc":"2.0", "id":request_id,
+                        "method":"tools/call",
+                        "params":{"name":"workflow.run_resume", "arguments":resume_arguments.clone()}
+                    }).to_string()))
+                    .unwrap()
+            };
+            let retry_service = service.clone();
             tokio::spawn(async move {
-                let response = app.oneshot(
-                    Request::builder()
-                        .method("POST")
-                        .uri("/mcp/workflow")
-                        .header("content-type", "application/json")
-                        .header("accept", "application/json, text/event-stream")
-                        .header("authorization", format!("Bearer {token}"))
-                        .body(Body::from(json!({
-                            "jsonrpc":"2.0", "id":"sqlite-resume",
-                            "method":"tools/call",
-                            "params":{"name":"workflow.run_resume", "arguments":resume_arguments}
-                        }).to_string()))
-                        .unwrap(),
-                ).await.unwrap();
+                let response = app.clone().oneshot(call_resume("sqlite-resume")).await.unwrap();
                 let status = response.status();
                 let wire = to_bytes(response.into_body(), 8192).await.unwrap();
                 let data = String::from_utf8(wire.to_vec()).unwrap();
@@ -1862,6 +1864,38 @@
                     .unwrap();
                 assert_eq!(status, StatusCode::OK);
                 assert_ne!(payload["result"]["isError"], true, "{payload}");
+                let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+                    &retry_service.store,
+                    run_id,
+                    0,
+                    100,
+                )
+                .await
+                .unwrap()
+                .len();
+                let retry = app.oneshot(call_resume("sqlite-resume-retry")).await.unwrap();
+                assert_eq!(retry.status(), StatusCode::OK);
+                let wire = to_bytes(retry.into_body(), 8192).await.unwrap();
+                let data = String::from_utf8(wire.to_vec()).unwrap();
+                let retry_payload = data
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                    .unwrap();
+                assert_eq!(retry_payload["result"]["isError"], true);
+                assert_eq!(
+                    kogwistar_store::ServerRunReadStore::server_run_events(
+                        &retry_service.store,
+                        run_id,
+                        0,
+                        100,
+                    )
+                    .await
+                    .unwrap()
+                    .len(),
+                    event_count,
+                    "replayed MCP resume must not append duplicate run events"
+                );
                 Ok::<Value, String>(payload["result"]["structuredContent"].clone())
             })
         } else {
