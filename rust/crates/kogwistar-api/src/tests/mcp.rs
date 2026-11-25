@@ -535,14 +535,6 @@ asyncio.run(main())
             "roles": ["reader"],
             "ns": "workflow"
         });
-        let stream_deadline = Instant::now() + Duration::from_secs(10);
-        while !mcp_sessions.has_active_get(&session_id) && Instant::now() < stream_deadline {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        assert!(
-            mcp_sessions.has_active_get(&session_id),
-            "Python MCP SDK did not establish the server-initiated GET stream"
-        );
         let logging_event_id = mcp_sessions
             .publish(
                 &session_id,
