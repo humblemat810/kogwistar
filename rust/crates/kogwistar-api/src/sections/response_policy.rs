@@ -1549,10 +1549,12 @@ fn default_document_insertion_method() -> String {
     "document_parser_v1".to_owned()
 }
 
-fn graph_pointer_integer(value: &Value) -> Option<i64> {
+fn graph_pointer_integer(value: &Value) -> Option<i128> {
     value
         .as_i64()
-        .or_else(|| value.as_str().and_then(|text| text.parse::<i64>().ok()))
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+        .or_else(|| value.as_str().and_then(|text| text.parse::<i128>().ok()))
 }
 
 fn graph_validation_error(message: impl Into<String>) -> String {
@@ -1575,14 +1577,18 @@ fn validate_graph_span(value: &Value) -> Result<(), String> {
     }
     let start = span
         .get("start_char")
-        .and_then(Value::as_i64)
+        .and_then(graph_pointer_integer)
         .ok_or_else(|| "mention span start_char must be an integer".to_owned())?;
     let end = span
         .get("end_char")
-        .and_then(Value::as_i64)
+        .and_then(graph_pointer_integer)
         .ok_or_else(|| "mention span end_char must be an integer".to_owned())?;
-    if start < 0 {
+    let max_offset = i128::from(u64::MAX);
+    if !(0..=max_offset).contains(&start) {
         return Err("mention span start_char must be >= 0".to_owned());
+    }
+    if end != -1 && !(0..=max_offset).contains(&end) {
+        return Err("mention span end_char must be within persistent offset range".to_owned());
     }
     if end != -1 && end <= start {
         return Err("mention span end_char must be > start_char".to_owned());
@@ -1644,6 +1650,11 @@ fn lift_graph_pointer_mentions(
         if end_char == -1 && raw_end_char.as_i64() != Some(-1) {
             return Err("pointer end_char must use numeric -1 for the open-ended sentinel".to_owned());
         }
+        if !(0..=i128::from(u64::MAX)).contains(&start_char)
+            || (end_char != -1 && !(0..=i128::from(u64::MAX)).contains(&end_char))
+        {
+            return Err("pointer offsets must be within persistent offset range".to_owned());
+        }
         let excerpt = pointer
             .get("verbatim_text")
             .map(|value| {
@@ -1659,7 +1670,7 @@ fn lift_graph_pointer_mentions(
             "document_page_url": format!("doc://{doc_id}#{source_cluster_id}"),
             "insertion_method": insertion_method,
             "start_char": start_char,
-            "end_char": if raw_end_char.as_i64() == Some(-1) { 1_000_000_000_i64 } else { end_char },
+            "end_char": if raw_end_char.as_i64() == Some(-1) { 1_000_000_000_i128 } else { end_char },
             "excerpt": excerpt.chars().take(400).collect::<String>(),
         }));
     }

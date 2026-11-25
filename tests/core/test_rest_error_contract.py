@@ -75,7 +75,6 @@ def test_python_document_graph_validation_defaults_omitted_edges_to_empty() -> N
     assert response.status_code == fixture["status"]
     assert response.json() == fixture["response"]
 
-
 def test_python_document_graph_validation_rejects_incomplete_pointer_without_500() -> None:
     fixture_path = _FIXTURE.with_name("document-validate-graph-invalid-pointer-v1.json")
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
@@ -100,3 +99,27 @@ def test_python_document_graph_validation_preserves_integer_string_pointer_coerc
 
     assert response.status_code == fixture["status"]
     assert response.json() == fixture["response"]
+
+
+def test_python_document_graph_validation_accepts_u64_max_pointer_offsets() -> None:
+    fixture_path = _FIXTURE.with_name("document-validate-graph-u64-offset-v1.json")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    response = TestClient(app).post(
+        "/api/document.validate_graph",
+        json=fixture["request"],
+    )
+
+    assert response.status_code == fixture["status"]
+    assert response.json() == fixture["response"]
+
+    out_of_range_request = json.loads(json.dumps(fixture["request"]))
+    pointer = out_of_range_request["nodes"][0]["metadata"]["pointers"][0]
+    pointer["start_char"] = "18446744073709551616"
+    pointer["end_char"] = "18446744073709551617"
+    rejected = TestClient(app).post(
+        "/api/document.validate_graph",
+        json=out_of_range_request,
+    )
+    assert rejected.status_code == fixture["status"]
+    assert rejected.json()["ok"] is False
+    assert list(rejected.json()["node_errors"]) == ["node-u64-offset"]

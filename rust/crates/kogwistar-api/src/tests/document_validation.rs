@@ -186,6 +186,45 @@
     }
 
     #[test]
+    fn document_graph_validation_accepts_u64_max_pointer_offsets() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-u64-offset-v1.json"
+        ))
+        .expect("valid u64 pointer offset fixture");
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap(),
+            fixture["response"]
+        );
+
+        let mut out_of_range_request = fixture["request"].clone();
+        let pointer = &mut out_of_range_request["nodes"][0]["metadata"]["pointers"][0];
+        pointer["start_char"] = json!("18446744073709551616");
+        pointer["end_char"] = json!("18446744073709551617");
+        let rejected = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&out_of_range_request).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+        assert_eq!(rejected.status, fixture["status"]);
+        let rejected: Value = serde_json::from_slice(&rejected.body).unwrap();
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["node_errors"]["node-u64-offset"].is_string());
+    }
+
+    #[test]
     fn document_graph_validation_defaults_omitted_edges_to_empty() {
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/document-validate-graph-empty-edges-v1.json"
