@@ -963,6 +963,9 @@ fn validate_postgres_operation(value: &Value) -> Result<(), (&'static str, Strin
             "metadata_not_equals",
             "metric",
             "embedding_dim",
+            "as_of_ts",
+            "follow_redirects",
+            "max_redirect_hops",
         ][..],
         "graph_projection_vector_query_batch" => &[
             "kind",

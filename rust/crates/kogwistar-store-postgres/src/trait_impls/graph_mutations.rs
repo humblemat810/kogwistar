@@ -68,17 +68,35 @@ impl GraphMutationStore for PostgresStore {
             .map_err(trait_error)
     }
 
+    async fn graph_projection_vector_query_excluding_metadata(
+        &self,
+        query: GraphProjectionVectorQuery,
+        metadata_not_equals: std::collections::BTreeMap<String, serde_json::Value>,
+    ) -> StoreResult<Vec<VectorMatch>> {
+        PostgresStore::graph_projection_vector_query_excluding_metadata(
+            self,
+            query,
+            metadata_not_equals,
+        )
+        .await
+        .map_err(trait_error)
+    }
+
     async fn graph_projection_vector_query_nodes_as_of(
         &self,
         query: GraphProjectionVectorQuery,
+        metadata_not_equals: std::collections::BTreeMap<String, serde_json::Value>,
         as_of_ts: &str,
         follow_redirects: bool,
         max_redirect_hops: usize,
     ) -> StoreResult<Vec<VectorMatch>> {
-        let candidates =
-            PostgresStore::graph_projection_vector_query_including_tombstones(self, query.clone())
-                .await
-                .map_err(trait_error)?;
+        let candidates = PostgresStore::graph_projection_vector_query_including_tombstones(
+            self,
+            query.clone(),
+            metadata_not_equals,
+        )
+        .await
+        .map_err(trait_error)?;
         kogwistar_store::resolve_graph_projection_vector_candidates_as_of(
             self,
             &query,

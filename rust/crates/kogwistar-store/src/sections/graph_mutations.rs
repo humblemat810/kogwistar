@@ -579,19 +579,47 @@ pub trait GraphMutationStore: Send + Sync {
         &self,
         query: GraphProjectionVectorQuery,
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send;
+    /// Apply metadata exclusions before vector top-k. Backends must override
+    /// this when the filter is non-empty rather than filtering a truncated set.
+    fn graph_projection_vector_query_excluding_metadata(
+        &self,
+        query: GraphProjectionVectorQuery,
+        metadata_not_equals: BTreeMap<String, Value>,
+    ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send {
+        async move {
+            if metadata_not_equals.is_empty() {
+                self.graph_projection_vector_query(query).await
+            } else {
+                Err(StoreError::Backend {
+                    backend: "graph-projection-vector-query".to_owned(),
+                    message: "metadata exclusion filters are not supported by this store"
+                        .to_owned(),
+                })
+            }
+        }
+    }
     /// Historical node vector search over a scoped graph projection. The
     /// backend supplies ranked candidates; lifecycle resolution preserves
     /// their order and source scores. ACL filtering remains the caller's job.
     fn graph_projection_vector_query_nodes_as_of(
         &self,
         query: GraphProjectionVectorQuery,
+        metadata_not_equals: BTreeMap<String, Value>,
         as_of_ts: &str,
         follow_redirects: bool,
         max_redirect_hops: usize,
     ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send {
         let as_of_ts = as_of_ts.to_owned();
         async move {
-            let candidates = self.graph_projection_vector_query(query.clone()).await?;
+            let candidates = if metadata_not_equals.is_empty() {
+                self.graph_projection_vector_query(query.clone()).await?
+            } else {
+                self.graph_projection_vector_query_excluding_metadata(
+                    query.clone(),
+                    metadata_not_equals,
+                )
+                .await?
+            };
             resolve_graph_projection_vector_candidates_as_of(
                 self,
                 &query,

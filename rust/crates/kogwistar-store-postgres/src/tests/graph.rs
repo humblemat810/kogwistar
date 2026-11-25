@@ -566,6 +566,11 @@ async fn postgres_historical_vector_query_resolves_redirects_and_keeps_candidate
             serde_json::json!({"lifecycle_status": "active"}),
             vec![0.8, 0.6],
         ),
+        (
+            "internal-acl",
+            serde_json::json!({"lifecycle_status": "active", "entity_type": "acl_record"}),
+            vec![0.999, 0.001],
+        ),
     ] {
         let metadata = metadata.as_object().unwrap().clone();
         store
@@ -592,24 +597,35 @@ async fn postgres_historical_vector_query_resolves_redirects_and_keeps_candidate
         table: "gke_nodes".to_owned(),
         query: VectorQuery {
             embedding: vec![1.0, 0.0],
-            limit: 2,
+            limit: 1,
             metadata: MetadataFilter::default(),
             metric: DistanceMetric::Cosine,
         },
         embedding_dim: 2,
     };
     let ordinary = store.graph_projection_vector_query(query.clone()).await?;
-    assert_eq!(ordinary[0].record.id, "target");
     assert!(ordinary.iter().all(|hit| hit.record.id != "old"));
 
     let before_delete = store
-        .graph_projection_vector_query_nodes_as_of(query.clone(), "2026-01-09T00:00:00Z", true, 16)
+        .graph_projection_vector_query_nodes_as_of(
+            query.clone(),
+            BTreeMap::from([("entity_type".to_owned(), serde_json::json!("acl_record"))]),
+            "2026-01-09T00:00:00Z",
+            true,
+            16,
+        )
         .await?;
     assert_eq!(before_delete[0].record.id, "old");
     assert_eq!(before_delete[0].distance, 0.0);
 
     let after_delete = store
-        .graph_projection_vector_query_nodes_as_of(query, "2026-01-11T00:00:00Z", true, 16)
+        .graph_projection_vector_query_nodes_as_of(
+            query,
+            BTreeMap::from([("entity_type".to_owned(), serde_json::json!("acl_record"))]),
+            "2026-01-11T00:00:00Z",
+            true,
+            16,
+        )
         .await?;
     assert_eq!(after_delete.len(), 1);
     assert_eq!(after_delete[0].record.id, "target");

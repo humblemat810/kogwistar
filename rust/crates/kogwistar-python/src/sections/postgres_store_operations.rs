@@ -333,6 +333,9 @@ async fn postgres_store_operation_json(
             metadata_not_equals,
             metric,
             embedding_dim,
+            as_of_ts,
+            follow_redirects,
+            max_redirect_hops,
         } => {
             let query = kogwistar_store::GraphProjectionVectorQuery {
                 scope: graph_scope(namespace, workspace_id, graph_space),
@@ -345,7 +348,17 @@ async fn postgres_store_operation_json(
                 },
                 embedding_dim,
             };
-            let matches = if metadata_not_equals.is_empty() {
+            let matches = if let Some(as_of_ts) = as_of_ts {
+                store
+                    .graph_projection_vector_query_nodes_as_of(
+                        query,
+                        metadata_not_equals,
+                        &as_of_ts,
+                        follow_redirects,
+                        max_redirect_hops,
+                    )
+                    .await?
+            } else if metadata_not_equals.is_empty() {
                 store.graph_projection_vector_query(query).await?
             } else {
                 store
