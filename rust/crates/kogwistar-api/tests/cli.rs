@@ -378,6 +378,32 @@ fn workflow_run_checkpoint_get_command_uses_python_endpoint() {
 }
 
 #[test]
+fn workflow_run_resume_contract_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_resume_contract",
+                "--run-id",
+                "r-12",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-12","resumable":true}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-12/resume-contract HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-12", "resumable": true}),
+    );
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_payload_defaults() {
     let (output, request) = run_mock_http_cli(
         |base| {

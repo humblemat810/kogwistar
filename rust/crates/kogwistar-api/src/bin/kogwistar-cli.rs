@@ -270,6 +270,14 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
                 format!("/api/workflow/runs/{run_id}/checkpoints/{step_seq}"),
             )
         }
+        "workflow.run_resume_contract" => {
+            validate_options(&options, &["--base-url", "--run-id"]);
+            let run_id = required_option(&options, "--run-id");
+            (
+                reqwest::Method::GET,
+                format!("/api/workflow/runs/{run_id}/resume-contract"),
+            )
+        }
         "workflow.run_status" | "workflow.run_cancel" => {
             validate_options(&options, &["--base-url", "--run-id"]);
             let is_cancel = command == "workflow.run_cancel";
