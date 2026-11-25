@@ -72,7 +72,7 @@
     }
 
     #[tokio::test]
-    async fn workflow_design_node_upsert_authorization_matches_python_policy_for_all_stores() {
+    async fn workflow_design_node_upsert_authorization_matches_python_policy_for_persistent_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nonce = SystemTime::now()
