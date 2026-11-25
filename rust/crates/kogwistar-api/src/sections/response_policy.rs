@@ -607,21 +607,24 @@ fn principal_role(principal: &Value) -> String {
 }
 
 fn base_capabilities(principal: &Value) -> BTreeSet<String> {
-    let explicit = principal
-        .get("capabilities")
-        .or_else(|| principal.get("caps"));
-    if explicit.is_some() {
-        return principal_strings(
-            principal,
-            if principal.get("capabilities").is_some() {
-                "capabilities"
-            } else {
-                "caps"
-            },
-        )
-        .into_iter()
-        .filter(|capability| capability != "*")
-        .collect();
+    let capabilities = principal.get("capabilities");
+    let explicit = capabilities
+        .filter(|value| match value {
+            Value::Null => false,
+            Value::Bool(value) => *value,
+            Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+            Value::String(value) => !value.is_empty(),
+            Value::Array(value) => !value.is_empty(),
+            Value::Object(value) => !value.is_empty(),
+        })
+        .map(|value| ("capabilities", value))
+        .or_else(|| principal.get("caps").map(|value| ("caps", value)))
+        .or_else(|| capabilities.map(|value| ("capabilities", value)));
+    if let Some((field, _)) = explicit {
+        return principal_strings(principal, field)
+            .into_iter()
+            .filter(|capability| capability != "*")
+            .collect();
     }
     if principal_role(principal) == "rw" {
         CAPABILITY_SPECS
