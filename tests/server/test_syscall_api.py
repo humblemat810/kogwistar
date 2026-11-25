@@ -244,12 +244,36 @@ def test_syscall_project_view_matches_resource_snapshot_contract(monkeypatch, en
             ns="workflow",
             capabilities=",".join(contract["required_capabilities"]),
         )
+        wrong_scope = _token_header(
+            client,
+            role="ro",
+            ns="wisdom",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
+        denied = client.post(
+            "/api/syscall/v1/project_view",
+            json={"version": "v1", "op": "project_view", "args": {}},
+            headers=wrong_scope,
+        )
+        conversation_scope = _token_header(
+            client,
+            role="ro",
+            ns="conversation",
+            capabilities=",".join(contract["required_capabilities"]),
+        )
+        conversation_result = client.post(
+            "/api/syscall/v1/project_view",
+            json={"version": "v1", "op": "project_view", "args": {}},
+            headers=conversation_scope,
+        )
         response = client.post(
             "/api/syscall/v1/project_view",
             json={"version": "v1", "op": "project_view", "args": {}},
             headers=headers,
         )
 
+    assert denied.status_code == 403
+    assert conversation_result.status_code == 200, conversation_result.text
     assert response.status_code == 200, response.text
     payload = response.json()["result"]
     assert all(field in payload for field in contract["required_fields"])

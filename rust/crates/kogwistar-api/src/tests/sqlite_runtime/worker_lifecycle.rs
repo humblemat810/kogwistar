@@ -1,3 +1,116 @@
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_metadata_project_view_syscall_matches_resource_contract_and_scope; python_test=tests/server/test_syscall_api.py#test_syscall_project_view_matches_resource_snapshot_contract
+#[test]
+fn sqlite_metadata_project_view_syscall_matches_resource_contract_and_scope() {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("kogwistar-syscall-project-view-{nonce}.sqlite3"));
+    let service = SqliteRunApplicationService::open(&path).unwrap();
+    let view_request = |namespace: &str, capabilities: &[&str]| ApiEffectRequest {
+        contract_version: 1,
+        method: "POST".to_owned(),
+        path_and_query: "/api/syscall/v1/project_view".to_owned(),
+        body: serde_json::to_vec(&json!({
+            "version":"v1",
+            "op":"project_view",
+            "args":{}
+        }))
+        .unwrap(),
+        principal: json!({
+            "sub":"viewer",
+            "role":"ro",
+            "ns":namespace,
+            "capabilities":capabilities,
+        }),
+    };
+    let resource_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../../contracts/golden/workflow-resources-http-v1.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        service
+            .execute_sync(view_request("workflow", &["project_view"]))
+            .status,
+        StatusCode::FORBIDDEN.as_u16()
+    );
+    assert_eq!(
+        service
+            .execute_sync(view_request(
+                "wisdom",
+                &["project_view", "read_security_scope"]
+            ))
+            .status,
+        StatusCode::FORBIDDEN.as_u16()
+    );
+    assert_eq!(
+        service
+            .execute_sync(view_request(
+                "conversation",
+                &["project_view", "read_security_scope"]
+            ))
+            .status,
+        StatusCode::OK.as_u16()
+    );
+    let response = service.execute_sync(view_request(
+        "workflow",
+        &["project_view", "read_security_scope"],
+    ));
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let envelope: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(envelope["version"], "v1");
+    assert_eq!(envelope["op"], "project_view");
+    assert_eq!(envelope["status"], "ok");
+
+    let result = &envelope["result"];
+    let required_fields = resource_contract["required_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let additive_fields = resource_contract["rust_additive_fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field.as_str().unwrap())
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_fields = result
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual_fields,
+        required_fields.union(&additive_fields).copied().collect()
+    );
+    for (section, fields) in resource_contract["required_object_fields"]
+        .as_object()
+        .unwrap()
+    {
+        let actual = result[section]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        let required = fields
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(required.is_subset(&actual), "resource section {section}");
+    }
+    assert!(result["storage_usage_bytes"].is_u64());
+
+    drop(service);
+    let _ = std::fs::remove_file(path);
+}
+
     // PYTHON_PARITY_NOTE_V1: Authorized syscall termination appends one run.cancelling event before applying the cancel; denied calls have no effect. rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router; fixture=contracts/golden/run-cancel-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_syscall_spawn_and_terminate_use_authoritative_run_service; python_test=tests/server/test_chat_server_api.py#test_run_lifecycle_syscalls_use_python_backend
     #[tokio::test]
     async fn sqlite_syscall_spawn_and_terminate_use_authoritative_run_service() {
@@ -9,33 +122,6 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-syscall-{nonce}.sqlite3"));
         let service = SqliteRunApplicationService::open(&path).unwrap();
-        let view_request = |capabilities: &[&str]| ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/syscall/v1/project_view".to_owned(),
-            body: serde_json::to_vec(&json!({
-                "version":"v1",
-                "op":"project_view",
-                "args":{}
-            }))
-            .unwrap(),
-            principal: json!({
-                "sub":"viewer",
-                "role":"ro",
-                "ns":"workflow",
-                "capabilities":capabilities,
-            }),
-        };
-        let denied_view = service.execute_sync(view_request(&["project_view"]));
-        assert_eq!(denied_view.status, StatusCode::FORBIDDEN.as_u16());
-        let view = service.execute_sync(view_request(&["project_view", "read_security_scope"]));
-        assert_eq!(view.status, StatusCode::OK.as_u16());
-        let view = serde_json::from_slice::<Value>(&view.body).unwrap();
-        assert_eq!(view["version"], "v1");
-        assert_eq!(view["op"], "project_view");
-        assert_eq!(view["status"], "ok");
-        assert!(view["result"]["scheduler"].is_object());
-        assert!(view["result"]["runs"].is_object());
         let receive_request = |namespace: &str| ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
