@@ -2,7 +2,7 @@
   "version": "v1",
   "run_id": "evidence-run",
   "conversation_id": "evidence-conversation",
-  "snapshot_node_id": "snapshot|evidence-run|5",
+  "snapshot_node_id": "9553a4db-7963-57ac-97b3-6dbd96366bc5",
   "snapshot_metadata": {
     "entity_type": "context_snapshot",
     "conversation_id": "evidence-conversation",

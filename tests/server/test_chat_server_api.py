@@ -3855,31 +3855,57 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
     monkeypatch.setattr(
         "kogwistar._rust_bridge._load_extension", fail_if_rust_load_is_attempted
     )
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/run-evidence-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _service, registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
-    run_id = "python-only-run-evidence"
-    conversation_id = "python-only-evidence-conversation"
+    run_id = contract["run_id"]
+    conversation_id = contract["conversation_id"]
 
     with TestClient(server.app) as client:
         conversation_headers = _token_header(client, role="rw", ns="conversation")
         workflow_headers = _token_header(
-            client, role="ro", ns="workflow", username="python-only-user"
+            client, role="ro", ns="workflow", username="alice"
         )
         denied_headers = _token_header(client, role="ro", ns="wisdom")
         created = client.post(
             "/api/conversations",
-            json={"user_id": "python-only-user", "conversation_id": conversation_id},
+            json={"user_id": "alice", "conversation_id": conversation_id},
             headers=conversation_headers,
         )
         assert created.status_code == 200, created.text
         start_node_id = created.json()["start_node_id"]
+        for node_id in contract["evidence_refs"]:
+            conversation_engine.write.add_node(
+                Node(
+                    id=node_id,
+                    label=node_id,
+                    type="entity",
+                    summary=node_id,
+                    doc_id=node_id,
+                    mentions=[Grounding(spans=[Span.from_dummy_for_conversation()])],
+                    metadata={
+                        "entity_type": "evidence",
+                        "conversation_id": conversation_id,
+                    },
+                    properties={},
+                    level_from_root=0,
+                    domain_id=None,
+                    canonical_entity_id=None,
+                    embedding=None,
+                )
+            )
         registry.create_run(
             run_id=run_id,
             conversation_id=conversation_id,
-            workflow_id="python-only-workflow",
-            user_id="python-only-user",
+            workflow_id="evidence-workflow",
+            user_id="alice",
             user_turn_node_id=start_node_id,
             status="succeeded",
         )
@@ -3891,29 +3917,32 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
         snapshot_id = conversation_service.persist_context_snapshot(
             conversation_id=conversation_id,
             run_id=run_id,
-            run_step_seq=0,
+            run_step_seq=contract["snapshot_metadata"]["run_step_seq"],
             stage="answer",
             view=SimpleNamespace(
                 messages=[{"role": "user", "content": "evidence test"}],
-                items=[SimpleNamespace(node_id=start_node_id)],
+                items=[
+                    SimpleNamespace(node_id=node_id)
+                    for node_id in contract["evidence_refs"]
+                ],
                 cost=None,
                 token_budget=32,
             ),
             model_name="test-model",
             budget_tokens=32,
-            evidence_pack_digest={"fixture_items": 1},
+            evidence_pack_digest=contract["source_summary"]["evidence_pack_digest"],
         )
         persisted_snapshot_metadata = conversation_engine.read.get_node_metadatas(
             ids=[snapshot_id], limit=1
         )[0]
-        assert persisted_snapshot_metadata["used_node_ids"] == [start_node_id]
+        assert persisted_snapshot_metadata["used_node_ids"] == contract["evidence_refs"]
         conversation_engine.acl.record_acl(
             grain="node",
             truth_graph="conversation",
             entity_id=snapshot_id,
             version=2,
             mode="private",
-            owner_id="python-only-user",
+            owner_id="alice",
             supersedes_version=1,
         )
 
@@ -3922,15 +3951,13 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
         )
         assert response.status_code == 200, response.text
         payload = response.json()
-        assert payload["version"] == "v1"
-        assert payload["run_id"] == run_id
-        assert payload["conversation_id"] == conversation_id
-        assert payload["snapshot_node_id"] == snapshot_id
-        assert payload["evidence_refs"] == [start_node_id]
-        assert payload["source_summary"] == {
-            "used_node_count": 1,
-            "evidence_pack_digest": {"fixture_items": 1},
+        assert snapshot_id == contract["snapshot_node_id"]
+        normalized_payload = dict(payload)
+        normalized_payload["snapshot_metadata"] = {
+            key: payload["snapshot_metadata"][key]
+            for key in contract["snapshot_metadata"]
         }
+        assert normalized_payload == contract
 
         denied = client.get(
             f"/api/runs/{run_id}/evidence", headers=denied_headers
