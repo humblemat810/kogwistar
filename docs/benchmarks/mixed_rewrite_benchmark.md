@@ -2563,3 +2563,20 @@ and zero validation errors. Raw report and traces are retained locally (ignored)
 under `.tmp/mixed-runtime-goal09-current-20261125/endpoint/`. This recheck
 confirms the SQLite MCP-storage performance cell only; PostgreSQL/pgvector,
 SQLite+Chroma, and authenticated workflow/graph performance remain open.
+
+#### Current-source capped SQLite endpoint rerun
+
+Rebuilt and reran after code changes since the preceding measurement, using
+source `033b8dcbe6f3a65d9eab4722f05d35e9eda4fe2d`, CPython 3.15.1t, network
+disabled, verified 2 CPU / 4 GiB, one warm-up and three fresh samples. Sequential
+100/500-record traces measured Python 57.21/55.43 ops/s and Rust-native
+549.17/537.87 ops/s (9.60x/9.70x). Per-operation p95 ratios were 0.089–0.121.
+Balanced concurrent traces used 32 writes and 128 reads, one writer and four
+readers: Python 30.59/30.62 ops/s, Rust-native 682.23/652.84 ops/s (21.32x
+for both). Read/write p95 ratios were 0.098–0.333. All same-size sequential
+digests matched; concurrent digests matched across sizes. Both pure paths had
+zero FFI; limits verified; report status `complete`, zero validation errors.
+Raw report and source manifest are retained under
+`.tmp/mixed-runtime-goal09-current-20261125-rerun/`. This refreshes SQLite
+evidence only; PostgreSQL/pgvector, SQLite+Chroma, and authenticated
+workflow/graph performance gates remain open.
