@@ -71,6 +71,53 @@ def _capability_link_errors(
     return errors
 
 
+def test_python_ci_selection_does_not_match_same_named_test_in_other_file() -> None:
+    assert not _python_test_is_selected(
+        "tests/server/unmarked.py",
+        "test_contract",
+        {"tests/server/marked.py::test_contract"},
+        {"tests/server/marked.py": {"ci"}},
+        ci_runs_fast_tests=True,
+        ci_runs_full_tests=False,
+    )
+
+
+def test_python_ci_selection_accepts_exact_selector_and_file_gate() -> None:
+    assert _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_contract",
+        {"tests/server/contract.py::test_contract"},
+        {},
+        ci_runs_fast_tests=False,
+        ci_runs_full_tests=False,
+    )
+    assert _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_contract",
+        {"tests/server/contract.py"},
+        {},
+        ci_runs_fast_tests=False,
+        ci_runs_full_tests=False,
+    )
+
+
+def _python_test_is_selected(
+    path: str,
+    name: str,
+    gate_selectors: set[str],
+    markers_by_path: dict[str, set[str]],
+    *,
+    ci_runs_fast_tests: bool,
+    ci_runs_full_tests: bool,
+) -> bool:
+    if path in gate_selectors or f"{path}::{name}" in gate_selectors:
+        return True
+    markers = markers_by_path.get(path, set())
+    return ("ci" in markers and ci_runs_fast_tests) or (
+        "ci_full" in markers and ci_runs_full_tests
+    )
+
+
 def _rust_selector_link_errors(
     capability_ownership: list[dict],
     selectors: dict[str, dict],
@@ -1832,6 +1879,15 @@ def test_each_capability_gate_clause_names_an_executable_test() -> None:
         )
         for path in (ROOT / "tests").rglob("*.py")
     }
+    python_markers_by_path = {
+        path.relative_to(ROOT).as_posix(): set(
+            re.findall(
+                r"pytest\.mark\.(ci_full|ci)\b",
+                path.read_text(encoding="utf-8").partition("\ndef ")[0],
+            )
+        )
+        for path in (ROOT / "tests").rglob("*.py")
+    }
     python_gate_paths = (
         "scripts/durable_store_capability_gate.py",
         "scripts/runtime_authority_gate.py",
@@ -1905,26 +1961,36 @@ def test_each_capability_gate_clause_names_an_executable_test() -> None:
         assert mentioned_python_tests or mentioned_rust_tests & declared_rust_tests, (
             f"{capability}/{clause} {status}: evidence lacks a declared test selector"
         )
-        def selected_by_gate_or_ci(path: str, name: str, names: set[str]) -> bool:
-            if name not in names:
-                return False
-            if path in python_gate_selectors or f"{path}::{name}" in python_gate_selectors:
-                return True
-            source = (ROOT / path).read_text(encoding="utf-8")
-            module_scope = source.partition("\ndef ")[0]
-            markers = set(
-                re.findall(r"pytest\.mark\.(ci_full|ci)\b", module_scope)
+        selected_explicit_python_refs = all(
+            _python_test_is_selected(
+                path,
+                name,
+                python_gate_selectors,
+                python_markers_by_path,
+                ci_runs_fast_tests=ci_runs_fast_tests,
+                ci_runs_full_tests=ci_runs_full_tests,
             )
-            return ("ci" in markers and ci_runs_fast_tests) or (
-                "ci_full" in markers and ci_runs_full_tests
-            )
-
-        selected_python_tests = all(
+            for path, name in python_refs
+        )
+        explicit_python_names = {name for _, name in python_refs}
+        unqualified_python_tests = mentioned_python_tests - explicit_python_names
+        selected_unqualified_python_tests = all(
             any(
-                selected_by_gate_or_ci(path, name, names)
+                _python_test_is_selected(
+                    path,
+                    name,
+                    python_gate_selectors,
+                    python_markers_by_path,
+                    ci_runs_fast_tests=ci_runs_fast_tests,
+                    ci_runs_full_tests=ci_runs_full_tests,
+                )
                 for path, names in python_tests_by_path.items()
+                if name in names
             )
-            for name in mentioned_python_tests
+            for name in unqualified_python_tests
+        )
+        selected_python_tests = (
+            selected_explicit_python_refs and selected_unqualified_python_tests
         )
         selected_rust_tests = (
             bool(rust_refs)
