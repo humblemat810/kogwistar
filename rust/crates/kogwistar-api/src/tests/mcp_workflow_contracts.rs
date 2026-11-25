@@ -1603,7 +1603,7 @@
     }
 
     #[tokio::test]
-    async fn mcp_workflow_design_node_upsert_denies_before_application_dispatch() {
+    async fn mcp_workflow_design_tools_deny_before_application_dispatch() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -1637,10 +1637,16 @@
             }
         }
 
-        let contract: Value = serde_json::from_str(include_str!(
-            "../../../../../contracts/golden/workflow-design-node-upsert-mcp-v1.json"
-        ))
-        .unwrap();
+        let contracts = [
+            include_str!("../../../../../contracts/golden/workflow-design-node-upsert-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-edge-upsert-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-node-delete-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-edge-delete-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-history-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-undo-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-redo-mcp-v1.json"),
+        ]
+        .map(|fixture| serde_json::from_str::<Value>(fixture).unwrap());
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1699,25 +1705,31 @@
             let list: Value = serde_json::from_slice(
                 &to_bytes(list_response.into_body(), 65_536).await.unwrap(),
             ).unwrap();
-            let tool = contract["tool"].as_str().unwrap();
-            assert!(!list["result"]["tools"].as_array().unwrap().iter().any(|item| item["name"] == tool));
+            for contract in &contracts {
+                let tool = contract["tool"].as_str().unwrap();
+                assert!(!list["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["name"] == tool));
 
-            let call_response = app.clone().oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/mcp/workflow")
-                    .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {bearer}"))
-                    .body(Body::from(json!({
-                        "jsonrpc":"2.0", "id":2, "method":"tools/call",
-                        "params":{"name":tool,"arguments":contract["arguments"]}
-                    }).to_string()))
-                    .unwrap(),
-            ).await.unwrap();
-            let call: Value = serde_json::from_slice(
-                &to_bytes(call_response.into_body(), 65_536).await.unwrap(),
-            ).unwrap();
-            assert_eq!(call["error"]["code"], -32602);
+                let call_response = app.clone().oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp/workflow")
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .body(Body::from(json!({
+                            "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                            "params":{"name":tool,"arguments":contract["arguments"]}
+                        }).to_string()))
+                        .unwrap(),
+                ).await.unwrap();
+                let call: Value = serde_json::from_slice(
+                    &to_bytes(call_response.into_body(), 65_536).await.unwrap(),
+                ).unwrap();
+                assert_eq!(call["error"]["code"], -32602, "{tool}");
+            }
         }
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         let _ = std::fs::remove_file(db_path);
