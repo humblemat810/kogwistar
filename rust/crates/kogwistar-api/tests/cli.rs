@@ -350,6 +350,34 @@ fn workflow_run_events_command_preserves_python_query_contract() {
 }
 
 #[test]
+fn workflow_run_checkpoint_get_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_checkpoint_get",
+                "--run-id",
+                "r-11",
+                "--step-seq",
+                "6",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-11","step_seq":6,"state":{"answer":42}}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-11/checkpoints/6 HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-11", "step_seq": 6, "state": {"answer": 42}}),
+    );
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_payload_defaults() {
     let (output, request) = run_mock_http_cli(
         |base| {

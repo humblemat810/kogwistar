@@ -2505,6 +2505,41 @@ def test_python_cli_workflow_run_submit_matches_rust_http_contract(
     }
 
 
+def test_python_cli_workflow_checkpoint_get_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-11", "step_seq": 6, "state": {"answer": 42}}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_checkpoint_get",
+                "--run-id",
+                "r-11",
+                "--step-seq",
+                "6",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/runs/r-11/checkpoints/6",
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
