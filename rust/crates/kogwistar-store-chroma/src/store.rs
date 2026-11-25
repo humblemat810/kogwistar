@@ -1020,9 +1020,7 @@ mod tests {
     use super::ChromaGraphStore;
     use super::normalize_chroma_distance;
     use crate::ChromaStoreConfig;
-    use kogwistar_store::{
-        DistanceMetric, GraphEntityKind, GraphReadStore, VectorQuery, similarity_from_distance,
-    };
+    use kogwistar_store::{DistanceMetric, GraphReadStore, VectorQuery, similarity_from_distance};
     use serde_json::{Value, json};
     use std::time::Duration;
 
@@ -1326,15 +1324,17 @@ mod tests {
             .await
             .unwrap();
             let matches = store
-                .vector_query_of_kind(
+                .vector_query_nodes_as_of(
                     "metric-contract",
-                    GraphEntityKind::Node,
                     &VectorQuery {
                         embedding: query.iter().map(|value| *value as f32).collect(),
                         limit: vectors.len(),
                         metadata: Default::default(),
                         metric,
                     },
+                    "2026-01-02T00:00:00Z",
+                    true,
+                    16,
                 )
                 .await
                 .unwrap();
