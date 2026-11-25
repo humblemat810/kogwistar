@@ -258,6 +258,49 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
             Some(body),
         );
     }
+    if command == "workflow.run_resume" {
+        validate_options(
+            &options,
+            &[
+                "--base-url",
+                "--run-id",
+                "--suspended-node-id",
+                "--suspended-token-id",
+                "--client-result",
+                "--workflow-id",
+                "--conversation-id",
+                "--turn-node-id",
+                "--user-id",
+            ],
+        );
+        let client_result = match options.get("--client-result") {
+            Some(value) => match serde_json::from_str::<Value>(value) {
+                Ok(result) => result,
+                Err(error) => {
+                    eprintln!("invalid JSON for --client-result: {error}");
+                    return ExitCode::from(2);
+                }
+            },
+            None => json!({}),
+        };
+        let body = json!({
+            "suspended_node_id": required_option(&options, "--suspended-node-id"),
+            "suspended_token_id": required_option(&options, "--suspended-token-id"),
+            "client_result": client_result,
+            "workflow_id": required_option(&options, "--workflow-id"),
+            "conversation_id": required_option(&options, "--conversation-id"),
+            "turn_node_id": required_option(&options, "--turn-node-id"),
+            "user_id": options.get("--user-id"),
+        });
+        return request_json(
+            reqwest::Method::POST,
+            format!(
+                "{base_url}/api/workflow/runs/{}/resume",
+                required_option(&options, "--run-id")
+            ),
+            Some(body),
+        );
+    }
     let (method, path) = match command.as_str() {
         "workflow.run_checkpoint_get" => {
             validate_options(&options, &["--base-url", "--run-id", "--step-seq"]);

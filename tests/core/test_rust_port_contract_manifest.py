@@ -2609,6 +2609,60 @@ def test_python_cli_workflow_replay_matches_rust_http_contract(
     }
 
 
+def test_python_cli_workflow_resume_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-14", "status": "queued"}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_resume",
+                "--run-id",
+                "r-14",
+                "--suspended-node-id",
+                "node-3",
+                "--suspended-token-id",
+                "token-4",
+                "--workflow-id",
+                "wf-5",
+                "--conversation-id",
+                "c-6",
+                "--turn-node-id",
+                "turn-7",
+                "--client-result",
+                '{"approved":true,"count":2}',
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/runs/r-14/resume",
+        "json_body": {
+            "suspended_node_id": "node-3",
+            "suspended_token_id": "token-4",
+            "client_result": {"approved": True, "count": 2},
+            "workflow_id": "wf-5",
+            "conversation_id": "c-6",
+            "turn_node_id": "turn-7",
+            "user_id": None,
+        },
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

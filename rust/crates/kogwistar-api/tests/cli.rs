@@ -434,6 +434,57 @@ fn workflow_run_replay_command_preserves_python_query_contract() {
 }
 
 #[test]
+fn workflow_run_resume_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_resume",
+                "--run-id",
+                "r-14",
+                "--suspended-node-id",
+                "node-3",
+                "--suspended-token-id",
+                "token-4",
+                "--workflow-id",
+                "wf-5",
+                "--conversation-id",
+                "c-6",
+                "--turn-node-id",
+                "turn-7",
+                "--client-result",
+                r#"{"approved":true,"count":2}"#,
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-14","status":"queued"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs/r-14/resume HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "suspended_node_id": "node-3",
+            "suspended_token_id": "token-4",
+            "client_result": {"approved": true, "count": 2},
+            "workflow_id": "wf-5",
+            "conversation_id": "c-6",
+            "turn_node_id": "turn-7",
+            "user_id": null
+        })
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-14", "status": "queued"}),
+    );
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_payload_defaults() {
     let (output, request) = run_mock_http_cli(
         |base| {
