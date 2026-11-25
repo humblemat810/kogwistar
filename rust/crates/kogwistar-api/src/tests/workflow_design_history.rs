@@ -1400,6 +1400,29 @@
             let field = field.as_str().unwrap();
             assert!(deleted.get(field).is_none(), "field {field}");
         }
+        let events = store
+            .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
+            .unwrap();
+        let expected_suffix = event_contract["expected_edge_delete_events"]
+            .as_array()
+            .unwrap();
+        assert!(events.len() >= expected_suffix.len());
+        let suffix_start = events.len() - expected_suffix.len();
+        let delete_target_seq = events[suffix_start].seq;
+        for (event, expected) in events[suffix_start..].iter().zip(expected_suffix) {
+            assert_eq!(event.entity_kind, expected["entity_kind"]);
+            assert_eq!(event.entity_id, expected["entity_id"]);
+            assert_eq!(event.op, expected["op"]);
+            if let Some(expected_payload) = expected["payload"].as_object() {
+                let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+                for (key, value) in expected_payload {
+                    assert_eq!(&payload[key], value, "event payload field {key}");
+                }
+                if expected["payload"]["action"] == "edge_delete" {
+                    assert_eq!(payload["target_seq"], delete_target_seq);
+                }
+            }
+        }
         let repeated_edge_delete = public_call!(
             "DELETE",
             "/api/workflow/design/wf-write/edges/edge",

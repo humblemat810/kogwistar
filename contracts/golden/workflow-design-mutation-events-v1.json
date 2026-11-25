@@ -53,5 +53,23 @@
         "target_seq": 5
       }
     }
+  ],
+  "expected_edge_delete_events": [
+    {
+      "entity_kind": "edge",
+      "entity_id": "edge",
+      "op": "TOMBSTONE"
+    },
+    {
+      "entity_kind": "design_control",
+      "entity_id": "wf-write",
+      "op": "MUTATION_COMMITTED",
+      "payload": {
+        "action": "edge_delete",
+        "entity_id": "edge",
+        "prev_version": 3,
+        "version": 4
+      }
+    }
   ]
 }

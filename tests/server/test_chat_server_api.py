@@ -6082,6 +6082,11 @@ def test_workflow_design_mutations_match_shared_event_contract(
             dst="end",
             is_default=True,
         )
+        service.workflow_design_delete_edge(
+            workflow_id=workflow_id,
+            designer_id="alice",
+            edge_id="edge",
+        )
     finally:
         claims_ctx.reset(identity)
 
@@ -6091,6 +6096,7 @@ def test_workflow_design_mutations_match_shared_event_contract(
         )
     )
     actual = []
+    edge_tombstone_seq = None
     for event in events:
         item = {
             "entity_kind": event[1],
@@ -6099,13 +6105,23 @@ def test_workflow_design_mutations_match_shared_event_contract(
         }
         if event[1] == "design_control":
             payload = json.loads(event[4])
+            if payload.get("action") == "edge_delete":
+                assert edge_tombstone_seq is not None
+                assert payload["target_seq"] == edge_tombstone_seq
             item["payload"] = {
                 key: payload[key]
-                for key in fixture["expected_events"][len(actual)]["payload"]
+                for key in (
+                    fixture["expected_events"]
+                    + fixture["expected_edge_delete_events"]
+                )[len(actual)]["payload"]
             }
+        elif event[1] == "edge" and event[3] == "TOMBSTONE":
+            edge_tombstone_seq = event[0]
         actual.append(item)
 
-    assert actual == fixture["expected_events"]
+    assert actual == (
+        fixture["expected_events"] + fixture["expected_edge_delete_events"]
+    )
 
 
 def test_workflow_design_node_upsert_requires_write_graph_before_effect(
