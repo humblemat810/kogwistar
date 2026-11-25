@@ -1202,21 +1202,22 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
         serde_json::from_value(Value::Object(recorded.payload)).unwrap();
     let (node_id, _, token_id, _) = state.frontier.suspended[0].clone();
 
+    let resume_body = serde_json::to_vec(&json!({
+        "suspended_node_id":node_id,
+        "suspended_token_id":token_id,
+        "client_result":{"approved":true},
+        "workflow_id":"memory-resume-workflow",
+        "conversation_id":"memory-resume-conversation"
+    }))
+    .unwrap();
     let resumed = service
         .execute(ApiEffectRequest {
             contract_version: 1,
             method: "POST".to_owned(),
             path_and_query: "/api/workflow/runs/memory-resume-run/resume?wait_for_completion=true"
                 .to_owned(),
-            body: serde_json::to_vec(&json!({
-                "suspended_node_id":node_id,
-                "suspended_token_id":token_id,
-                "client_result":{"approved":true},
-                "workflow_id":"memory-resume-workflow",
-                "conversation_id":"memory-resume-conversation"
-            }))
-            .unwrap(),
-            principal,
+            body: resume_body.clone(),
+            principal: principal.clone(),
         })
         .await;
     assert_eq!(resumed.status, StatusCode::OK.as_u16());
@@ -1240,6 +1241,40 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
     assert_eq!(actual_fields, expected_fields);
     assert_eq!(result["workflow_status"], "succeeded");
     assert_eq!(result["final_state"]["started"], true);
+
+    let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "memory-resume-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .len();
+    let retried = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs/memory-resume-run/resume?wait_for_completion=true"
+                .to_owned(),
+            body: resume_body,
+            principal,
+        })
+        .await;
+    assert_eq!(retried.status, StatusCode::CONFLICT.as_u16());
+    assert_eq!(
+        kogwistar_store::ServerRunReadStore::server_run_events(
+            &service.store,
+            "memory-resume-run",
+            0,
+            100,
+        )
+        .await
+        .unwrap()
+        .len(),
+        event_count,
+        "duplicate resume must not append events after the token is consumed"
+    );
 }
 
 #[tokio::test]

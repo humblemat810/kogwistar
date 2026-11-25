@@ -2198,6 +2198,19 @@ async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
         get_user_id=get_current_user_id,
         require_workflow_access=lambda _workflow_id, _role: None,
     )
+    resume_arguments = {
+        "run_id": run_id,
+        "suspended_node_id": suspended_node_id,
+        "suspended_token_id": suspended_token_id,
+        "client_result": {
+            "status": "success",
+            "state_update": [["u", {"approved": True}]],
+        },
+        "workflow_id": workflow_id,
+        "conversation_id": conversation_id,
+        "turn_node_id": turn_node_id,
+        "user_id": owner,
+    }
     with _claims(
         "rw",
         "workflow",
@@ -2206,20 +2219,20 @@ async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
     ):
         result = await workflow_mcp.call_tool(
             "workflow.run_resume",
-            {
-                "run_id": run_id,
-                "suspended_node_id": suspended_node_id,
-                "suspended_token_id": suspended_token_id,
-                "client_result": {
-                    "status": "success",
-                    "state_update": [["u", {"approved": True}]],
-                },
-                "workflow_id": workflow_id,
-                "conversation_id": conversation_id,
-                "turn_node_id": turn_node_id,
-                "user_id": owner,
-            },
+            resume_arguments,
         )
+        checkpoint_count = len(
+            conversation_engine.read.get_nodes(
+                where={
+                    "$and": [
+                        {"entity_type": "workflow_checkpoint"},
+                        {"run_id": run_id},
+                    ]
+                }
+            )
+        )
+        with pytest.raises(ValueError, match="not found in suspended runtime state"):
+            await workflow_mcp.call_tool("workflow.run_resume", resume_arguments)
 
     payload = _structured(result)
     assert result.is_error is False
@@ -2227,6 +2240,16 @@ async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
     assert payload["final_state"]["started"] is True
     assert payload["final_state"]["approved"] is True
     assert payload["final_state"]["finished"] is True
+    assert len(
+        conversation_engine.read.get_nodes(
+            where={
+                "$and": [
+                    {"entity_type": "workflow_checkpoint"},
+                    {"run_id": run_id},
+                ]
+            }
+        )
+    ) == checkpoint_count
 
 
 @pytest.mark.asyncio
