@@ -1212,6 +1212,178 @@ fn workflow_design_redo_command_preserves_python_payload_contract() {
 }
 
 #[test]
+fn workflow_design_node_upsert_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_node_upsert",
+                "--workflow-id",
+                "wf-44",
+                "--designer-id",
+                "designer-c",
+                "--label",
+                "review",
+                "--node-id",
+                "node-7",
+                "--op",
+                "validate",
+                "--start",
+                "--terminal",
+                "--no-fanout",
+                "--metadata",
+                "{\"color\":\"blue\"}",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"node_id":"node-7"}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-44/nodes HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "designer_id": "designer-c",
+            "node_id": "node-7",
+            "label": "review",
+            "op": "validate",
+            "start": true,
+            "terminal": true,
+            "fanout": false,
+            "metadata": {"color": "blue"},
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"node_id": "node-7"}));
+}
+
+#[test]
+fn workflow_design_edge_upsert_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_edge_upsert",
+                "--workflow-id",
+                "wf-45",
+                "--designer-id",
+                "designer-d",
+                "--src",
+                "node-a",
+                "--dst",
+                "node-b",
+                "--edge-id",
+                "edge-9",
+                "--relation",
+                "wf_branch",
+                "--predicate",
+                "approved",
+                "--priority",
+                "17",
+                "--is-default",
+                "--multiplicity",
+                "many",
+                "--metadata",
+                "{\"reason\":\"test\"}",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"edge_id":"edge-9"}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-45/edges HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "designer_id": "designer-d",
+            "edge_id": "edge-9",
+            "src": "node-a",
+            "dst": "node-b",
+            "relation": "wf_branch",
+            "predicate": "approved",
+            "priority": 17,
+            "is_default": true,
+            "multiplicity": "many",
+            "metadata": {"reason": "test"},
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"edge_id": "edge-9"}));
+}
+
+#[test]
+fn workflow_design_node_delete_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_node_delete",
+                "--workflow-id",
+                "wf-46",
+                "--designer-id",
+                "designer-e",
+                "--node-id",
+                "node-8",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"deleted":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("DELETE /api/workflow/design/wf-46/nodes/node-8 HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-e"})
+    );
+    assert_cli_json(&output, serde_json::json!({"deleted": true}));
+}
+
+#[test]
+fn workflow_design_edge_delete_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_edge_delete",
+                "--workflow-id",
+                "wf-47",
+                "--designer-id",
+                "designer-f",
+                "--edge-id",
+                "edge-10",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"deleted":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("DELETE /api/workflow/design/wf-47/edges/edge-10 HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-f"})
+    );
+    assert_cli_json(&output, serde_json::json!({"deleted": true}));
+}
+
+#[test]
 fn workflow_run_submit_command_preserves_python_explicit_values() {
     let (output, request) = run_mock_http_cli(
         |base| {

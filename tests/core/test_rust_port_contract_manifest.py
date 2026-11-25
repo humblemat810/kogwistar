@@ -3219,6 +3219,123 @@ def test_python_cli_workflow_design_history_actions_match_rust_contract(
     assert observed == expected
 
 
+@pytest.mark.parametrize(
+    ("command", "args", "method", "path", "body"),
+    [
+        (
+            "workflow.design_node_upsert",
+            [
+                "--workflow-id",
+                "wf-44",
+                "--designer-id",
+                "designer-c",
+                "--label",
+                "review",
+                "--node-id",
+                "node-7",
+                "--op",
+                "validate",
+                "--start",
+                "--terminal",
+                "--no-fanout",
+                "--metadata",
+                '{"color":"blue"}',
+            ],
+            "POST",
+            "/api/workflow/design/wf-44/nodes",
+            {
+                "designer_id": "designer-c",
+                "node_id": "node-7",
+                "label": "review",
+                "op": "validate",
+                "start": True,
+                "terminal": True,
+                "fanout": False,
+                "metadata": {"color": "blue"},
+            },
+        ),
+        (
+            "workflow.design_edge_upsert",
+            [
+                "--workflow-id",
+                "wf-45",
+                "--designer-id",
+                "designer-d",
+                "--src",
+                "node-a",
+                "--dst",
+                "node-b",
+                "--edge-id",
+                "edge-9",
+                "--relation",
+                "wf_branch",
+                "--predicate",
+                "approved",
+                "--priority",
+                "17",
+                "--is-default",
+                "--multiplicity",
+                "many",
+                "--metadata",
+                '{"reason":"test"}',
+            ],
+            "POST",
+            "/api/workflow/design/wf-45/edges",
+            {
+                "designer_id": "designer-d",
+                "edge_id": "edge-9",
+                "src": "node-a",
+                "dst": "node-b",
+                "relation": "wf_branch",
+                "predicate": "approved",
+                "priority": 17,
+                "is_default": True,
+                "multiplicity": "many",
+                "metadata": {"reason": "test"},
+            },
+        ),
+        (
+            "workflow.design_node_delete",
+            ["--workflow-id", "wf-46", "--designer-id", "designer-e", "--node-id", "node-8"],
+            "DELETE",
+            "/api/workflow/design/wf-46/nodes/node-8",
+            {"designer_id": "designer-e"},
+        ),
+        (
+            "workflow.design_edge_delete",
+            ["--workflow-id", "wf-47", "--designer-id", "designer-f", "--edge-id", "edge-10"],
+            "DELETE",
+            "/api/workflow/design/wf-47/edges/edge-10",
+            {"designer_id": "designer-f"},
+        ),
+    ],
+)
+def test_python_cli_workflow_design_mutations_match_rust_contract(
+    command: str,
+    args: list[str],
+    method: str,
+    path: str,
+    body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": method,
+        "url": f"http://rust-server{path}",
+        "json_body": body,
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

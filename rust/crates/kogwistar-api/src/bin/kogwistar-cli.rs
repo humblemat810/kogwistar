@@ -88,6 +88,31 @@ fn optional_integer(options: &HashMap<String, String>, name: &str) -> Option<i64
         .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
 }
 
+fn boolean_option(
+    options: &HashMap<String, String>,
+    affirmative: &str,
+    negative: &str,
+    default: bool,
+) -> bool {
+    options
+        .get(negative)
+        .map(|_| false)
+        .or_else(|| options.get(affirmative).map(|_| true))
+        .unwrap_or(default)
+}
+
+fn json_option(options: &HashMap<String, String>, name: &str) -> Value {
+    options
+        .get(name)
+        .map(|value| {
+            serde_json::from_str::<Value>(value).unwrap_or_else(|error| {
+                eprintln!("invalid JSON for {name}: {error}");
+                std::process::exit(2);
+            })
+        })
+        .unwrap_or_else(|| json!({}))
+}
+
 fn request_json(method: reqwest::Method, url: String, body: Option<Value>) -> ExitCode {
     let token = std::env::var("KOGWISTAR_API_TOKEN").ok();
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -231,13 +256,26 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
     let Some(command) = args.next() else {
         usage();
     };
-    let options = if command == "workflow.service_declare" {
-        option_values_with_boolean_flags(
+    let options = match command.as_str() {
+        "workflow.service_declare" => option_values_with_boolean_flags(
             args,
             &["--enabled", "--no-enabled", "--autostart", "--no-autostart"],
-        )
-    } else {
-        option_values(args)
+        ),
+        "workflow.design_node_upsert" => option_values_with_boolean_flags(
+            args,
+            &[
+                "--start",
+                "--no-start",
+                "--terminal",
+                "--no-terminal",
+                "--fanout",
+                "--no-fanout",
+            ],
+        ),
+        "workflow.design_edge_upsert" => {
+            option_values_with_boolean_flags(args, &["--is-default", "--no-is-default"])
+        }
+        _ => option_values(args),
     };
     let base_url = options
         .get("--base-url")
@@ -475,6 +513,112 @@ fn workflow_api_command(mut args: impl Iterator<Item = String>) -> ExitCode {
         return request_json(
             reqwest::Method::POST,
             format!("{base_url}/api/workflow/capabilities/{endpoint}"),
+            Some(body),
+        );
+    }
+    if command == "workflow.design_node_upsert" {
+        validate_options(
+            &options,
+            &[
+                "--base-url",
+                "--workflow-id",
+                "--designer-id",
+                "--label",
+                "--node-id",
+                "--op",
+                "--start",
+                "--no-start",
+                "--terminal",
+                "--no-terminal",
+                "--fanout",
+                "--no-fanout",
+                "--metadata",
+            ],
+        );
+        let body = json!({
+            "designer_id": required_option(&options, "--designer-id"),
+            "node_id": options.get("--node-id"),
+            "label": required_option(&options, "--label"),
+            "op": options.get("--op"),
+            "start": boolean_option(&options, "--start", "--no-start", false),
+            "terminal": boolean_option(&options, "--terminal", "--no-terminal", false),
+            "fanout": boolean_option(&options, "--fanout", "--no-fanout", false),
+            "metadata": json_option(&options, "--metadata"),
+        });
+        return request_json(
+            reqwest::Method::POST,
+            format!(
+                "{base_url}/api/workflow/design/{}/nodes",
+                required_option(&options, "--workflow-id")
+            ),
+            Some(body),
+        );
+    }
+    if command == "workflow.design_edge_upsert" {
+        validate_options(
+            &options,
+            &[
+                "--base-url",
+                "--workflow-id",
+                "--designer-id",
+                "--src",
+                "--dst",
+                "--edge-id",
+                "--relation",
+                "--predicate",
+                "--priority",
+                "--is-default",
+                "--no-is-default",
+                "--multiplicity",
+                "--metadata",
+            ],
+        );
+        let priority = options
+            .get("--priority")
+            .map(|value| value.parse::<i64>().unwrap_or_else(|_| usage()))
+            .unwrap_or(100);
+        let body = json!({
+            "designer_id": required_option(&options, "--designer-id"),
+            "edge_id": options.get("--edge-id"),
+            "src": required_option(&options, "--src"),
+            "dst": required_option(&options, "--dst"),
+            "relation": options.get("--relation").map(String::as_str).unwrap_or("wf_next"),
+            "predicate": options.get("--predicate"),
+            "priority": priority,
+            "is_default": boolean_option(&options, "--is-default", "--no-is-default", false),
+            "multiplicity": options.get("--multiplicity").map(String::as_str).unwrap_or("one"),
+            "metadata": json_option(&options, "--metadata"),
+        });
+        return request_json(
+            reqwest::Method::POST,
+            format!(
+                "{base_url}/api/workflow/design/{}/edges",
+                required_option(&options, "--workflow-id")
+            ),
+            Some(body),
+        );
+    }
+    if command == "workflow.design_node_delete" || command == "workflow.design_edge_delete" {
+        let node = command == "workflow.design_node_delete";
+        let entity_option = if node { "--node-id" } else { "--edge-id" };
+        validate_options(
+            &options,
+            &[
+                "--base-url",
+                "--workflow-id",
+                "--designer-id",
+                entity_option,
+            ],
+        );
+        let entity = required_option(&options, entity_option);
+        let kind = if node { "nodes" } else { "edges" };
+        let body = json!({"designer_id": required_option(&options, "--designer-id")});
+        return request_json(
+            reqwest::Method::DELETE,
+            format!(
+                "{base_url}/api/workflow/design/{}/{kind}/{entity}",
+                required_option(&options, "--workflow-id")
+            ),
             Some(body),
         );
     }
