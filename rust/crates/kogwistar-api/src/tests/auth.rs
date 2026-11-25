@@ -14,15 +14,25 @@
     }
 
     #[test]
-    fn request_roles_match_python_scalar_role_policy() {
+    fn request_roles_use_scalar_claim_and_ignore_role_arrays() {
         for (claims, expected) in [
-            (json!({"role":"ro", "roles":["rw", "admin"]}), vec!["ro"]),
-            (json!({"role":"admin", "roles":["rw"]}), vec!["ro"]),
+            (
+                json!({"role":"ro", "roles":["rw", "admin"]}),
+                vec!["ro", "admin"],
+            ),
             (json!({"roles":["rw"]}), vec!["ro"]),
             (json!({"role":"rw", "roles":["ro"]}), vec!["rw"]),
         ] {
             assert_eq!(roles_from_claims(&claims), expected);
         }
+    }
+
+    #[test]
+    fn request_roles_preserve_configured_scalar_role() {
+        assert_eq!(
+            roles_from_claims(&json!({"role":"reader", "roles":["rw"]})),
+            vec!["reader"]
+        );
     }
 
     #[test]

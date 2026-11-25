@@ -351,13 +351,25 @@ fn jwt_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'
 }
 
 fn roles_from_claims(claims: &Value) -> Vec<String> {
-    let role = claims
+    let scalar_role = claims
         .get("role")
         .and_then(Value::as_str)
         .map(|role| role.trim().to_ascii_lowercase())
-        .filter(|role| matches!(role.as_str(), "ro" | "rw"))
-        .unwrap_or_else(|| "ro".to_owned());
-    vec![role]
+        .filter(|role| !role.is_empty());
+    let role = scalar_role.unwrap_or_else(|| "ro".to_owned());
+    let mut roles = vec![role];
+    if let Some(values) = claims.get("roles").and_then(Value::as_array) {
+        for custom_role in values.iter().filter_map(Value::as_str) {
+            let custom_role = custom_role.trim().to_ascii_lowercase();
+            if !custom_role.is_empty()
+                && !matches!(custom_role.as_str(), "ro" | "rw")
+                && !roles.contains(&custom_role)
+            {
+                roles.push(custom_role);
+            }
+        }
+    }
+    roles
 }
 
 fn jwt_claims(headers: &HeaderMap, config: &AuthConfig) -> Result<Value, &'static str> {
