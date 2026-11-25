@@ -100,6 +100,53 @@
         );
     }
 
+    #[tokio::test]
+    async fn document_validate_graph_http_route_matches_shared_error_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-graph-validation-error-v1.json"
+        ))
+        .expect("valid document validation error fixture");
+        let service = Arc::new(
+            PostgresRunApplicationService::from_dsn(
+                "postgres://unused:unused@127.0.0.1:1/unused",
+                "document_validate_graph_error_route_contract",
+            )
+            .unwrap(),
+        );
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            service,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/document.validate_graph")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&fixture["request"]).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json")));
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["detail"], fixture["python_detail"]);
+        assert_eq!(body["code"], fixture["rust_legacy_fields"]["code"]);
+        assert_eq!(body["message"], fixture["rust_legacy_fields"]["message"]);
+    }
+
     #[test]
     fn document_graph_validation_missing_nodes_matches_python_error_detail() {
         let fixture: Value = serde_json::from_str(include_str!(
