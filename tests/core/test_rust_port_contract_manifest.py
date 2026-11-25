@@ -101,6 +101,32 @@ def test_python_ci_selection_accepts_exact_selector_and_file_gate() -> None:
     )
 
 
+def test_python_test_marker_on_one_function_does_not_select_sibling() -> None:
+    markers = _python_test_markers(
+        "import pytest\n"
+        "@pytest.mark.ci\n"
+        "def test_selected(): pass\n"
+        "def test_unselected(): pass\n",
+        "tests/server/contract.py",
+    )
+    assert _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_selected",
+        set(),
+        markers,
+        ci_runs_fast_tests=True,
+        ci_runs_full_tests=False,
+    )
+    assert not _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_unselected",
+        set(),
+        markers,
+        ci_runs_fast_tests=True,
+        ci_runs_full_tests=False,
+    )
+
+
 def _python_test_is_selected(
     path: str,
     name: str,
@@ -112,10 +138,51 @@ def _python_test_is_selected(
 ) -> bool:
     if path in gate_selectors or f"{path}::{name}" in gate_selectors:
         return True
-    markers = markers_by_path.get(path, set())
+    markers = markers_by_path.get(path, set()) | markers_by_path.get(
+        f"{path}::{name}", set()
+    )
     return ("ci" in markers and ci_runs_fast_tests) or (
         "ci_full" in markers and ci_runs_full_tests
     )
+
+
+def _pytest_ci_markers(node: ast.AST) -> set[str]:
+    return {
+        item.attr
+        for item in ast.walk(node)
+        if isinstance(item, ast.Attribute)
+        and item.attr in {"ci", "ci_full"}
+        and isinstance(item.value, ast.Attribute)
+        and item.value.attr == "mark"
+        and isinstance(item.value.value, ast.Name)
+        and item.value.value.id == "pytest"
+    }
+
+
+def _python_test_markers(source: str, path: str) -> dict[str, set[str]]:
+    tree = ast.parse(source.lstrip("\ufeff"))
+    result: dict[str, set[str]] = {path: set()}
+    for statement in tree.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            key = f"{path}::{statement.name}"
+            result[key] = _pytest_ci_markers(
+                ast.Tuple(elts=statement.decorator_list, ctx=ast.Load())
+            )
+            continue
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        if value is not None and any(
+            isinstance(target, ast.Name) and target.id == "pytestmark"
+            for target in targets
+        ):
+            result[path].update(_pytest_ci_markers(value))
+    return result
 
 
 def _rust_selector_link_errors(
@@ -1880,13 +1947,11 @@ def test_each_capability_gate_clause_names_an_executable_test() -> None:
         for path in (ROOT / "tests").rglob("*.py")
     }
     python_markers_by_path = {
-        path.relative_to(ROOT).as_posix(): set(
-            re.findall(
-                r"pytest\.mark\.(ci_full|ci)\b",
-                path.read_text(encoding="utf-8").partition("\ndef ")[0],
-            )
-        )
+        selector: markers
         for path in (ROOT / "tests").rglob("*.py")
+        for selector, markers in _python_test_markers(
+            path.read_text(encoding="utf-8"), path.relative_to(ROOT).as_posix()
+        ).items()
     }
     python_gate_paths = (
         "scripts/durable_store_capability_gate.py",
