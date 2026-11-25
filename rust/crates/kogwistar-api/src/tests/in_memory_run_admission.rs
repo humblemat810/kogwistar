@@ -1314,21 +1314,30 @@ async fn in_memory_native_synchronous_resume_matches_shared_result_contract() {
         "unauthorized MCP resume must not dispatch or mutate run events"
     );
 
-    let resumed = app
-        .clone()
-        .oneshot(call_resume("resume-once", &token))
-        .await
-        .unwrap();
-    assert_eq!(resumed.status(), StatusCode::OK);
-    let wire = to_bytes(resumed.into_body(), 8192).await.unwrap();
-    let data = String::from_utf8(wire.to_vec()).unwrap();
-    let message = data
-        .lines()
-        .find_map(|line| line.strip_prefix("data: "))
-        .unwrap();
-    let response: Value = serde_json::from_str(message).unwrap();
-    assert_ne!(response["result"]["isError"], true, "{response}");
-    let result = response["result"]["structuredContent"].clone();
+    let (resume_a, resume_b) = tokio::join!(
+        app.clone().oneshot(call_resume("resume-race-a", &token)),
+        app.clone().oneshot(call_resume("resume-race-b", &token)),
+    );
+    let mut successful_results = Vec::new();
+    let mut rejected_calls = 0;
+    for response in [resume_a.unwrap(), resume_b.unwrap()] {
+        assert_eq!(response.status(), StatusCode::OK);
+        let wire = to_bytes(response.into_body(), 8192).await.unwrap();
+        let data = String::from_utf8(wire.to_vec()).unwrap();
+        let message = data
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap();
+        let response: Value = serde_json::from_str(message).unwrap();
+        if response["result"]["isError"] == true || response["error"].is_object() {
+            rejected_calls += 1;
+        } else {
+            successful_results.push(response["result"]["structuredContent"].clone());
+        }
+    }
+    assert_eq!(successful_results.len(), 1, "exactly one resume may consume a token");
+    assert_eq!(rejected_calls, 1, "the competing resume must be rejected");
+    let result = successful_results.pop().unwrap();
     let contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
     ))
