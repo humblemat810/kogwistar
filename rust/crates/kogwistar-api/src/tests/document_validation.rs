@@ -225,6 +225,28 @@
     }
 
     #[test]
+    fn document_graph_validation_coerces_boolean_pointer_offset_like_python() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-bool-offset-v1.json"
+        ))
+        .expect("valid boolean pointer offset fixture");
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap(),
+            fixture["response"]
+        );
+    }
+
+    #[test]
     fn document_graph_validation_defaults_omitted_edges_to_empty() {
         let fixture: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/document-validate-graph-empty-edges-v1.json"

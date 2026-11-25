@@ -1554,6 +1554,7 @@ fn graph_pointer_integer(value: &Value) -> Option<i128> {
         .as_i64()
         .map(i128::from)
         .or_else(|| value.as_u64().map(i128::from))
+        .or_else(|| value.as_bool().map(|value| if value { 1 } else { 0 }))
         .or_else(|| value.as_str().and_then(|text| text.parse::<i128>().ok()))
 }
 

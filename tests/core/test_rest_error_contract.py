@@ -123,3 +123,15 @@ def test_python_document_graph_validation_accepts_u64_max_pointer_offsets() -> N
     assert rejected.status_code == fixture["status"]
     assert rejected.json()["ok"] is False
     assert list(rejected.json()["node_errors"]) == ["node-u64-offset"]
+
+
+def test_python_document_graph_validation_coerces_boolean_pointer_offset() -> None:
+    fixture_path = _FIXTURE.with_name("document-validate-graph-bool-offset-v1.json")
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    response = TestClient(app).post(
+        "/api/document.validate_graph",
+        json=fixture["request"],
+    )
+
+    assert response.status_code == fixture["status"]
+    assert response.json() == fixture["response"]
