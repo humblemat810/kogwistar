@@ -533,6 +533,27 @@ const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
 ];
 
 fn principal_strings(principal: &Value, name: &str) -> Vec<String> {
+    if name == "ns" {
+        return match principal.get(name) {
+            Some(Value::String(raw)) if raw.is_empty() => Vec::new(),
+            Some(Value::String(raw)) => vec![raw.to_lowercase()],
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(|value| match value {
+                    Value::String(raw) => raw.to_lowercase(),
+                    Value::Bool(raw) => raw.to_string(),
+                    Value::Number(raw) => raw.to_string(),
+                    Value::Null | Value::Object(_) | Value::Array(_) => {
+                        "\0invalid-namespace-claim".to_owned()
+                    }
+                })
+                .collect(),
+            Some(Value::Bool(false) | Value::Null) | None => Vec::new(),
+            Some(Value::Number(raw)) if raw.as_f64() == Some(0.0) => Vec::new(),
+            Some(Value::Object(raw)) if raw.is_empty() => Vec::new(),
+            Some(_) => vec!["\0invalid-namespace-claim".to_owned()],
+        };
+    }
     match principal.get(name) {
         Some(Value::String(raw)) => raw
             .split(',')

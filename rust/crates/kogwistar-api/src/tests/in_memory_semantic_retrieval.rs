@@ -57,6 +57,22 @@ fn in_memory_root_graph_tool_auth_matches_python_capability_policy() {
             ),
             "comma-delimited capability string must not grant {name}"
         );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":"other,docs", "capabilities":["read_graph"]}),
+            ),
+            "comma-delimited namespace string must not grant {name}"
+        );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":" docs ", "capabilities":["read_graph"]}),
+            ),
+            "whitespace-padded namespace must not grant {name}"
+        );
         assert!(service.supports_mcp_tool_for_principal(
             "root",
             name,
@@ -165,6 +181,50 @@ async fn in_memory_root_graph_mcp_hides_and_rejects_tools_without_read_capabilit
     )
     .unwrap();
     assert_eq!(denied["error"]["code"], -32602);
+
+    let mismatched_namespace_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader",
+            "role":"ro",
+            "ns":"other,docs",
+            "capabilities":["read_graph"],
+            "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let mismatched_namespace_call = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {mismatched_namespace_token}"),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-mismatched-namespace",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mismatched_namespace_call: Value = serde_json::from_slice(
+        &to_bytes(mismatched_namespace_call.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mismatched_namespace_call["error"]["code"], -32602);
 
     let allowed_token = token(&["read_graph"]);
     let allowed_list = app
