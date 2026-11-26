@@ -2712,6 +2712,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 "workflow.run_status"
                     | "workflow.run_events"
                     | "workflow.run_steps"
+                    | "workflow.run_evidence"
                     | "workflow.run_resume"
                     | "workflow.run_cancel"
                     | "workflow.run_submit"
@@ -2766,6 +2767,24 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && principal_strings(principal, "ns")
                     .iter()
                     .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_NOTE_V1: workflow.run_evidence MCP admission requires role + workflow namespace; execution requires workflow.run.read + project_view and owner-scoped ACL-filtered snapshot. Python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_evidence+kogwistar/server/chat_service.py#ChatRunService.run_evidence; rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; fixture=contracts/golden/run-evidence-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_evidence_route_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_evidence_matches_shared_contract+test_mcp_workflow_run_evidence_denies_scope_and_missing_capabilities
+        if name == "workflow.run_evidence" {
+            let effective = effective_capabilities(
+                principal,
+                &self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && effective.contains("workflow.run.read")
+                && effective.contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
         if name == "workflow.run_resume" {

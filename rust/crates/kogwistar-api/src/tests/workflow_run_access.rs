@@ -9,6 +9,28 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
         "GET",
         "/api/runs/evidence-run/evidence"
     ));
+    assert!(service.supports_mcp_tool("workflow", "workflow.run_evidence"));
+    let mcp_principal = json!({
+        "role":"ro",
+        "ns":["workflow"],
+        "capabilities":["workflow.run.read","project_view"]
+    });
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_evidence",
+        &mcp_principal
+    ));
+    for denied_principal in [
+        json!({"role":"ro","ns":["conversation"],"capabilities":["workflow.run.read","project_view"]}),
+        json!({"role":"ro","ns":["workflow"],"capabilities":["workflow.run.read"]}),
+        json!({"role":"rw","ns":["workflow"],"capabilities":["project_view"]}),
+    ] {
+        assert!(!service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.run_evidence",
+            &denied_principal
+        ));
+    }
 
     kogwistar_store::ServerRunWriteStore::create_server_run(
         &service.store,
@@ -168,6 +190,7 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
         Arc::new(service),
     );
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("GET")
@@ -184,6 +207,28 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), 65_536).await.unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), expected);
+
+    let mcp_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(format!(
+                    r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"workflow.run_evidence","arguments":{{"run_id":"{}"}}}}}}"#,
+                    expected["run_id"].as_str().unwrap()
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_response.status(), StatusCode::OK);
+    let mcp_body = to_bytes(mcp_response.into_body(), 65_536).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&mcp_body).unwrap()["result"],
+        expected
+    );
 }
 
 #[tokio::test]
