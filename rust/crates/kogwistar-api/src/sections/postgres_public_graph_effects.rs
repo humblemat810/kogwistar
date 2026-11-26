@@ -512,13 +512,6 @@ impl PostgresRunApplicationService {
                 "The selected Rust store does not own atomic graph and document projections",
             );
         }
-        if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Graph upsert requires write_graph capability",
-            );
-        }
         let (graph_request, inserted_nodes, inserted_edges) =
             match document_tree_upsert_graph_request(request) {
                 Ok(parsed) => parsed,
