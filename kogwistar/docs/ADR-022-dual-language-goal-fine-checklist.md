@@ -531,9 +531,14 @@ development-token bypass. Python oracle
 `tests/server/test_workflow_designer_ui.py::test_workflow_design_history_denies_without_acl_before_read`
 and Rust authenticated HTTP test
 `tests::workflow_design_history_enforces_configured_workflow_acl` each pass,
-covering no-ACL deny and `ro` grant. This closes one REST ACL cell only; DLFC-05
-remains IN PROGRESS and its broader route/backend matrix is unchanged. Rust
-also asserts denial creates no named workflow-design projection.
+covering no-ACL deny and `ro` grant. The same Rust route test now covers node
+upsert: missing ACL and `ro` ACL return 403, `rw` ACL returns 200, and denied
+requests append no design events. Python oracle
+`tests/server/test_workflow_designer_ui.py::test_workflow_design_node_upsert_requires_rw_acl_before_dispatch`
+passes the same missing/`ro` deny and `rw` allow matrix (**1 passed**). This
+closes the node-upsert ACL cell only; DLFC-05 remains IN PROGRESS and its broader
+route/backend matrix is unchanged. Rust also asserts history denial creates no
+named workflow-design projection.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |

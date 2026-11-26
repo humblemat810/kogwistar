@@ -104,6 +104,59 @@ def test_workflow_design_history_denies_without_acl_before_read() -> None:
     assert reads == ["visible-wf"]
 
 
+def test_workflow_design_node_upsert_requires_rw_acl_before_dispatch() -> None:
+    from fastapi import HTTPException
+
+    calls = []
+
+    class Service:
+        def workflow_design_upsert_node(self, **kwargs):
+            calls.append(kwargs)
+            return {"workflow_id": kwargs["workflow_id"], "node_id": kwargs["node_id"]}
+
+    def require_access(workflow_id: str, role: str) -> None:
+        allowed = {"read-only-wf": "ro", "writable-wf": "rw"}.get(workflow_id)
+        if allowed != role and not (allowed == "rw" and role == "ro"):
+            raise HTTPException(status_code=403, detail="workflow ACL denied")
+
+    app = FastAPI()
+    app.include_router(
+        create_runtime_router(
+            get_service=Service,
+            require_role=lambda _role: None,
+            require_namespace=lambda _namespaces: None,
+            runtime_namespaces={"workflow"},
+            require_workflow_access=require_access,
+        )
+    )
+    node = {
+        "designer_id": "alice",
+        "node_id": "start",
+        "label": "Start",
+        "op": "start",
+        "start": True,
+    }
+    with TestClient(app) as client:
+        missing_acl = client.post("/api/workflow/design/no-acl-wf/nodes", json=node)
+        read_only = client.post("/api/workflow/design/read-only-wf/nodes", json=node)
+        writable = client.post("/api/workflow/design/writable-wf/nodes", json=node)
+
+    assert missing_acl.status_code == 403
+    assert read_only.status_code == 403
+    assert writable.status_code == 200
+    assert calls == [
+        {
+            **node,
+            "workflow_id": "writable-wf",
+            "actor_sub": None,
+            "source": "rest",
+            "terminal": False,
+            "fanout": False,
+            "metadata": {},
+        }
+    ]
+
+
 def test_workflow_designer_template_contains_graph_semantics() -> None:
     template = Path("kogwistar/templates/workflow_designer.html").read_text(
         encoding="utf-8"

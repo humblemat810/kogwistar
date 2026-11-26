@@ -771,6 +771,18 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
             [],
         )
         .unwrap();
+    auth_db
+        .execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('read-only-wf', 'alice', 'ro')",
+            [],
+        )
+        .unwrap();
+    auth_db
+        .execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('writable-wf', 'alice', 'rw')",
+            [],
+        )
+        .unwrap();
     drop(auth_db);
 
     let token = encode(
@@ -781,6 +793,19 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
             "role": "ro",
             "ns": ["workflow"],
             "capabilities": ["workflow.design.inspect"],
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(b"design-history-acl-secret"),
+    )
+    .unwrap();
+    let write_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice",
+            "user_id": "alice",
+            "role": "rw",
+            "ns": ["workflow"],
+            "capabilities": ["workflow.design.write", "write_graph"],
             "exp": 4102444800_u64
         }),
         &EncodingKey::from_secret(b"design-history-acl-secret"),
@@ -819,6 +844,45 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
         .get_named_projection("workflow_design", "missing-acl-wf")
         .unwrap()
         .is_none());
+    for (workflow_id, expected) in [
+        ("missing-acl-wf", StatusCode::FORBIDDEN),
+        ("read-only-wf", StatusCode::FORBIDDEN),
+        ("writable-wf", StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/workflow/design/{workflow_id}/nodes"))
+                    .header("authorization", format!("Bearer {write_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "designer_id": "alice",
+                            "node_id": "start",
+                            "label": "Start",
+                            "op": "start",
+                            "start": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "workflow {workflow_id}");
+    }
+    assert!(service
+        .store
+        .replay_raw_events("wf_design:missing-acl-wf", 0, 10)
+        .unwrap()
+        .is_empty());
+    assert!(service
+        .store
+        .replay_raw_events("wf_design:read-only-wf", 0, 10)
+        .unwrap()
+        .is_empty());
 
     drop(app);
     drop(service);
