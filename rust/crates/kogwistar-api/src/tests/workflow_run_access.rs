@@ -920,6 +920,136 @@ async fn in_memory_workflow_run_steps_mcp_matches_shared_contract() {
 }
 
 #[tokio::test]
+async fn sqlite_workflow_run_steps_mcp_matches_shared_contract() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tower::ServiceExt;
+
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-steps-mcp-v1.json"
+    ))
+    .unwrap();
+    let run_id = contract["arguments"]["run_id"].as_str().unwrap();
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("kogwistar-run-steps-{nonce}.sqlite3"));
+    let service = SqliteRunApplicationService::open(&path).unwrap();
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: "steps-conversation".to_owned(),
+            workflow_id: "workflow-1".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "steps-turn".to_owned(),
+            status: "succeeded".to_owned(),
+        })
+        .unwrap();
+    for (event_type, payload) in [
+        (
+            "workflow.recorded_transition.v1",
+            json!({
+                "transition_id":"steps-transition-1",
+                "reduced": {
+                    "state": {
+                        "last_step_seq":0,
+                        "workflow_id":"workflow-1",
+                        "last_node_id":"entry",
+                        "state": {"frontier":{"pending":[]}}
+                    },
+                    "state_update":contract["result"]["steps"][0]["result"]["state_update"],
+                    "result":contract["result"]["steps"][0]["result"],
+                    "errors":[],
+                    "server_status":"succeeded"
+                }
+            }),
+        ),
+        (
+            "workflow.trace.v1",
+            json!({"trace": {
+                "event":"runtime.native.step.completed",
+                "step_seq":0,
+                "node_id":"entry",
+                "operation":"begin",
+                "duration_ms":3,
+                "trace_id":"trace-1",
+                "span_id":"span-step-1",
+                "parent_span_id":"span-run-1",
+                "attempt":1
+            }}),
+        ),
+    ] {
+        service
+            .store
+            .append_server_run_event(
+                run_id,
+                event_type,
+                payload.to_string(),
+            )
+            .unwrap();
+    }
+
+    let secret = "sqlite-run-steps-mcp-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "user_id":"alice", "role":"ro",
+            "ns":["workflow"], "capabilities":["workflow.run.read"],
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":1, "method":"tools/call",
+                        "params":{"name":contract["tool"],"arguments":contract["arguments"]}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body["result"], contract["result"]);
+    drop(service);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+    let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+}
+
+#[tokio::test]
 async fn in_memory_run_steps_route_matches_shared_python_projection() {
     let contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-step-inspection-v1.json"

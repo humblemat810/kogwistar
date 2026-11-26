@@ -460,6 +460,16 @@ the two checklist crosswalk tests (**2 passed**), and `cargo fmt --all -- --chec
 passed. This closes only this InMemory MCP projection cell; DLFC-06 remains IN
 PROGRESS.
 
+DLFC-06 SQLite MCP `workflow.run_steps` cell (2026-11-27): an authenticated
+Rust MCP call over `SqliteRunApplicationService` now reads the same seeded
+durable events and exact-matches `workflow-run-steps-mcp-v1.json`. Rust
+`tests::sqlite_workflow_run_steps_mcp_matches_shared_contract` (**1 passed**);
+Python oracle `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_steps_matches_shared_contract`
+(**1 passed**). The existing source annotation retains its single representative
+InMemory selector; this checklist records the additional SQLite oracle. This
+proves SQLite canonical event-store behavior only, not a live Chroma projection;
+DLFC-06 remains IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
