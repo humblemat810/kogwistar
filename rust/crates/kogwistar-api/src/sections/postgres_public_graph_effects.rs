@@ -1,6 +1,7 @@
 // Public graph and document-tree write effects.
 // Python counterparts: engine_core.subsystems.ingest/write graph-upsert paths.
 impl PostgresRunApplicationService {
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_public_graph_effects.rs#public_graph_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/document-upsert-tree-success-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_graph_mutations.rs#postgres_document_tree_upsert_requires_rw_role_before_storage; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_requires_rw_even_with_write_graph_capability
     async fn public_graph_upsert_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let graph_store = self.graph_store_for_type(&self.graph_role);
         if !graph_store
@@ -16,11 +17,13 @@ impl PostgresRunApplicationService {
                 "The selected Rust store does not own atomic graph and document projections",
             );
         }
-        if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"]) {
+        if principal_role(&request.principal) != "rw"
+            || !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"])
+        {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Graph upsert requires write_graph capability",
+                "Graph upsert requires rw and write_graph capability",
             );
         }
         let input = match graph_upsert_request(request) {

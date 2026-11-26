@@ -247,6 +247,41 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     }
 
 
+def test_document_upsert_tree_requires_rw_even_with_write_graph_capability(
+    monkeypatch, engine_triplet
+):
+    fixture_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "document-upsert-tree-success-v1.json"
+    )
+    request = json.loads(fixture_path.read_text(encoding="utf-8"))["request"]
+    engine, conversation_engine, workflow_engine = engine_triplet
+    _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _debug_rag_runner
+    )
+    persistence_calls = 0
+
+    def unexpected_persist(**_kwargs):
+        nonlocal persistence_calls
+        persistence_calls += 1
+        raise AssertionError("read-only graph upsert reached persistence")
+
+    monkeypatch.setattr(engine, "persist_document_graph_extraction", unexpected_persist)
+
+    with TestClient(server.app) as client:
+        headers = token_header(
+            client, role="ro", ns="docs", capabilities="write_graph"
+        )
+        response = client.post(
+            "/api/document.upsert_tree", json=request, headers=headers
+        )
+
+    assert response.status_code == 403
+    assert persistence_calls == 0
+
+
 def test_document_upsert_tree_accepts_nonempty_shared_graph_extraction(
     monkeypatch, engine_triplet
 ):

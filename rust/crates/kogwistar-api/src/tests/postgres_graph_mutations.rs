@@ -1,4 +1,39 @@
     #[tokio::test]
+    async fn postgres_document_tree_upsert_requires_rw_role_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "document_tree_role_authorization",
+        )
+        .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-upsert-tree-success-v1.json"
+        )))
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/document.upsert_tree".to_owned(),
+                body: serde_json::to_vec(&fixture["request"]).unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": ["docs"],
+                    "storage_ns": "docs",
+                    "capabilities": ["write_graph"]
+                }),
+            })
+            .await;
+
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
