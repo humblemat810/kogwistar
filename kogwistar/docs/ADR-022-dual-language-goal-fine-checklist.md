@@ -448,6 +448,18 @@ missing-run 404; Rust
 closes only the InMemory lineage HTTP/MCP cell; broader read/query operation/backend
 cells remain open, so DLFC-06 stays IN PROGRESS.
 
+DLFC-06 InMemory MCP `workflow.run_steps` cell (2026-11-27): an authenticated
+Rust MCP request now reads seeded durable run events and matches the shared
+`workflow-run-steps-mcp-v1.json` result exactly. TDD exposed extra internal event
+fields in the public projection; Rust now returns Python's selected fields, and
+the fixture uses Python's canonical `wf_step|{run_id}|{step_seq}` identity.
+Evidence: Rust `tests::in_memory_workflow_run_steps_mcp_matches_shared_contract`
+(**1 passed**) and focused Rust `run_steps` suite (**6 passed**); Python shared MCP
+and HTTP projection tests (**2 passed**); parity-annotation test (**1 passed**),
+the two checklist crosswalk tests (**2 passed**), and `cargo fmt --all -- --check`
+passed. This closes only this InMemory MCP projection cell; DLFC-06 remains IN
+PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

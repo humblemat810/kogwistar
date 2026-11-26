@@ -979,7 +979,7 @@ async fn mcp_dispatch(
                     principal: principal.clone(),
                 })
             }
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-run-steps-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_run_observability.rs#mcp_run_lineage_builds_bounded_encoded_read_only_route; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_steps_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-run-steps-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_workflow_run_steps_mcp_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_steps_matches_shared_contract
             "workflow.run_steps" if !run_id.is_empty() => {
                 let valid_arguments = !arguments
                     .keys()

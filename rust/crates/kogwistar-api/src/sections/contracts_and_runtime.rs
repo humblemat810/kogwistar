@@ -1626,7 +1626,7 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
         .collect()
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/inline_owner_authority.rs#runtime_step_inspection_matches_shared_python_projection_fixture; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture
 fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
     let trace_events = events
         .iter()
@@ -1759,9 +1759,6 @@ fn runtime_inspection_effect(
                         "status": if step.errors.is_empty() { "ok" } else { "error" },
                         "duration_ms": step.duration_ms.unwrap_or(0),
                         "result": result,
-                        "event_seq": step.event_seq,
-                        "created_at_ms": step.created_at_ms,
-                        "transition_id": step.transition_id,
                     });
                     if let Some(trace_context) = step.trace_context {
                         value["trace_context"] = trace_context;
