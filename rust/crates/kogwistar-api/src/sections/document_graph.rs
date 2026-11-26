@@ -2887,7 +2887,9 @@ fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
 
 fn runtime_run_namespace(path_and_query: &str) -> Option<&'static str> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
-    if path.starts_with("/api/workflow/runs/") {
+    if path.starts_with("/api/workflow/runs/")
+        || runtime_run_route(path).is_some_and(|(_, tail)| tail.as_slice() == ["evidence"])
+    {
         Some("workflow")
     } else if path.starts_with("/api/runs/") {
         Some("conversation")

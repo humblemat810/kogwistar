@@ -1,4 +1,192 @@
 #[tokio::test]
+async fn in_memory_run_evidence_route_matches_shared_contract() {
+    let service = InMemoryGraphApplicationService::default();
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-evidence-v1.json"
+    ))
+    .unwrap();
+    assert!(service.supports_http_operation(
+        "GET",
+        "/api/runs/evidence-run/evidence"
+    ));
+
+    kogwistar_store::ServerRunWriteStore::create_server_run(
+        &service.store,
+        ServerRunCreate {
+            run_id: expected["run_id"].as_str().unwrap().to_owned(),
+            conversation_id: expected["conversation_id"].as_str().unwrap().to_owned(),
+            workflow_id: "evidence-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "evidence-turn".to_owned(),
+            status: "succeeded".to_owned(),
+        },
+    )
+        .await
+        .unwrap();
+
+    let scope = GraphScope {
+        namespace: "conversation".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let add_node = |id: &str, metadata: Value, document: Value| GraphMutation {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: json!({"id":id,"metadata":metadata}),
+        record: GraphRecord {
+            id: id.to_owned(),
+            document: Some(document.to_string()),
+            metadata: serde_json::from_value(metadata).unwrap(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    let snapshot_id = expected["snapshot_node_id"].as_str().unwrap();
+    let snapshot_metadata = expected["snapshot_metadata"].clone();
+    let digest = expected["source_summary"]["evidence_pack_digest"].to_string();
+    let acl_id = format!("acl-{snapshot_id}");
+    let acl_metadata = json!({
+        "entity_type":"acl_record",
+        "acl_truth_graph":"conversation",
+        "acl_target_grain":"node",
+        "acl_target_entity_id":snapshot_id,
+        "acl_version":1,
+        "acl_mode":"private",
+        "owner_id":"alice",
+        "workspace_id":"workspace-a",
+        "graph_space":"conversation"
+    });
+    GraphMutationStore::apply_graph_mutations_atomic(
+        &service.store,
+        vec![
+            add_node(
+                snapshot_id,
+                snapshot_metadata.clone(),
+                json!({
+                    "metadata":snapshot_metadata,
+                    "properties":{"evidence_pack_digest":digest}
+                }),
+            ),
+            add_node(&acl_id, acl_metadata.clone(), json!({"metadata":acl_metadata})),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: format!("/api/runs/{}/evidence", expected["run_id"].as_str().unwrap()),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice",
+                "user_id":"alice",
+                "role":"ro",
+                "storage_ns":"conversation",
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation",
+                "ns":["workflow"],
+                "capabilities":["workflow.run.read","project_view"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16());
+    assert_eq!(serde_json::from_slice::<Value>(&response.body).unwrap(), expected);
+
+    for (namespace, capabilities, expected_code) in [
+        ("conversation", json!(["workflow.run.read", "project_view"]), "KOGWISTAR_NAMESPACE_FORBIDDEN"),
+        ("workflow", json!(["workflow.run.read"]), "KOGWISTAR_CAPABILITY_FORBIDDEN"),
+    ] {
+        let denied = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!(
+                    "/api/runs/{}/evidence",
+                    expected["run_id"].as_str().unwrap()
+                ),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice",
+                    "user_id":"alice",
+                    "role":"ro",
+                    "storage_ns":"conversation",
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":[namespace],
+                    "capabilities":capabilities
+                }),
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        let denied_body: Value = serde_json::from_slice(&denied.body).unwrap();
+        assert_eq!(denied_body["code"], expected_code);
+        assert!(!denied_body.to_string().contains(expected["run_id"].as_str().unwrap()));
+    }
+
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let secret = b"in-memory-run-evidence-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice",
+            "user_id":"alice",
+            "role":"ro",
+            "storage_ns":"conversation",
+            "workspace_id":"workspace-a",
+            "graph_space":"conversation",
+            "ns":["workflow"],
+            "capabilities":["workflow.run.read","project_view"],
+            "iss":"local",
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/api/runs/{}/evidence",
+                    expected["run_id"].as_str().unwrap()
+                ))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 65_536).await.unwrap();
+    assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), expected);
+}
+
+#[tokio::test]
 async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
     let service = PostgresRunApplicationService::from_dsn(
         "postgres://unused:unused@127.0.0.1:1/unused",

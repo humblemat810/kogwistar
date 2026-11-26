@@ -1345,6 +1345,10 @@ fn runtime_run_route_decodes_encoded_run_id_without_splitting_it() {
         Some("conversation")
     );
     assert_eq!(
+        runtime_run_namespace("/api/runs/evidence-run/evidence"),
+        Some("workflow")
+    );
+    assert_eq!(
         runtime_run_namespace("/api/workflow/runs/workflow-run"),
         Some("workflow")
     );

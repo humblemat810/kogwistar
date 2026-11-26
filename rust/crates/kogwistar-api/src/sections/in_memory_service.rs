@@ -2887,6 +2887,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     || tail.as_slice() == ["steps"]
                     || tail.as_slice() == ["events"]
                     || tail.as_slice() == ["events", "poll"]
+                    || tail.as_slice() == ["evidence"]
             })
         {
             return true;
@@ -5418,7 +5419,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-    // PYTHON_PARITY_NOTE_V1: HTTP workflow status/steps require read capability and configured ACL; MCP status requires workflow.run.read but follows Python MCP without per-workflow ACL, while MCP steps retain ACL checks. Event reads require read capability. Conversation reads remain owner-scoped. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_status+workflow_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#only_mcp_workflow_status_request_gets_acl_parity_exception; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_status_uses_capability_without_workflow_acl+test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps
+    // PYTHON_PARITY_NOTE_V1: HTTP run evidence uses workflow namespace, workflow.run.read, project_view, owner scope, and ACL-filtered conversation snapshots; Python counterpart is chat_api.get_run_evidence -> ChatRunService.run_evidence/latest_snapshot. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/chat_api.py#create_chat_router.get_run_evidence+kogwistar/server/chat_service.py#ChatRunService.run_evidence; fixture=contracts/golden/run-evidence-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_evidence_route_matches_shared_contract; python_test=tests/server/test_chat_server_api.py#test_run_evidence_uses_python_defaults_and_checks_namespace
     async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());
@@ -5445,6 +5446,16 @@ impl InMemoryGraphApplicationService {
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
                 "Reading workflow runs requires workflow.run.read capability",
+            );
+        }
+        let run_evidence_read = tail.as_slice() == ["evidence"];
+        if run_evidence_read
+            && !capability_allowed(request, &self.capabilities, "project_view", &["project_view"])
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Reading run evidence requires project_view capability",
             );
         }
         let Some(owner_id) = authenticated_run_owner_id(&request.principal) else {
@@ -5513,6 +5524,38 @@ impl InMemoryGraphApplicationService {
         }
         if tail.is_empty() {
             return json_effect(StatusCode::OK, server_run_value(run));
+        }
+        if run_evidence_read {
+            let (scope, acl_principal) =
+                conversation_graph_scope_and_acl_principal(&request.principal);
+            let (nodes, edges) = match self.graph_snapshot(scope).await {
+                Ok(records) => records,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error,
+                    );
+                }
+            };
+            let (visible_nodes, _) =
+                graph_records_visible_by_acl(&nodes, &edges, "conversation", &acl_principal);
+            let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+                &visible_nodes,
+                &run.conversation_id,
+                Some(&run_id),
+                None,
+            ) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::NOT_FOUND,
+                        "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                        error.to_string(),
+                    );
+                }
+            };
+            return json_effect(StatusCode::OK, public_run_evidence_value(&run_id, snapshot));
         }
         let after_seq = query_integer(&request.path_and_query, "after_seq", 0);
         let limit = query_integer(&request.path_and_query, "limit", 500).clamp(1, 10_000);
