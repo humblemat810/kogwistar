@@ -77,6 +77,16 @@ not append another event. Rust selector: **1 passed**. Paired Python effect/resp
 `test_mcp_workflow_run_cancel_matches_shared_contract`; DLFC-10 remains IN
 PROGRESS because this closes one SQLite response/effect cell only.
 
+Conversation MCP cancellation effect cell (2026-11-27): Rust
+`tests::mcp_conversation_run_operations_use_conversation_scope_end_to_end`
+and Python `tests/mcp/test_chat_mcp_tools.py::test_mcp_chat_submit_cancel_and_workflow_diagnostics`
+both passed (**1 each**). Rust SQLite checks namespace/capability denial before
+mutation and matches the shared cancel fixture on authorized cancellation;
+Python verifies cancellation-node persistence and run completion. The Rust
+test now has a Python parity annotation validated by the crosswalk test. This
+adds evidence for this operation/backend cell only; DLFC-10 remains IN
+PROGRESS.
+
 ### DLFC-05 Evidence Update (Existing Tasklet)
 
 Workflow-run read ACL parity: Python REST status and steps require per-workflow `ro` ACL; Rust SQLite previously missed status ACL preflight. Rust now matches REST. Separately, Python MCP status checks MCP role+workflow namespace, then `ChatRunService.get_run` checks `workflow.run.read`, but does not apply per-workflow ACL; MCP steps retain their ACL check. Rust previously routed MCP status through REST-only ACL and returned 403 where Python succeeds. TDD reproduced and fixed both distinctions without changing REST policy. Evidence: Python `tests/server/test_workflow_lineage_api.py` (**4 passed**) and `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_status_uses_capability_without_workflow_acl` (**1 passed**); Rust `tests::sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl`, `tests::workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores`, and `tests::only_mcp_workflow_status_request_gets_acl_parity_exception`; authenticated InMemory route test rejects forged public marker; live PostgreSQL `tests::postgres_workflow_lineage_route_checks_each_workflow_acl` (**1 passed**). These close named status authorization cells only; DLFC-05 remains IN PROGRESS.

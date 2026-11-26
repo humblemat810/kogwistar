@@ -316,6 +316,7 @@
         assert!(request.body.is_empty());
     }
 
+    // PYTHON_PARITY_NOTE_V1: Conversation-scoped MCP status/cancel paths enforce conversation namespace and cancel capability; successful cancel response matches the shared fixture. rust=rust/crates/kogwistar-api/src/tests/conversation_mcp.rs#mcp_conversation_run_operations_use_conversation_scope_end_to_end; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_chat_submit_cancel_and_workflow_diagnostics+test_mcp_conversation_cancel_run_matches_shared_contract; fixture=contracts/golden/conversation-run-status-mcp-v1.json,contracts/golden/conversation-cancel-run-mcp-v1.json
     #[tokio::test]
     async fn mcp_conversation_run_operations_use_conversation_scope_end_to_end() {
         use axum::body::{Body, to_bytes};
