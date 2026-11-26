@@ -6009,6 +6009,23 @@ def test_chat_run_service_operator_inbox_respects_security_scope(
     service = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
+    service._execution_meta_store().project_lane_message(
+        message_id="orphaned-projection",
+        namespace="conversation",
+        purpose="operator",
+        inbox_id="inbox:ops",
+        conversation_id="conv-scope-msg",
+        recipient_id="lane:b",
+        sender_id="lane:a",
+        msg_type="request.orphaned",
+        status="pending",
+        created_at=1,
+        available_at=1,
+        run_id=None,
+        step_id=None,
+        correlation_id=None,
+        payload_json='{"secret":"must-not-leak"}',
+    )
     token_send = claims_ctx.set(
         {
             "ns": "conversation",
@@ -6055,6 +6072,7 @@ def test_chat_run_service_operator_inbox_respects_security_scope(
     assert len(rows) == 1
     assert rows[0]["msg_type"] == "request.shared"
     assert rows[0]["visibility"] == "shared"
+    assert rows[0]["message_id"] != "orphaned-projection"
 
 
 @pytest.mark.asyncio
