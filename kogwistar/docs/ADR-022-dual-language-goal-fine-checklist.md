@@ -268,7 +268,7 @@ cancelled states using `contracts/golden/workflow-run-status-http-v1.json`.
 Both assert required fields, stable IDs, result/error, terminal flag, and
 timestamps; each response also agrees with its legacy `/api/runs/{run_id}`
 projection. Python `tests/server/test_chat_server_api.py::test_run_status_route_matches_shared_v1_contract`
-passed over the three `engine_triplet` parameters; Rust
+passed with the shared `engine_triplet` fixture; Rust
 `tests::sqlite_run_status_http_route_matches_shared_contract_for_all_states`
 passed (**1**). The parity annotation crosswalk passed (**1**), validating the
 Rust SQLite service and Python `create_runtime_router.get_workflow_run`
