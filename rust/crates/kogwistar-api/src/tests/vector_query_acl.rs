@@ -723,6 +723,20 @@ async fn sqlite_chroma_vector_query_matches_shared_python_acl_contract() {
                         .collect::<Vec<_>>();
                     ranked.sort_by(|left, right| left.1.total_cmp(&right.1));
                     ranked.truncate(request["n_results"].as_u64().unwrap() as usize);
+                    // Simulate a stale projection leaking a tombstoned row despite
+                    // the lifecycle exclusion in the Chroma query.
+                    ranked.extend(candidates.iter().filter_map(|candidate| {
+                        (candidate["lifecycle_status"] == "tombstoned").then(|| {
+                            let embedding = candidate["embedding"].as_array().unwrap();
+                            let dot = query[0] * embedding[0].as_f64().unwrap()
+                                + query[1] * embedding[1].as_f64().unwrap();
+                            let q_norm = query[0].hypot(query[1]);
+                            let v_norm = embedding[0].as_f64().unwrap().hypot(
+                                embedding[1].as_f64().unwrap(),
+                            );
+                            (candidate, 1.0 - dot / (q_norm * v_norm))
+                        })
+                    }));
                     let ids = ranked
                         .iter()
                         .map(|(candidate, _)| candidate["id"].clone())
@@ -750,6 +764,9 @@ async fn sqlite_chroma_vector_query_matches_shared_python_acl_contract() {
                                 original["source_edge_ids"] = json!([]);
                                 original["target_edge_ids"] = json!([]);
                                 original["mentions"] = json!([]);
+                            }
+                            if let Some(lifecycle_status) = candidate.get("lifecycle_status") {
+                                original["lifecycle_status"] = lifecycle_status.clone();
                             }
                             json!({
                                 "_kogwistar_namespace":fixture_for_server["scope"]["namespace"],
@@ -820,9 +837,6 @@ async fn sqlite_chroma_vector_query_matches_shared_python_acl_contract() {
     let mut acl_mutations = Vec::new();
     for (kind, records) in [("node", &fixture["nodes"]), ("edge", &fixture["edges"])] {
         for candidate in records.as_array().unwrap() {
-            if candidate["lifecycle_status"] == "tombstoned" {
-                continue;
-            }
             let id = candidate["id"].as_str().unwrap();
             let mut metadata = json!({
                 "entity_type":"acl_record", "acl_truth_graph":fixture["truth_graph"],
