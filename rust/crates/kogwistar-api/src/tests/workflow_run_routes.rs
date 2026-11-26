@@ -25,30 +25,32 @@ fn resume_wait_for_completion_defaults_to_sync_and_accepts_explicit_false() {
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let resume_contract = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
     ))
     .unwrap();
-    postgres_resume_roundtrip(false, resume_contract).await;
+    postgres_resume_roundtrip(false, &dsn, resume_contract).await;
 }
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_mcp_resume_continues_persisted_suspended_token() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let resume_contract = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
     ))
     .unwrap();
-    postgres_resume_roundtrip(true, resume_contract).await;
+    postgres_resume_roundtrip(true, &dsn, resume_contract).await;
 }
 
-async fn postgres_resume_roundtrip(resume_via_mcp: bool, contract: Value) {
+async fn postgres_resume_roundtrip(resume_via_mcp: bool, dsn: &str, contract: Value) {
     use kogwistar_store::{ProjectionReadStore, RUNTIME_CURRENT_STATE_NAMESPACE};
 
-    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
-        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
     let schema = format!("rust_syscall_resume_{}", uuid::Uuid::new_v4().simple());
-    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    let service = PostgresRunApplicationService::from_dsn(dsn, &schema).unwrap();
     service.ensure_graph_type_schemas().await.unwrap();
     let run_id = "postgres-resume-syscall-run";
     let workflow_id = "postgres-resume-syscall-workflow";
