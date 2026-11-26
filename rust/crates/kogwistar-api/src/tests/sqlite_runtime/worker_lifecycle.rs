@@ -1889,16 +1889,34 @@
             };
             let retry_service = service.clone();
             tokio::spawn(async move {
-                let response = app.clone().oneshot(call_resume("sqlite-resume")).await.unwrap();
-                let status = response.status();
-                let wire = to_bytes(response.into_body(), 8192).await.unwrap();
-                let data = String::from_utf8(wire.to_vec()).unwrap();
-                let payload = data.lines()
-                    .find_map(|line| line.strip_prefix("data: "))
-                    .and_then(|line| serde_json::from_str::<Value>(line).ok())
-                    .unwrap();
-                assert_eq!(status, StatusCode::OK);
-                assert_ne!(payload["result"]["isError"], true, "{payload}");
+                async fn response_payload(
+                    response: axum::response::Response,
+                ) -> (StatusCode, Value) {
+                    let status = response.status();
+                    let wire = to_bytes(response.into_body(), 8192).await.unwrap();
+                    let data = String::from_utf8(wire.to_vec()).unwrap();
+                    let payload = data
+                        .lines()
+                        .find_map(|line| line.strip_prefix("data: "))
+                        .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                        .unwrap();
+                    (status, payload)
+                }
+
+                let (response_a, response_b) = tokio::join!(
+                    app.clone().oneshot(call_resume("sqlite-resume-a")),
+                    app.clone().oneshot(call_resume("sqlite-resume-b")),
+                );
+                let (status_a, payload_a) = response_payload(response_a.unwrap()).await;
+                let (status_b, payload_b) = response_payload(response_b.unwrap()).await;
+                assert_eq!(status_a, StatusCode::OK);
+                assert_eq!(status_b, StatusCode::OK);
+                let a_succeeded = payload_a["result"]["isError"] != true
+                    && !payload_a["error"].is_object();
+                let b_succeeded = payload_b["result"]["isError"] != true
+                    && !payload_b["error"].is_object();
+                assert_ne!(a_succeeded, b_succeeded, "{payload_a}; {payload_b}");
+                let payload = if a_succeeded { payload_a } else { payload_b };
                 let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
                     &retry_service.store,
                     run_id,

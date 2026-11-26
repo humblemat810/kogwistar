@@ -4059,6 +4059,8 @@ def test_resume_route_uses_python_defaults_and_checks_namespace(
 def test_python_resume_syscall_continues_persisted_workflow(
     monkeypatch, request, tmp_path, backend, pg_dsn, pg_schema
 ):
+    from kogwistar.server import chat_service_run_execution as run_execution_module
+
     resume_contract = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -4186,6 +4188,8 @@ def test_python_resume_syscall_continues_persisted_workflow(
         claims_ctx.reset(identity)
 
     resolver = MappingStepResolver()
+    end_calls = []
+    end_calls_lock = threading.Lock()
 
     @resolver.register("python-resume-start")
     def _start(_context):
@@ -4197,6 +4201,8 @@ def test_python_resume_syscall_continues_persisted_workflow(
 
     @resolver.register("python-resume-end")
     def _end(context):
+        with end_calls_lock:
+            end_calls.append(context.state_view.get("approved"))
         return RunSuccess(
             state_update=[
                 ("u", {"ended": True, "approved": context.state_view.get("approved")})
@@ -4244,36 +4250,69 @@ def test_python_resume_syscall_continues_persisted_workflow(
     assert len(suspended_tokens) == 1
     suspended_node_id, _, suspended_token_id, _ = suspended_tokens[0]
 
-    with TestClient(server.app) as client:
-        response = client.post(
-            "/api/syscall/v1/resume",
-            json={
-                "version": "v1",
-                "op": "resume",
-                "args": {
-                    "run_id": run_id,
-                    "suspended_node_id": suspended_node_id,
-                    "suspended_token_id": suspended_token_id,
-                    "client_result": {
-                        "status": "success",
-                        "state_update": [["u", {"approved": True}]],
-                    },
-                    "workflow_id": workflow_id,
-                    "conversation_id": conversation_id,
-                    "turn_node_id": turn_node_id,
-                    "user_id": owner,
-                },
+    syscall_request = {
+        "version": "v1",
+        "op": "resume",
+        "args": {
+            "run_id": run_id,
+            "suspended_node_id": suspended_node_id,
+            "suspended_token_id": suspended_token_id,
+            "client_result": {
+                "status": "success",
+                "state_update": [["u", {"approved": True}]],
             },
-            headers=_token_header(
-                client,
-                role="rw",
-                ns="workflow",
-                username=owner,
-                capabilities="workflow.run.write,approve_action",
-            ),
+            "workflow_id": workflow_id,
+            "conversation_id": conversation_id,
+            "turn_node_id": turn_node_id,
+            "user_id": owner,
+        },
+    }
+    with TestClient(server.app) as client:
+        resume_headers = _token_header(
+            client,
+            role="rw",
+            ns="workflow",
+            username=owner,
+            capabilities="workflow.run.write,approve_action",
         )
 
-    assert response.status_code == 200, response.text
+    original_load_checkpoint = run_execution_module.load_checkpoint
+    checkpoint_read_barrier = threading.Barrier(2)
+
+    def synchronized_load_checkpoint(*args, **kwargs):
+        checkpoint = original_load_checkpoint(*args, **kwargs)
+        checkpoint_read_barrier.wait(timeout=10)
+        return checkpoint
+
+    monkeypatch.setattr(
+        run_execution_module, "load_checkpoint", synchronized_load_checkpoint
+    )
+
+    def resume_over_http():
+        with TestClient(server.app) as client:
+            return client.post(
+                "/api/syscall/v1/resume",
+                json=syscall_request,
+                headers=resume_headers,
+            )
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(resume_over_http) for _ in range(2)]
+            responses = [future.result(timeout=30) for future in futures]
+    finally:
+        monkeypatch.setattr(
+            run_execution_module, "load_checkpoint", original_load_checkpoint
+        )
+
+    successful_responses = [response for response in responses if response.status_code == 200]
+    rejected_responses = [response for response in responses if response.status_code == 500]
+    assert len(successful_responses) == 1, [response.text for response in responses]
+    assert len(rejected_responses) == 1, [response.text for response in responses]
+    assert "owned until" in rejected_responses[0].text
+    assert end_calls == [True]
+
+    response = successful_responses[0]
     payload = response.json()
     assert payload["version"] == "v1"
     assert payload["op"] == "resume"

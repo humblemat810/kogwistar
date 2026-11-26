@@ -25,16 +25,24 @@ fn resume_wait_for_completion_defaults_to_sync_and_accepts_explicit_false() {
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_resume_syscall_resumes_persisted_suspended_token() {
-    postgres_resume_roundtrip(false).await;
+    let resume_contract = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+    ))
+    .unwrap();
+    postgres_resume_roundtrip(false, resume_contract).await;
 }
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_mcp_resume_continues_persisted_suspended_token() {
-    postgres_resume_roundtrip(true).await;
+    let resume_contract = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
+    ))
+    .unwrap();
+    postgres_resume_roundtrip(true, resume_contract).await;
 }
 
-async fn postgres_resume_roundtrip(resume_via_mcp: bool) {
+async fn postgres_resume_roundtrip(resume_via_mcp: bool, contract: Value) {
     use kogwistar_store::{ProjectionReadStore, RUNTIME_CURRENT_STATE_NAMESPACE};
 
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
@@ -176,16 +184,34 @@ async fn postgres_resume_roundtrip(resume_via_mcp: bool) {
         };
         let retry_service = service.clone();
         tokio::spawn(async move {
-            let response = app.clone().oneshot(call_resume("postgres-resume")).await.unwrap();
-            let status = response.status();
-            let wire = to_bytes(response.into_body(), 8192).await.unwrap();
-            let data = String::from_utf8(wire.to_vec()).unwrap();
-            let payload = data.lines()
-                .find_map(|line| line.strip_prefix("data: "))
-                .and_then(|line| serde_json::from_str::<Value>(line).ok())
-                .unwrap();
-            assert_eq!(status, StatusCode::OK);
-            assert_ne!(payload["result"]["isError"], true, "{payload}");
+            async fn response_payload(
+                response: axum::response::Response,
+            ) -> (StatusCode, Value) {
+                let status = response.status();
+                let wire = to_bytes(response.into_body(), 8192).await.unwrap();
+                let data = String::from_utf8(wire.to_vec()).unwrap();
+                let payload = data
+                    .lines()
+                    .find_map(|line| line.strip_prefix("data: "))
+                    .and_then(|line| serde_json::from_str::<Value>(line).ok())
+                    .unwrap();
+                (status, payload)
+            }
+
+            let (response_a, response_b) = tokio::join!(
+                app.clone().oneshot(call_resume("postgres-resume-a")),
+                app.clone().oneshot(call_resume("postgres-resume-b")),
+            );
+            let (status_a, payload_a) = response_payload(response_a.unwrap()).await;
+            let (status_b, payload_b) = response_payload(response_b.unwrap()).await;
+            assert_eq!(status_a, StatusCode::OK);
+            assert_eq!(status_b, StatusCode::OK);
+            let a_succeeded = payload_a["result"]["isError"] != true
+                && !payload_a["error"].is_object();
+            let b_succeeded = payload_b["result"]["isError"] != true
+                && !payload_b["error"].is_object();
+            assert_ne!(a_succeeded, b_succeeded, "{payload_a}; {payload_b}");
+            let payload = if a_succeeded { payload_a } else { payload_b };
             let event_count = kogwistar_store::ServerRunReadStore::server_run_events(
                 &retry_service.store, run_id, 0, 100
             ).await.unwrap().len();
@@ -289,10 +315,6 @@ async fn postgres_resume_roundtrip(resume_via_mcp: bool) {
     assert_eq!(finished.status, StatusCode::OK.as_u16());
 
     let resumed = resume_future.await.unwrap().unwrap();
-    let contract: Value = serde_json::from_str(include_str!(
-        "../../../../../contracts/golden/workflow-run-resume-result-v1.json"
-    ))
-    .unwrap();
     for field in contract["required_fields"].as_array().unwrap() {
         let field = field.as_str().unwrap();
         assert!(resumed.get(field).is_some(), "missing {field}");

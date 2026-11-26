@@ -202,6 +202,7 @@ impl PostgresStore {
         .await
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/workflow_runtime.rs#resume_recorded_runtime_token; python=kogwistar/server/chat_service_run_execution.py#_default_resume_runner; python_service=kogwistar/server/chat_service.py#ChatRunService.resume_run; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_mcp_resume_continues_persisted_suspended_token; python_test=tests/server/test_chat_server_api.py#test_python_resume_syscall_continues_persisted_workflow
     pub async fn resume_recorded_runtime_token(
         &self,
         run_id: &str,
@@ -218,6 +219,9 @@ impl PostgresStore {
         let token_id = token_id.to_owned();
         self.transaction(|uow| {
             Box::pin(async move {
+                // Lock before reading the frontier so concurrent resume calls
+                // cannot both accept the same previously suspended token.
+                advisory_lock(&uow.transaction, &format!("recorded-run\u{1f}{run_id}"), 42).await?;
                 let current = read_recorded_runtime_state(
                     &uow.transaction,
                     &uow.tables,
