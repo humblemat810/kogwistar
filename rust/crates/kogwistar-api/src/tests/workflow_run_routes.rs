@@ -2917,6 +2917,7 @@ async fn postgres_run_evidence_route_returns_only_authorized_run_snapshot() {
     cleanup_task.await.unwrap().unwrap();
 }
 
+// PYTHON_PARITY_NOTE_V1: Missing workflow lineage target returns HTTP 404 after authority checks, matching Python runtime_api workflow_run_lineage. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_lineage_route_checks_each_workflow_acl; python=kogwistar/server/runtime_api.py#workflow_run_lineage; python_test=tests/server/test_workflow_lineage_api.py#test_lineage_returns_404_for_missing_run
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
 async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
@@ -3182,6 +3183,19 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
     let allowed_body = to_bytes(allowed.into_body(), 8192).await.unwrap();
     let payload = serde_json::from_slice::<Value>(&allowed_body).unwrap();
     assert_eq!(payload, lineage_contract["response"]);
+
+    let missing_lineage = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/workflow/runs/missing-lineage-run/lineage")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_lineage.status(), StatusCode::NOT_FOUND);
 
     let mcp_response = app
         .oneshot(

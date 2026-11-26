@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Goal Fine Checklist
 
-**Updated:** 2026-11-26
+**Updated:** 2026-11-27
 **Purpose:** Executable closure tracker for GOAL-06/08/09 in [the goal-closure audit](ADR-022-dual-language-goal-closure-checklist.md). This is not the 177/911 evidence inventory and does not change its denominator.
 **Progress:** **13/18 tasklets PASS (72.2%); 5 IN PROGRESS; 0 NOT STARTED; 0 FAIL; 0 BLOCKED.** This is tasklet completion only, not an estimate that the overall goal is 72.2% complete.
 **Closure:** GOAL-06 and GOAL-08 close only when every applicable operation/backend/behavior cell below has a passing executable oracle or an explicit unsupported + fail-closed oracle. GOAL-09 closes only when all declared performance tasklets pass with scoped claims. Coarse status must be derived from all mapped fine tasklets; no deferrals remain.
@@ -402,6 +402,14 @@ schema; same principal, ACL grants, REST route, and visible-prefix assertion.
 Current full Python route/service module: **8 passed**. These close only the
 Python in-memory and PostgreSQL lineage ACL cells; broader HTTP/read ACL and
 backend cells keep DLFC-06 IN PROGRESS.
+
+DLFC-06 missing-run lineage result (2026-11-27): Rust
+`tests::postgres_workflow_lineage_route_checks_each_workflow_acl` now asserts
+authenticated PostgreSQL `GET /api/workflow/runs/{missing}/lineage` returns
+404 (**1 passed** against disposable pgvector); Python
+`tests/server/test_workflow_lineage_api.py::test_lineage_returns_404_for_missing_run`
+returns the same status (**1 passed**). This closes only the lineage
+not-found branch; DLFC-06 remains IN PROGRESS.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
