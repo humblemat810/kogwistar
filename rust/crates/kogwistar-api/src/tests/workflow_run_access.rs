@@ -560,6 +560,23 @@ async fn in_memory_checkpoint_and_replay_routes_match_python_contracts() {
             .await;
         assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
     }
+    for (path, expected_status) in [
+        ("/api/runs/checkpoint-run/checkpoints/99", StatusCode::NOT_FOUND),
+        ("/api/runs/checkpoint-run/checkpoints/not-a-number", StatusCode::UNPROCESSABLE_ENTITY),
+        ("/api/runs/checkpoint-run/replay?target_step_seq=99", StatusCode::NOT_FOUND),
+        ("/api/runs/checkpoint-run/replay?target_step_seq=bad", StatusCode::UNPROCESSABLE_ENTITY),
+    ] {
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: path.to_owned(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(response.status, expected_status.as_u16(), "{path}");
+    }
 }
 
 #[tokio::test]
