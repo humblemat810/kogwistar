@@ -1474,6 +1474,44 @@ async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
         assert_eq!(workflow_body["finished_at_ms"], body["finished_at_ms"]);
     }
 
+    let missing_workflow_read_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "user-status-contract",
+            "user_id": "user-status-contract",
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": ["project_view"],
+            "iss": "local",
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let missing_capability = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/workflow/runs/run-status-succeeded")
+                .header(
+                    "authorization",
+                    format!("Bearer {missing_workflow_read_token}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_capability.status(), StatusCode::FORBIDDEN);
+    let missing_capability_body = to_bytes(missing_capability.into_body(), 65_536)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&missing_capability_body).unwrap()["code"],
+        "KOGWISTAR_CAPABILITY_FORBIDDEN"
+    );
+
     let wrong_scope_token = encode(
         &Header::new(Algorithm::HS256),
         &json!({

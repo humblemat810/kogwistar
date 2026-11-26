@@ -12,6 +12,10 @@ async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
             "KOGWISTAR_CAPABILITY_FORBIDDEN",
         ),
         (
+            json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+        ),
+        (
             json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
             "KOGWISTAR_NAMESPACE_FORBIDDEN",
         ),

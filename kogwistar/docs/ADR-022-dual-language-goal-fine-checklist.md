@@ -274,6 +274,17 @@ passed (**1**). The parity annotation crosswalk passed (**1**), validating the
 Rust SQLite service and Python `create_runtime_router.get_workflow_run`
 mapping. This adds one scoped route/backend cell; DLFC-03 remains IN PROGRESS.
 
+DLFC-05 workflow status capability cell (2026-11-26): with valid workflow
+namespace and role but only `project_view` (no `workflow.run.read`), Python
+`test_run_status_route_matches_shared_v1_contract` and Rust
+`tests::sqlite_run_status_http_route_matches_shared_contract_for_all_states`
+both return 403 with `KOGWISTAR_CAPABILITY_FORBIDDEN`. Python proves the run
+registry is not read; Rust's SQLite authenticated route checks the wire error,
+and `tests::workflow_run_status_denies_wrong_scope_before_storage_access`
+repeats the denial against unreachable PostgreSQL, proving auth precedes DB
+access. Rust focused selector: **4 passed**; Python status + parity crosswalk:
+**2 passed**. This closes one capability cell only; DLFC-05 remains IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
