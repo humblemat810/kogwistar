@@ -1,6 +1,6 @@
 # Chroma Rust Interop Worklist
 
-**Updated:** 2026-11-26
+**Updated:** 2026-11-27
 **Scope:** Verification-only slice for Rust Chroma support and Python↔Rust data handoff. Existing architecture already provides `ChromaGraphStore` and SQLite+Chroma composition; expected outcome is test evidence, not product-code changes.  
 **Exit:** All counted fine items PASS and all coarse gates derive PASS. Combined with accepted CI #859/#860 evidence for the six named non-Chroma capabilities, this closes the documented cutover/interoperability gates in scope. It does **not** prove every runtime/platform combination (`sqlite-meta` PyPy 3.11 native-binding coverage remains open), Chroma as Rust's canonical event authority, transactions spanning SQLite and Chroma, or universal Kogwistar behavior parity.
 
@@ -17,6 +17,8 @@ Current checkout revalidation on 2026-11-23 (Rust source commit `48362e3c3f212c0
 Current checkout revalidation on source `55dfbe0386fa776f71557b53e52bbddabf1a313c`: all four live Python↔Rust graph and worker-handoff selectors passed, **4 passed, 0 skipped, 100.02s**. This revalidates CH-F6/CH-F7/CH-F8/CH-F9 against current Rust server binary and live Chroma. No product-code change was needed. It does not close broader GOAL-06/08 operation/backend parity or GOAL-09 performance cases.
 
 Revalidated this feature checkout at `d4095afa2fe42f4658f065b6aaf3ace76d5dc42b` on 2026-11-26: Rust Chroma adapter `cargo test --manifest-path rust/Cargo.toml -p kogwistar-store-chroma --test http_contract` (**8 passed**); SQLite-canonical/Chroma-eventual failure/retry `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api sqlite_chroma_embedding_worker_projects_revision_fenced_stage1_document` (**1 passed**); current Rust server binary rebuilt, then `tests/server/test_rust_api_chroma_interop_live.py` with `--run-manual` (**4 passed, 0 skipped, 94.59s**) revalidated CH-F6–CH-F9 and CH-F11 against a locally launched Chroma service. This verifies the bounded Chroma interop worklist on the current candidate; it does not establish every HTTP/MCP operation's Chroma parity or change the broader GOAL-06/08 status.
+
+Revalidated feature checkout `ae103abf` on 2026-11-27: Rust adapter contract (**8 passed**), SQLite-canonical/Chroma-eventual retry/reopen (**1 passed**), and rebuilt Rust server plus live Python↔Rust Chroma suite (**4 passed, 0 skipped, 114.03s**). CH-C1–CH-C4 remain PASS for this bounded interop scope only; GOAL-06/08 remain independently open for full operation/backend parity.
 
 ## Coarse Gates
 
