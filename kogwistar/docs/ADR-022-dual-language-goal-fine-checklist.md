@@ -522,6 +522,19 @@ the complete `cost_ledger` to `expected_cost_ledger` in the shared
 each**). No retry/effect or other-backend claim follows; DLFC-10 remains
 IN PROGRESS.
 
+DLFC-05 ACL parity (2026-11-27): TDD reproduced a Rust REST gap: authenticated
+`GET /api/workflow/design/{id}/history` returned 200 without a configured
+workflow ACL, while Python route policy denies before service read. Rust
+transport now checks configured owner ACL for workflow-design REST graph,
+history, and mutation routes; requests without `user_id` retain Python's
+development-token bypass. Python oracle
+`tests/server/test_workflow_designer_ui.py::test_workflow_design_history_denies_without_acl_before_read`
+and Rust authenticated HTTP test
+`tests::workflow_design_history_enforces_configured_workflow_acl` each pass,
+covering no-ACL deny and `ro` grant. This closes one REST ACL cell only; DLFC-05
+remains IN PROGRESS and its broader route/backend matrix is unchanged. Rust
+also asserts denial creates no named workflow-design projection.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

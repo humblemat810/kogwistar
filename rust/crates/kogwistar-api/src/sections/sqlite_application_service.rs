@@ -321,6 +321,22 @@ impl ApplicationService for SqliteRunApplicationService {
         })
     }
 
+    fn workflow_access_allowed(
+        &self,
+        workflow_id: String,
+        user_id: String,
+        required_role: String,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            let Some(auth_store) = self.owner_auth_store.as_ref() else {
+                return Ok(true);
+            };
+            auth_store
+                .workflow_access_allowed(&workflow_id, &user_id, &required_role)
+                .await
+        })
+    }
+
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         if surface == "root" && name == "document_id_from_file_name" {
             return DocumentStore::supports_document_projection_lookup(&self.store);

@@ -1742,6 +1742,18 @@ async fn mcp_dispatch(
             }))
             .into_response();
         }
+        if let Some(error) = workflow_design_acl_error(state.application.as_ref(), &request).await {
+            return Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": -32000,
+                    "message": "Rust application service error",
+                    "data": serde_json::from_slice::<Value>(&error.body).unwrap_or(Value::Null),
+                },
+            }))
+            .into_response();
+        }
         let response = state.application.execute(request).await;
         if !(200..300).contains(&response.status) {
             return Json(json!({
@@ -1994,6 +2006,11 @@ async fn application_effect_handler(
         return (status, [("content-type", error.content_type)], Body::from(error.body))
             .into_response();
     }
+    if let Some(error) = workflow_design_acl_error(state.application.as_ref(), &request).await {
+        let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return (status, [("content-type", error.content_type)], Body::from(error.body))
+            .into_response();
+    }
     let mut response = state.application.execute(request).await;
     if d3_bundle && (200..300).contains(&response.status) {
         response = match serde_json::from_slice::<Value>(&response.body) {
@@ -2044,6 +2061,51 @@ async fn workflow_run_submit_acl_error(
             StatusCode::FORBIDDEN,
             "KOGWISTAR_WORKFLOW_FORBIDDEN",
             "User does not have write access to this workflow",
+        )),
+        Err(_) => Some(effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_AUTH_STORE_ERROR",
+            "Could not verify workflow access",
+        )),
+    }
+}
+
+async fn workflow_design_acl_error(
+    application: &dyn ApplicationService,
+    request: &ApiEffectRequest,
+) -> Option<ApiEffectResponse> {
+    // PYTHON_REFERENCE_V1: Rust checks configured per-workflow ACL before the REST effect, matching Python runtime_api route guards; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#workflow_design_acl_error; python=kogwistar/server/runtime_api.py#create_runtime_router.workflow_design_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#workflow_design_history_enforces_configured_workflow_acl; python_test=tests/server/test_workflow_designer_ui.py#test_workflow_design_history_denies_without_acl_before_read; note=authenticated owners need ro ACL for reads and rw ACL for mutations; dev-token requests without user_id preserve Python bypass.
+    let path = request.path_and_query.split('?').next()?;
+    let mut parts = path.strip_prefix("/api/workflow/design/")?.split('/');
+    let workflow_id = parts.next()?.trim();
+    let operation = parts.next()?;
+    if workflow_id.is_empty() || parts.next().is_some_and(|part| part.is_empty()) {
+        return None;
+    }
+    let required_role = match (request.method.as_str(), operation) {
+        ("GET", "graph" | "history") => "ro",
+        ("POST", "undo" | "redo" | "nodes" | "edges") => "rw",
+        ("DELETE", "nodes" | "edges") => "rw",
+        _ => return None,
+    };
+    let Some(user_id) = request
+        .principal
+        .get("user_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return None;
+    };
+    match application
+        .workflow_access_allowed(workflow_id.to_owned(), user_id.to_owned(), required_role.to_owned())
+        .await
+    {
+        Ok(true) => None,
+        Ok(false) => Some(effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_WORKFLOW_FORBIDDEN",
+            format!("User does not have {required_role} access to this workflow"),
         )),
         Err(_) => Some(effect_error(
             StatusCode::INTERNAL_SERVER_ERROR,

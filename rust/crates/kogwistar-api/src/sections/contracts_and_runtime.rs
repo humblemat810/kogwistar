@@ -953,6 +953,17 @@ pub trait ApplicationService: Send + Sync + 'static {
         Box::pin(async { Ok(true) })
     }
 
+    /// Check configured workflow ACL for an authenticated REST actor.
+    /// Services without an ACL store preserve the unconfigured-server behavior.
+    fn workflow_access_allowed(
+        &self,
+        _workflow_id: String,
+        _user_id: String,
+        _required_role: String,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(true) })
+    }
+
     fn supports_mcp_tool_for_principal(
         &self,
         surface: &str,

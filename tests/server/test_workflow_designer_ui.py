@@ -70,6 +70,40 @@ def test_workflow_designer_read_routes_apply_acl() -> None:
     assert ("access", "wf-1", "ro") in checks
 
 
+def test_workflow_design_history_denies_without_acl_before_read() -> None:
+    from fastapi import HTTPException
+
+    reads = []
+
+    class Service:
+        def workflow_design_history(self, *, workflow_id: str):
+            reads.append(workflow_id)
+            return {"workflow_id": workflow_id, "versions": []}
+
+    def require_access(workflow_id: str, role: str) -> None:
+        assert role == "ro"
+        if workflow_id == "private-wf":
+            raise HTTPException(status_code=403, detail="workflow ACL denied")
+
+    app = FastAPI()
+    app.include_router(
+        create_runtime_router(
+            get_service=Service,
+            require_role=lambda _role: None,
+            require_namespace=lambda _namespaces: None,
+            runtime_namespaces={"workflow"},
+            require_workflow_access=require_access,
+        )
+    )
+    with TestClient(app) as client:
+        denied = client.get("/api/workflow/design/private-wf/history")
+        allowed = client.get("/api/workflow/design/visible-wf/history")
+
+    assert denied.status_code == 403
+    assert allowed.status_code == 200
+    assert reads == ["visible-wf"]
+
+
 def test_workflow_designer_template_contains_graph_semantics() -> None:
     template = Path("kogwistar/templates/workflow_designer.html").read_text(
         encoding="utf-8"

@@ -731,6 +731,102 @@ async fn workflow_run_submit_enforces_configured_workflow_acl() {
 }
 
 #[tokio::test]
+async fn workflow_design_history_enforces_configured_workflow_acl() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-design-history-workflow-acl-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-design-history-workflow-acl-auth-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some("design-history-acl-secret".to_owned()),
+        ..AuthConfig::default()
+    };
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let auth_db = rusqlite::Connection::open(&auth_path).unwrap();
+    auth_db
+        .execute(
+            "INSERT INTO users (user_id, email, is_active, created_at) VALUES ('alice', 'alice@example.test', 1, CURRENT_TIMESTAMP)",
+            [],
+        )
+        .unwrap();
+    auth_db
+        .execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('visible-wf', 'alice', 'ro')",
+            [],
+        )
+        .unwrap();
+    drop(auth_db);
+
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice",
+            "user_id": "alice",
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": ["workflow.design.inspect"],
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(b"design-history-acl-secret"),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: auth_config,
+        },
+        Arc::new(service.clone()),
+    );
+
+    for (workflow_id, expected) in [
+        ("missing-acl-wf", StatusCode::FORBIDDEN),
+        ("visible-wf", StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/workflow/design/{workflow_id}/history"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "workflow {workflow_id}");
+    }
+    assert!(service
+        .store
+        .get_named_projection("workflow_design", "missing-acl-wf")
+        .unwrap()
+        .is_none());
+
+    drop(app);
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+    let _ = std::fs::remove_file(auth_path);
+}
+
+#[tokio::test]
 async fn sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;

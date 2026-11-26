@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Goal Closure Checklist
 
-**Updated:** 2026-11-26
+**Updated:** 2026-11-27
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
 **Status summary:** **6 bounded criteria PASS; 1 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
@@ -22,7 +22,7 @@
 
 ## Pivoted Test-Case Status
 
-One row per listed test case, including pytest parameter cases; this case-level view does not change the 18-tasklet denominator. Current: **167 PASS / 1 IN PROGRESS / 2 NOT STARTED / 170 listed cases**. Passing InMemory workflow-lineage and SQLite workflow-step MCP cases were added under existing DLFC-06 scope; no new gate/tasklet added. Other missing operation/backend cells remain enumerated by the Full-Parity Test Matrix and open GOAL-06/08 tasklets; thus, listed-case completion does not imply goal completion.
+One row per listed test case, including pytest parameter cases; this case-level view does not change the 18-tasklet denominator. Current: **169 PASS / 1 IN PROGRESS / 2 NOT STARTED / 172 listed cases**. Two passing REST workflow-design ACL cases were added under existing DLFC-05 scope; no new gate/tasklet added. Other missing operation/backend cells remain enumerated by the Full-Parity Test Matrix and open GOAL-06/08 tasklets; thus, listed-case completion does not imply goal completion.
 
 Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL-01 Python-only matrix, GOAL-02 MCP denial, and GOAL-05 fake-backend and pending-embedding tests with `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider`; **15 passed** (12 parameter cases plus 3 tests, 13.59s). Batch B ran the GOAL-02/04 SQLite cases and GOAL-05 Chroma/PostgreSQL cases listed below with the same command flags; **8 passed** (18.12s), including disposable PostgreSQL testcontainers. Batch C built the Rust API server (`cargo build --manifest-path rust/Cargo.toml -p kogwistar-api --bin kogwistar-server`, **passed**, 1m34s), ran both live Rust/Python Chroma interoperability tests (**2 passed**, 68.92s), and verified native workflow routes: five non-PostgreSQL variants passed in the focused pytest run, then both PostgreSQL variants passed against the local pgvector container (**7/7 parameter cases passed**). Live PostgreSQL queue differential passed (**1 passed**); Rust inline graph/ACL/index/lane atomic-write test passed (**1 passed**). PostgreSQL variants used disposable/random schemas and completed teardown. No full-suite or whole-surface parity claim follows from these selected cases.
 
@@ -195,6 +195,8 @@ Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL
 | GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_performance_gate_accepts_values_at_declared_limits` | PASS | Exact 0.95 throughput and 1.10 p95 boundaries pass. |
 | GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_performance_gate_is_unassessed_without_both_pure_modes` | PASS | A report missing either pure mode is explicitly unassessed, not marked as a performance-gate pass. |
 | GOAL-09 | `scripts/run_mixed_runtime_matrix.ps1 -EndpointOnly -CpuLimit 2 -MemoryLimit 4g -Samples 3 -EndpointItems 100 -ConcurrentItems 32`; `.tmp/mixed-runtime-followup-20261125/concurrent-endpoint-rerun/endpoint/endpoint-report.v1.json` | PASS | CPython 3.15.1t; balanced fixed SQLite trace, 1 writer/4 readers, 32 writes + 128 reads; 2 CPU/4 GiB verified; Python/Rust-native same digest; Rust-native FFI=0. Throughput 30.43/507.47 ops/s (16.68x); read/write p95 ratios 0.422/0.153; thresholds passed, zero verifier errors. Three samples only; Rust throughput CV 14.50%, evidence preliminary and workload-scoped. |
+| GOAL-06 | `tests/server/test_workflow_designer_ui.py::test_workflow_design_history_denies_without_acl_before_read` | PASS | Python route denies missing per-workflow `ro` ACL before service read and allows `ro` ACL; paired Rust authenticated route test passed. |
+| GOAL-06 | `tests::workflow_design_history_enforces_configured_workflow_acl` | PASS | Rust authenticated SQLite REST route matches Python: missing workflow ACL returns 403; configured `ro` ACL returns 200. TDD reproduced pre-fix 200 for the missing-ACL case. |
 | GOAL-09 | Resource-matched Rust-native vs Python persistent trace (PostgreSQL/pgvector) | NOT STARTED | Required oracle: same sequential and concurrent graph trace, isolated disposable schema, digest parity, and throughput/p95 thresholds. No paired fixed-resource report yet. |
 | GOAL-09 | Resource-matched Rust-native vs Python graph/vector trace (SQLite + Chroma) | NOT STARTED | Required oracle: same eventual-projection workload, canonical event parity, projection convergence, and scoped throughput/p95 measurements. No paired fixed-resource report yet. |
 | GOAL-09 | Resource-matched Rust-native vs Python authenticated workflow/graph request trace | IN PROGRESS | Historical TCP medians (Python 20,869 ms; Rust 13,742 ms) used two measured samples; retain as historical only. Current hooks emit matched TCP latency/IDs/digest/fixture and 100 ms polling; Python collects warm-up + 3 measured. Verifier tests **9 passed**; Rust test compiles. Low-fixture live smoke: Python and Rust PostgreSQL HTTP each **1 passed**, same 11-node fixture/digest/poll; uncapped Windows clients, not perf evidence. Fixed-resource rerun still required. See `docs/benchmarks/mixed_rewrite_benchmark.md`. |
@@ -272,6 +274,15 @@ contract. A passing tasklet cannot imply untested matrix families.
 3. Extend performance evidence only for representative high-value request families/backends; keep current benchmark claims scoped to their measured traces.
 
 ## Latest Bounded Slice Evidence
+
+DLFC-05: configured per-workflow ACL now gates Rust workflow-design REST graph,
+history and mutation routes before application effects, matching Python's
+`require_workflow_access` behavior. The shared `ApplicationService` seam
+delegates ACL lookup to existing backend `AuthStore`; no new ACL representation
+or authorization policy was added. Focused Python and Rust route tests passed
+(**1 each**); Rust TDD red had returned 200 for a principal lacking workflow
+ACL. This closes only the history-read ACL cell and adds no tasklet; DLFC-05
+remains IN PROGRESS, with GOAL-06/08 still OPEN.
 
 In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/scope and active-run capability checks, shared cancel response fields, terminal-repeat idempotency, and atomic recorded-transition/lane cleanup pass `in_memory_run_cancel_matches_shared_contract_and_authority` and `cancel_commits_runtime_transition_and_lane_cleanup_atomically`. Python MCP and in-memory-store comparison tests also pass. This closes only the named memory cancellation cell; GOAL-06 and GOAL-08 remain OPEN pending the full operation/backend matrix.
 
