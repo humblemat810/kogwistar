@@ -2495,19 +2495,52 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         "edges":fixture["edges"]
     }))
     .unwrap();
-    let denied = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/document.upsert_tree".to_owned(),
-            body: body.clone(),
-            principal: json!({
-                "sub":"alice", "user_id":"alice", "role":"ro", "ns":["docs"],
-                "storage_ns":"docs", "capabilities":["write_graph"]
+    let secret = "in-memory-document-tree-test-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let token = |role: &str| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"alice", "user_id":"alice", "role":role,
+                "ns":["docs"], "storage_ns":"docs",
+                "capabilities":["write_graph"], "exp":now + 300
             }),
-        })
-        .await;
-    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service.clone()),
+    );
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("ro")))
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
     assert!(service
         .store
         .replay_events("docs", 0, usize::MAX)
@@ -2516,20 +2549,23 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         .is_empty());
 
     assert!(service.supports_http_operation("POST", "/api/document.upsert_tree"));
-    let response = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/document.upsert_tree".to_owned(),
-            body,
-            principal: json!({
-                "sub":"alice", "user_id":"alice", "role":"rw", "ns":["docs"],
-                "storage_ns":"docs", "capabilities":["write_graph"]
-            }),
-        })
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("rw")))
+                .body(Body::from(body))
+                .unwrap(),
+        )
         .await;
-    assert_eq!(response.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&response.body));
-    let result: Value = serde_json::from_slice(&response.body).unwrap();
+    let response = response.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
     assert_eq!(result["status"], "ok");
     assert_eq!(result["inserted_nodes"], 2);
     assert_eq!(result["inserted_edges"], 1);

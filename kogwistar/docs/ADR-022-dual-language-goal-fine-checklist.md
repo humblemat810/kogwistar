@@ -232,8 +232,9 @@ scope/endpoint visibility checks, default owner ACL derivation, and one atomic
 graph/index batch. The fixture source document is pre-seeded, matching Python's
 existing-document contract. Rust
 `tests::in_memory_document_tree_upsert_matches_graph_extraction_contract`
-(**1 passed**) verifies read-only denial before events, successful graph event
-and projection persistence, owner ACL rows, and local edge endpoint resolution.
+(**1 passed through Axum/JWT HTTP**) verifies read-only denial before events,
+successful graph event and projection persistence, owner ACL rows, and local
+edge endpoint resolution.
 Python `tests/server/test_chat_server_api.py::test_document_upsert_tree_accepts_nonempty_shared_graph_extraction`
 (**1 passed**) and the parity annotation crosswalk check
 `tests/core/test_rust_python_parity_annotations.py::test_rust_python_parity_annotations_resolve_to_shared_executable_contracts`
