@@ -238,26 +238,29 @@ both passed live (**1 each**). Python
 `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_resume_dispatches_request_and_returns_result`
 passed (**1**) against the shared result fixture. No broader MCP matrix closure implied.
 
-DLFC-05/10 InMemory `workflow.run_steps` cell (2026-11-26): TDD first reproduced
-that Rust InMemory omitted the tool. It now admits the Python-equivalent MCP
-role/namespace policy and routes reads through existing runtime-event inspection;
-service execution still requires `workflow.run.read`, authenticated identity,
-and configured workflow ACL. A reader with workflow `ro` ACL may inspect a run
-owned by another user, matching Python MCP; conversation run reads retain their
-owner restriction. The Rust cross-owner regression first failed with
-`KOGWISTAR_RUN_OWNER_FORBIDDEN` before reaching ACL validation, then passed after
-the route-scoped correction. Rust
+DLFC-05/10 InMemory workflow run-read cells (2026-11-26): TDD first reproduced
+that Rust InMemory omitted `workflow.run_steps`, then exposed owner-only checks
+that preempted Python's workflow ACL authorization. It now admits the
+Python-equivalent MCP role/namespace policy and routes steps through existing
+runtime-event inspection. Status and steps require `workflow.run.read` plus
+configured workflow `ro` ACL; workflow event reads require read capability;
+authenticated ACL readers may inspect another user's workflow run. Conversation
+run reads remain owner-scoped. Rust's cross-owner regression first failed with
+`KOGWISTAR_RUN_OWNER_FORBIDDEN`, then passed after the route-scoped correction.
+Rust
 `tests::workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores`
 and `tests::in_memory_workflow_steps_route_enforces_capability_before_run_lookup`
 passed (**1 each**). The integrated test submits a real InMemory run, proves missing
-capability is denied before lookup, workflow ACL denial precedes step projection,
-an ACL `ro` grant permits a distinct reader to inspect the owner's run through
-REST and actual `/mcp/workflow`, and returns a steps array. Python focused batch:
+capability is denied before lookup, no-ACL status/steps are denied, event reads
+require the read capability, and an ACL `ro` grant permits a distinct reader to
+inspect the owner's run status, REST steps, and actual `/mcp/workflow` steps.
+Python focused batch:
 `test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps`,
 `test_chat_service_steps_still_require_read_capability_after_mcp_admission`, and
-`test_run_steps_matches_shared_rust_projection_fixture` (**3 passed**). Rust
-cross-owner regression (**1 passed**). This closes only InMemory steps
-admission/read and authority cells; DLFC-05 and DLFC-10 remain IN PROGRESS.
+`test_run_steps_matches_shared_rust_projection_fixture`, plus status ACL allow
+and deny tests in `tests/server/test_workflow_lineage_api.py` (**5 passed**).
+Rust integrated regression (**1 passed**). This closes only these InMemory
+workflow run-read cells; DLFC-05 and DLFC-10 remain IN PROGRESS.
 
 DLFC-03 additional InMemory cell (2026-11-26): Rust now serves authenticated
 `POST /api/document.upsert_tree` using the shared graph-extraction normalizer,

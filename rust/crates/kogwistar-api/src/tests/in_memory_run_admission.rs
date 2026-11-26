@@ -1009,6 +1009,40 @@ async fn in_memory_workflow_steps_route_enforces_capability_before_run_lookup() 
     )
     .unwrap();
     assert_eq!(acl_denied_body["code"], "KOGWISTAR_WORKFLOW_FORBIDDEN");
+    let status_acl_denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/workflow/runs/steps-run")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token(vec!["workflow.run.read"])),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status_acl_denied.status(), StatusCode::FORBIDDEN);
+    let status_acl_denied_body: Value = serde_json::from_slice(
+        &to_bytes(status_acl_denied.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(status_acl_denied_body["code"], "KOGWISTAR_WORKFLOW_FORBIDDEN");
+    let readable_events = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/steps-run/events?after_seq=0".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"steps-reader", "user_id":"steps-reader", "role":"ro",
+                "ns":["workflow"], "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(readable_events.status, StatusCode::OK.as_u16());
     let auth = rusqlite::Connection::open(&auth_path).unwrap();
     auth.execute(
         "INSERT INTO users (user_id, email, is_active, created_at) VALUES ('steps-reader', 'steps-reader@example.test', 1, CURRENT_TIMESTAMP)",
@@ -1034,6 +1068,28 @@ async fn in_memory_workflow_steps_route_enforces_capability_before_run_lookup() 
     .unwrap();
     assert_eq!(visible_body["run_id"], "steps-run");
     assert!(visible_body["steps"].is_array());
+
+    let visible_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/workflow/runs/steps-run")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token(vec!["workflow.run.read"])),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(visible_status.status(), StatusCode::OK);
+    let visible_status_body: Value = serde_json::from_slice(
+        &to_bytes(visible_status.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(visible_status_body["workflow_id"], "steps-workflow");
 
     let mcp = app
         .oneshot(

@@ -18,7 +18,7 @@ class _Service:
     def get_run(self, run_id):
         if self.missing:
             raise KeyError(f"Workflow run not found: {run_id}")
-        return {"run_id": run_id, "workflow_id": "wf.parent"}
+        return {"run_id": run_id, "workflow_id": "wf.parent", "user_id": "run-owner"}
 
     def workflow_run_lineage(self, run_id):
         return {"run_id": run_id, "lineage": self.lineage}
@@ -90,6 +90,13 @@ def test_run_status_denies_unauthorized_workflow():
     with _client(_Service(), set()) as client:
         response = client.get("/api/workflow/runs/private-run")
     assert response.status_code == 403
+
+
+def test_run_status_allows_acl_reader_who_does_not_own_run():
+    with _client(_Service(), {"wf.parent"}) as client:
+        response = client.get("/api/workflow/runs/shared-run")
+    assert response.status_code == 200
+    assert response.json()["user_id"] == "run-owner"
 
 
 def test_lineage_returns_404_for_missing_run():
