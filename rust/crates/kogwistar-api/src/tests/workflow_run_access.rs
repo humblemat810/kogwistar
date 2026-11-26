@@ -235,11 +235,45 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
 // PYTHON_PARITY_NOTE_V1: InMemory lineage matches Python REST and MCP projections, admission, missing-run status, limit handling, and ACL-visible prefix. Python=kogwistar/server/chat_service_run_inspection.py#ChatRunService.workflow_run_lineage+kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run_lineage+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_lineage; fixture=contracts/golden/workflow-run-lineage-v1.json; python_test=kogwistar/tests/server/test_workflow_lineage_api.py#test_python_lineage_stops_at_parent_hidden_by_graph_acl+test_lineage_returns_404_for_missing_run+kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_lineage_matches_shared_contract+test_mcp_workflow_run_lineage_denies_scope_capability_and_child_acl.
 #[tokio::test]
 async fn in_memory_workflow_lineage_route_matches_shared_contract() {
-    let service = InMemoryGraphApplicationService::default();
     let contract: Value = serde_json::from_str(include_str!(
         "../../../../../contracts/golden/workflow-run-lineage-v1.json"
     ))
     .unwrap();
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-memory-lineage-auth-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let auth = SqliteAuthStore::open(&auth_path).unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "lineage-alice".to_owned(),
+        email: "lineage-alice@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "alice".to_owned(),
+        default_role: "ro".to_owned(),
+        default_ns: "workflow".to_owned(),
+    })
+    .await
+    .unwrap();
+    drop(auth);
+    let auth_connection = rusqlite::Connection::open(&auth_path).unwrap();
+    for workflow_id in ["wf-child", "wf-parent", "wf-visible"] {
+        auth_connection
+            .execute(
+                "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?1, 'alice', 'ro')",
+                [workflow_id],
+            )
+            .unwrap();
+    }
+    drop(auth_connection);
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = InMemoryGraphApplicationService::default()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
     let route = "/api/workflow/runs/lineage-child/lineage";
     assert!(service.supports_http_operation("GET", route));
     let lineage_principal = json!({
@@ -566,6 +600,7 @@ async fn in_memory_workflow_lineage_route_matches_shared_contract() {
     )
     .unwrap();
     let denied_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -588,6 +623,43 @@ async fn in_memory_workflow_lineage_route_matches_shared_contract() {
         denied_payload["error"]["data"]["code"],
         "KOGWISTAR_CAPABILITY_FORBIDDEN"
     );
+
+    let unauthorized_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"charlie", "user_id":"charlie", "role":"ro",
+            "storage_ns":"conversation", "workspace_id":"workspace-a",
+            "graph_space":"conversation", "ns":["workflow"],
+            "capabilities":["workflow.run.read"], "iss":"local",
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let unauthorized_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {unauthorized_token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workflow.run_lineage","arguments":{"run_id":"lineage-child"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unauthorized_response.status(), StatusCode::OK);
+    let unauthorized_body = to_bytes(unauthorized_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let unauthorized_payload: Value = serde_json::from_slice(&unauthorized_body).unwrap();
+    assert_eq!(
+        unauthorized_payload["error"]["data"]["code"],
+        "KOGWISTAR_WORKFLOW_FORBIDDEN"
+    );
+    let _ = std::fs::remove_file(auth_path);
 }
 
 #[tokio::test]

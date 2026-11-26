@@ -434,8 +434,9 @@ equality with `workflow-run-lineage-v1.json`, limit/truncation, missing-run
 response. The existing InMemory MCP allowlist and admission now expose the
 tool only under Python-equivalent role/workflow-namespace policy; actual
 authenticated MCP denial without `workflow.run.read` returns
-`KOGWISTAR_CAPABILITY_FORBIDDEN`, while execution enforces graph/workflow
-authority. Python REST lineage
+`KOGWISTAR_CAPABILITY_FORBIDDEN`; configured workflow ACL denial returns
+`KOGWISTAR_WORKFLOW_FORBIDDEN`, while graph ACL preserves the visible prefix.
+Python REST lineage
 module `tests/server/test_workflow_lineage_api.py` (**8 passed**) and MCP
 selectors `test_mcp_workflow_run_lineage_matches_shared_contract` plus
 `test_mcp_workflow_run_lineage_denies_scope_capability_and_child_acl` (**2
