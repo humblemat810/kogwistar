@@ -326,7 +326,7 @@ async fn postgres_resume_roundtrip(resume_via_mcp: bool, dsn: &str, contract: Va
     assert_eq!(resumed["budget"], json!({}));
 
     drop(service);
-    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+    let (cleanup, connection) = tokio_postgres::connect(dsn, tokio_postgres::NoTls)
         .await
         .unwrap();
     let cleanup_task = tokio::spawn(connection);

@@ -725,8 +725,11 @@ async fn sqlite_chroma_vector_query_matches_shared_python_acl_contract() {
                     ranked.truncate(request["n_results"].as_u64().unwrap() as usize);
                     // Simulate a stale projection leaking a tombstoned row despite
                     // the lifecycle exclusion in the Chroma query.
-                    ranked.extend(candidates.iter().filter_map(|candidate| {
-                        (candidate["lifecycle_status"] == "tombstoned").then(|| {
+                    ranked.extend(
+                        candidates
+                            .iter()
+                            .filter(|candidate| candidate["lifecycle_status"] == "tombstoned")
+                            .map(|candidate| {
                             let embedding = candidate["embedding"].as_array().unwrap();
                             let dot = query[0] * embedding[0].as_f64().unwrap()
                                 + query[1] * embedding[1].as_f64().unwrap();
@@ -735,8 +738,8 @@ async fn sqlite_chroma_vector_query_matches_shared_python_acl_contract() {
                                 embedding[1].as_f64().unwrap(),
                             );
                             (candidate, 1.0 - dot / (q_norm * v_norm))
-                        })
-                    }));
+                        }),
+                    );
                     let ids = ranked
                         .iter()
                         .map(|(candidate, _)| candidate["id"].clone())

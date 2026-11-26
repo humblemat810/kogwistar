@@ -2274,9 +2274,10 @@ impl InMemoryGraphApplicationService {
                 "Graph upsert endpoint is tombstoned",
             );
         }
-        let mut external = GraphUpsertExternalEndpoints::default();
-        external.node_ids = external_nodes;
-        external.edge_ids = external_edges.keys().cloned().collect();
+        let external = GraphUpsertExternalEndpoints {
+            node_ids: external_nodes,
+            edge_ids: external_edges.keys().cloned().collect(),
+        };
         let (batch_input, node_ids, edge_ids) = match graph_upsert_mutation_batch(
             &input,
             &source_text,
@@ -5520,28 +5521,25 @@ impl InMemoryGraphApplicationService {
                 );
             }
         };
-        if tail.is_empty()
-            || is_runtime_inspection_tail(&tail_refs)
+        if (tail.is_empty() || is_runtime_inspection_tail(&tail_refs))
+            && !is_mcp_workflow_status_read(request)
+            && let Some(auth_store) = self.owner_auth_store.as_ref()
         {
-            if !is_mcp_workflow_status_read(request)
-                && let Some(auth_store) = self.owner_auth_store.as_ref()
-            {
-                match auth_store.workflow_access_allowed(&run.workflow_id, owner_id, "ro").await {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        return effect_error(
-                            StatusCode::FORBIDDEN,
-                            "KOGWISTAR_WORKFLOW_FORBIDDEN",
-                            "User does not have read access to this workflow",
-                        );
-                    }
-                    Err(error) => {
-                        return effect_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "KOGWISTAR_AUTH_STORE_ERROR",
-                            error,
-                        );
-                    }
+            match auth_store.workflow_access_allowed(&run.workflow_id, owner_id, "ro").await {
+                Ok(true) => {}
+                Ok(false) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                        "User does not have read access to this workflow",
+                    );
+                }
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_AUTH_STORE_ERROR",
+                        error,
+                    );
                 }
             }
         }

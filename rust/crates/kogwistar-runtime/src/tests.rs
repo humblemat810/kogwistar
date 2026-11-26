@@ -211,7 +211,7 @@
         };
         let wire = serde_json::to_value(&request).unwrap();
         assert!(wire.get("ephemeral_context").is_none());
-        assert!(serde_json::to_string(&wire).unwrap().find("private").is_none());
+        assert!(!serde_json::to_string(&wire).unwrap().contains("private"));
         let restored: RuntimeNativeStepRequest = serde_json::from_value(wire).unwrap();
         assert!(restored.ephemeral_context.is_empty());
     }
