@@ -5441,7 +5441,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-        // PYTHON_PARITY_NOTE_V1: in-memory run inspection and lineage use Python-equivalent owner, workflow ACL, graph ACL, and namespace checks. Python=kogwistar/server/chat_service_run_inspection.py#ChatRunService.workflow_run_lineage+kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run_lineage; Rust test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_workflow_lineage_route_matches_shared_contract; Python test=kogwistar/tests/server/test_workflow_lineage_api.py#test_python_lineage_stops_at_parent_hidden_by_graph_acl.
+    // PYTHON_PARITY_NOTE_V1: in-memory run inspection and lineage use Python-equivalent owner, workflow ACL, graph ACL, and namespace checks. Python=kogwistar/server/chat_service_run_inspection.py#ChatRunService.workflow_run_lineage+kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run_lineage; Rust test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_workflow_lineage_route_matches_shared_contract; Python test=kogwistar/tests/server/test_workflow_lineage_api.py#test_python_lineage_stops_at_parent_hidden_by_graph_acl.
     async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());

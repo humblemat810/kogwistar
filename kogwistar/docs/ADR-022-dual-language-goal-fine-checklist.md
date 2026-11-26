@@ -427,12 +427,15 @@ invisible parent, handles cycles/tombstones, returns 404 for a missing run,
 and supports the existing bounded `limit` response. Rust
 `tests::in_memory_workflow_lineage_route_matches_shared_contract` checks exact
 equality with `workflow-run-lineage-v1.json`, limit/truncation, missing-run
-404, and parent-hidden visible-prefix (**1 passed**). Python lineage module
+404, wrong-namespace/capability denials, and parent-hidden visible-prefix
+(**1 passed**). Python lineage module
 `tests/server/test_workflow_lineage_api.py` (**8 passed**), including the real
 ACL-enabled in-memory `ChatRunService` oracle and missing-run 404; Rust
-`cargo fmt --all -- --check` passed. This closes only the InMemory lineage REST
-cell; broader read/query operation/backend cells remain open, so DLFC-06 stays
-IN PROGRESS.
+`test_rust_python_parity_annotations_resolve_to_shared_executable_contracts`
+(**1 passed**), `cargo fmt --all -- --check`, and
+`cargo clippy -p kogwistar-api --all-targets -- -D warnings` passed. This
+closes only the InMemory lineage REST cell; broader read/query operation/backend
+cells remain open, so DLFC-06 stays IN PROGRESS.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
