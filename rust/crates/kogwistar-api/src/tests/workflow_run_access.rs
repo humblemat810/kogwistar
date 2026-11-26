@@ -465,6 +465,104 @@ async fn in_memory_run_steps_route_matches_shared_python_projection() {
 }
 
 #[tokio::test]
+async fn in_memory_checkpoint_and_replay_routes_match_python_contracts() {
+    let service = InMemoryGraphApplicationService::default();
+    let run_id = "checkpoint-run";
+    kogwistar_store::ServerRunWriteStore::create_server_run(
+        &service.store,
+        ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: "checkpoint-conversation".to_owned(),
+            workflow_id: "checkpoint-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "checkpoint-turn".to_owned(),
+            status: "running".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    for (step_seq, state) in [(0, json!({"cursor":"start"})), (3, json!({"cursor":"later"}))] {
+        kogwistar_store::ServerRunWriteStore::append_server_run_event(
+            &service.store,
+            run_id,
+            "workflow.recorded_transition.v1",
+            json!({
+                "transition_id": format!("checkpoint-transition-{step_seq}"),
+                "reduced": {
+                    "state": {
+                        "last_step_seq": step_seq,
+                        "workflow_id": "checkpoint-workflow",
+                        "last_node_id": "prepare",
+                        "state": state
+                    },
+                    "state_update": [],
+                    "result": null,
+                    "errors": [],
+                    "server_status": "running"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+    }
+    let principal = json!({
+        "sub":"alice", "user_id":"alice", "role":"ro",
+        "ns":["workflow"], "capabilities":["workflow.run.read"]
+    });
+    for (suffix, fixture_name) in [
+        ("checkpoints", "run-checkpoints-v1.json"),
+        ("checkpoints/3", "run-checkpoint-detail-v1.json"),
+        ("replay?target_step_seq=3", "run-replay-v1.json"),
+    ] {
+        let path = format!("/api/runs/{run_id}/{suffix}");
+        assert!(service.supports_http_operation("GET", &path), "{path}");
+        let fixture: Value = serde_json::from_str(
+            &std::fs::read_to_string(
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../contracts/golden")
+                    .join(fixture_name),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: path.clone(),
+                body: Vec::new(),
+                principal: principal.clone(),
+            })
+            .await;
+        assert_eq!(response.status as u64, fixture["success_status"], "{path}");
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["run_id"], run_id);
+        if suffix == "checkpoints" {
+            assert_eq!(body["checkpoints"].as_array().unwrap().len(), 2);
+            assert_eq!(body["checkpoints"][0]["step_seq"], 0);
+            assert_eq!(body["checkpoints"][1]["step_seq"], 3);
+            assert_eq!(body["checkpoints"][1]["state"], json!({"cursor":"later"}));
+        } else {
+            assert_eq!(body["state"], json!({"cursor":"later"}));
+        }
+        let denied = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: path,
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice", "user_id":"alice", "role":"ro",
+                    "ns":["conversation"], "capabilities":["workflow.run.read"]
+                }),
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    }
+}
+
+#[tokio::test]
 async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
     let service = PostgresRunApplicationService::from_dsn(
         "postgres://unused:unused@127.0.0.1:1/unused",

@@ -2902,8 +2902,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
         }
         if method == "GET"
             && runtime_run_route(path).is_some_and(|(_, tail)| {
+                let tail_refs = tail.iter().map(String::as_str).collect::<Vec<_>>();
                 tail.is_empty()
-                    || tail.as_slice() == ["steps"]
+                    || is_runtime_inspection_tail(&tail_refs)
                     || tail.as_slice() == ["events"]
                     || tail.as_slice() == ["events", "poll"]
                     || tail.as_slice() == ["evidence"]
@@ -5438,11 +5439,12 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-    // PYTHON_PARITY_NOTE_V1: HTTP run evidence uses workflow namespace, workflow.run.read, project_view, owner scope, and ACL-filtered conversation snapshots; Python counterpart is chat_api.get_run_evidence -> ChatRunService.run_evidence/latest_snapshot. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/chat_api.py#create_chat_router.get_run_evidence+kogwistar/server/chat_service.py#ChatRunService.run_evidence; fixture=contracts/golden/run-evidence-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_evidence_route_matches_shared_contract; python_test=tests/server/test_chat_server_api.py#test_run_evidence_uses_python_defaults_and_checks_namespace
+        // PYTHON_PARITY_NOTE_V1: in-memory run inspection uses recorded runtime events and Python-equivalent workflow namespace/capability checks. Python=kogwistar/server/chat_api.py#create_chat_router.get_run_steps+get_run_checkpoints+get_checkpoint+replay_run; Rust test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_checkpoint_and_replay_routes_match_python_contracts.
     async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());
         };
+        let tail_refs = tail.iter().map(String::as_str).collect::<Vec<_>>();
         let required_namespace =
             runtime_run_namespace(&request.path_and_query).unwrap_or("workflow");
         if !principal_strings(&request.principal, "ns")
@@ -5486,7 +5488,7 @@ impl InMemoryGraphApplicationService {
         };
         let workflow_run_read = required_namespace == "workflow"
             && (tail.is_empty()
-                || tail.as_slice() == ["steps"]
+                || is_runtime_inspection_tail(&tail_refs)
                 || tail.as_slice() == ["events"]
                 || tail.as_slice() == ["events", "poll"]);
         let delegated_workflow_read = workflow_run_read
@@ -5518,7 +5520,9 @@ impl InMemoryGraphApplicationService {
                 );
             }
         };
-        if tail.is_empty() || tail.as_slice() == ["steps"] {
+        if tail.is_empty()
+            || is_runtime_inspection_tail(&tail_refs)
+        {
             if !is_mcp_workflow_status_read(request)
                 && let Some(auth_store) = self.owner_auth_store.as_ref()
             {
@@ -5586,10 +5590,8 @@ impl InMemoryGraphApplicationService {
         )
         .await
         {
-            Ok(events)
-                if tail.as_slice() == ["steps"] =>
-            {
-                runtime_inspection_effect(request, &run_id, &["steps"], events)
+            Ok(events) if is_runtime_inspection_tail(&tail_refs) => {
+                runtime_inspection_effect(request, &run_id, &tail_refs, events)
             }
             Ok(events)
                 if tail.as_slice() == ["events"] || tail.as_slice() == ["events", "poll"] =>
