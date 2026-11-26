@@ -1873,7 +1873,7 @@ async def test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning
 
     def get_run(run_id: str) -> dict[str, str]:
         reads.append(f"run:{run_id}")
-        return {"workflow_id": "private-workflow"}
+        return {"workflow_id": "private-workflow", "user_id": "run-owner"}
 
     def list_steps(run_id: str) -> list[dict[str, str]]:
         reads.append(f"steps:{run_id}")
@@ -1908,6 +1908,34 @@ async def test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning
     assert denied.value.status_code == 403
     assert access_checks == [("private-workflow", "ro")]
     assert reads == ["run:private-run"]
+
+    def allow_workflow_access(workflow_id: str, role: str) -> None:
+        access_checks.append((workflow_id, role))
+
+    delegated_workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=allow_workflow_access,
+    )
+    with _claims("ro", "workflow", sub="steps-reader"):
+        delegated = await delegated_workflow_mcp._execute(
+            "workflow.run_steps",
+            {"run_id": "private-run"},
+            enforce_visibility=True,
+        )
+
+    assert _structured(delegated) == {
+        "run_id": "private-run",
+        "steps": [{"step_seq": 1}],
+    }
+    assert access_checks[-1] == ("private-workflow", "ro")
+    assert reads[-2:] == ["run:private-run", "steps:private-run"]
 
 
 @pytest.mark.asyncio

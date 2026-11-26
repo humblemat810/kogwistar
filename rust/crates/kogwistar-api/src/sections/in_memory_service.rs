@@ -5408,7 +5408,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-    // PYTHON_PARITY_NOTE_V1: In-memory run steps reuse recorded runtime events; steps enforce read capability, run ownership, and configured workflow ACL. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_steps_route_enforces_capability_before_run_lookup; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture+tests/mcp/test_chat_mcp_tools.py#test_chat_service_steps_still_require_read_capability_after_mcp_admission
+    // PYTHON_PARITY_NOTE_V1: In-memory workflow steps reuse recorded runtime events; authenticated workflow readers pass read capability and configured workflow ACL, matching Python MCP admission. Conversation run reads remain owner-scoped. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_steps_route_enforces_capability_before_run_lookup; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture+tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps
     async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());
@@ -5444,9 +5444,15 @@ impl InMemoryGraphApplicationService {
                 "Run inspection requires an authenticated owner",
             );
         };
+        let acl_delegated_workflow_steps =
+            required_namespace == "workflow" && tail.as_slice() == ["steps"];
         let run = match kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id).await
         {
-            Ok(Some(run)) if run.user_id.as_deref() == Some(owner_id) => run,
+            Ok(Some(run))
+                if run.user_id.as_deref() == Some(owner_id) || acl_delegated_workflow_steps =>
+            {
+                run
+            }
             Ok(Some(_)) => {
                 return effect_error(
                     StatusCode::FORBIDDEN,

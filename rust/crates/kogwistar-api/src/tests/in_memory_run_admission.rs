@@ -925,7 +925,7 @@ async fn in_memory_workflow_steps_route_enforces_capability_before_run_lookup() 
             }))
             .unwrap(),
             principal: json!({
-                "sub":"steps-reader", "user_id":"steps-reader", "role":"rw",
+                "sub":"run-owner", "user_id":"run-owner", "role":"rw",
                 "ns":["workflow"], "capabilities":["spawn_process", "workflow.run.write"]
             }),
         })

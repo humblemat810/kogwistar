@@ -241,18 +241,23 @@ passed (**1**) against the shared result fixture. No broader MCP matrix closure 
 DLFC-05/10 InMemory `workflow.run_steps` cell (2026-11-26): TDD first reproduced
 that Rust InMemory omitted the tool. It now admits the Python-equivalent MCP
 role/namespace policy and routes reads through existing runtime-event inspection;
-service execution still requires `workflow.run.read`, authenticated run ownership,
-and configured workflow ACL. Rust
+service execution still requires `workflow.run.read`, authenticated identity,
+and configured workflow ACL. A reader with workflow `ro` ACL may inspect a run
+owned by another user, matching Python MCP; conversation run reads retain their
+owner restriction. The Rust cross-owner regression first failed with
+`KOGWISTAR_RUN_OWNER_FORBIDDEN` before reaching ACL validation, then passed after
+the route-scoped correction. Rust
 `tests::workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores`
 and `tests::in_memory_workflow_steps_route_enforces_capability_before_run_lookup`
 passed (**1 each**). The integrated test submits a real InMemory run, proves missing
 capability is denied before lookup, workflow ACL denial precedes step projection,
-an ACL `ro` grant permits REST and actual `/mcp/workflow` reads, and returns a
-steps array. Python adjacent oracles
-`test_chat_service_steps_still_require_read_capability_after_mcp_admission` and
-`test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps`
-passed in the prior focused batch. This closes only InMemory steps admission/read
-and authority cells; DLFC-05 and DLFC-10 remain IN PROGRESS.
+an ACL `ro` grant permits a distinct reader to inspect the owner's run through
+REST and actual `/mcp/workflow`, and returns a steps array. Python focused batch:
+`test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps`,
+`test_chat_service_steps_still_require_read_capability_after_mcp_admission`, and
+`test_run_steps_matches_shared_rust_projection_fixture` (**3 passed**). Rust
+cross-owner regression (**1 passed**). This closes only InMemory steps
+admission/read and authority cells; DLFC-05 and DLFC-10 remain IN PROGRESS.
 
 DLFC-03 additional InMemory cell (2026-11-26): Rust now serves authenticated
 `POST /api/document.upsert_tree` using the shared graph-extraction normalizer,
