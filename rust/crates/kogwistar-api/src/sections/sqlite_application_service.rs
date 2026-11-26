@@ -357,8 +357,8 @@ impl ApplicationService for SqliteRunApplicationService {
                     || self.embedding_provider.is_some());
         }
         name != "workflow.tool_audit"
-            && name != "workflow.run_evidence"
             && name != "workflow.run_lineage"
+            && (name != "workflow.run_evidence" || self.chroma_graph.is_some())
             && (name != "conversation.create" || self.chroma_graph.is_some())
             && (name != "conversation.ask"
                 || (self.chroma_graph.is_some()
@@ -553,6 +553,25 @@ impl ApplicationService for SqliteRunApplicationService {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             return effective_capabilities(principal, &state).contains("workflow.run.read")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_NOTE_V1: run-evidence MCP admission requires workflow.run.read + project_view; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_evidence; python_test=tests/server/test_chat_server_api.py#test_run_evidence_uses_python_defaults_and_checks_namespace; fixture=contracts/golden/run-evidence-v1.json.
+        if name == "workflow.run_evidence" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return capabilities.contains("workflow.run.read")
+                && capabilities.contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
         // PYTHON_PARITY_NOTE_V1: dashboard preflights nested read capabilities before MCP dispatch; rust=kogwistar/rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard+kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_operator_dashboard_mcp_admission_matches_python_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
@@ -1621,6 +1640,86 @@ impl ApplicationService for SqliteRunApplicationService {
                         }
                     }
                 }
+            }
+            // PYTHON_PARITY_NOTE_V1: run evidence combines the SQLite run registry
+            // with the authorized conversation graph projection; Python counterpart
+            // is chat_api.get_run_evidence and Postgres uses the same snapshot contract.
+            if request.method == "GET"
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["evidence"]
+            {
+                if !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+                {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                        "Run evidence reads require workflow namespace",
+                    );
+                }
+                for (action, message) in [
+                    (
+                        "workflow.run.read",
+                        "Reading run evidence requires workflow.run.read capability",
+                    ),
+                    (
+                        "project_view",
+                        "Reading run evidence snapshots requires project_view capability",
+                    ),
+                ] {
+                    if !capability_allowed(&request, &self.capabilities, action, &[action]) {
+                        return effect_error(
+                            StatusCode::FORBIDDEN,
+                            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                            message,
+                        );
+                    }
+                }
+                if self.chroma_graph.is_none() {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                        "SQLite run evidence requires a configured conversation graph projection",
+                    );
+                }
+                let run = match self.get_run(&run_id) {
+                    Ok(Some(run)) => run,
+                    Ok(None) => {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Unknown run_id: {run_id}"),
+                        );
+                    }
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error,
+                        );
+                    }
+                };
+                let graph = match self.chroma_graph_snapshot(&request, "conversation").await {
+                    Ok(graph) => graph,
+                    Err(response) => return response,
+                };
+                let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+                    graph.nodes(),
+                    &run.conversation_id,
+                    Some(&run_id),
+                    None,
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                            error.to_string(),
+                        );
+                    }
+                };
+                return json_effect(StatusCode::OK, public_run_evidence_value(&run_id, snapshot));
             }
             self.execute_sync(request)
         })

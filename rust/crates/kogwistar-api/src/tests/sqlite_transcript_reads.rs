@@ -60,6 +60,7 @@
                         ("turn-other-workspace", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":4,"role":"assistant","summary":"other workspace","workspace_id":"workspace-b"})),
                         ("turn-other-graph-space", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":5,"role":"assistant","summary":"other graph space","graph_space":"knowledge"})),
                         ("snapshot", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer","snapshot_seq":7})),
+                        ("9553a4db-7963-57ac-97b3-6dbd96366bc5", json!({"entity_type":"context_snapshot","conversation_id":"evidence-conversation","run_id":"evidence-run","run_step_seq":5,"used_node_ids":["evidence-node-1","evidence-node-2"],"lifecycle_status":"active"})),
                         ("snapshot-private", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-private","stage":"answer","snapshot_seq":8})),
                         ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
@@ -68,6 +69,7 @@
                         ("acl-turn-other-workspace", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-workspace","acl_version":1,"acl_mode":"public","workspace_id":"workspace-b"})),
                         ("acl-turn-other-graph-space", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-graph-space","acl_version":1,"acl_mode":"public","graph_space":"knowledge"})),
                         ("acl-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot","acl_version":1,"acl_mode":"public"})),
+                        ("acl-evidence-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"9553a4db-7963-57ac-97b3-6dbd96366bc5","acl_version":1,"acl_mode":"public"})),
                         ("acl-snapshot-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
                         ("foreign-start", json!({"entity_type":"conversation_start","conversation_id":"c-foreign","user_id":"other-user","status":"active"})),
                         ("acl-foreign-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"foreign-start","acl_version":1,"acl_mode":"public"})),
@@ -97,6 +99,8 @@
                         "documents": nodes.iter().map(|(id, _)| {
                             if *id == "snapshot" {
                                 r#"{"metadata":{"summary":"stored summary"},"properties":{"references":["evidence-1"]}}"#.to_owned()
+                            } else if *id == "9553a4db-7963-57ac-97b3-6dbd96366bc5" {
+                                r#"{"metadata":{"entity_type":"context_snapshot","conversation_id":"evidence-conversation","run_id":"evidence-run","run_step_seq":5,"used_node_ids":["evidence-node-1","evidence-node-2"]},"properties":{"evidence_pack_digest":"{\"items\":2}"}}"#.to_owned()
                             } else {
                                 "{}".to_owned()
                             }
@@ -133,6 +137,14 @@
         )
         .await
         .unwrap();
+        service.store.create_server_run(kogwistar_store::ServerRunCreate {
+            run_id: "evidence-run".to_owned(),
+            conversation_id: "evidence-conversation".to_owned(),
+            workflow_id: "workflow-evidence".to_owned(),
+            user_id: Some("reader-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "succeeded".to_owned(),
+        }).unwrap();
         // ACL decisions are canonical SQLite events; Chroma contains only the graph projection.
         for (target, mode, owner) in [
             ("start", "public", None),
@@ -141,6 +153,7 @@
             ("empty-marker", "public", None),
             ("turn-private", "private", Some("someone-else")),
             ("snapshot", "public", None),
+            ("9553a4db-7963-57ac-97b3-6dbd96366bc5", "public", None),
             ("snapshot-private", "private", Some("someone-else")),
             ("foreign-start", "public", None),
         ] {
@@ -192,6 +205,89 @@
             "sub":"reader-1", "user_id":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
             "graph_space":"conversation", "ns":["conversation"], "capabilities":["read_graph"]
         });
+        let evidence_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-evidence-v1.json"
+        )).unwrap();
+        for (principal, code) in [
+            (
+                json!({"sub":"reader-1","role":"ro","ns":["workflow"],"capabilities":["workflow.run.read"]}),
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            ),
+            (
+                json!({"sub":"reader-1","role":"ro","ns":["conversation"],"capabilities":["workflow.run.read","project_view"]}),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+        ] {
+            let denied = service
+                .execute(read_request("/api/workflow/runs/evidence-run/evidence", principal))
+                .await;
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(serde_json::from_slice::<Value>(&denied.body).unwrap()["code"], code);
+        }
+        let evidence = service.execute(read_request(
+            "/api/workflow/runs/evidence-run/evidence",
+            json!({
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read","project_view"]
+            }),
+        )).await;
+        assert_eq!(evidence.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&evidence.body));
+        assert_eq!(serde_json::from_slice::<Value>(&evidence.body).unwrap(), evidence_contract);
+        assert!(service.supports_mcp_tool("workflow", "workflow.run_evidence"));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.run_evidence",
+            &json!({"role":"ro","ns":["workflow"],"capabilities":["workflow.run.read"]})
+        ));
+        assert!(service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.run_evidence",
+            &json!({"role":"ro","ns":["workflow"],"capabilities":["workflow.run.read","project_view"]})
+        ));
+        let evidence_token = encode(
+            &Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read","project_view"], "exp":4_102_444_800_u64
+            }),
+            &EncodingKey::from_secret(b"sqlite-chroma-transcript-secret"),
+        )
+        .unwrap();
+        let evidence_mcp = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        )
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {evidence_token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workflow.run_evidence","arguments":{"run_id":"evidence-run"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(evidence_mcp.status(), StatusCode::OK);
+        let evidence_mcp_body = to_bytes(evidence_mcp.into_body(), 65_536).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&evidence_mcp_body).unwrap()["result"],
+            evidence_contract
+        );
         let denied = service
             .execute(request(
                 "receive_message",

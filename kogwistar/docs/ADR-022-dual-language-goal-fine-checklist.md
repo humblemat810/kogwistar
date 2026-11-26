@@ -205,6 +205,10 @@ time into shared-fixture Python/Rust parity tests, keeping unsupported cells
 as explicit fail-closed tests. Do not mark `PARTIAL` as PASS based only on
 these existing focused selectors.
 
+### DLFC-06 Evidence Update (Existing Tasklet)
+
+SQLite+Chroma now advertises MCP `workflow.run_evidence` only when a conversation graph projection is configured; the handler reads the canonical SQLite run registry and ACL/scope-filtered Chroma conversation projection, then reuses `ContextSnapshotV1` and `run-evidence-v1.json`. Axum MCP test `tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` checks exact fixture equality, tool admission, missing-capability/namespace denials, and an actual `/mcp/workflow` call (**1 passed**); `tests::run_evidence_checks_authority_before_run_lookup` (**3 passed, 1 ignored**) and `tests::sqlite_run_service_handles_get_events_and_cancel` (**1 passed**) preserve authority-before-lookup and metadata-only SQLite fail-closed behavior. `cargo fmt --manifest-path rust/Cargo.toml --all -- --check` passed. This closes only the SQLite+Chroma run-evidence backend cell; DLFC-06 remains `IN PROGRESS` because its broader read/query and HTTP/ACL/backend matrix is not yet closed.
+
 ## Coarse Mapping
 
 DLFC-10 additive evidence (2026-11-26): Rust authenticated MCP `workflow.run_resume`
