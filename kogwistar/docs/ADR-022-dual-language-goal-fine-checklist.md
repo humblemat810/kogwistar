@@ -364,6 +364,13 @@ a disposable local `chromadb/chroma:latest` container
 read/projection path only; remaining HTTP/read ACL and backend cells keep
 DLFC-06 IN PROGRESS.
 
+Python route counterpart (2026-11-26):
+`tests/server/test_workflow_lineage_api.py::test_lineage_returns_visible_prefix_when_graph_read_omits_parent`
+passes (**1 passed**). It verifies that REST preserves the visible lineage
+prefix returned by its service when an ACL-filtered graph read omits a parent.
+This is a route projection test using a stub service, not an integrated proof
+of Python GraphRead ACL filtering; it does not close additional DLFC-06 cells.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

@@ -86,6 +86,25 @@ def test_lineage_denies_unauthorized_parent_or_child():
         assert client.get("/api/workflow/runs/child/lineage").status_code == 200
 
 
+def test_lineage_returns_visible_prefix_when_graph_read_omits_parent():
+    visible_child = {
+        "run_id": "lineage-child",
+        "workflow_id": "wf-child",
+        "parent_run_id": "lineage-parent",
+        "status": "completed",
+        "wf_invoked": [],
+    }
+    service = _Service(lineage=[visible_child])
+    with _client(service, {"wf.parent", "wf-child"}) as client:
+        response = client.get("/api/workflow/runs/lineage-child/lineage")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "lineage-child",
+        "lineage": [visible_child],
+    }
+
+
 def test_run_status_denies_unauthorized_workflow():
     with _client(_Service(), set()) as client:
         response = client.get("/api/workflow/runs/private-run")
