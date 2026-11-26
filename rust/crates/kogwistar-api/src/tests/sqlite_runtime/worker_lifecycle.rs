@@ -1746,6 +1746,119 @@
         sqlite_resume_syscall_roundtrip(service, path, resume_contract, true).await;
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#workflow_run_cancel; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_mcp_cancel_commits_one_durable_event; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_mcp_cancel_commits_one_durable_event() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use kogwistar_store::ServerRunCreate;
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("KOGWISTAR_TEST_CHROMA_URL must point to live Chroma");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let config = |kind: &str| kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint: endpoint.clone(),
+            collection: format!("mcp-cancel-{kind}-{suffix}"),
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            config("nodes"),
+            config("edges"),
+        )
+        .await
+        .unwrap();
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-mcp-cancel-{nonce}.sqlite3"));
+        let store = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
+        let run_id = "sqlite-chroma-mcp-cancel-run";
+        store
+            .create_server_run(ServerRunCreate {
+                run_id: run_id.to_owned(),
+                conversation_id: "mcp-cancel-conversation".to_owned(),
+                workflow_id: "mcp-cancel-workflow".to_owned(),
+                user_id: Some("alice".to_owned()),
+                user_turn_node_id: "mcp-cancel-turn".to_owned(),
+                status: "running".to_owned(),
+            })
+            .unwrap();
+        let events_before = store.list_server_run_events(run_id, 0, 100).unwrap();
+        let service = SqliteRunApplicationService::open(&path)
+            .unwrap()
+            .with_chroma_graph(graph);
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(service.clone()),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0",
+                        "id":"sqlite-chroma-cancel",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"workflow.run_cancel",
+                            "arguments":{"run_id":run_id}
+                        }
+                    })).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 8192).await.unwrap(),
+        )
+        .unwrap();
+        let cancel_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../../contracts/golden/workflow-run-cancel-mcp-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(response["id"], "sqlite-chroma-cancel");
+        assert_eq!(response["result"]["run_id"], run_id);
+        assert_eq!(response["result"]["status"], "cancelling");
+        assert_eq!(response["result"]["cancel_requested"], true);
+        assert_eq!(
+            cancel_fixture["result"]["status"],
+            response["result"]["status"]
+        );
+        assert_eq!(
+            cancel_fixture["result"]["cancel_requested"],
+            response["result"]["cancel_requested"]
+        );
+
+        let events_after = service.store.list_server_run_events(run_id, 0, 100).unwrap();
+        let cancel_event = "run.cancelling";
+        let count_cancel_events = |events: &[kogwistar_store::ServerRunEvent]| {
+            events
+                .iter()
+                .filter(|event| event.event_type == cancel_event)
+                .count()
+        };
+        assert_eq!(count_cancel_events(&events_after), count_cancel_events(&events_before) + 1);
+        assert!(service.store.get_server_run(run_id).unwrap().unwrap().cancel_requested);
+
+        drop(service);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
     async fn sqlite_resume_syscall_roundtrip(
         service: SqliteRunApplicationService,
         path: std::path::PathBuf,
