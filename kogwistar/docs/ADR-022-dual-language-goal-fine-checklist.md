@@ -470,6 +470,14 @@ InMemory selector; this checklist records the additional SQLite oracle. This
 proves SQLite canonical event-store behavior only, not a live Chroma projection;
 DLFC-06 remains IN PROGRESS.
 
+DLFC-10 SQLite MCP `workflow.budget_snapshot` result cell (2026-11-27): Python
+`tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_budget_snapshot_matches_shared_contract`
+and Rust `tests::sqlite_run_service_handles_get_events_and_cancel` now compare
+the complete `cost_ledger` to `expected_cost_ledger` in the shared
+`workflow-budget-http-v1.json`, not only required field presence (**1 passed
+each**). No retry/effect or other-backend claim follows; DLFC-10 remains
+IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

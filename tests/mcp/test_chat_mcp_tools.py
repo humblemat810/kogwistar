@@ -7441,6 +7441,7 @@ async def test_mcp_workflow_budget_snapshot_matches_shared_contract(
         assert field in payload
     for field in contract["required_cost_ledger_fields"]:
         assert field in payload["cost_ledger"]
+    assert payload["cost_ledger"] == contract["expected_cost_ledger"]
     assert payload["budget_model"] == contract["budget_model"]
 
 

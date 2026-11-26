@@ -1056,6 +1056,10 @@
                     );
                 }
                 assert_eq!(
+                    value["result"]["cost_ledger"],
+                    contract["expected_cost_ledger"]
+                );
+                assert_eq!(
                     value["result"]["budget_model"],
                     contract["budget_model"]
                 );
