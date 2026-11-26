@@ -232,6 +232,82 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
 }
 
 #[tokio::test]
+async fn in_memory_run_events_poll_matches_shared_contract() {
+    let service = InMemoryGraphApplicationService::default();
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-events-poll-v1.json"
+    ))
+    .unwrap();
+    kogwistar_store::ServerRunWriteStore::create_server_run(
+        &service.store,
+        ServerRunCreate {
+            run_id: "run-1".to_owned(),
+            conversation_id: "conversation-1".to_owned(),
+            workflow_id: "workflow-1".to_owned(),
+            user_id: Some("user-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "running".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    kogwistar_store::ServerRunWriteStore::append_server_run_event(
+        &service.store,
+        "run-1",
+        "run.started",
+        r#"{"source":"test"}"#.to_owned(),
+    )
+    .await
+    .unwrap();
+
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/runs/run-1/events/poll?after_seq=0&limit=10".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"user-1",
+                "user_id":"user-1",
+                "role":"ro",
+                "ns":["conversation"],
+                "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status, contract["success_status"].as_u64().unwrap() as u16);
+    let body: Value = serde_json::from_slice(&response.body).unwrap();
+    for field in contract["required_fields"].as_array().unwrap() {
+        assert!(body.get(field.as_str().unwrap()).is_some());
+    }
+    assert_eq!(body["run_id"], "run-1");
+    assert_eq!(body["events"].as_array().unwrap().len(), 1);
+    let event = &body["events"][0];
+    for field in contract["required_event_fields"].as_array().unwrap() {
+        assert!(event.get(field.as_str().unwrap()).is_some());
+    }
+    assert_eq!(event["event_type"], "run.started");
+    assert_eq!(event["payload"], json!({"source":"test"}));
+
+    let denied = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/runs/run-1/events/poll".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"user-1",
+                "user_id":"user-1",
+                "role":"ro",
+                "ns":["workflow"],
+                "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+}
+
+#[tokio::test]
 async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
     let service = PostgresRunApplicationService::from_dsn(
         "postgres://unused:unused@127.0.0.1:1/unused",
