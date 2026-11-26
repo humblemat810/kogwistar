@@ -337,6 +337,17 @@
             serde_json::from_slice::<Value>(&lineage.body).unwrap(),
             lineage_contract["response"]
         );
+        let missing_lineage = service
+            .execute(read_request(
+                "/api/workflow/runs/missing/lineage",
+                json!({
+                    "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            ))
+            .await;
+        assert_eq!(missing_lineage.status, StatusCode::NOT_FOUND.as_u16());
         let parent_hidden = service
             .execute(read_request(
                 "/api/workflow/runs/lineage-child/lineage",

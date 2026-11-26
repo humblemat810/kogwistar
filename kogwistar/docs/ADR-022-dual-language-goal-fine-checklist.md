@@ -411,6 +411,14 @@ authenticated PostgreSQL `GET /api/workflow/runs/{missing}/lineage` returns
 returns the same status (**1 passed**). This closes only the lineage
 not-found branch; DLFC-06 remains IN PROGRESS.
 
+DLFC-06 SQLite+Chroma missing-run lineage result (2026-11-27): existing Rust
+`tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
+now also asserts authenticated `GET /api/workflow/runs/missing/lineage` returns
+404. It passed with the fake Chroma service (**1 passed**); the paired Python
+404 oracle above passed. Together with the PostgreSQL route result, this covers
+the lineage not-found branch for both supported Rust backend compositions only.
+Other HTTP/read ACL and backend cells remain open.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
