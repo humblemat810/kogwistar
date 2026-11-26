@@ -240,6 +240,11 @@ Python `tests/server/test_chat_server_api.py::test_document_upsert_tree_accepts_
 `tests/core/test_rust_python_parity_annotations.py::test_rust_python_parity_annotations_resolve_to_shared_executable_contracts`
 (**1 passed**) passed; `cargo fmt --all --check` passed. This closes one backend
 cell only; DLFC-03 remains IN PROGRESS and its fixed denominator is unchanged.
+The same HTTP test now also writes stable-ID targets as Bob, then verifies Alice's
+otherwise-authorized upsert cannot overwrite Bob's ACL-hidden existing nodes or
+edge: request returns 409 and durable event count is unchanged. This closes the
+target-visibility gap before atomic mutation; it does not close other backend
+cells or the broader authorization matrix.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |

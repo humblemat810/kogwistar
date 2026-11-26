@@ -2488,13 +2488,28 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         })
         .await
         .unwrap();
-    let body = serde_json::to_vec(&json!({
+    let extraction = json!({
         "doc_id":doc_id,
         "insertion_method":insertion_method,
         "nodes":fixture["nodes"],
         "edges":fixture["edges"]
-    }))
-    .unwrap();
+    });
+    let body = serde_json::to_vec(&extraction).unwrap();
+    let mut stable_extraction = extraction.clone();
+    let stable_nodes = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ];
+    let stable_edge = "33333333-3333-4333-8333-333333333333";
+    for (index, id) in stable_nodes.iter().enumerate() {
+        stable_extraction["nodes"][index]["id"] = json!(id);
+        stable_extraction["nodes"][index]["local_id"] = json!(id);
+    }
+    stable_extraction["edges"][0]["id"] = json!(stable_edge);
+    stable_extraction["edges"][0]["local_id"] = json!(stable_edge);
+    stable_extraction["edges"][0]["source_ids"] = json!([stable_nodes[0]]);
+    stable_extraction["edges"][0]["target_ids"] = json!([stable_nodes[1]]);
+    let stable_body = serde_json::to_vec(&stable_extraction).unwrap();
     let secret = "in-memory-document-tree-test-secret";
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -2506,11 +2521,11 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         key: Some(secret.to_owned()),
         ..AuthConfig::default()
     };
-    let token = |role: &str| {
+    let token = |user_id: &str, role: &str| {
         encode(
             &Header::new(Algorithm::HS256),
             &json!({
-                "sub":"alice", "user_id":"alice", "role":role,
+                "sub":user_id, "user_id":user_id, "role":role,
                 "ns":["docs"], "storage_ns":"docs",
                 "capabilities":["write_graph"], "exp":now + 300
             }),
@@ -2534,7 +2549,7 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
                 .method("POST")
                 .uri("/api/document.upsert_tree")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token("ro")))
+                .header("authorization", format!("Bearer {}", token("alice", "ro")))
                 .body(Body::from(body.clone()))
                 .unwrap(),
         )
@@ -2550,13 +2565,14 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
 
     assert!(service.supports_http_operation("POST", "/api/document.upsert_tree"));
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
                 .uri("/api/document.upsert_tree")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token("rw")))
-                .body(Body::from(body))
+                .header("authorization", format!("Bearer {}", token("bob", "rw")))
+                .body(Body::from(body.clone()))
                 .unwrap(),
         )
         .await;
@@ -2569,6 +2585,50 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
     assert_eq!(result["status"], "ok");
     assert_eq!(result["inserted_nodes"], 2);
     assert_eq!(result["inserted_edges"], 1);
+    let stable_owner_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("bob", "rw")))
+                .body(Body::from(stable_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stable_owner_write.status(), StatusCode::OK);
+    let event_count_after_owner_write = service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap()
+        .len();
+    let hidden_target_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("alice", "rw")))
+                .body(Body::from(stable_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(hidden_target_write.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        service
+            .store
+            .replay_events("docs", 0, usize::MAX)
+            .await
+            .unwrap()
+            .len(),
+        event_count_after_owner_write,
+        "hidden target rejection must precede graph mutation"
+    );
     let events = service
         .store
         .replay_events("docs", 0, usize::MAX)
