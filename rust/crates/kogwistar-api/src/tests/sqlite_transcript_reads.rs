@@ -145,6 +145,14 @@
             user_turn_node_id: "turn-1".to_owned(),
             status: "succeeded".to_owned(),
         }).unwrap();
+        service.store.create_server_run(kogwistar_store::ServerRunCreate {
+            run_id: "run-private".to_owned(),
+            conversation_id: "c1".to_owned(),
+            workflow_id: "workflow-private".to_owned(),
+            user_id: Some("reader-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "succeeded".to_owned(),
+        }).unwrap();
         // ACL decisions are canonical SQLite events; Chroma contains only the graph projection.
         for (target, mode, owner) in [
             ("start", "public", None),
@@ -288,6 +296,20 @@
             serde_json::from_slice::<Value>(&evidence_mcp_body).unwrap()["result"],
             evidence_contract
         );
+        let private_evidence = service
+            .execute(read_request(
+                "/api/workflow/runs/run-private/evidence",
+                json!({
+                    "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read","project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(private_evidence.status, StatusCode::NOT_FOUND.as_u16());
+        let private_body: Value = serde_json::from_slice(&private_evidence.body).unwrap();
+        assert_eq!(private_body["code"], "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND");
+        assert!(!private_body.to_string().contains("run-private"));
         let denied = service
             .execute(request(
                 "receive_message",
