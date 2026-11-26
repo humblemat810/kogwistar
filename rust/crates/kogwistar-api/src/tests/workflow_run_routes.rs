@@ -839,6 +839,24 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
             .unwrap();
         assert_eq!(response.status(), expected, "workflow {workflow_id}");
     }
+    for (workflow_id, expected) in [
+        ("missing-acl-wf", StatusCode::FORBIDDEN),
+        ("visible-wf", StatusCode::OK),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/workflow/design/{workflow_id}/graph"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected, "graph workflow {workflow_id}");
+    }
     assert!(service
         .store
         .get_named_projection("workflow_design", "missing-acl-wf")
@@ -883,6 +901,55 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
         .replay_raw_events("wf_design:read-only-wf", 0, 10)
         .unwrap()
         .is_empty());
+    for workflow_id in ["missing-acl-wf", "read-only-wf"] {
+        let denied_operations = [
+            (
+                "POST",
+                "edges",
+                json!({
+                    "designer_id": "alice",
+                    "edge_id": "e1",
+                    "src": "n1",
+                    "dst": "n2",
+                    "relation": "next"
+                }),
+            ),
+            ("DELETE", "nodes/n1", json!({"designer_id": "alice"})),
+            ("DELETE", "edges/e1", json!({"designer_id": "alice"})),
+            ("POST", "undo", json!({"designer_id": "alice"})),
+            ("POST", "redo", json!({"designer_id": "alice"})),
+        ];
+        for (method, suffix, body) in denied_operations {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(format!("/api/workflow/design/{workflow_id}/{suffix}"))
+                        .header("authorization", format!("Bearer {write_token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} workflow {workflow_id} route {suffix}"
+            );
+        }
+        assert!(service
+            .store
+            .replay_raw_events(&format!("wf_design:{workflow_id}"), 0, 10)
+            .unwrap()
+            .is_empty());
+        assert!(service
+            .store
+            .get_named_projection("workflow_design", workflow_id)
+            .unwrap()
+            .is_none());
+    }
 
     drop(app);
     drop(service);

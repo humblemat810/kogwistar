@@ -157,6 +157,112 @@ def test_workflow_design_node_upsert_requires_rw_acl_before_dispatch() -> None:
     ]
 
 
+def test_workflow_design_remaining_routes_enforce_acl_before_effect() -> None:
+    from fastapi import HTTPException
+
+    effects = []
+    acl_checks = []
+
+    class Service:
+        def workflow_design_graph(self, *, workflow_id: str, refresh: bool = False):
+            effects.append(("graph", workflow_id, refresh))
+            return {"workflow_id": workflow_id, "nodes": [], "edges": []}
+
+        def workflow_design_upsert_edge(self, **kwargs):
+            effects.append(("edge_upsert", kwargs))
+            return {}
+
+        def workflow_design_delete_node(self, **kwargs):
+            effects.append(("node_delete", kwargs))
+            return {}
+
+        def workflow_design_delete_edge(self, **kwargs):
+            effects.append(("edge_delete", kwargs))
+            return {}
+
+        def workflow_design_undo(self, **kwargs):
+            effects.append(("undo", kwargs))
+            return {}
+
+        def workflow_design_redo(self, **kwargs):
+            effects.append(("redo", kwargs))
+            return {}
+
+    def require_access(workflow_id: str, role: str) -> None:
+        acl_checks.append((workflow_id, role))
+        acl_role = {"read-only-wf": "ro", "visible-wf": "ro"}.get(workflow_id)
+        if acl_role is None or (role == "rw" and acl_role != "rw"):
+            raise HTTPException(status_code=403, detail="workflow ACL denied")
+
+    app = FastAPI()
+    app.include_router(
+        create_runtime_router(
+            get_service=Service,
+            require_role=lambda _role: None,
+            require_namespace=lambda _namespaces: None,
+            runtime_namespaces={"workflow"},
+            require_workflow_access=require_access,
+        )
+    )
+    write_body = {"designer_id": "alice"}
+    cases = [
+        ("GET", "/api/workflow/design/no-acl-wf/graph", None, 403),
+        ("GET", "/api/workflow/design/visible-wf/graph", None, 200),
+        (
+            "POST",
+            "/api/workflow/design/no-acl-wf/edges",
+            {
+                "designer_id": "alice",
+                "edge_id": "e1",
+                "src": "n1",
+                "dst": "n2",
+                "relation": "next",
+            },
+            403,
+        ),
+        ("DELETE", "/api/workflow/design/no-acl-wf/nodes/n1", write_body, 403),
+        ("DELETE", "/api/workflow/design/no-acl-wf/edges/e1", write_body, 403),
+        ("POST", "/api/workflow/design/no-acl-wf/undo", write_body, 403),
+        ("POST", "/api/workflow/design/no-acl-wf/redo", write_body, 403),
+        (
+            "POST",
+            "/api/workflow/design/read-only-wf/edges",
+            {
+                "designer_id": "alice",
+                "edge_id": "e1",
+                "src": "n1",
+                "dst": "n2",
+                "relation": "next",
+            },
+            403,
+        ),
+        ("DELETE", "/api/workflow/design/read-only-wf/nodes/n1", write_body, 403),
+        ("DELETE", "/api/workflow/design/read-only-wf/edges/e1", write_body, 403),
+        ("POST", "/api/workflow/design/read-only-wf/undo", write_body, 403),
+        ("POST", "/api/workflow/design/read-only-wf/redo", write_body, 403),
+    ]
+    with TestClient(app) as client:
+        for method, path, body, expected_status in cases:
+            response = client.request(method, path, json=body)
+            assert response.status_code == expected_status, path
+
+    assert effects == [("graph", "visible-wf", False)]
+    assert acl_checks == [
+        ("no-acl-wf", "ro"),
+        ("visible-wf", "ro"),
+        ("no-acl-wf", "rw"),
+        ("no-acl-wf", "rw"),
+        ("no-acl-wf", "rw"),
+        ("no-acl-wf", "rw"),
+        ("no-acl-wf", "rw"),
+        ("read-only-wf", "rw"),
+        ("read-only-wf", "rw"),
+        ("read-only-wf", "rw"),
+        ("read-only-wf", "rw"),
+        ("read-only-wf", "rw"),
+    ]
+
+
 def test_workflow_designer_template_contains_graph_semantics() -> None:
     template = Path("kogwistar/templates/workflow_designer.html").read_text(
         encoding="utf-8"
