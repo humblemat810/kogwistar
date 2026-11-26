@@ -1276,6 +1276,7 @@ fn rust_run_status_terminal_flag_matches_shared_contract() {
 #[tokio::test]
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#server_run_value; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/run-status-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_run_status_http_route_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api.py#test_run_status_route_matches_shared_v1_contract
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#server_run_value; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/run-status-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_run_status_http_route_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api.py#test_run_detail_uses_python_defaults_and_checks_namespace
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#execute_sync; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run; fixture=contracts/golden/workflow-run-status-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_run_status_http_route_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api.py#test_run_status_route_matches_shared_v1_contract
 async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -1341,7 +1342,7 @@ async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
             "sub": "user-status-contract",
             "user_id": "user-status-contract",
             "role": "ro",
-            "ns": ["conversation"],
+            "ns": ["conversation", "workflow"],
             "capabilities": ["workflow.run.read"],
             "iss": "local",
             "exp": 4102444800_u64
@@ -1426,6 +1427,51 @@ async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
         assert_eq!(body["finished_at_ms"], json!(stored.finished_at_ms));
         assert!(body["created_at_ms"].is_i64());
         assert!(body["updated_at_ms"].is_i64());
+
+        let workflow_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-status-http-v1.json"
+        ))
+        .unwrap();
+        let workflow_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/api/workflow/runs/{run_id}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            workflow_response.status().as_u16(),
+            workflow_contract["success_status"].as_u64().unwrap() as u16,
+            "workflow run state {status}"
+        );
+        let workflow_body = to_bytes(workflow_response.into_body(), 65_536)
+            .await
+            .unwrap();
+        let workflow_body: Value = serde_json::from_slice(&workflow_body).unwrap();
+        for field in workflow_contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(workflow_body.get(field).is_some(), "{status} missing {field}");
+        }
+        assert_eq!(workflow_body["run_id"], run_id);
+        assert_eq!(workflow_body["status"], status);
+        assert_eq!(workflow_body["conversation_id"], "conversation-status-contract");
+        assert_eq!(workflow_body["workflow_id"], "workflow-status-contract");
+        assert_eq!(workflow_body["user_id"], "user-status-contract");
+        assert_eq!(workflow_body["user_turn_node_id"], "turn-status-contract");
+        assert_eq!(workflow_body["cancel_requested"], false);
+        assert_eq!(workflow_body["terminal"], terminal_statuses.contains(&json!(status)));
+        assert_eq!(workflow_body["assistant_turn_node_id"], body["assistant_turn_node_id"]);
+        assert_eq!(workflow_body["result"], body["result"]);
+        assert_eq!(workflow_body["error"], body["error"]);
+        assert_eq!(workflow_body["created_at_ms"], body["created_at_ms"]);
+        assert_eq!(workflow_body["updated_at_ms"], body["updated_at_ms"]);
+        assert_eq!(workflow_body["started_at_ms"], body["started_at_ms"]);
+        assert_eq!(workflow_body["finished_at_ms"], body["finished_at_ms"]);
     }
 
     let wrong_scope_token = encode(

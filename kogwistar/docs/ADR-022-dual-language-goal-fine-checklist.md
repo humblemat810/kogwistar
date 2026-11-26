@@ -262,6 +262,18 @@ InMemory HTTP: `tests::in_memory_document_upsert_empty_tree_matches_shared_succe
 This remains one backend cell and does not close other route/backend cells or
 the broader authorization matrix.
 
+DLFC-03 workflow-scoped status cell (2026-11-26): Python and Rust now exercise
+`GET /api/workflow/runs/{run_id}` for queued, running, succeeded, failed, and
+cancelled states using `contracts/golden/workflow-run-status-http-v1.json`.
+Both assert required fields, stable IDs, result/error, terminal flag, and
+timestamps; each response also agrees with its legacy `/api/runs/{run_id}`
+projection. Python `tests/server/test_chat_server_api.py::test_run_status_route_matches_shared_v1_contract`
+passed over the three `engine_triplet` parameters; Rust
+`tests::sqlite_run_status_http_route_matches_shared_contract_for_all_states`
+passed (**1**). The parity annotation crosswalk passed (**1**), validating the
+Rust SQLite service and Python `create_runtime_router.get_workflow_run`
+mapping. This adds one scoped route/backend cell; DLFC-03 remains IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

@@ -7076,12 +7076,22 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
         / "run-status-v1.json"
     )
     contract = json.loads(fixture_path.read_text(encoding="utf-8"))
+    workflow_contract_path = (
+        Path(__file__).resolve().parents[2]
+        / "contracts"
+        / "golden"
+        / "workflow-run-status-http-v1.json"
+    )
+    workflow_contract = json.loads(
+        workflow_contract_path.read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     _service, registry = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
     with TestClient(server.app) as client:
         headers = _token_header(client, role="ro", ns="conversation")
+        workflow_headers = _token_header(client, role="ro", ns="workflow")
         for status in ("queued", "running", "succeeded", "failed", "cancelled"):
             expected_ids = {
                 "run_id": f"run-status-{status}",
@@ -7128,6 +7138,29 @@ def test_run_status_route_matches_shared_v1_contract(monkeypatch, engine_triplet
             assert isinstance(payload["updated_at_ms"], int)
             assert payload["started_at_ms"] == stored["started_at_ms"]
             assert payload["finished_at_ms"] == stored["finished_at_ms"]
+
+            workflow_response = client.get(
+                f"/api/workflow/runs/{expected_ids['run_id']}",
+                headers=workflow_headers,
+            )
+            assert workflow_response.status_code == workflow_contract["success_status"]
+            workflow_payload = workflow_response.json()
+            assert set(workflow_contract["required_fields"]).issubset(workflow_payload)
+            assert {key: workflow_payload[key] for key in expected_ids} == expected_ids
+            assert workflow_payload["status"] == status
+            assert workflow_payload["terminal"] is (
+                status in contract["terminal_statuses"]
+            )
+            assert workflow_payload["cancel_requested"] is False
+            assert workflow_payload["assistant_turn_node_id"] == (
+                expected_assistant_turn_node_id
+            )
+            assert workflow_payload["result"] == expected_result
+            assert workflow_payload["error"] == expected_error
+            assert workflow_payload["started_at_ms"] == stored["started_at_ms"]
+            assert workflow_payload["finished_at_ms"] == stored["finished_at_ms"]
+            assert workflow_payload["created_at_ms"] == payload["created_at_ms"]
+            assert workflow_payload["updated_at_ms"] == payload["updated_at_ms"]
 
         missing = client.get("/api/runs/missing-run-status", headers=headers)
         assert missing.status_code == 404
