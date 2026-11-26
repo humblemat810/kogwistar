@@ -2709,7 +2709,8 @@ impl ApplicationService for InMemoryGraphApplicationService {
         if surface == "workflow"
             && matches!(
                 name,
-                "workflow.run_events"
+                "workflow.run_status"
+                    | "workflow.run_events"
                     | "workflow.run_steps"
                     | "workflow.run_resume"
                     | "workflow.run_cancel"
@@ -2732,6 +2733,15 @@ impl ApplicationService for InMemoryGraphApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        // PYTHON_PARITY_NOTE_V1: status tool admission checks role + workflow namespace; get_run enforces workflow.run.read. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_status+kogwistar/server/chat_service.py#ChatRunService.get_run; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_status_uses_capability_without_workflow_acl
+        if name == "workflow.run_status" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_NOTE_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read; rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores
         if name == "workflow.run_events" {
             return surface == "workflow"
@@ -5408,7 +5418,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-    // PYTHON_PARITY_NOTE_V1: Workflow status/steps require read capability and configured workflow ACL; event reads require read capability. Authenticated workflow readers may inspect another owner's run, matching Python REST/MCP and SQLite/PostgreSQL services. Conversation run reads remain owner-scoped. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_steps_route_enforces_capability_before_run_lookup; python_test=tests/server/test_workflow_lineage_api.py#test_run_status_allows_acl_reader_who_does_not_own_run+tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps
+    // PYTHON_PARITY_NOTE_V1: HTTP workflow status/steps require read capability and configured ACL; MCP status requires workflow.run.read but follows Python MCP without per-workflow ACL, while MCP steps retain ACL checks. Event reads require read capability. Conversation reads remain owner-scoped. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_status+workflow_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#only_mcp_workflow_status_request_gets_acl_parity_exception; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_status_uses_capability_without_workflow_acl+test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps
     async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());
@@ -5479,7 +5489,9 @@ impl InMemoryGraphApplicationService {
             }
         };
         if tail.is_empty() || tail.as_slice() == ["steps"] {
-            if let Some(auth_store) = self.owner_auth_store.as_ref() {
+            if !is_mcp_workflow_status_read(request)
+                && let Some(auth_store) = self.owner_auth_store.as_ref()
+            {
                 match auth_store.workflow_access_allowed(&run.workflow_id, owner_id, "ro").await {
                     Ok(true) => {}
                     Ok(false) => {

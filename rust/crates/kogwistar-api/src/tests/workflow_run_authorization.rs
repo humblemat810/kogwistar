@@ -34,6 +34,55 @@
     }
 
     #[test]
+    fn workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-run-status-mcp-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_run_status_mcp_admission",
+        )
+        .unwrap();
+        let in_memory = InMemoryGraphApplicationService::default();
+        let services: [(&str, &dyn ApplicationService); 3] = [
+            ("sqlite", &sqlite),
+            ("postgres", &postgres),
+            ("in_memory", &in_memory),
+        ];
+
+        for (backend, service) in services {
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_status",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":[]})
+            ), "{backend} should admit status at MCP role/namespace boundary");
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_status",
+                &json!({"role":"rw", "ns":["workflow"], "capabilities":["workflow.run.read"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_status",
+                &json!({"role":"ro", "ns":["conversation"]})
+            ), "{backend} must reject non-workflow namespace");
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                "workflow.run_status",
+                &json!({"role":"ro", "ns":["workflow"]})
+            ), "{backend} must reject wrong MCP surface");
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn workflow_run_events_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 

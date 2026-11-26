@@ -932,6 +932,15 @@ impl ApplicationService for PostgresRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        // PYTHON_PARITY_NOTE_V1: status tool admission checks role + workflow namespace; get_run enforces workflow.run.read. rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_status+kogwistar/server/chat_service.py#ChatRunService.get_run; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_status_uses_capability_without_workflow_acl
+        if name == "workflow.run_status" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_NOTE_V1: transcript reads require ro/rw, conversation scope, and read_graph; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_transcript_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace
         if name == "conversation.get_transcript" {
             if surface != "conversation"

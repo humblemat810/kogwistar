@@ -967,7 +967,7 @@ async fn mcp_dispatch(
                     method: "GET".to_owned(),
                     path_and_query: format!("/api/workflow/runs/{run_id}"),
                     body: Vec::new(),
-                    principal: principal.clone(),
+                    principal: mcp_workflow_status_principal(&principal),
                 })
             }
             "conversation.run_status" if !run_id.is_empty() => {

@@ -1155,24 +1155,26 @@ impl PostgresRunApplicationService {
                 self.owner_auth_store.as_ref(),
                 authenticated_run_owner_id(&request.principal),
             ) {
-                match auth_store
-                    .workflow_access_allowed(&run.workflow_id, user_id, "ro")
-                    .await
-                {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        return effect_error(
-                            StatusCode::FORBIDDEN,
-                            "KOGWISTAR_WORKFLOW_FORBIDDEN",
-                            "User does not have read access to this workflow",
-                        );
-                    }
-                    Err(error) => {
-                        return effect_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "KOGWISTAR_AUTH_STORE_ERROR",
-                            error,
-                        );
+                if !is_mcp_workflow_status_read(&request) {
+                    match auth_store
+                        .workflow_access_allowed(&run.workflow_id, user_id, "ro")
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return effect_error(
+                                StatusCode::FORBIDDEN,
+                                "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                                "User does not have read access to this workflow",
+                            );
+                        }
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_AUTH_STORE_ERROR",
+                                error,
+                            );
+                        }
                     }
                 }
             }

@@ -1262,6 +1262,61 @@ async def test_mcp_workflow_run_status_denies_wrong_namespace_before_read(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_status_uses_capability_without_workflow_acl(
+    monkeypatch, engine_triplet
+):
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    access_checks: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        service._run_execution,
+        "get_run",
+        lambda run_id: {"run_id": run_id, "workflow_id": "private-workflow"},
+    )
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=lambda workflow_id, role: access_checks.append(
+            (workflow_id, role)
+        ),
+    )
+
+    with _claims(
+        "ro",
+        "workflow",
+        sub="outsider",
+        scope_parts={"capabilities": ["workflow.run.read"]},
+    ):
+        result = _structured(
+            await workflow_mcp._execute(
+                "workflow.run_status",
+                {"run_id": "private-run"},
+                enforce_visibility=True,
+            )
+        )
+
+    assert result["run_id"] == "private-run"
+    assert access_checks == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_events_denies_wrong_namespace_before_read(
     monkeypatch, engine_triplet
 ):

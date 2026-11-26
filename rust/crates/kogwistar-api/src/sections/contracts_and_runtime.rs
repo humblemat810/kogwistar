@@ -865,6 +865,32 @@ pub struct ApiEffectRequest {
     pub principal: Value,
 }
 
+const INTERNAL_MCP_TRANSPORT_CLAIM: &str = "_kogwistar_internal_transport";
+
+fn mcp_workflow_status_principal(principal: &Value) -> Value {
+    let mut principal = principal.clone();
+    if let Some(claims) = principal.as_object_mut() {
+        claims.insert(
+            INTERNAL_MCP_TRANSPORT_CLAIM.to_owned(),
+            json!("mcp"),
+        );
+    }
+    principal
+}
+
+fn is_mcp_workflow_status_read(request: &ApiEffectRequest) -> bool {
+    request.method == "GET"
+        && request.principal.get(INTERNAL_MCP_TRANSPORT_CLAIM).and_then(Value::as_str)
+            == Some("mcp")
+        && request
+            .path_and_query
+            .split('?')
+            .next()
+            .is_some_and(|path| path.starts_with("/api/workflow/runs/"))
+        && runtime_run_route(&request.path_and_query)
+            .is_some_and(|(_, tail)| tail.is_empty())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ApiEffectResponse {
     pub status: u16,

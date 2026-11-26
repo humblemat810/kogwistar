@@ -2978,6 +2978,34 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
         .unwrap();
     assert_eq!(stored_child.len(), 1, "persisted child run node not found");
 
+    let no_acl_principal = json!({
+        "user_id":"charlie",
+        "sub":"charlie",
+        "role":"ro",
+        "ns":["workflow"],
+        "capabilities":["workflow.run.read"]
+    });
+    let rest_status_without_acl = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/lineage-child".to_owned(),
+            body: Vec::new(),
+            principal: no_acl_principal.clone(),
+        })
+        .await;
+    assert_eq!(rest_status_without_acl.status, StatusCode::FORBIDDEN.as_u16());
+    let mcp_status_without_acl = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/lineage-child".to_owned(),
+            body: Vec::new(),
+            principal: mcp_workflow_status_principal(&no_acl_principal),
+        })
+        .await;
+    assert_eq!(mcp_status_without_acl.status, StatusCode::OK.as_u16());
+
     let secret = "lineage-route-test-secret";
     let token = encode(
         &Header::new(Algorithm::HS256),

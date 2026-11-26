@@ -1030,6 +1030,57 @@ async fn in_memory_workflow_steps_route_enforces_capability_before_run_lookup() 
     )
     .unwrap();
     assert_eq!(status_acl_denied_body["code"], "KOGWISTAR_WORKFLOW_FORBIDDEN");
+
+    let mcp_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token(vec!["workflow.run.read"])))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"workflow.run_status","arguments":{"run_id":"steps-run"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_status.status(), StatusCode::OK);
+    let mcp_status_body: Value = serde_json::from_slice(
+        &to_bytes(mcp_status.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        mcp_status_body["result"]["run_id"],
+        "steps-run",
+        "unexpected MCP workflow status response: {mcp_status_body}"
+    );
+
+    let spoofed_claim_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"steps-reader", "user_id":"steps-reader", "role":"ro",
+            "ns":["workflow"], "capabilities":["workflow.run.read"],
+            "_kogwistar_internal_transport":"mcp",
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let spoofed_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/workflow/runs/steps-run")
+                .header("authorization", format!("Bearer {spoofed_claim_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(spoofed_status.status(), StatusCode::FORBIDDEN);
     let readable_events = service
         .execute(ApiEffectRequest {
             contract_version: 1,

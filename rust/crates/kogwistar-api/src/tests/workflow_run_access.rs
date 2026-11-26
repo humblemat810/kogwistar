@@ -8,15 +8,15 @@ async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
 
     for (principal, expected_code) in [
         (
-            json!({"role":"ro", "ns":["workflow"], "capabilities":[]}),
+            json!({"role":"ro", "ns":["workflow"], "capabilities":[], "_kogwistar_internal_transport":"mcp"}),
             "KOGWISTAR_CAPABILITY_FORBIDDEN",
         ),
         (
-            json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"]}),
+            json!({"role":"ro", "ns":["workflow"], "capabilities":["project_view"], "_kogwistar_internal_transport":"mcp"}),
             "KOGWISTAR_CAPABILITY_FORBIDDEN",
         ),
         (
-            json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"]}),
+            json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"], "_kogwistar_internal_transport":"mcp"}),
             "KOGWISTAR_NAMESPACE_FORBIDDEN",
         ),
     ] {
@@ -35,6 +35,39 @@ async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
             expected_code
         );
     }
+}
+
+#[test]
+fn public_http_principal_cannot_supply_internal_mcp_transport_marker() {
+    let principal = without_internal_transport_marker(json!({
+        "sub": "reader",
+        "_kogwistar_internal_transport": "mcp"
+    }));
+    assert!(principal.get(INTERNAL_MCP_TRANSPORT_CLAIM).is_none());
+}
+
+#[test]
+fn only_mcp_workflow_status_request_gets_acl_parity_exception() {
+    let principal = mcp_workflow_status_principal(&json!({"user_id":"reader"}));
+    assert_eq!(principal[INTERNAL_MCP_TRANSPORT_CLAIM], "mcp");
+    let status = ApiEffectRequest {
+        contract_version: 1,
+        method: "GET".to_owned(),
+        path_and_query: "/api/workflow/runs/run-1".to_owned(),
+        body: Vec::new(),
+        principal: principal.clone(),
+    };
+    assert!(is_mcp_workflow_status_read(&status));
+    let steps = ApiEffectRequest {
+        path_and_query: "/api/workflow/runs/run-1/steps".to_owned(),
+        ..status.clone()
+    };
+    assert!(!is_mcp_workflow_status_read(&steps));
+    let conversation = ApiEffectRequest {
+        path_and_query: "/api/runs/run-1".to_owned(),
+        ..status
+    };
+    assert!(!is_mcp_workflow_status_read(&conversation));
 }
 
 #[tokio::test]
@@ -223,6 +256,27 @@ async fn sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl() {
     assert_eq!(
         serde_json::from_slice::<Value>(&status.body).unwrap()["code"],
         "KOGWISTAR_WORKFLOW_FORBIDDEN"
+    );
+
+    let mcp_status = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/private-steps-run".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "user_id": "steps-acl-user",
+                "role": "rw",
+                "ns": ["workflow"],
+                "capabilities": ["workflow.run.read"],
+                "_kogwistar_internal_transport": "mcp"
+            }),
+        })
+        .await;
+    assert_eq!(mcp_status.status, StatusCode::OK.as_u16());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&mcp_status.body).unwrap()["run_id"],
+        "private-steps-run"
     );
 
     let response = service

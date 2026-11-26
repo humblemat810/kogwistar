@@ -390,6 +390,15 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
+        // PYTHON_PARITY_NOTE_V1: status tool admission checks role + workflow namespace; get_run enforces workflow.run.read. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_status+kogwistar/server/chat_service.py#ChatRunService.get_run; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_status_uses_capability_without_workflow_acl
+        if name == "workflow.run_status" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         // PYTHON_PARITY_NOTE_V1: service declaration MCP admission requires rw/workflow; the effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare+kogwistar/server/chat_service.py#ChatRunService.declare_service; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_declare_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_declare_denies_unauthorized_effects
         if name == "workflow.service_declare" {
             return surface == "workflow"
@@ -1627,7 +1636,9 @@ impl ApplicationService for SqliteRunApplicationService {
                         "Reading workflow runs requires workflow.run.read capability",
                     );
                 }
-                if let Ok(Some(run)) = self.get_run(&run_id) {
+                if !is_mcp_workflow_status_read(&request)
+                    && let Ok(Some(run)) = self.get_run(&run_id)
+                {
                     match auth_store
                         .workflow_access_allowed(&run.workflow_id, user_id, "ro")
                         .await
