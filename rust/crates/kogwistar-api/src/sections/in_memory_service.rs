@@ -2710,6 +2710,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
             && matches!(
                 name,
                 "workflow.run_events"
+                    | "workflow.run_steps"
                     | "workflow.run_resume"
                     | "workflow.run_cancel"
                     | "workflow.run_submit"
@@ -2746,6 +2747,15 @@ impl ApplicationService for InMemoryGraphApplicationService {
                         .unwrap_or_else(|poisoned| poisoned.into_inner()),
                 )
                 .contains("workflow.run.read")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_NOTE_V1: workflow.run_steps MCP admission uses role + workflow namespace; service execution enforces workflow.run.read, owner, and configured workflow ACL. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps+kogwistar/server/chat_service.py#ChatRunService.list_steps; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_chat_service_steps_still_require_read_capability_after_mcp_admission
+        if name == "workflow.run_steps" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
         if name == "workflow.run_resume" {
@@ -2864,6 +2874,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
         if method == "GET"
             && runtime_run_route(path).is_some_and(|(_, tail)| {
                 tail.is_empty()
+                    || tail.as_slice() == ["steps"]
                     || tail.as_slice() == ["events"]
                     || tail.as_slice() == ["events", "poll"]
             })
@@ -5397,6 +5408,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
+    // PYTHON_PARITY_NOTE_V1: In-memory run steps reuse recorded runtime events; steps enforce read capability, run ownership, and configured workflow ACL. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#read_runtime_run_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_steps_route_enforces_capability_before_run_lookup; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture+tests/mcp/test_chat_mcp_tools.py#test_chat_service_steps_still_require_read_capability_after_mcp_admission
     async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());
@@ -5457,6 +5469,27 @@ impl InMemoryGraphApplicationService {
                 );
             }
         };
+        if tail.as_slice() == ["steps"] {
+            if let Some(auth_store) = self.owner_auth_store.as_ref() {
+                match auth_store.workflow_access_allowed(&run.workflow_id, owner_id, "ro").await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        return effect_error(
+                            StatusCode::FORBIDDEN,
+                            "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                            "User does not have read access to this workflow",
+                        );
+                    }
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_AUTH_STORE_ERROR",
+                            error,
+                        );
+                    }
+                }
+            }
+        }
         if tail.is_empty() {
             return json_effect(StatusCode::OK, server_run_value(run));
         }
@@ -5470,6 +5503,11 @@ impl InMemoryGraphApplicationService {
         )
         .await
         {
+            Ok(events)
+                if tail.as_slice() == ["steps"] =>
+            {
+                runtime_inspection_effect(request, &run_id, &["steps"], events)
+            }
             Ok(events)
                 if tail.as_slice() == ["events"] || tail.as_slice() == ["events", "poll"] =>
             {

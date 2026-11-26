@@ -899,6 +899,186 @@ async fn in_memory_project_view_syscall_is_reachable_through_authenticated_http(
     }
 }
 
+#[tokio::test]
+async fn in_memory_workflow_steps_route_enforces_capability_before_run_lookup() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    use kogwistar_store::ServerRunReadStore;
+
+    let secret = "in-memory-workflow-steps-secret";
+    let service = InMemoryGraphApplicationService::default();
+    let submitted = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/workflow/runs".to_owned(),
+            body: serde_json::to_vec(&json!({
+                "run_id":"steps-run",
+                "workflow_id":"steps-workflow",
+                "conversation_id":"steps-conversation",
+                "initial_state":{"seed":true},
+                "node_ops":{"start":"noop"},
+                "node_executor_targets":{"start":"rust-native"}
+            }))
+            .unwrap(),
+            principal: json!({
+                "sub":"steps-reader", "user_id":"steps-reader", "role":"rw",
+                "ns":["workflow"], "capabilities":["spawn_process", "workflow.run.write"]
+            }),
+        })
+        .await;
+    assert_eq!(submitted.status, StatusCode::ACCEPTED.as_u16());
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-memory-steps-auth-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = service
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let token = |capabilities: Vec<&str>| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"steps-reader", "user_id":"steps-reader", "role":"ro",
+                "ns":["workflow"], "capabilities":capabilities,
+                "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let call = |jwt: String, run_id: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(format!("/api/workflow/runs/{run_id}/steps"))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    let denied = app
+        .clone()
+        .oneshot(call(token(vec![]), "missing-run"))
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let denied_body: Value = serde_json::from_slice(
+        &to_bytes(denied.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(denied_body["code"], "KOGWISTAR_CAPABILITY_FORBIDDEN");
+
+    let authorized = app
+        .clone()
+        .oneshot(call(token(vec!["workflow.run.read"]), "missing-run"))
+        .await
+        .unwrap();
+    assert_eq!(authorized.status(), StatusCode::NOT_FOUND);
+
+    let acl_denied = app
+        .clone()
+        .oneshot(call(token(vec!["workflow.run.read"]), "steps-run"))
+        .await
+        .unwrap();
+    assert_eq!(acl_denied.status(), StatusCode::FORBIDDEN);
+    let acl_denied_body: Value = serde_json::from_slice(
+        &to_bytes(acl_denied.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(acl_denied_body["code"], "KOGWISTAR_WORKFLOW_FORBIDDEN");
+    let auth = rusqlite::Connection::open(&auth_path).unwrap();
+    auth.execute(
+        "INSERT INTO users (user_id, email, is_active, created_at) VALUES ('steps-reader', 'steps-reader@example.test', 1, CURRENT_TIMESTAMP)",
+        [],
+    )
+    .unwrap();
+    auth.execute(
+        "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('steps-workflow', 'steps-reader', 'ro')",
+        [],
+    )
+    .unwrap();
+    drop(auth);
+
+    let visible = app
+        .clone()
+        .oneshot(call(token(vec!["workflow.run.read"]), "steps-run"))
+        .await
+        .unwrap();
+    assert_eq!(visible.status(), StatusCode::OK);
+    let visible_body: Value = serde_json::from_slice(
+        &to_bytes(visible.into_body(), 8192).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(visible_body["run_id"], "steps-run");
+    assert!(visible_body["steps"].is_array());
+
+    let mcp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token(vec!["workflow.run.read"])),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"steps-read",
+                        "method":"tools/call",
+                        "params":{"name":"workflow.run_steps", "arguments":{"run_id":"steps-run"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp.status(), StatusCode::OK);
+    let mcp_body = to_bytes(mcp.into_body(), 16_384).await.unwrap();
+    let mcp_text = String::from_utf8(mcp_body.to_vec()).unwrap();
+    let mcp_payload: Value = serde_json::from_str(
+        mcp_text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap_or(&mcp_text),
+    )
+    .unwrap();
+    assert_eq!(mcp_payload["result"]["structuredContent"]["run_id"], "steps-run");
+    assert!(mcp_payload["result"]["structuredContent"]["steps"].is_array());
+
+    assert!(ServerRunReadStore::server_run(&service.store, "steps-run")
+        .await
+        .unwrap()
+        .is_some());
+    drop(service);
+    let _ = std::fs::remove_file(auth_path);
+}
+
 // PYTHON_PARITY_NOTE_V1: MCP submit/cancel reach in-memory effects; denied submit/cancel leave no mutation and terminal retry adds no event. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
 #[tokio::test]
 async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {

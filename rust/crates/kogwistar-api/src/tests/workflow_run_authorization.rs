@@ -104,9 +104,10 @@
         )
         .unwrap();
         let in_memory = InMemoryGraphApplicationService::default();
-        let services: [(&str, &dyn ApplicationService); 2] = [
+        let services: [(&str, &dyn ApplicationService); 3] = [
             ("sqlite", &sqlite),
             ("postgres", &postgres),
+            ("in_memory", &in_memory),
         ];
 
         for (backend, service) in services {
@@ -136,12 +137,6 @@
                 &json!({"role":"ro", "ns":["workflow"]})
             ));
         }
-
-        assert!(!in_memory.supports_mcp_tool_for_principal(
-            "workflow",
-            "workflow.run_steps",
-            &json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.read"]})
-        ));
 
         drop(sqlite);
         let _ = std::fs::remove_file(path);

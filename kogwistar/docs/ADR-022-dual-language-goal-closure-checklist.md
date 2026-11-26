@@ -272,5 +272,14 @@ In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/
 
 MCP transport is also exercised end to end: missing `workflow.run.write` returns an MCP tool error without changing run state; an authorized call reaches the Rust in-memory store and cancels the run (`in_memory_workflow_cancel_mcp_reaches_authorized_store_effect`; full API suite: 418 passed, 41 ignored).
 
+Rust InMemory now also supports the existing Python `workflow.run_steps` MCP
+operation. Focused tests cover role/namespace admission, capability denial before
+run lookup, owner isolation, configured workflow ACL denial/grant, REST projection,
+and the actual MCP call. Evidence:
+`tests::workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores`
+and `tests::in_memory_workflow_steps_route_enforces_capability_before_run_lookup`
+(**1 passed each**). This closes only this InMemory operation cell; GOAL-06/08
+remain OPEN and the coarse summary remains 6 bounded PASS, 1 PARTIAL, 2 OPEN.
+
 The in-memory backend now dispatches all 11 catalogued syscall operations. This slice routes `spawn_process`, `terminate_process`, and `resume` through existing run handlers, and adds `checkpoint`, `project_view`, and `request_approval` using existing runtime-inspection, resource-snapshot, and approval helpers. Rust tests cover delegated spawn authorization, denied termination/checkpoint/project-view/approval without unauthorized effects, resume result envelope, checkpoint lookup, project-view scope, approval denial, authenticated Axum HTTP success/denial, and authenticated MCP-wire resume from persisted suspension with same-token retry rejection (`in_memory_workflow_syscalls_use_native_run_handlers`, `in_memory_resume_syscall_preserves_resume_envelope_and_result`, `in_memory_project_view_syscall_is_reachable_through_authenticated_http`, `in_memory_native_synchronous_resume_matches_shared_result_contract`). Five Python adjacent-contract tests passed for spawn, approval denial, resume, checkpoint access, and resource-snapshot authorization; the persisted Python MCP resume test also rejects same-token retry without checkpoint growth. The latest `request_approval` slice compares exact Python/Rust 400 status and body for missing action and missing grant/revoke capability using `contracts/golden/syscall-request-approval-invalid-v1.json`; both focused tests pass. Generated inventory confirms 11/11 dispatch presence and zero unavailable entries for this backend; this is not proof of every syscall/backend parity cell. GOAL-06/08 remain OPEN; overall checklist summary remains 6 bounded PASS, 1 PARTIAL, 2 OPEN.
 
