@@ -260,10 +260,17 @@ DLFC-05/10 InMemory workflow run-read cells (2026-11-26): TDD first reproduced
 that Rust InMemory omitted `workflow.run_steps`, then exposed owner-only checks
 that preempted Python's workflow ACL authorization. It now admits the
 Python-equivalent MCP role/namespace policy and routes steps through existing
-runtime-event inspection. Status and steps require `workflow.run.read` plus
-configured workflow `ro` ACL; workflow event reads require read capability;
-authenticated ACL readers may inspect another user's workflow run. Conversation
-run reads remain owner-scoped. Rust's cross-owner regression first failed with
+runtime-event inspection. REST status and steps require `workflow.run.read` plus
+configured workflow `ro` ACL. MCP `workflow.run_status` follows Python's distinct
+contract: role, workflow namespace, and `workflow.run.read` authorize the lookup;
+it does not call `require_workflow_access`. MCP steps retain per-workflow ACL
+checks. Regression evidence for this distinction: Python
+`tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_status_uses_capability_without_workflow_acl`
+and Rust `tests::in_memory_workflow_steps_route_enforces_capability_before_run_lookup`
+(**1 passed each**, 2026-11-26; Rust exercises the authenticated `/mcp/workflow`
+route). Workflow event reads require read capability; authenticated ACL readers
+may inspect another user's workflow run. Conversation run reads remain
+owner-scoped. Rust's cross-owner regression first failed with
 `KOGWISTAR_RUN_OWNER_FORBIDDEN`, then passed after the route-scoped correction.
 Rust
 `tests::workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores`
