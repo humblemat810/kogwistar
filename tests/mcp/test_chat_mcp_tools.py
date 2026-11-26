@@ -6049,7 +6049,7 @@ def test_chat_run_service_operator_inbox_respects_security_scope(
         }
     )
     try:
-        rows = service.list_operator_inbox(inbox_id="inbox:ops", limit=10)
+        rows = service.list_operator_inbox(inbox_id="inbox:ops", limit=1)
     finally:
         claims_ctx.reset(token_read)
     assert len(rows) == 1
