@@ -1186,7 +1186,7 @@ async fn in_memory_workflow_steps_route_enforces_capability_before_run_lookup() 
     let _ = std::fs::remove_file(auth_path);
 }
 
-// PYTHON_PARITY_NOTE_V1: MCP submit/cancel reach in-memory effects; denied submit/cancel leave no mutation and terminal retry adds no event. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
+// PYTHON_PARITY_NOTE_V1: MCP submit/cancel reach in-memory effects; denied submit/cancel leave no mutation and terminal retry adds no event even without workflow.run.write. rust=rust/crates/kogwistar-api/src/tests/in_memory_run_admission.rs#in_memory_workflow_cancel_mcp_reaches_authorized_store_effect; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_cancel_denies_missing_write_capability; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_contract=contracts/golden/run-cancel-v1.json
 #[tokio::test]
 async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
     use axum::body::{Body, to_bytes};
@@ -1369,7 +1369,7 @@ async fn in_memory_workflow_cancel_mcp_reaches_authorized_store_effect() {
         .oneshot(call(
             "workflow.run_cancel",
             json!({"run_id":run_id}),
-            token(vec!["workflow.run.write"]),
+            token(vec![]),
         ))
         .await
         .unwrap();

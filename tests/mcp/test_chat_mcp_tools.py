@@ -6299,6 +6299,24 @@ async def test_mcp_workflow_run_cancel_denies_missing_write_capability(
     assert run["status"] == "running"
     assert run["cancel_requested"] is False
 
+    service.run_registry.create_run(
+        run_id="mcp-cancel-terminal-run",
+        conversation_id="mcp-cancel-terminal-conversation",
+        workflow_id="mcp-cancel-terminal-workflow",
+        user_id="alice",
+        user_turn_node_id="mcp-cancel-terminal-turn",
+        status="cancelled",
+    )
+    with _claims("rw", "workflow", sub="alice", scope_parts={"capabilities": []}):
+        terminal_retry = _structured(
+            await server.mcp._execute(
+                "workflow.run_cancel",
+                {"run_id": "mcp-cancel-terminal-run"},
+                enforce_visibility=True,
+            )
+        )
+    assert terminal_retry["status"] == "cancelled"
+
 
 @pytest.mark.asyncio
 async def test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission(
