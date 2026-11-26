@@ -305,6 +305,67 @@ async fn in_memory_run_events_poll_matches_shared_contract() {
         })
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let secret = "run-events-poll-query-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"user-1", "user_id":"user-1", "role":"ro",
+            "ns":["conversation"], "capabilities":["workflow.run.read"],
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service),
+    );
+    let invalid = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/runs/run-1/events/poll?limit=invalid")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let invalid_body: Value =
+        serde_json::from_slice(&to_bytes(invalid.into_body(), 8192).await.unwrap()).unwrap();
+    assert_eq!(invalid_body["detail"][0]["type"], "int_parsing");
+    assert_eq!(invalid_body["detail"][0]["loc"], json!(["query", "limit"]));
+    assert_eq!(invalid_body["detail"][0]["input"], "invalid");
+
+    let invalid_after_seq = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/runs/run-1/events/poll?after_seq=invalid")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invalid_after_seq.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]

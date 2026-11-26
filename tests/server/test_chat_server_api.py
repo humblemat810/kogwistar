@@ -4868,6 +4868,20 @@ def test_chat_rest_events_poll_matches_rust_seeded_contract(monkeypatch, engine_
             "/api/runs/run-1/events/poll?after_seq=0&limit=10",
             headers=headers,
         )
+        invalid_limit = client.get(
+            "/api/runs/run-1/events/poll?limit=invalid", headers=headers
+        )
+        assert invalid_limit.status_code == 422
+        detail = invalid_limit.json()["detail"][0]
+        assert {key: detail[key] for key in ("type", "loc", "input")} == {
+            "type": "int_parsing",
+            "loc": ["query", "limit"],
+            "input": "invalid",
+        }
+        invalid_after_seq = client.get(
+            "/api/runs/run-1/events/poll?after_seq=invalid", headers=headers
+        )
+        assert invalid_after_seq.status_code == 422
 
     assert response.status_code == contract["success_status"], response.text
     body = response.json()

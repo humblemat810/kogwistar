@@ -1950,6 +1950,28 @@ async fn application_effect_handler(
     let bundle_path_and_query = uri.to_string();
     let (method, path_and_query, body) = public_visualization_effect(&method, &uri, body);
     let mut path_and_query = path_and_query;
+    // PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#application_effect_handler; python=kogwistar/server/chat_api.py#create_chat_router.get_run_events_poll; fixture=contracts/golden/run-events-poll-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_events_poll_matches_shared_contract; python_test=tests/server/test_chat_server_api.py#test_chat_rest_events_poll_matches_rust_seeded_contract
+    if method == "GET"
+        && runtime_run_route(&path_and_query)
+            .is_some_and(|(_, tail)| tail.as_slice() == ["events", "poll"])
+    {
+        for (key, value) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+            if (key == "after_seq" || key == "limit") && value.parse::<i64>().is_err() {
+                return (
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    Json(json!({
+                        "detail": [{
+                            "type": "int_parsing",
+                            "loc": ["query", key],
+                            "msg": "Input should be a valid integer, unable to parse string as an integer",
+                            "input": value,
+                        }]
+                    })),
+                )
+                    .into_response();
+            }
+        }
+    }
     if path_and_query.ends_with("/events")
         && !path_and_query.contains("after_seq=")
         && let Some(last_event_id) = headers
