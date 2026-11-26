@@ -1749,7 +1749,7 @@ async fn sqlite_run_status_http_route_matches_shared_contract_for_all_states() {
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
-// PYTHON_PARITY_NOTE_V1: PostgreSQL REST/MCP/syscall cancellation preserves scope; denied calls leave state unchanged, authorized nonterminal termination appends run.cancelling, terminal retries add no event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel+tests/server/test_chat_server_api.py#test_conversation_syscalls_use_python_postgres_backend; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
+// PYTHON_PARITY_NOTE_V1: PostgreSQL REST/MCP/syscall cancellation preserves scope; denied active calls leave state unchanged, authorized nonterminal termination appends run.cancelling, and terminal MCP retry succeeds without workflow.run.write or appending another event. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_uses_authenticated_user_over_argument+test_mcp_workflow_run_cancel_denies_missing_write_capability+test_mcp_workflow_runtime_submit_cancel+tests/server/test_chat_server_api.py#test_conversation_syscalls_use_python_postgres_backend; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/run-cancel-v1.json
 async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability() {
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
@@ -1836,6 +1836,58 @@ async fn postgres_workflow_run_cancel_contract_enforces_scope_and_write_capabili
         },
         Arc::new(service.clone()),
     );
+    service
+        .store
+        .create_server_run(ServerRunCreate {
+            run_id: "terminal-cancel-run".to_owned(),
+            conversation_id: "terminal-cancel-conversation".to_owned(),
+            workflow_id: "terminal-cancel-workflow".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "terminal-cancel-turn".to_owned(),
+            status: "cancelled".to_owned(),
+        })
+        .await
+        .unwrap();
+    let terminal_retry = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":"terminal-cancel-retry","method":"tools/call","params":{"name":"workflow.run_cancel","arguments":{"run_id":"terminal-cancel-run"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(terminal_retry.status(), StatusCode::OK);
+    let terminal_retry_wire = String::from_utf8(
+        to_bytes(terminal_retry.into_body(), 8192).await.unwrap().to_vec(),
+    )
+    .unwrap();
+    let terminal_retry_data = terminal_retry_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("terminal MCP cancellation retry result");
+    let terminal_retry_payload: Value = serde_json::from_str(terminal_retry_data).unwrap();
+    assert_ne!(terminal_retry_payload["result"]["isError"], true);
+    assert_eq!(
+        terminal_retry_payload["result"]["structuredContent"]["status"],
+        "cancelled"
+    );
+    assert!(kogwistar_store::ServerRunReadStore::server_run_events(
+        &service.store,
+        "terminal-cancel-run",
+        0,
+        100,
+    )
+    .await
+    .unwrap()
+    .is_empty());
     let submit_denial_token = encode(
         &Header::new(Algorithm::HS256),
         &json!({
