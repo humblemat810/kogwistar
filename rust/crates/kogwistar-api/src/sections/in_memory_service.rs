@@ -2077,6 +2077,376 @@ impl InMemoryGraphApplicationService {
         )
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_graph_routes.rs#in_memory_document_tree_upsert_matches_graph_extraction_contract; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
+    async fn document_tree_upsert_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if principal_role(&request.principal) != "rw"
+            || !capability_allowed(
+                request,
+                &self.capabilities,
+                "write_graph",
+                &["write_graph"],
+            )
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Graph upsert requires rw and write_graph capability",
+            );
+        }
+        if authenticated_run_owner_id(&request.principal).is_none() {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_GRAPH_OWNER_REQUIRED",
+                "Graph upsert requires an authenticated owner identity",
+            );
+        }
+        if !principal_strings(&request.principal, "ns")
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "docs"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Graph upsert requires docs namespace",
+            );
+        }
+        let (graph_request, inserted_nodes, inserted_edges) =
+            match document_tree_upsert_graph_request(request) {
+                Ok(parsed) => parsed,
+                Err(response) => return response,
+            };
+        let input = match graph_upsert_request(&graph_request) {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        if inserted_nodes == 0 && inserted_edges == 0 {
+            return json_effect(
+                StatusCode::OK,
+                json!({
+                    "status": "ok",
+                    "inserted_nodes": 0,
+                    "inserted_edges": 0,
+                    "engine_result": {
+                        "document_id": input.doc_id,
+                        "node_ids": [],
+                        "edge_ids": [],
+                        "nodes_added": 0,
+                        "edges_added": 0
+                    }
+                }),
+            );
+        }
+
+        let security_scope = security_scope_value(&request.principal);
+        let scope = GraphScope {
+            namespace: security_scope["storage_namespace"]
+                .as_str()
+                .unwrap_or("docs")
+                .to_owned(),
+            workspace_id: security_scope["workspace"].as_str().map(str::to_owned),
+            graph_space: security_scope["graph_space"].as_str().map(str::to_owned),
+        };
+        let documents = match self
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_documents".to_owned(),
+                ids: Some(vec![input.doc_id.clone()]),
+                metadata: MetadataFilter::default(),
+                limit: 1,
+            })
+            .await
+        {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_DOCUMENT_READ_FAILED",
+                    error.to_string(),
+                );
+            }
+        };
+        let Some(source_text) = documents.first().and_then(|record| record.document.clone()) else {
+            return effect_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "KOGWISTAR_SOURCE_DOCUMENT_REQUIRED",
+                "Graph upsert requires an existing source document in the request scope",
+            );
+        };
+
+        let external = match graph_upsert_external_endpoints(&input) {
+            Ok(endpoints) => endpoints,
+            Err(error) => return invalid_graph_request(error),
+        };
+        let mut external_nodes = external.node_ids;
+        let mut pending_edges = external.edge_ids;
+        let mut external_edges = BTreeMap::<String, GraphRecord>::new();
+        while !pending_edges.is_empty() {
+            let pending = pending_edges
+                .iter()
+                .filter(|id| !external_edges.contains_key(*id))
+                .cloned()
+                .collect::<Vec<_>>();
+            pending_edges.clear();
+            if pending.is_empty() {
+                break;
+            }
+            let records = match self
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: scope.clone(),
+                    table: "gke_edges".to_owned(),
+                    ids: Some(pending.clone()),
+                    metadata: MetadataFilter::default(),
+                    limit: pending.len(),
+                })
+                .await
+            {
+                Ok(records) => records,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_GRAPH_ENDPOINT_READ_FAILED",
+                        error.to_string(),
+                    );
+                }
+            };
+            if records.len() != pending.len() {
+                return invalid_graph_request(
+                    "one or more external hyperedge endpoints are missing from the request scope"
+                        .to_owned(),
+                );
+            }
+            for record in records {
+                external_nodes.extend(
+                    ["source_ids", "target_ids"]
+                        .into_iter()
+                        .flat_map(|field| graph_record_string_ids(&record, field)),
+                );
+                pending_edges.extend(
+                    ["source_edge_ids", "target_edge_ids"]
+                        .into_iter()
+                        .flat_map(|field| graph_record_string_ids(&record, field)),
+                );
+                external_edges.insert(record.id.clone(), record);
+            }
+            if external_nodes.len().saturating_add(external_edges.len()) > 10_000 {
+                return invalid_graph_request(
+                    "graph endpoint closure exceeds 10000 entities".to_owned(),
+                );
+            }
+        }
+        let external_node_records = if external_nodes.is_empty() {
+            Vec::new()
+        } else {
+            match self
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    ids: Some(external_nodes.iter().cloned().collect()),
+                    metadata: MetadataFilter::default(),
+                    limit: external_nodes.len(),
+                })
+                .await
+            {
+                Ok(records) => records,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_GRAPH_ENDPOINT_READ_FAILED",
+                        error.to_string(),
+                    );
+                }
+            }
+        };
+        if external_node_records.len() != external_nodes.len() {
+            return invalid_graph_request(
+                "one or more external node endpoints are missing from the request scope"
+                    .to_owned(),
+            );
+        }
+        let endpoint_records = external_node_records
+            .iter()
+            .chain(external_edges.values())
+            .cloned()
+            .collect::<Vec<_>>();
+        if endpoint_records.iter().any(wisdom_record_is_tombstoned) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_GRAPH_ENDPOINT_FORBIDDEN",
+                "Graph upsert endpoint is tombstoned",
+            );
+        }
+        let endpoint_ids = external_nodes
+            .iter()
+            .chain(external_edges.keys())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut existing_endpoint_acl = Vec::new();
+        for target_id in endpoint_ids {
+            let mut filter = MetadataFilter::default();
+            filter
+                .equals
+                .insert("entity_type".to_owned(), json!("acl_record"));
+            filter
+                .equals
+                .insert("acl_truth_graph".to_owned(), json!("knowledge"));
+            filter
+                .equals
+                .insert("acl_target_entity_id".to_owned(), json!(target_id));
+            let records = match self
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    ids: None,
+                    metadata: filter,
+                    limit: 10_000,
+                })
+                .await
+            {
+                Ok(records) => records,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_ACL_READ_FAILED",
+                        error.to_string(),
+                    );
+                }
+            };
+            existing_endpoint_acl.extend(records);
+        }
+        let mut endpoint_acl_index = GraphAclIndex::default();
+        endpoint_acl_index.extend_from_records(&existing_endpoint_acl, "knowledge");
+        let acl_principal = graph_acl_principal_from_claims(
+            &request.principal,
+            security_scope["security_scope"].as_str(),
+        );
+        let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
+            &external_node_records,
+            &external_edges.values().cloned().collect::<Vec<_>>(),
+            &endpoint_acl_index,
+            &acl_principal,
+        );
+        if visible_nodes.len() != external_node_records.len()
+            || visible_edges.len() != external_edges.len()
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_GRAPH_ENDPOINT_FORBIDDEN",
+                "Graph upsert endpoint is not visible to the authenticated principal",
+            );
+        }
+
+        let mut external = GraphUpsertExternalEndpoints::default();
+        external.node_ids = external_nodes;
+        external.edge_ids = external_edges.keys().cloned().collect();
+        let (batch_input, node_ids, edge_ids) = match graph_upsert_mutation_batch(
+            &input,
+            &source_text,
+            &security_scope,
+            &external,
+            "knowledge",
+        ) {
+            Ok(batch) => batch,
+            Err(error) => return invalid_graph_request(error),
+        };
+        let mutations = match graph_mutation_batch_value(batch_input.clone()) {
+            Ok(mutations) => mutations,
+            Err(error) => return invalid_graph_request(error),
+        };
+        let targets = acl_targets_for_graph_mutations(&mutations).0;
+        let mut existing_acl = Vec::new();
+        for target_id in acl_target_entity_ids(&targets) {
+            let mut filter = MetadataFilter::default();
+            filter
+                .equals
+                .insert("entity_type".to_owned(), json!("acl_record"));
+            filter
+                .equals
+                .insert("acl_truth_graph".to_owned(), json!("knowledge"));
+            filter
+                .equals
+                .insert("acl_target_entity_id".to_owned(), json!(target_id));
+            match self
+                .store
+                .graph_projection_records(GraphProjectionRead {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    ids: None,
+                    metadata: filter,
+                    limit: 10_000,
+                })
+                .await
+            {
+                Ok(records) => existing_acl.extend(records),
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_ACL_READ_FAILED",
+                        error.to_string(),
+                    );
+                }
+            }
+        }
+        let effect_id = uuid::Uuid::new_v4().to_string();
+        let (acl_mutations, acl_jobs) = match derive_default_acl_graph_effects_from_records(
+            &scope,
+            &mutations,
+            targets,
+            existing_acl,
+            AclDefaultsContext {
+                truth_graph: "knowledge",
+                owner_id: &graph_acl_principal_id(&request.principal),
+                security_scope: security_scope["security_scope"].as_str(),
+                effect_id: &effect_id,
+            },
+        ) {
+            Ok(result) => result,
+            Err(error) => return invalid_graph_request(error),
+        };
+        let mut all_mutations = mutations.clone();
+        all_mutations.extend(acl_mutations);
+        let mut index_jobs = match graph_index_jobs_value(&batch_input, &mutations) {
+            Ok(jobs) => jobs,
+            Err(error) => return invalid_graph_request(error),
+        };
+        index_jobs.extend(acl_jobs);
+        match self
+            .store
+            .apply_graph_mutations_with_index_jobs_atomic(GraphMutationBatch {
+                mutations: all_mutations,
+                index_jobs,
+            })
+            .await
+        {
+            Ok(_) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "status": "ok",
+                    "inserted_nodes": inserted_nodes,
+                    "inserted_edges": inserted_edges,
+                    "engine_result": {
+                        "document_id": input.doc_id,
+                        "node_ids": node_ids,
+                        "edge_ids": edge_ids,
+                        "nodes_added": node_ids.len(),
+                        "edges_added": edge_ids.len()
+                    }
+                }),
+            ),
+            Err(error) => effect_error(
+                StatusCode::CONFLICT,
+                "KOGWISTAR_GRAPH_MUTATION_CONFLICT",
+                error.to_string(),
+            ),
+        }
+    }
+
     async fn graph_mutation_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"]) {
             return effect_error(
@@ -2544,6 +2914,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
         if method == "POST" && route == Some("/api/workflow/runs") {
             return true;
         }
+        if method == "POST" && route == Some("/api/document.upsert_tree") {
+            return true;
+        }
         if method == "POST"
             && runtime_run_route(path)
                 .is_some_and(|(_, tail)| tail.as_slice() == ["resume"])
@@ -2610,6 +2983,9 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && request.path_and_query.split('?').next() == Some("/api/workflow/runs")
             {
                 return self.submit_run_effect(&request, None).await;
+            }
+            if is_public_document_tree_upsert_route(&request.method, &request.path_and_query) {
+                return self.document_tree_upsert_effect(&request).await;
             }
             if request.method == "POST"
                 && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)

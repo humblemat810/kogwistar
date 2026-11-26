@@ -2451,4 +2451,168 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert!(vector_query.get("documents").is_none());
 }
 
+#[tokio::test]
+async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
+    use kogwistar_store::{
+        DocumentProjectionUpsert, DocumentStore, EventReadStore, GraphProjectionRead,
+        GraphRecord, GraphScope, MetadataFilter,
+    };
+
+    let service = InMemoryGraphApplicationService::default();
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-extraction-v1.json"
+    )))
+    .unwrap();
+    let doc_id = fixture["doc_id"].as_str().unwrap();
+    let insertion_method = fixture["insertion_method"].as_str().unwrap();
+    let scope = GraphScope {
+        namespace: "docs".to_owned(),
+        workspace_id: Some(String::new()),
+        graph_space: Some(String::new()),
+    };
+    service
+        .store
+        .upsert_document_projection(DocumentProjectionUpsert {
+            scope: scope.clone(),
+            record: GraphRecord {
+                id: doc_id.to_owned(),
+                document: Some(fixture["content"].as_str().unwrap().to_owned()),
+                metadata: json!({"insertion_method":insertion_method})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        })
+        .await
+        .unwrap();
+    let body = serde_json::to_vec(&json!({
+        "doc_id":doc_id,
+        "insertion_method":insertion_method,
+        "nodes":fixture["nodes"],
+        "edges":fixture["edges"]
+    }))
+    .unwrap();
+    let denied = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.upsert_tree".to_owned(),
+            body: body.clone(),
+            principal: json!({
+                "sub":"alice", "user_id":"alice", "role":"ro", "ns":["docs"],
+                "storage_ns":"docs", "capabilities":["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap()
+        .is_empty());
+
+    assert!(service.supports_http_operation("POST", "/api/document.upsert_tree"));
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.upsert_tree".to_owned(),
+            body,
+            principal: json!({
+                "sub":"alice", "user_id":"alice", "role":"rw", "ns":["docs"],
+                "storage_ns":"docs", "capabilities":["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&response.body));
+    let result: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["inserted_nodes"], 2);
+    assert_eq!(result["inserted_edges"], 1);
+    let events = service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap();
+    let node_ids = result["engine_result"]["node_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let edge_ids = result["engine_result"]["edge_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    for id in node_ids.iter().chain(&edge_ids) {
+        assert!(events.iter().any(|event| event.entity_id == *id));
+        let mut acl_filter = MetadataFilter::default();
+        acl_filter
+            .equals
+            .insert("entity_type".to_owned(), json!("acl_record"));
+        acl_filter
+            .equals
+            .insert("acl_truth_graph".to_owned(), json!("knowledge"));
+        acl_filter
+            .equals
+            .insert("acl_target_entity_id".to_owned(), json!(id));
+        let acl_records = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: acl_filter,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(!acl_records.is_empty(), "missing owner ACL for {id}");
+    }
+    let persisted_nodes = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(node_ids.clone()),
+            metadata: MetadataFilter::default(),
+            limit: node_ids.len(),
+        })
+        .await
+        .unwrap();
+    let persisted_node_ids = persisted_nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let persisted_edges = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_edges".to_owned(),
+            ids: Some(edge_ids.clone()),
+            metadata: MetadataFilter::default(),
+            limit: edge_ids.len(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(persisted_nodes.len(), node_ids.len());
+    assert_eq!(persisted_edges.len(), edge_ids.len());
+    for edge in persisted_edges {
+        let payload: Value = serde_json::from_str(edge.document.as_deref().unwrap()).unwrap();
+        for endpoint in ["source_ids", "target_ids"]
+            .into_iter()
+            .flat_map(|field| payload[field].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+        {
+            assert!(persisted_node_ids.contains(endpoint));
+        }
+    }
+}
+
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_visualization.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_visualization.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type

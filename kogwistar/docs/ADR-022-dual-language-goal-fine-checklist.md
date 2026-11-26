@@ -226,6 +226,20 @@ both passed live (**1 each**). Python
 `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_resume_dispatches_request_and_returns_result`
 passed (**1**) against the shared result fixture. No broader MCP matrix closure implied.
 
+DLFC-03 additional InMemory cell (2026-11-26): Rust now serves authenticated
+`POST /api/document.upsert_tree` using the shared graph-extraction normalizer,
+scope/endpoint visibility checks, default owner ACL derivation, and one atomic
+graph/index batch. The fixture source document is pre-seeded, matching Python's
+existing-document contract. Rust
+`tests::in_memory_document_tree_upsert_matches_graph_extraction_contract`
+(**1 passed**) verifies read-only denial before events, successful graph event
+and projection persistence, owner ACL rows, and local edge endpoint resolution.
+Python `tests/server/test_chat_server_api.py::test_document_upsert_tree_accepts_nonempty_shared_graph_extraction`
+(**1 passed**) and the parity annotation crosswalk check
+`tests/core/test_rust_python_parity_annotations.py::test_rust_python_parity_annotations_resolve_to_shared_executable_contracts`
+(**1 passed**) passed; `cargo fmt --all --check` passed. This closes one backend
+cell only; DLFC-03 remains IN PROGRESS and its fixed denominator is unchanged.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
