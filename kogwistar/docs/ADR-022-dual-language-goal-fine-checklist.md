@@ -354,6 +354,16 @@ repeats the denial against unreachable PostgreSQL, proving auth precedes DB
 access. Rust focused selector: **4 passed**; Python status + parity crosswalk:
 **2 passed**. This closes one capability cell only; DLFC-05 remains IN PROGRESS.
 
+DLFC-06 live Chroma lineage cell (2026-11-26): the existing ignored Rust
+integration test now seeds both workflow-run graph nodes and canonical SQLite
+run/ACL records, then GETs lineage through the SQLite+Chroma service and exactly
+matches `contracts/golden/workflow-run-lineage-v1.json`. The test passed against
+a disposable local `chromadb/chroma:latest` container
+(`tests::sqlite_chroma_receive_message_reads_live_chroma_and_matches_shared_fixture`,
+**1 passed**, no skip; container stopped). This validates the live Chroma
+read/projection path only; remaining HTTP/read ACL and backend cells keep
+DLFC-06 IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

@@ -1328,6 +1328,106 @@
         assert_eq!(response["status"], "ok");
         assert_eq!(response["result"], fixture);
 
+        let lineage_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-lineage-v1.json"
+        ))
+        .unwrap();
+        let child = &lineage_fixture["response"]["lineage"][0];
+        let child_run_id = child["run_id"].as_str().unwrap();
+        service
+            .store
+            .create_server_run(kogwistar_store::ServerRunCreate {
+                run_id: child_run_id.to_owned(),
+                conversation_id: "lineage-conversation".to_owned(),
+                workflow_id: child["workflow_id"].as_str().unwrap().to_owned(),
+                user_id: Some("reader-1".to_owned()),
+                user_turn_node_id: fixture["messages"][0]["node_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                status: "succeeded".to_owned(),
+            })
+            .unwrap();
+        for run in lineage_fixture["response"]["lineage"].as_array().unwrap() {
+            let run_id = run["run_id"].as_str().unwrap();
+            let node_id = format!("wf_run|{run_id}");
+            graph
+                .upsert_graph_record_of_kind(
+                    &namespace,
+                    GraphEntityKind::Node,
+                    GraphRecord {
+                        id: node_id.clone(),
+                        document: Some("{}".to_owned()),
+                        metadata: serde_json::from_value(json!({
+                            "entity_type":"workflow_run",
+                            "workflow_id":run["workflow_id"],
+                            "parent_run_id":run["parent_run_id"],
+                            "status":run["status"],
+                            "wf_invoked":run["wf_invoked"],
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation",
+                            "lifecycle_status":"active",
+                            "level_from_root":0
+                        }))
+                        .unwrap(),
+                        embedding: Some(vec![0.6, 0.8]),
+                    },
+                )
+                .await
+                .unwrap();
+            let acl_id = format!("acl-{node_id}");
+            service
+                .store
+                .append_raw_entity_event(
+                    &namespace,
+                    SqliteNewRawEntityEvent {
+                        event_id: format!("event-{acl_id}"),
+                        entity_kind: "node".to_owned(),
+                        entity_id: acl_id.clone(),
+                        op: "ADD".to_owned(),
+                        payload_json: json!({
+                            "id":acl_id,
+                            "document":null,
+                            "metadata":{
+                                "entity_type":"acl_record",
+                                "acl_truth_graph":"conversation",
+                                "acl_target_grain":"node",
+                                "acl_target_entity_id":node_id,
+                                "acl_version":1,
+                                "acl_mode":"public",
+                                "workspace_id":"workspace-a",
+                                "graph_space":"conversation"
+                            }
+                        })
+                        .to_string(),
+                    },
+                )
+                .unwrap();
+        }
+        let lineage = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{child_run_id}/lineage"),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"reader-1",
+                    "user_id":"reader-1",
+                    "role":"ro",
+                    "storage_ns":namespace,
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            })
+            .await;
+        assert_eq!(lineage.status, lineage_fixture["success_status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&lineage.body).unwrap(),
+            lineage_fixture["response"]
+        );
+
         let evidence_fixture: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/run-evidence-v1.json"
         ))
