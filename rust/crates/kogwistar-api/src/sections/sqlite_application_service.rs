@@ -1562,22 +1562,21 @@ impl ApplicationService for SqliteRunApplicationService {
                 };
                 return operator_inbox_effect(&request, &lanes, graph.nodes());
             }
+            // Python parity: runtime_api.get_workflow_run and
+            // runtime_api.get_workflow_run_steps both enforce workflow read ACL.
             if request.method == "GET"
                 && request
                     .path_and_query
                     .split('?')
                     .next()
-                    .is_some_and(|path| {
-                        path.starts_with("/api/workflow/runs/") && path.ends_with("/steps")
-                    })
+                    .is_some_and(|path| path.starts_with("/api/workflow/runs/"))
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && (tail.is_empty() || (tail.len() == 1 && tail[0] == "steps"))
                 && let (Some(auth_store), Some(user_id)) = (
                     self.owner_auth_store.as_ref(),
                     authenticated_run_owner_id(&request.principal),
                 )
             {
-                let Some((run_id, _)) = runtime_run_route(&request.path_and_query) else {
-                    return self.execute_sync(request);
-                };
                 if !principal_strings(&request.principal, "ns")
                     .iter()
                     .any(|namespace| namespace == "*" || namespace == "workflow")

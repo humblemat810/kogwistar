@@ -86,6 +86,12 @@ def test_lineage_denies_unauthorized_parent_or_child():
         assert client.get("/api/workflow/runs/child/lineage").status_code == 200
 
 
+def test_run_status_denies_unauthorized_workflow():
+    with _client(_Service(), set()) as client:
+        response = client.get("/api/workflow/runs/private-run")
+    assert response.status_code == 403
+
+
 def test_lineage_returns_404_for_missing_run():
     with _client(_Service(missing=True), set()) as client:
         response = client.get("/api/workflow/runs/missing/lineage")

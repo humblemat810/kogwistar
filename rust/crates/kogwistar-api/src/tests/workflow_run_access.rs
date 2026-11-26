@@ -149,7 +149,7 @@ async fn workflow_run_steps_denies_wrong_scope_before_storage_access() {
 }
 
 #[tokio::test]
-async fn sqlite_workflow_run_steps_enforces_per_workflow_read_acl() {
+async fn sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-sqlite-run-steps-acl-{}.sqlite",
         uuid::Uuid::new_v4().simple()
@@ -192,6 +192,27 @@ async fn sqlite_workflow_run_steps_enforces_per_workflow_read_acl() {
             status: "completed".to_owned(),
         })
         .unwrap();
+
+    let status = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/private-steps-run".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "user_id": "steps-acl-user",
+                "role": "rw",
+                "ns": ["workflow"],
+                "capabilities": ["workflow.run.read"]
+            }),
+        })
+        .await;
+
+    assert_eq!(status.status, StatusCode::FORBIDDEN.as_u16());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&status.body).unwrap()["code"],
+        "KOGWISTAR_WORKFLOW_FORBIDDEN"
+    );
 
     let response = service
         .execute(ApiEffectRequest {
