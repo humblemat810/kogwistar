@@ -61,6 +61,12 @@
                         ("turn-other-graph-space", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":5,"role":"assistant","summary":"other graph space","graph_space":"knowledge"})),
                         ("snapshot", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer","snapshot_seq":7})),
                         ("9553a4db-7963-57ac-97b3-6dbd96366bc5", json!({"entity_type":"context_snapshot","conversation_id":"evidence-conversation","run_id":"evidence-run","run_step_seq":5,"used_node_ids":["evidence-node-1","evidence-node-2"],"lifecycle_status":"active"})),
+                        ("wf_run|evidence-run", json!({"entity_type":"workflow_run","workflow_id":"workflow-evidence","parent_run_id":"lineage-parent","status":"succeeded","wf_invoked":["workflow-parent"],"lifecycle_status":"active"})),
+                        ("wf_run|lineage-child", json!({"entity_type":"workflow_run","workflow_id":"wf-child","parent_run_id":"lineage-parent","status":"completed","wf_invoked":[],"lifecycle_status":"active"})),
+                        ("wf_run|lineage-parent", json!({"entity_type":"workflow_run","workflow_id":"wf-parent","parent_run_id":null,"status":"completed","wf_invoked":[],"lifecycle_status":"active"})),
+                        ("acl-wf_run|evidence-run", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"wf_run|evidence-run","acl_version":1,"acl_mode":"public"})),
+                        ("acl-wf_run|lineage-child", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"wf_run|lineage-child","acl_version":1,"acl_mode":"public"})),
+                        ("acl-wf_run|lineage-parent", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"wf_run|lineage-parent","acl_version":1,"acl_mode":"private","acl_owner_id":"reader-1"})),
                         ("snapshot-private", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-private","stage":"answer","snapshot_seq":8})),
                         ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
@@ -153,6 +159,14 @@
             user_turn_node_id: "turn-1".to_owned(),
             status: "succeeded".to_owned(),
         }).unwrap();
+        service.store.create_server_run(kogwistar_store::ServerRunCreate {
+            run_id: "lineage-child".to_owned(),
+            conversation_id: "evidence-conversation".to_owned(),
+            workflow_id: "wf-child".to_owned(),
+            user_id: Some("reader-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "completed".to_owned(),
+        }).unwrap();
         // ACL decisions are canonical SQLite events; Chroma contains only the graph projection.
         for (target, mode, owner) in [
             ("start", "public", None),
@@ -162,6 +176,9 @@
             ("turn-private", "private", Some("someone-else")),
             ("snapshot", "public", None),
             ("9553a4db-7963-57ac-97b3-6dbd96366bc5", "public", None),
+            ("wf_run|evidence-run", "public", None),
+            ("wf_run|lineage-child", "public", None),
+            ("wf_run|lineage-parent", "private", Some("reader-1")),
             ("snapshot-private", "private", Some("someone-else")),
             ("foreign-start", "public", None),
         ] {
@@ -296,6 +313,79 @@
             serde_json::from_slice::<Value>(&evidence_mcp_body).unwrap()["result"],
             evidence_contract
         );
+        assert!(service.supports_http_operation(
+            "GET",
+            "/api/workflow/runs/{run_id}/lineage"
+        ));
+        assert!(service.supports_mcp_tool("workflow", "workflow.run_lineage"));
+        let lineage = service
+            .execute(read_request(
+                "/api/workflow/runs/lineage-child/lineage",
+                json!({
+                    "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            ))
+            .await;
+        assert_eq!(lineage.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&lineage.body));
+        let lineage_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-lineage-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&lineage.body).unwrap(),
+            lineage_contract["response"]
+        );
+        let parent_hidden = service
+            .execute(read_request(
+                "/api/workflow/runs/lineage-child/lineage",
+                json!({
+                    "sub":"bob", "user_id":"bob", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            ))
+            .await;
+        let parent_hidden_payload: Value = serde_json::from_slice(&parent_hidden.body).unwrap();
+        assert_eq!(parent_hidden.status, StatusCode::OK.as_u16());
+        assert_eq!(parent_hidden_payload["lineage"].as_array().unwrap().len(), 1);
+        assert_eq!(parent_hidden_payload["lineage"][0]["run_id"], "lineage-child");
+        let lineage_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let lineage_mcp = lineage_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {evidence_token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"workflow.run_lineage","arguments":{"run_id":"lineage-child","limit":1}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lineage_mcp.status(), StatusCode::OK);
+        let lineage_mcp_body = to_bytes(lineage_mcp.into_body(), 65_536).await.unwrap();
+        let lineage_mcp_payload: Value = serde_json::from_slice(&lineage_mcp_body).unwrap();
+        assert_eq!(lineage_mcp_payload["id"], 8);
+        assert_eq!(lineage_mcp_payload["result"]["run_id"], "lineage-child");
+        assert_eq!(lineage_mcp_payload["result"]["lineage"].as_array().unwrap().len(), 1);
+        assert_eq!(lineage_mcp_payload["result"]["truncated"], true);
         let private_evidence = service
             .execute(read_request(
                 "/api/workflow/runs/run-private/evidence",

@@ -357,7 +357,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     || self.embedding_provider.is_some());
         }
         name != "workflow.tool_audit"
-            && name != "workflow.run_lineage"
+            && (name != "workflow.run_lineage" || self.chroma_graph.is_some())
             && (name != "workflow.run_evidence" || self.chroma_graph.is_some())
             && (name != "conversation.create" || self.chroma_graph.is_some())
             && (name != "conversation.ask"
@@ -1608,7 +1608,8 @@ impl ApplicationService for SqliteRunApplicationService {
                     .next()
                     .is_some_and(|path| path.starts_with("/api/workflow/runs/"))
                 && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
-                && (tail.is_empty() || (tail.len() == 1 && tail[0] == "steps"))
+                && (tail.is_empty()
+                    || (tail.len() == 1 && matches!(tail[0].as_str(), "steps" | "lineage")))
                 && let (Some(auth_store), Some(user_id)) = (
                     self.owner_auth_store.as_ref(),
                     authenticated_run_owner_id(&request.principal),
@@ -1740,6 +1741,142 @@ impl ApplicationService for SqliteRunApplicationService {
                     }
                 };
                 return json_effect(StatusCode::OK, public_run_evidence_value(&run_id, snapshot));
+            }
+            // SQLite registry anchors existence; Chroma supplies ACL-filtered conversation records.
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#execute; python=kogwistar/server/chat_service.py#ChatRunService.workflow_run_lineage; fixture=contracts/golden/workflow-run-lineage-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python_test=tests/server/test_workflow_lineage_api.py#test_lineage_checks_parent_and_every_child_acl
+            if request.method == "GET"
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["lineage"]
+            {
+                if !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+                {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                        "Workflow lineage reads require workflow namespace",
+                    );
+                }
+                if !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "workflow.run.read",
+                    &["workflow.run.read"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "Reading workflow run lineage requires workflow.run.read capability",
+                    );
+                }
+                if self.chroma_graph.is_none() {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                        "SQLite runtime metadata does not provide authoritative workflow graph lineage",
+                    );
+                }
+                let _run = match self.get_run(&run_id) {
+                    Ok(Some(run)) => run,
+                    Ok(None) => {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Workflow run not found: {run_id}"),
+                        );
+                    }
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error,
+                        );
+                    }
+                };
+                let graph = match self.chroma_graph_snapshot(&request, "conversation").await {
+                    Ok(graph) => graph,
+                    Err(response) => return response,
+                };
+                let authenticated_user = authenticated_run_owner_id(&request.principal);
+                let mut lineage = Vec::new();
+                let mut current = run_id.clone();
+                let mut seen = BTreeSet::new();
+                while !current.is_empty() && seen.insert(current.clone()) {
+                    let node_id = format!("wf_run|{current}");
+                    let record = graph.nodes().iter().find(|record| record.id == node_id);
+                    let Some(record) = record.filter(|record| {
+                        !matches!(
+                            record
+                                .metadata
+                                .get("lifecycle_status")
+                                .and_then(Value::as_str),
+                            Some("tombstoned" | "deleted")
+                        )
+                    }) else {
+                        if lineage.is_empty() {
+                            return effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Workflow run not found: {run_id}"),
+                            );
+                        }
+                        break;
+                    };
+                    let workflow_id = record
+                        .metadata
+                        .get("workflow_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if let Some(user_id) = authenticated_user
+                        && !workflow_id.is_empty()
+                        && let Some(auth_store) = self.owner_auth_store.as_ref()
+                    {
+                        match auth_store
+                            .workflow_access_allowed(workflow_id, user_id, "ro")
+                            .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                return effect_error(
+                                    StatusCode::FORBIDDEN,
+                                    "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                                    "User does not have read access to every workflow in this lineage",
+                                );
+                            }
+                            Err(error) => {
+                                return effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_AUTH_STORE_ERROR",
+                                    error,
+                                );
+                            }
+                        }
+                    }
+                    let parent = record.metadata.get("parent_run_id").cloned().unwrap_or(Value::Null);
+                    lineage.push(json!({
+                        "run_id": current,
+                        "workflow_id": workflow_id,
+                        "parent_run_id": parent,
+                        "status": record.metadata.get("status").and_then(Value::as_str).unwrap_or_default(),
+                        "wf_invoked": record.metadata.get("wf_invoked").cloned().unwrap_or(Value::Null),
+                    }));
+                    current = parent.as_str().unwrap_or_default().to_owned();
+                }
+                if query_parameter_present(&request.path_and_query, "limit") {
+                    let limit = query_integer(&request.path_and_query, "limit", 200)
+                        .clamp(1, 1000) as usize;
+                    let truncated = lineage.len() > limit;
+                    lineage.truncate(limit);
+                    return json_effect(
+                        StatusCode::OK,
+                        json!({"run_id":run_id,"lineage":lineage,"truncated":truncated}),
+                    );
+                }
+                return json_effect(
+                    StatusCode::OK,
+                    json!({"run_id":run_id,"lineage":lineage}),
+                );
             }
             self.execute_sync(request)
         })
