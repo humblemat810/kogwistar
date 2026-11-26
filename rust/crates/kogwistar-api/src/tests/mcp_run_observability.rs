@@ -373,7 +373,7 @@
 
     #[test]
     fn operator_inbox_filters_graph_visibility_and_security_scope_before_limit() {
-        let request = ApiEffectRequest {
+        let mut request = ApiEffectRequest {
             contract_version: 1,
             method: "GET".to_owned(),
             path_and_query: "/api/workflow/operator/inbox?inbox_id=ops&limit=1".to_owned(),
@@ -386,6 +386,10 @@
                 "security_scope":"team-a",
             }),
         };
+        let limit_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-operator-inbox-limit-v1.json"
+        ))
+        .unwrap();
         let lane = |message_id: &str, seq: i64| ProjectedLaneMessage {
             message_id: message_id.to_owned(),
             namespace: "tenant-a".to_owned(),
@@ -439,6 +443,26 @@
         assert_eq!(messages[0]["message_id"], "shared-visible");
         assert_eq!(messages[0]["visibility"], "shared");
         assert_eq!(messages[0]["storage_namespace"], "tenant-a");
+
+        for case in limit_contract["cases"].as_array().unwrap() {
+            let limit = case["limit"].as_i64().unwrap();
+            request.path_and_query =
+                format!("/api/workflow/operator/inbox?inbox_id=ops&limit={limit}");
+            let limited_response = operator_inbox_effect(
+                &request,
+                &[lane("hidden-by-scope", 1), lane("shared-visible", 2), lane("private-visible", 3)],
+                &[
+                    node("hidden-by-scope", "team-b", false),
+                    node("shared-visible", "team-b", true),
+                    node("private-visible", "team-a", false),
+                ],
+            );
+            let limited_value: Value = serde_json::from_slice(&limited_response.body).unwrap();
+            assert_eq!(
+                limited_value["messages"].as_array().unwrap().len(),
+                case["expected_message_count"].as_u64().unwrap() as usize
+            );
+        }
     }
 
     #[test]

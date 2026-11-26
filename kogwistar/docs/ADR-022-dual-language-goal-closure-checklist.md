@@ -199,9 +199,9 @@ Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL
 | GOAL-06 | `tests/server/test_workflow_designer_ui.py::test_workflow_design_remaining_routes_enforce_acl_before_effect` | PASS | Python graph GET denies missing ACL and allows `ro`; edge upsert/delete, node delete, undo, redo deny missing/`ro` ACL before service effects. Focused pytest: 1 passed. |
 | GOAL-06 | `tests::workflow_design_history_enforces_configured_workflow_acl` | PASS | Rust authenticated SQLite REST routes match Python: history and graph deny missing ACL and allow `ro`; node upsert denies missing/`ro`, allows `rw`; edge upsert/delete, node delete, undo, redo deny missing/`ro` and leave events/projections unchanged. Focused Cargo test: 1 passed. TDD reproduced pre-fix 200 for missing history ACL. |
 | GOAL-06 | `tests/server/test_workflow_designer_ui.py::test_workflow_design_node_upsert_requires_rw_acl_before_dispatch` | PASS | Python node-upsert route denies missing/`ro` workflow ACL before dispatch and allows `rw`; paired with Rust authenticated route test. |
-| GOAL-06 | `tests/mcp/test_chat_mcp_tools.py::test_chat_run_service_operator_inbox_respects_security_scope` | PASS | Python includes a dangling projection and inaccessible row before a visible shared row; `limit=1` omits both and returns visible row. Focused pytest: 1 passed. |
+| GOAL-06 | `tests/mcp/test_chat_mcp_tools.py::test_chat_run_service_operator_inbox_respects_security_scope` | PASS | Python omits dangling/inaccessible rows before limiting; shared fixture confirms `limit=0` gives empty and `limit=-1` follows Python slice semantics. Focused pytest: 1 passed. |
 | GOAL-06 | `tests::operator_inbox_omits_missing_acl_visible_graph_nodes` | PASS | Rust excludes orphaned lane projections with no ACL-visible graph node and does not expose projected payload. Focused Cargo test: 1 passed. |
-| GOAL-06 | `tests::operator_inbox_filters_graph_visibility_and_security_scope_before_limit` | PASS | Rust operator inbox applies visibility/scope filtering before `limit=1`; same hidden-before-visible oracle as Python. Focused Cargo test: 1 passed. |
+| GOAL-06 | `tests::operator_inbox_filters_graph_visibility_and_security_scope_before_limit` | PASS | Rust filters visibility/scope before limit; shared fixture covers zero/negative limits. TDD reproduced `limit=0` mismatch before fix; focused Cargo test: 1 passed. |
 | GOAL-09 | Resource-matched Rust-native vs Python persistent trace (PostgreSQL/pgvector) | NOT STARTED | Required oracle: same sequential and concurrent graph trace, isolated disposable schema, digest parity, and throughput/p95 thresholds. No paired fixed-resource report yet. |
 | GOAL-09 | Resource-matched Rust-native vs Python graph/vector trace (SQLite + Chroma) | NOT STARTED | Required oracle: same eventual-projection workload, canonical event parity, projection convergence, and scoped throughput/p95 measurements. No paired fixed-resource report yet. |
 | GOAL-09 | Resource-matched Rust-native vs Python authenticated workflow/graph request trace | IN PROGRESS | Historical TCP medians (Python 20,869 ms; Rust 13,742 ms) used two measured samples; retain as historical only. Current hooks emit matched TCP latency/IDs/digest/fixture and 100 ms polling; Python collects warm-up + 3 measured. Verifier tests **9 passed**; Rust test compiles. Low-fixture live smoke: Python and Rust PostgreSQL HTTP each **1 passed**, same 11-node fixture/digest/poll; uncapped Windows clients, not perf evidence. Fixed-resource rerun still required. See `docs/benchmarks/mixed_rewrite_benchmark.md`. |
@@ -290,11 +290,13 @@ undo and redo deny-before-effect; focused Python and Rust selectors each passed.
 This closes only the named REST route ACL cells and adds no tasklet; DLFC-05
 remains IN PROGRESS, with GOAL-06/08 still OPEN.
 
-DLFC-06: strengthened existing Python operator-inbox scope test with a dangling
-projection and `limit=1`. Python omits orphan/inaccessible rows and returns the
-visible shared row; Rust's existing orphan-omission and filter-before-limit
-selectors pass (**1 Python, 2 Rust**). This closes only the operator-inbox read
-filter cell; DLFC-06 and GOAL-06/08 remain open.
+DLFC-06: strengthened the existing operator-inbox scope oracle. Python and Rust
+omit orphan/inaccessible rows before limiting; shared fixture
+`workflow-operator-inbox-limit-v1.json` verifies `limit=0` returns none and
+`limit=-1` matches Python slicing. TDD first reproduced Rust's zero-limit leak,
+then focused Python/Rust tests passed (**1 Python, 2 Rust**); parity-annotation
+crosswalk also passed. This closes only the operator-inbox read filter/limit
+cell; DLFC-06 and GOAL-06/08 remain open.
 
 In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/scope and active-run capability checks, shared cancel response fields, terminal-repeat idempotency, and atomic recorded-transition/lane cleanup pass `in_memory_run_cancel_matches_shared_contract_and_authority` and `cancel_commits_runtime_transition_and_lane_cleanup_atomically`. Python MCP and in-memory-store comparison tests also pass. This closes only the named memory cancellation cell; GOAL-06 and GOAL-08 remain OPEN pending the full operation/backend matrix.
 

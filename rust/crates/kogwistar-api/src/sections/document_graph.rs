@@ -2076,6 +2076,7 @@ fn operational_path(path_and_query: &str) -> Option<&str> {
     .then_some(path)
 }
 
+// PYTHON_PARITY_NOTE_V1: Preserve Python list-slice limit semantics, including zero/negative limits, after graph ACL filtering; rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operator_inbox_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_operator_inbox; fixture=contracts/golden/workflow-operator-inbox-limit-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_run_observability.rs#operator_inbox_filters_graph_visibility_and_security_scope_before_limit; python_test=tests/mcp/test_chat_mcp_tools.py#test_chat_run_service_operator_inbox_respects_security_scope
 fn operator_inbox_effect(
     request: &ApiEffectRequest,
     lanes: &[ProjectedLaneMessage],
@@ -2092,7 +2093,7 @@ fn operator_inbox_effect(
     };
     let inbox_id = query_value("inbox_id");
     let status = query_value("status");
-    let limit = query_integer(&request.path_and_query, "limit", 200).clamp(1, 10_000) as usize;
+    let limit = query_integer(&request.path_and_query, "limit", 200).clamp(-10_000, 10_000);
     let scope = security_scope_value(&request.principal);
     let actual_scope = scope["security_scope"]
         .as_str()
@@ -2150,10 +2151,13 @@ fn operator_inbox_effect(
             "execution_namespace": scope["execution_namespace"],
             "security_scope": scope["security_scope"],
         }));
-        if messages.len() >= limit {
-            break;
-        }
     }
+    let end = if limit < 0 {
+        messages.len().saturating_sub(limit.unsigned_abs() as usize)
+    } else {
+        messages.len().min(limit as usize)
+    };
+    messages.truncate(end);
     json_effect(StatusCode::OK, json!({"messages": messages}))
 }
 

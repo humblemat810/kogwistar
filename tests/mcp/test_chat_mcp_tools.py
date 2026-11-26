@@ -6005,6 +6005,12 @@ def test_chat_run_service_resume_contract_exposes_checkpoint_metadata(
 def test_chat_run_service_operator_inbox_respects_security_scope(
     monkeypatch, engine_triplet
 ):
+    limit_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-operator-inbox-limit-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     engine, conversation_engine, workflow_engine = engine_triplet
     service = _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
@@ -6054,6 +6060,16 @@ def test_chat_run_service_operator_inbox_respects_security_scope(
             security_scope="tenant-a",
             shared_scope=True,
         )
+        conversation_engine.send_lane_message(
+            conversation_id="conv-scope-msg",
+            inbox_id="inbox:ops",
+            sender_id="lane:a",
+            recipient_id="lane:b",
+            msg_type="request.visible",
+            payload={"hello": "visible"},
+            security_scope="tenant-a",
+            shared_scope=True,
+        )
     finally:
         claims_ctx.reset(token_send)
 
@@ -6067,12 +6083,19 @@ def test_chat_run_service_operator_inbox_respects_security_scope(
     )
     try:
         rows = service.list_operator_inbox(inbox_id="inbox:ops", limit=1)
+        limited_rows = [
+            service.list_operator_inbox(inbox_id="inbox:ops", limit=case["limit"])
+            for case in limit_contract["cases"]
+        ]
     finally:
         claims_ctx.reset(token_read)
     assert len(rows) == 1
     assert rows[0]["msg_type"] == "request.shared"
     assert rows[0]["visibility"] == "shared"
     assert rows[0]["message_id"] != "orphaned-projection"
+    assert [len(messages) for messages in limited_rows] == [
+        case["expected_message_count"] for case in limit_contract["cases"]
+    ]
 
 
 @pytest.mark.asyncio

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "limit": 0,
+      "expected_message_count": 0
+    },
+    {
+      "limit": -1,
+      "expected_message_count": 1
+    }
+  ]
+}
