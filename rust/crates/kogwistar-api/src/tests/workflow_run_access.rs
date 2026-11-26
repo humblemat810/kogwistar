@@ -231,6 +231,257 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
     );
 }
 
+// PYTHON_PARITY_NOTE_V1: InMemory lineage matches the Python REST projection, missing-run status, limit handling, and ACL-visible prefix. Python=kogwistar/server/chat_service_run_inspection.py#ChatRunService.workflow_run_lineage+kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run_lineage; fixture=contracts/golden/workflow-run-lineage-v1.json; python_test=kogwistar/tests/server/test_workflow_lineage_api.py#test_python_lineage_stops_at_parent_hidden_by_graph_acl+test_lineage_returns_404_for_missing_run.
+#[tokio::test]
+async fn in_memory_workflow_lineage_route_matches_shared_contract() {
+    let service = InMemoryGraphApplicationService::default();
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-lineage-v1.json"
+    ))
+    .unwrap();
+    let route = "/api/workflow/runs/lineage-child/lineage";
+    assert!(service.supports_http_operation("GET", route));
+
+    let scope = GraphScope {
+        namespace: "conversation".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let mut mutations = Vec::new();
+    for item in contract["response"]["lineage"].as_array().unwrap() {
+        let run_id = item["run_id"].as_str().unwrap();
+        let workflow_id = item["workflow_id"].as_str().unwrap();
+        kogwistar_store::ServerRunWriteStore::create_server_run(
+            &service.store,
+            ServerRunCreate {
+                run_id: run_id.to_owned(),
+                conversation_id: "lineage-conversation".to_owned(),
+                workflow_id: workflow_id.to_owned(),
+                user_id: Some("alice".to_owned()),
+                user_turn_node_id: "lineage-turn".to_owned(),
+                status: "completed".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let run_node_id = format!("wf_run|{run_id}");
+        let mut metadata = json!({
+            "entity_type":"workflow_run",
+            "workflow_id":workflow_id,
+            "parent_run_id":item["parent_run_id"],
+            "status":item["status"],
+            "wf_invoked":item["wf_invoked"],
+            "workspace_id":"workspace-a",
+            "graph_space":"conversation"
+        });
+        mutations.push(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{run_node_id}"),
+            op: "ADD".to_owned(),
+            payload: json!({"id":run_node_id,"metadata":metadata}),
+            record: GraphRecord {
+                id: run_node_id.clone(),
+                document: Some("{}".to_owned()),
+                metadata: serde_json::from_value(metadata.take()).unwrap(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        });
+        let acl_id = format!("acl-{run_node_id}");
+        let acl_metadata = json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"conversation",
+            "acl_target_grain":"node",
+            "acl_target_entity_id":run_node_id,
+            "acl_version":1,
+            "acl_mode":"public",
+            "workspace_id":"workspace-a",
+            "graph_space":"conversation"
+        });
+        mutations.push(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{acl_id}"),
+            op: "ADD".to_owned(),
+            payload: json!({"id":acl_id,"metadata":acl_metadata}),
+            record: GraphRecord {
+                id: acl_id,
+                document: Some("{}".to_owned()),
+                metadata: serde_json::from_value(acl_metadata).unwrap(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        });
+    }
+    GraphMutationStore::apply_graph_mutations_atomic(&service.store, mutations)
+        .await
+        .unwrap();
+
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: route.to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "user_id":"alice", "role":"ro",
+                "storage_ns":"conversation", "workspace_id":"workspace-a",
+                "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status, contract["success_status"].as_u64().unwrap() as u16);
+    assert_eq!(serde_json::from_slice::<Value>(&response.body).unwrap(), contract["response"]);
+
+    for (principal, expected_code) in [
+        (
+            json!({"sub":"alice","user_id":"alice","role":"ro","storage_ns":"conversation","workspace_id":"workspace-a","graph_space":"conversation","ns":["conversation"],"capabilities":["workflow.run.read"]}),
+            "KOGWISTAR_NAMESPACE_FORBIDDEN",
+        ),
+        (
+            json!({"sub":"alice","user_id":"alice","role":"ro","storage_ns":"conversation","workspace_id":"workspace-a","graph_space":"conversation","ns":["workflow"],"capabilities":[]}),
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+        ),
+    ] {
+        let denied = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: route.to_owned(),
+                body: Vec::new(),
+                principal,
+            })
+            .await;
+        assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+        let body: Value = serde_json::from_slice(&denied.body).unwrap();
+        assert_eq!(body["code"], expected_code);
+    }
+
+    let limited = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: format!("{route}?limit=1"),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "user_id":"alice", "role":"ro",
+                "storage_ns":"conversation", "workspace_id":"workspace-a",
+                "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(limited.status, StatusCode::OK.as_u16());
+    let limited: Value = serde_json::from_slice(&limited.body).unwrap();
+    assert_eq!(limited["lineage"].as_array().unwrap().len(), 1);
+    assert_eq!(limited["truncated"], true);
+
+    let missing = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/missing/lineage".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "user_id":"alice", "role":"ro",
+                "storage_ns":"conversation", "workspace_id":"workspace-a",
+                "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND.as_u16());
+
+    kogwistar_store::ServerRunWriteStore::create_server_run(
+        &service.store,
+        ServerRunCreate {
+            run_id: "visible-child".to_owned(),
+            conversation_id: "lineage-conversation".to_owned(),
+            workflow_id: "wf-visible".to_owned(),
+            user_id: Some("alice".to_owned()),
+            user_turn_node_id: "lineage-turn".to_owned(),
+            status: "completed".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    let add_scoped_node = |id: &str, metadata: Value| GraphMutation {
+        scope: scope.clone(),
+        table: "gke_nodes".to_owned(),
+        entity_kind: "node".to_owned(),
+        event_id: format!("event-{id}"),
+        op: "ADD".to_owned(),
+        payload: json!({"id":id,"metadata":metadata}),
+        record: GraphRecord {
+            id: id.to_owned(),
+            document: Some("{}".to_owned()),
+            metadata: serde_json::from_value(metadata).unwrap(),
+            embedding: None,
+        },
+        embedding_dim: 0,
+    };
+    let visible_child = json!({
+        "entity_type":"workflow_run", "workflow_id":"wf-visible",
+        "parent_run_id":"hidden-parent", "status":"completed",
+        "workspace_id":"workspace-a", "graph_space":"conversation"
+    });
+    let hidden_parent = json!({
+        "entity_type":"workflow_run", "workflow_id":"wf-hidden",
+        "parent_run_id":null, "status":"completed",
+        "workspace_id":"workspace-a", "graph_space":"conversation"
+    });
+    GraphMutationStore::apply_graph_mutations_atomic(
+        &service.store,
+        vec![
+            add_scoped_node("wf_run|visible-child", visible_child),
+            add_scoped_node(
+                "acl-visible-child",
+                json!({
+                    "entity_type":"acl_record", "acl_truth_graph":"conversation",
+                    "acl_target_grain":"node", "acl_target_entity_id":"wf_run|visible-child",
+                    "acl_version":1, "acl_mode":"public",
+                    "workspace_id":"workspace-a", "graph_space":"conversation"
+                }),
+            ),
+            add_scoped_node("wf_run|hidden-parent", hidden_parent),
+            add_scoped_node(
+                "acl-hidden-parent",
+                json!({
+                    "entity_type":"acl_record", "acl_truth_graph":"conversation",
+                    "acl_target_grain":"node", "acl_target_entity_id":"wf_run|hidden-parent",
+                    "acl_version":1, "acl_mode":"private", "owner_id":"bob",
+                    "workspace_id":"workspace-a", "graph_space":"conversation"
+                }),
+            ),
+        ],
+    )
+    .await
+    .unwrap();
+    let visible_prefix = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/workflow/runs/visible-child/lineage".to_owned(),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"alice", "user_id":"alice", "role":"ro",
+                "storage_ns":"conversation", "workspace_id":"workspace-a",
+                "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(visible_prefix.status, StatusCode::OK.as_u16());
+    let visible_prefix: Value = serde_json::from_slice(&visible_prefix.body).unwrap();
+    assert_eq!(visible_prefix["lineage"].as_array().unwrap().len(), 1);
+    assert_eq!(visible_prefix["lineage"][0]["run_id"], "visible-child");
+}
+
 #[tokio::test]
 async fn in_memory_run_events_poll_matches_shared_contract() {
     let service = InMemoryGraphApplicationService::default();

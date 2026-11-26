@@ -419,6 +419,21 @@ now also asserts authenticated `GET /api/workflow/runs/missing/lineage` returns
 the lineage not-found branch for both supported Rust backend compositions only.
 Other HTTP/read ACL and backend cells remain open.
 
+DLFC-06 InMemory workflow-lineage route (2026-11-27): TDD first confirmed
+`supports_http_operation("GET", "/api/workflow/runs/{id}/lineage")` was false.
+Rust now serves lineage from the request's scoped conversation graph, applies
+graph ACL visibility and configured per-workflow `ro` checks, stops at an
+invisible parent, handles cycles/tombstones, returns 404 for a missing run,
+and supports the existing bounded `limit` response. Rust
+`tests::in_memory_workflow_lineage_route_matches_shared_contract` checks exact
+equality with `workflow-run-lineage-v1.json`, limit/truncation, missing-run
+404, and parent-hidden visible-prefix (**1 passed**). Python lineage module
+`tests/server/test_workflow_lineage_api.py` (**8 passed**), including the real
+ACL-enabled in-memory `ChatRunService` oracle and missing-run 404; Rust
+`cargo fmt --all -- --check` passed. This closes only the InMemory lineage REST
+cell; broader read/query operation/backend cells remain open, so DLFC-06 stays
+IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

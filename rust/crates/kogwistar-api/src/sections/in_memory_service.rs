@@ -2906,6 +2906,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 let tail_refs = tail.iter().map(String::as_str).collect::<Vec<_>>();
                 tail.is_empty()
                     || is_runtime_inspection_tail(&tail_refs)
+                    || tail.as_slice() == ["lineage"]
                     || tail.as_slice() == ["events"]
                     || tail.as_slice() == ["events", "poll"]
                     || tail.as_slice() == ["evidence"]
@@ -5440,7 +5441,7 @@ impl InMemoryGraphApplicationService {
         }
     }
 
-        // PYTHON_PARITY_NOTE_V1: in-memory run inspection uses recorded runtime events and Python-equivalent workflow namespace/capability checks. Python=kogwistar/server/chat_api.py#create_chat_router.get_run_steps+get_run_checkpoints+get_checkpoint+replay_run; Rust test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_checkpoint_and_replay_routes_match_python_contracts.
+        // PYTHON_PARITY_NOTE_V1: in-memory run inspection and lineage use Python-equivalent owner, workflow ACL, graph ACL, and namespace checks. Python=kogwistar/server/chat_service_run_inspection.py#ChatRunService.workflow_run_lineage+kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run_lineage; Rust test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_workflow_lineage_route_matches_shared_contract; Python test=kogwistar/tests/server/test_workflow_lineage_api.py#test_python_lineage_stops_at_parent_hidden_by_graph_acl.
     async fn read_runtime_run_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let Some((run_id, tail)) = runtime_run_route(&request.path_and_query) else {
             return unavailable_effect(request.clone());
@@ -5490,6 +5491,7 @@ impl InMemoryGraphApplicationService {
         let workflow_run_read = required_namespace == "workflow"
             && (tail.is_empty()
                 || is_runtime_inspection_tail(&tail_refs)
+                || tail.as_slice() == ["lineage"]
                 || tail.as_slice() == ["events"]
                 || tail.as_slice() == ["events", "poll"]);
         let delegated_workflow_read = workflow_run_read
@@ -5521,7 +5523,9 @@ impl InMemoryGraphApplicationService {
                 );
             }
         };
-        if (tail.is_empty() || is_runtime_inspection_tail(&tail_refs))
+        if (tail.is_empty()
+            || is_runtime_inspection_tail(&tail_refs)
+            || tail.as_slice() == ["lineage"])
             && !is_mcp_workflow_status_read(request)
             && let Some(auth_store) = self.owner_auth_store.as_ref()
         {
@@ -5577,6 +5581,102 @@ impl InMemoryGraphApplicationService {
                 }
             };
             return json_effect(StatusCode::OK, public_run_evidence_value(&run_id, snapshot));
+        }
+        if tail.as_slice() == ["lineage"] {
+            let (scope, acl_principal) =
+                conversation_graph_scope_and_acl_principal(&request.principal);
+            let (nodes, edges) = match self.graph_snapshot(scope).await {
+                Ok(records) => records,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_STORE_ERROR",
+                        error,
+                    );
+                }
+            };
+            let (visible_nodes, _) =
+                graph_records_visible_by_acl(&nodes, &edges, "conversation", &acl_principal);
+            let authenticated_user = authenticated_run_owner_id(&request.principal);
+            let mut lineage = Vec::new();
+            let mut current = run_id.clone();
+            let mut seen = BTreeSet::new();
+            while !current.is_empty() && seen.insert(current.clone()) {
+                let node_id = format!("wf_run|{current}");
+                let record = visible_nodes.iter().find(|record| record.id == node_id);
+                let Some(record) = record.filter(|record| {
+                    !matches!(
+                        record
+                            .metadata
+                            .get("lifecycle_status")
+                            .and_then(Value::as_str),
+                        Some("tombstoned" | "deleted")
+                    )
+                }) else {
+                    if lineage.is_empty() {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            "Workflow run not found",
+                        );
+                    }
+                    break;
+                };
+                let workflow_id = record
+                    .metadata
+                    .get("workflow_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if let (Some(user_id), Some(auth_store)) =
+                    (authenticated_user, self.owner_auth_store.as_ref())
+                    && !workflow_id.is_empty()
+                {
+                    match auth_store
+                        .workflow_access_allowed(workflow_id, user_id, "ro")
+                        .await
+                    {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            return effect_error(
+                                StatusCode::FORBIDDEN,
+                                "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                                "User does not have read access to every workflow in this lineage",
+                            );
+                        }
+                        Err(error) => {
+                            return effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_AUTH_STORE_ERROR",
+                                error,
+                            );
+                        }
+                    }
+                }
+                let parent = record
+                    .metadata
+                    .get("parent_run_id")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                lineage.push(json!({
+                    "run_id": current,
+                    "workflow_id": workflow_id,
+                    "parent_run_id": parent,
+                    "status": record.metadata.get("status").and_then(Value::as_str).unwrap_or_default(),
+                    "wf_invoked": record.metadata.get("wf_invoked").cloned().unwrap_or(Value::Null),
+                }));
+                current = parent.as_str().unwrap_or_default().to_owned();
+            }
+            if query_parameter_present(&request.path_and_query, "limit") {
+                let limit = query_integer(&request.path_and_query, "limit", 200)
+                    .clamp(1, 1000) as usize;
+                let truncated = lineage.len() > limit;
+                lineage.truncate(limit);
+                return json_effect(
+                    StatusCode::OK,
+                    json!({"run_id":run_id,"lineage":lineage,"truncated":truncated}),
+                );
+            }
+            return json_effect(StatusCode::OK, json!({"run_id":run_id,"lineage":lineage}));
         }
         let after_seq = query_integer(&request.path_and_query, "after_seq", 0);
         let limit = query_integer(&request.path_and_query, "limit", 500).clamp(1, 10_000);
