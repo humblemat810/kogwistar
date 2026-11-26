@@ -42,6 +42,15 @@
 
 Terminal workflow-cancel retry parity now has live persistent-backend evidence. Python and Rust InMemory selectors passed with an `rw`/workflow caller lacking `workflow.run.write`; active cancellation remains denied, while already-terminal cancellation returns unchanged status without another event. Rust PostgreSQL `tests::postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` now seeds a terminal run and exercises authenticated MCP retry through the live router; no write capability is granted and event history remains empty (**1 passed**, disposable pgvector:pg16, 2026-11-26). `cargo fmt --manifest-path rust/Cargo.toml --all --check` passes. This closes the named terminal-retry/backend cell only; DLFC-10 remains IN PROGRESS because the broader MCP operation/backend retry matrix remains open.
 
+SQLite+Chroma MCP resume evidence (2026-11-26): existing ignored test
+`tests::sqlite_runtime_worker_lifecycle::sqlite_chroma_mcp_resume_continues_persisted_suspended_token`
+passed against disposable live `chromadb/chroma:latest` (**1 passed**, no skip).
+It exercises authenticated MCP resume through SQLite runtime storage with a
+live Chroma graph projection and checks the shared resume result contract. The
+test container was stopped after the run. This closes only the live
+SQLite+Chroma resume cell; DLFC-10 remains IN PROGRESS because other operation
+and backend effect/retry cells remain unverified.
+
 ### DLFC-05 Evidence Update (Existing Tasklet)
 
 Workflow-run read ACL parity: Python REST status and steps require per-workflow `ro` ACL; Rust SQLite previously missed status ACL preflight. Rust now matches REST. Separately, Python MCP status checks MCP role+workflow namespace, then `ChatRunService.get_run` checks `workflow.run.read`, but does not apply per-workflow ACL; MCP steps retain their ACL check. Rust previously routed MCP status through REST-only ACL and returned 403 where Python succeeds. TDD reproduced and fixed both distinctions without changing REST policy. Evidence: Python `tests/server/test_workflow_lineage_api.py` (**4 passed**) and `tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_status_uses_capability_without_workflow_acl` (**1 passed**); Rust `tests::sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl`, `tests::workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores`, and `tests::only_mcp_workflow_status_request_gets_acl_parity_exception`; authenticated InMemory route test rejects forged public marker; live PostgreSQL `tests::postgres_workflow_lineage_route_checks_each_workflow_acl` (**1 passed**). These close named status authorization cells only; DLFC-05 remains IN PROGRESS.
