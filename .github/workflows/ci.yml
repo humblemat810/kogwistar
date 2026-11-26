@@ -255,7 +255,7 @@ jobs:
           ANONYMIZED_TELEMETRY: "FALSE"
         run: >-
           python -m pytest -q -p no:cacheprovider
-          tests/server/test_chat_server_api.py::test_server_health_matches_shared_contract
+          tests/server/test_chat_server_api_documents.py::test_server_health_matches_shared_contract
           tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence
           tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture
           tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token

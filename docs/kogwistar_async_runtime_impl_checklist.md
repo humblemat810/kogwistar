@@ -414,7 +414,7 @@ Sync/Async test-mapping policy:
 - [x] LangGraph parity claims are limited to semantics mode -> documented in Phase 8 notes
   - sync counterpart(s): `tests/workflow/test_langgraph_converter.py`, `tests/workflow/test_langgraph_converter_parallel_integration.py`, `tests/workflow/test_langgraph_blob_state.py`
 - [x] sync runtime remains stable while async runtime lands incrementally -> `test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync`, `test_default_runtime_runner_uses_async_or_sync_runtime_by_kind`, `test_chat_service_split_smoke.py`
-  - sync counterpart(s): `tests/server/test_chat_server_api.py`, `tests/server/test_chat_service_split_smoke.py`
+  - sync counterpart(s): `tests/server/test_chat_server_api_admission.py`, `tests/server/test_chat_service_split_smoke.py`
 
 Recent note (2026-04-22):
 

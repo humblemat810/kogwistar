@@ -41,10 +41,12 @@ RUST_API_EXCLUDED_TESTS = (
 GROUPS: dict[str, tuple[tuple[str, ...], bool]] = {
     "rest-sse": (
         (
-            "tests/server/test_chat_server_api.py::test_chat_rest_submit_and_sse",
-            "tests/server/test_chat_server_api.py::test_chat_rest_sse_reconnects_cleanly_after_terminal_run",
-            "tests/server/test_chat_server_api.py::test_runtime_rest_submit_and_sse",
-            "tests/server/test_chat_server_api.py::test_runtime_rest_cancel",
+            "tests/server/test_chat_server_api_conversations.py::test_chat_rest_submit_and_sse",
+            "tests/server/test_chat_server_api_run_inspection.py::test_chat_rest_sse_reconnects_cleanly_after_terminal_run",
+            "tests/server/test_chat_server_api_runtime_workflow.py::test_runtime_rest_submit_and_sse",
+            "tests/server/test_chat_server_api_runtime_workflow.py::test_runtime_rest_cancel",
+            "tests/server/test_chat_server_api_runtime_workflow.py::test_workflow_run_lane_message_lifecycle_streams_through_registry_sse",
+            "tests/server/test_agent_event_api.py::test_terminal_sse_stream_stops_when_service_only_returns_stale_events",
         ),
         False,
     ),
@@ -59,7 +61,14 @@ GROUPS: dict[str, tuple[tuple[str, ...], bool]] = {
     ),
     "mcp": (
         (
-            "tests/mcp/test_chat_mcp_tools.py",
+            "tests/mcp/test_chat_mcp_conversation_tools.py",
+            "tests/mcp/test_chat_mcp_graph_reads.py",
+            "tests/mcp/test_chat_mcp_graph_tools.py",
+            "tests/mcp/test_chat_mcp_operator_tools.py",
+            "tests/mcp/test_chat_mcp_workflow_authority.py",
+            "tests/mcp/test_chat_mcp_workflow_run_access.py",
+            "tests/mcp/test_chat_mcp_workflow_runtime_design.py",
+            "tests/mcp/test_chat_mcp_workflow_services.py",
             "tests/server/test_mcp_tool_registry_contract.py",
         ),
         False,
