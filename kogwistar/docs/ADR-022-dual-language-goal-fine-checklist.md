@@ -368,10 +368,12 @@ Python ACL lineage counterpart (2026-11-26):
 `tests/server/test_workflow_lineage_api.py::test_python_lineage_stops_at_parent_hidden_by_graph_acl`
 passes against an ACL-enabled in-memory graph and real `ChatRunService`; child
 node, grounding, and span grants are public while parent node is private to
-another principal. The returned lineage stops at the hidden parent, matching
-Rust's live Chroma case. The full Python route/service module now passes (**7
-passed**). This closes only the Python in-memory lineage ACL cell; broader
-HTTP/read ACL and backend cells keep DLFC-06 IN PROGRESS.
+another principal. With the run registry seeded, authenticated REST
+`GET /api/workflow/runs/lineage-child/lineage` returns `200` and only the
+visible child, matching Rust's live Chroma route case. The full Python
+route/service module now passes (**7 passed**). This closes only the Python
+in-memory lineage ACL cell; broader HTTP/read ACL and backend cells keep
+DLFC-06 IN PROGRESS.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |

@@ -174,11 +174,20 @@ def test_python_lineage_stops_at_parent_hidden_by_graph_acl(tmp_path):
         mode="private",
         owner_id="bob",
     )
+    registry = RunRegistry(engine.meta_sqlite)
+    registry.create_run(
+        run_id="lineage-child",
+        conversation_id="conversation-1",
+        workflow_id="wf.child",
+        user_id="alice",
+        user_turn_node_id="turn-1",
+        status="completed",
+    )
     service = ChatRunService(
         get_knowledge_engine=lambda: engine,
         get_conversation_engine=lambda: engine,
         get_workflow_engine=lambda: engine,
-        run_registry=RunRegistry(engine.meta_sqlite),
+        run_registry=registry,
     )
     token = set_claims_ctx(
         {"sub": "alice", "user_id": "alice", "ns": "workflow"}
@@ -190,20 +199,26 @@ def test_python_lineage_stops_at_parent_hidden_by_graph_acl(tmp_path):
                 ids=["wf_run|lineage-child", "wf_run|lineage-parent"], limit=2
             )
         } == {"wf_run|lineage-child"}
-        result = service.workflow_run_lineage("lineage-child")
+        with _client(service, {"wf.child"}) as client:
+            response = client.get(
+                "/api/workflow/runs/lineage-child/lineage"
+            )
     finally:
         reset_claims_ctx(token)
 
-    assert result["run_id"] == "lineage-child"
-    assert result["lineage"] == [
-        {
-            "run_id": "lineage-child",
-            "workflow_id": "wf.child",
-            "parent_run_id": "lineage-parent",
-            "status": "completed",
-            "wf_invoked": None,
-        }
-    ]
+    assert response.status_code == 200
+    assert response.json() == {
+        "run_id": "lineage-child",
+        "lineage": [
+            {
+                "run_id": "lineage-child",
+                "workflow_id": "wf.child",
+                "parent_run_id": "lineage-parent",
+                "status": "completed",
+                "wf_invoked": None,
+            }
+        ],
+    }
 
 
 def test_run_status_denies_unauthorized_workflow():
