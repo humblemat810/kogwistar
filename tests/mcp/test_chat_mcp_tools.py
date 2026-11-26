@@ -1796,6 +1796,36 @@ async def test_mcp_workflow_run_steps_denies_wrong_namespace_before_read(
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_steps_preserves_role_namespace_policy_without_capability(
+    monkeypatch, engine_triplet
+):
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[str] = []
+
+    def get_run(run_id: str) -> dict[str, str]:
+        reads.append(f"run:{run_id}")
+        return {"workflow_id": "workflow-1"}
+
+    def list_steps(run_id: str) -> list[dict[str, str]]:
+        reads.append(f"steps:{run_id}")
+        return []
+
+    monkeypatch.setattr(service, "get_run", get_run)
+    monkeypatch.setattr(service, "list_steps", list_steps)
+
+    with _claims("ro", "workflow", sub="reader", scope_parts={"capabilities": []}):
+        result = await server.mcp.call_tool(
+            "workflow.run_steps", {"run_id": "authorized-run"}
+        )
+
+    assert _structured(result) == {"run_id": "authorized-run", "steps": []}
+    assert reads == ["run:authorized-run", "steps:authorized-run"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_checkpoint_get_denies_wrong_namespace_before_read(
     monkeypatch, engine_triplet
 ):

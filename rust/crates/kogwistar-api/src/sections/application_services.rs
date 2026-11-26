@@ -986,6 +986,15 @@ impl ApplicationService for PostgresRunApplicationService {
                 && self.supports_mcp_tool(surface, name);
         }
         // PYTHON_PARITY_NOTE_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read before event-store access; rust=kogwistar/rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events+kogwistar/server/chat_service.py#ChatRunService.list_run_events; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_events_denies_missing_read_capability_before_read
+        // PYTHON_PARITY_NOTE_V1: workflow steps MCP admission uses ro/rw + workflow namespace; the handler enforces configured per-workflow ACL, while this tool has no explicit workflow.run.read capability requirement; rust=rust/crates/kogwistar-api/src/sections/application_services.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_steps_preserves_role_namespace_policy_without_capability
+        if name == "workflow.run_steps" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "workflow.run_events" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
