@@ -1753,6 +1753,7 @@
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use kogwistar_store::ServerRunCreate;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use std::sync::Arc;
         use std::time::{SystemTime, UNIX_EPOCH};
         use tower::ServiceExt;
@@ -1778,6 +1779,7 @@
         let path = std::env::temp_dir().join(format!("kogwistar-mcp-cancel-{nonce}.sqlite3"));
         let store = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
         let run_id = "sqlite-chroma-mcp-cancel-run";
+        let terminal_run_id = "sqlite-chroma-mcp-terminal-run";
         store
             .create_server_run(ServerRunCreate {
                 run_id: run_id.to_owned(),
@@ -1788,26 +1790,66 @@
                 status: "running".to_owned(),
             })
             .unwrap();
+        store
+            .create_server_run(ServerRunCreate {
+                run_id: terminal_run_id.to_owned(),
+                conversation_id: "mcp-terminal-cancel-conversation".to_owned(),
+                workflow_id: "mcp-terminal-cancel-workflow".to_owned(),
+                user_id: Some("alice".to_owned()),
+                user_turn_node_id: "mcp-terminal-cancel-turn".to_owned(),
+                status: "cancelled".to_owned(),
+            })
+            .unwrap();
         let events_before = store.list_server_run_events(run_id, 0, 100).unwrap();
+        let terminal_events_before = store
+            .list_server_run_events(terminal_run_id, 0, 100)
+            .unwrap();
         let service = SqliteRunApplicationService::open(&path)
             .unwrap()
             .with_chroma_graph(graph);
+        let secret = b"sqlite-chroma-mcp-cancel-secret";
+        let token = |capabilities: &[&str]| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub":"alice",
+                    "user_id":"alice",
+                    "role":"rw",
+                    "ns":["workflow"],
+                    "capabilities":capabilities,
+                    "iss":"local",
+                    "exp":4102444800_u64
+                }),
+                &EncodingKey::from_secret(secret),
+            )
+            .unwrap()
+        };
         let app = router_with_application(
             ApiState {
                 health: snapshot(),
-                required_roles: vec!["reader".to_owned()],
+                required_roles: Vec::new(),
                 implementation: ImplementationSnapshot::default(),
-                auth: AuthConfig::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
             },
             Arc::new(service.clone()),
         );
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/mcp/workflow")
                     .header("content-type", "application/json")
-                    .header("x-kogwistar-roles", "reader,rw")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&["workflow.run.write"])),
+                    )
                     .body(Body::from(serde_json::to_vec(&json!({
                         "jsonrpc":"2.0",
                         "id":"sqlite-chroma-cancel",
@@ -1853,6 +1895,47 @@
         };
         assert_eq!(count_cancel_events(&events_after), count_cancel_events(&events_before) + 1);
         assert!(service.store.get_server_run(run_id).unwrap().unwrap().cancel_requested);
+
+        let terminal_retry = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(&[])),
+                    )
+                    .body(Body::from(serde_json::to_vec(&json!({
+                        "jsonrpc":"2.0",
+                        "id":"sqlite-chroma-terminal-cancel-retry",
+                        "method":"tools/call",
+                        "params":{
+                            "name":"workflow.run_cancel",
+                            "arguments":{"run_id":terminal_run_id}
+                        }
+                    })).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(terminal_retry.status(), StatusCode::OK);
+        let terminal_retry: Value = serde_json::from_slice(
+            &to_bytes(terminal_retry.into_body(), 8192).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(terminal_retry["result"]["run_id"], terminal_run_id);
+        assert_eq!(terminal_retry["result"]["status"], "cancelled");
+        assert_eq!(terminal_retry["result"]["cancel_requested"], false);
+        let terminal_events_after = service
+            .store
+            .list_server_run_events(terminal_run_id, 0, 100)
+            .unwrap();
+        assert_eq!(
+            terminal_events_after.len(),
+            terminal_events_before.len(),
+            "terminal retry must not append another run event"
+        );
 
         drop(service);
         drop(store);

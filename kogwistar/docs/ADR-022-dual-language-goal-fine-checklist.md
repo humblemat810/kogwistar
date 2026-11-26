@@ -56,11 +56,15 @@ test `tests::sqlite_runtime_worker_lifecycle::sqlite_chroma_mcp_cancel_commits_o
 It uses the existing `workflow-run-cancel-mcp-v1.json`, invokes the real
 authenticated MCP route, and verifies `status=cancelling`, durable
 `cancel_requested=true`, plus exactly one newly appended `run.cancelling`
-event. Live disposable `chromadb/chroma:latest`: **1 passed**, no skip; the
-container was stopped. Python contract selector is
-`tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_cancel_matches_shared_contract`.
-This closes only Rust SQLite+Chroma cancel-effect coverage; DLFC-10 remains
-IN PROGRESS pending other operation/backend effect and retry cells.
+event. Same test seeds a terminal run and retries as the authenticated owner
+with no `workflow.run.write`; response preserves `cancelled` and explicit
+`cancel_requested=false`, with unchanged event count. Live disposable
+`chromadb/chroma:latest`: **1 passed**, no skip; the container was stopped.
+Python oracles are
+`tests/mcp/test_chat_mcp_tools.py::test_mcp_workflow_run_cancel_matches_shared_contract`
+and `::test_mcp_workflow_run_cancel_denies_missing_write_capability`. This
+closes only Rust SQLite+Chroma active-effect and terminal-retry cells; DLFC-10
+remains IN PROGRESS pending other operation/backend effect and retry cells.
 
 ### DLFC-05 Evidence Update (Existing Tasklet)
 
