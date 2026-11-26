@@ -1311,7 +1311,8 @@
                             "acl_target_grain":"node",
                             "acl_target_entity_id":snapshot_id,
                             "acl_version":1,
-                            "acl_mode":"public",
+                            "acl_mode":"private",
+                            "owner_id":"reader-1",
                             "workspace_id":"workspace-a",
                             "graph_space":"conversation"
                         }
@@ -1343,6 +1344,27 @@
             serde_json::from_slice::<Value>(&evidence.body).unwrap(),
             evidence_fixture
         );
+
+        let denied_evidence = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/evidence"),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"other-reader",
+                    "user_id":"other-reader",
+                    "role":"ro",
+                    "storage_ns":namespace,
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":["workflow"],
+                    "capabilities":["workflow.run.read","project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(denied_evidence.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&denied_evidence.body).contains(snapshot_id));
 
         drop(graph);
         drop(service);
