@@ -730,6 +730,166 @@ async fn workflow_run_submit_enforces_configured_workflow_acl() {
     remove_test_sqlite(&auth_path);
 }
 
+#[tokio::test]
+async fn sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-mcp-run-steps-acl-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-mcp-run-steps-acl-auth-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        ..AuthConfig::default()
+    };
+    let service = SqliteRunApplicationService::open(&sqlite_path)
+        .unwrap()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    let auth = rusqlite::Connection::open(&auth_path).unwrap();
+    auth.execute(
+        "INSERT INTO users (user_id, email, is_active, created_at) VALUES ('alice', 'alice@example.test', 1, CURRENT_TIMESTAMP)",
+        [],
+    )
+    .unwrap();
+    auth.execute(
+        "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('visible-workflow', 'alice', 'ro')",
+        [],
+    )
+    .unwrap();
+    drop(auth);
+
+    for (run_id, workflow_id) in [
+        ("private-run", "private-workflow"),
+        ("visible-run", "visible-workflow"),
+    ] {
+        service
+            .store
+            .create_server_run(ServerRunCreate {
+                run_id: run_id.to_owned(),
+                conversation_id: "steps-acl-conversation".to_owned(),
+                workflow_id: workflow_id.to_owned(),
+                user_id: Some("alice".to_owned()),
+                user_turn_node_id: format!("turn-{run_id}"),
+                status: "completed".to_owned(),
+            })
+            .unwrap();
+    }
+
+    let secret = b"workflow-run-steps-acl-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice",
+            "user_id": "alice",
+            "role": "ro",
+            "ns": ["workflow"],
+            "capabilities": [],
+            "iss": "local",
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec!["ro".to_owned()],
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+
+    let direct_rest = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/workflow/runs/visible-run/steps?limit=200")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(direct_rest.status(), StatusCode::FORBIDDEN);
+    let direct_body = to_bytes(direct_rest.into_body(), 4096).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&direct_body).unwrap()["code"],
+        "KOGWISTAR_CAPABILITY_FORBIDDEN"
+    );
+
+    for (request_id, run_id, expected_error) in [
+        ("private", "private-run", true),
+        ("visible", "visible-run", false),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "method": "tools/call",
+                            "params": {
+                                "name": "workflow.run_steps",
+                                "arguments": {"run_id": run_id}
+                            }
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let text = String::from_utf8(body.to_vec()).unwrap();
+        let message = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .unwrap_or(&text);
+        let payload: Value = serde_json::from_str(message).unwrap();
+        if expected_error {
+            assert_eq!(payload["result"]["isError"], true, "{payload}");
+            assert!(!payload.to_string().contains(run_id));
+        } else {
+            assert_eq!(payload["result"]["structuredContent"]["run_id"], run_id);
+            assert_eq!(
+                payload["result"]["structuredContent"]["steps"],
+                json!([])
+            );
+        }
+    }
+
+    drop(app);
+    drop(service);
+    remove_test_sqlite(&sqlite_path);
+    remove_test_sqlite(&auth_path);
+}
+
 // PYTHON_PARITY_NOTE_V1: SQLite MCP submit/cancel persist effects and terminal retry adds no run event; Python counterparts verify submit/cancel behavior and authorization. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-submit-mcp-v1.json
 #[tokio::test]
 async fn sqlite_mcp_run_submit_persists_admission() {

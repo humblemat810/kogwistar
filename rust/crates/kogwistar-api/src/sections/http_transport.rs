@@ -1005,7 +1005,7 @@ async fn mcp_dispatch(
                             "/api/workflow/runs/{encoded_run_id}/steps?limit={limit}"
                         ),
                         body: Vec::new(),
-                        principal: principal.clone(),
+                            principal: principal_for_mcp_effect(tool_name, &principal),
                     }
                 })
             }
@@ -1934,6 +1934,39 @@ async fn mcp_dispatch(
         })),
     )
         .into_response()
+}
+
+// PYTHON_PARITY_NOTE_V1: workflow.run_steps has MCP role/namespace admission plus per-workflow ACL, unlike the stricter direct REST capability gate; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#principal_for_mcp_effect; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps
+fn principal_for_mcp_effect(tool_name: &str, principal: &Value) -> Value {
+    let mut delegated = principal.clone();
+    if tool_name != "workflow.run_steps" {
+        return delegated;
+    }
+
+    // Python's workflow.run_steps authorizes by tool role + namespace, then
+    // enforces per-workflow ACL in the handler. This MCP-only delegation lets
+    // Rust reuse the REST read implementation without weakening direct REST
+    // authorization. The caller has already passed MCP tool admission.
+    let Some(object) = delegated.as_object_mut() else {
+        return delegated;
+    };
+    match object.get_mut("capabilities").and_then(Value::as_array_mut) {
+        Some(capabilities) => {
+            if !capabilities
+                .iter()
+                .any(|value| value.as_str() == Some("workflow.run.read"))
+            {
+                capabilities.push(json!("workflow.run.read"));
+            }
+        }
+        None => {
+            object.insert(
+                "capabilities".to_owned(),
+                json!(["workflow.run.read"]),
+            );
+        }
+    }
+    delegated
 }
 
 async fn application_effect_handler(
