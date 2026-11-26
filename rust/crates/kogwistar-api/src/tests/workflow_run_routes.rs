@@ -786,20 +786,24 @@ async fn sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end() {
     }
 
     let secret = b"workflow-run-steps-acl-secret";
-    let token = encode(
-        &Header::new(Algorithm::HS256),
-        &json!({
-            "sub": "alice",
-            "user_id": "alice",
-            "role": "ro",
-            "ns": ["workflow"],
-            "capabilities": [],
-            "iss": "local",
-            "exp": 4102444800_u64
-        }),
-        &EncodingKey::from_secret(secret),
-    )
-    .unwrap();
+    let token_for_capabilities = |capabilities: Value| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "user_id": "alice",
+                "role": "ro",
+                "ns": ["workflow"],
+                "capabilities": capabilities,
+                "iss": "local",
+                "exp": 4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret),
+        )
+        .unwrap()
+    };
+    let no_read_token = token_for_capabilities(json!([]));
+    let read_token = token_for_capabilities(json!(["workflow.run.read"]));
     let app = router_with_application(
         ApiState {
             health: snapshot(),
@@ -822,7 +826,7 @@ async fn sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end() {
             Request::builder()
                 .method("GET")
                 .uri("/api/workflow/runs/visible-run/steps?limit=200")
-                .header("authorization", format!("Bearer {token}"))
+                .header("authorization", format!("Bearer {no_read_token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -847,7 +851,7 @@ async fn sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end() {
                     .uri("/mcp/workflow")
                     .header("content-type", "application/json")
                     .header("accept", "application/json, text/event-stream")
-                    .header("authorization", format!("Bearer {token}"))
+                    .header("authorization", format!("Bearer {read_token}"))
                     .body(Body::from(
                         json!({
                             "jsonrpc": "2.0",
@@ -883,6 +887,42 @@ async fn sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end() {
             );
         }
     }
+
+    let no_capability_mcp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {no_read_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "id": "missing-capability",
+                        "method": "tools/call",
+                        "params": {
+                            "name": "workflow.run_steps",
+                            "arguments": {"run_id": "visible-run"}
+                        }
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = to_bytes(no_capability_mcp.into_body(), 8192)
+        .await
+        .unwrap();
+    let text = String::from_utf8(body.to_vec()).unwrap();
+    let message = text
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .unwrap_or(&text);
+    let payload: Value = serde_json::from_str(message).unwrap();
+    assert_eq!(payload["result"]["isError"], true, "{payload}");
 
     drop(app);
     drop(service);

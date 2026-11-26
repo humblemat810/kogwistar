@@ -1826,6 +1826,31 @@ async def test_mcp_workflow_run_steps_preserves_role_namespace_policy_without_ca
 
 
 @pytest.mark.asyncio
+async def test_chat_service_steps_still_require_read_capability_after_mcp_admission(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[str] = []
+    monkeypatch.setattr(
+        service._run_inspection,
+        "list_steps",
+        lambda run_id: reads.append(run_id) or [],
+    )
+
+    with _claims("ro", "workflow", sub="reader", scope_parts={"capabilities": []}):
+        with pytest.raises(HTTPException) as denied:
+            service.list_steps("private-run")
+
+    assert denied.value.status_code == 403
+    assert reads == []
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps(
     monkeypatch, engine_triplet
 ):
