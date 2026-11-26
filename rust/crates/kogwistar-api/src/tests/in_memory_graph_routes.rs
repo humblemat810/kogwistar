@@ -2605,7 +2605,7 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         .await
         .unwrap()
         .len();
-    let hidden_target_write = app
+    let other_writer_write = app
         .clone()
         .oneshot(
             Request::builder()
@@ -2618,16 +2618,16 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         )
         .await
         .unwrap();
-    assert_eq!(hidden_target_write.status(), StatusCode::CONFLICT);
-    assert_eq!(
+    assert_eq!(other_writer_write.status(), StatusCode::OK);
+    assert!(
         service
             .store
             .replay_events("docs", 0, usize::MAX)
             .await
             .unwrap()
-            .len(),
-        event_count_after_owner_write,
-        "hidden target rejection must precede graph mutation"
+            .len()
+            > event_count_after_owner_write,
+        "authorized rw writes follow Python's existing upsert contract"
     );
     let events = service
         .store

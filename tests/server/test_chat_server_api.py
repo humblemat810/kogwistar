@@ -355,6 +355,35 @@ def test_document_upsert_tree_accepts_nonempty_shared_graph_extraction(
         for endpoint_id in edge.source_ids + edge.target_ids
     )
 
+    stable_request = json.loads(json.dumps(request))
+    stable_nodes = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ]
+    stable_edge = "33333333-3333-4333-8333-333333333333"
+    for index, entity_id in enumerate(stable_nodes):
+        stable_request["nodes"][index]["id"] = entity_id
+    stable_request["edges"][0]["id"] = stable_edge
+    stable_request["edges"][0]["source_ids"] = [stable_nodes[0]]
+    stable_request["edges"][0]["target_ids"] = [stable_nodes[1]]
+    with TestClient(server.app) as client:
+        owner_headers = token_header(
+            client, role="rw", ns="docs,conversation,workflow", username="bob"
+        )
+        owner_response = client.post(
+            "/api/document.upsert_tree", json=stable_request, headers=owner_headers
+        )
+        assert owner_response.status_code == 200, owner_response.text
+        other_writer_headers = token_header(
+            client, role="rw", ns="docs,conversation,workflow", username="alice"
+        )
+        other_writer_response = client.post(
+            "/api/document.upsert_tree",
+            json=stable_request,
+            headers=other_writer_headers,
+        )
+    assert other_writer_response.status_code == 200, other_writer_response.text
+
 
 def test_document_validate_graph_matches_shared_success_contract(
     monkeypatch, engine_triplet
