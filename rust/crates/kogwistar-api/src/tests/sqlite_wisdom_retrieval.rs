@@ -876,16 +876,12 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     let body = serde_json::to_vec(&extraction).unwrap();
     let principal = json!({
         "sub": "alice", "user_id": "alice", "role": "rw",
-        "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+        "ns": ["docs"], "storage_ns": "docs", "capabilities": []
     });
     for denied_principal in [
         json!({
             "sub": "alice", "user_id": "alice", "role": "ro",
             "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
-        }),
-        json!({
-            "sub": "alice", "user_id": "alice", "role": "rw",
-            "ns": ["docs"], "storage_ns": "docs", "capabilities": ["read_graph"]
         }),
         json!({
             "role": "rw", "ns": ["docs"], "storage_ns": "docs",
@@ -916,7 +912,7 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         &json!({
             "sub": "alice", "user_id": "alice", "role": "rw",
             "roles": ["reader", "rw"], "ns": ["docs"],
-            "storage_ns": "docs", "capabilities": ["write_graph"],
+            "storage_ns": "docs", "capabilities": [],
             "exp": 4102444800_u64
         }),
         &EncodingKey::from_secret(secret.as_bytes()),

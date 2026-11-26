@@ -229,7 +229,12 @@ def test_document_upsert_tree_uses_document_graph_extraction_entrypoint(
     )
 
     with TestClient(server.app) as client:
-        headers = token_header(client, role="rw", ns="docs,conversation,workflow")
+        headers = token_header(
+            client,
+            role="rw",
+            ns="docs,conversation,workflow",
+            capabilities="",
+        )
         resp = client.post(
             "/api/document.upsert_tree",
             json=request,

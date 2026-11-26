@@ -2533,6 +2533,18 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         )
         .unwrap()
     };
+    let token_without_capabilities = |user_id: &str| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":user_id, "user_id":user_id, "role":"rw",
+                "ns":["docs"], "storage_ns":"docs",
+                "capabilities":[], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
     let app = router_with_application(
         ApiState {
             health: snapshot(),
@@ -2571,7 +2583,10 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
                 .method("POST")
                 .uri("/api/document.upsert_tree")
                 .header("content-type", "application/json")
-                .header("authorization", format!("Bearer {}", token("bob", "rw")))
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token_without_capabilities("bob")),
+                )
                 .body(Body::from(body.clone()))
                 .unwrap(),
         )

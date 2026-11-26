@@ -931,18 +931,11 @@ impl SqliteRunApplicationService {
                 "Graph upsert requires SQLite canonical events and a configured Chroma projection",
             );
         }
-        if principal_role(&request.principal) != "rw"
-            || !capability_allowed_for_principal(
-                &request.principal,
-                &self.capabilities,
-                "write_graph",
-                &["write_graph"],
-            )
-        {
+        if principal_role(&request.principal) != "rw" {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Graph upsert requires rw and write_graph capability",
+                "Graph upsert requires rw role",
             );
         }
         let Some(owner_id) = authenticated_run_owner_id(&request.principal) else {

@@ -17,13 +17,11 @@ impl PostgresRunApplicationService {
                 "The selected Rust store does not own atomic graph and document projections",
             );
         }
-        if principal_role(&request.principal) != "rw"
-            || !capability_allowed(request, &self.capabilities, "write_graph", &["write_graph"])
-        {
+        if principal_role(&request.principal) != "rw" {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Graph upsert requires rw and write_graph capability",
+                "Graph upsert requires rw role",
             );
         }
         let input = match graph_upsert_request(request) {
