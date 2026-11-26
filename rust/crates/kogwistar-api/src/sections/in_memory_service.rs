@@ -2712,6 +2712,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 name,
                 "workflow.run_status"
                     | "workflow.run_events"
+                    | "workflow.run_lineage"
                     | "workflow.run_steps"
                     | "workflow.run_evidence"
                     | "workflow.run_resume"
@@ -2759,6 +2760,15 @@ impl ApplicationService for InMemoryGraphApplicationService {
                         .unwrap_or_else(|poisoned| poisoned.into_inner()),
                 )
                 .contains("workflow.run.read")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_NOTE_V1: lineage MCP admission checks role and workflow namespace; execution enforces workflow.run.read, owner/workflow authority, and graph ACL. Python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_lineage; Rust test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_workflow_lineage_route_matches_shared_contract; Python test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_lineage_matches_shared_contract+test_mcp_workflow_run_lineage_denies_scope_capability_and_child_acl.
+        if name == "workflow.run_lineage" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
         // PYTHON_PARITY_NOTE_V1: workflow.run_steps MCP admission uses role + workflow namespace; service execution enforces workflow.run.read, owner, and configured workflow ACL. rust=rust/crates/kogwistar-api/src/sections/in_memory_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps+kogwistar/server/chat_service.py#ChatRunService.list_steps; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_chat_service_steps_still_require_read_capability_after_mcp_admission

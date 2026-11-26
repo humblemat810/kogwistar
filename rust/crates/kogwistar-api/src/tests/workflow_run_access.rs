@@ -231,7 +231,7 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
     );
 }
 
-// PYTHON_PARITY_NOTE_V1: InMemory lineage matches the Python REST projection, missing-run status, limit handling, and ACL-visible prefix. Python=kogwistar/server/chat_service_run_inspection.py#ChatRunService.workflow_run_lineage+kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run_lineage; fixture=contracts/golden/workflow-run-lineage-v1.json; python_test=kogwistar/tests/server/test_workflow_lineage_api.py#test_python_lineage_stops_at_parent_hidden_by_graph_acl+test_lineage_returns_404_for_missing_run.
+// PYTHON_PARITY_NOTE_V1: InMemory lineage matches Python REST and MCP projections, admission, missing-run status, limit handling, and ACL-visible prefix. Python=kogwistar/server/chat_service_run_inspection.py#ChatRunService.workflow_run_lineage+kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run_lineage+kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_lineage; fixture=contracts/golden/workflow-run-lineage-v1.json; python_test=kogwistar/tests/server/test_workflow_lineage_api.py#test_python_lineage_stops_at_parent_hidden_by_graph_acl+test_lineage_returns_404_for_missing_run+kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_lineage_matches_shared_contract+test_mcp_workflow_run_lineage_denies_scope_capability_and_child_acl.
 #[tokio::test]
 async fn in_memory_workflow_lineage_route_matches_shared_contract() {
     let service = InMemoryGraphApplicationService::default();
@@ -241,6 +241,22 @@ async fn in_memory_workflow_lineage_route_matches_shared_contract() {
     .unwrap();
     let route = "/api/workflow/runs/lineage-child/lineage";
     assert!(service.supports_http_operation("GET", route));
+    let lineage_principal = json!({
+        "sub":"alice", "user_id":"alice", "role":"ro",
+        "storage_ns":"conversation", "workspace_id":"workspace-a",
+        "graph_space":"conversation", "ns":["workflow"],
+        "capabilities":["workflow.run.read"]
+    });
+    assert!(service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_lineage",
+        &lineage_principal
+    ));
+    assert!(!service.supports_mcp_tool_for_principal(
+        "workflow",
+        "workflow.run_lineage",
+        &json!({"role":"ro","ns":["conversation"],"capabilities":["workflow.run.read"]})
+    ));
 
     let scope = GraphScope {
         namespace: "conversation".to_owned(),
@@ -480,6 +496,61 @@ async fn in_memory_workflow_lineage_route_matches_shared_contract() {
     let visible_prefix: Value = serde_json::from_slice(&visible_prefix.body).unwrap();
     assert_eq!(visible_prefix["lineage"].as_array().unwrap().len(), 1);
     assert_eq!(visible_prefix["lineage"][0]["run_id"], "visible-child");
+
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let secret = "in-memory-lineage-mcp-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "user_id":"alice", "role":"ro",
+            "storage_ns":"conversation", "workspace_id":"workspace-a",
+            "graph_space":"conversation", "ns":["workflow"],
+            "capabilities":["workflow.run.read"], "iss":"local",
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service),
+    );
+    let mcp_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"workflow.run_lineage","arguments":{"run_id":"lineage-child","limit":1}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mcp_response.status(), StatusCode::OK);
+    let mcp_body = to_bytes(mcp_response.into_body(), 65_536).await.unwrap();
+    let mcp_payload: Value = serde_json::from_slice(&mcp_body).unwrap();
+    assert_eq!(mcp_payload["result"]["run_id"], "lineage-child");
+    assert_eq!(mcp_payload["result"]["lineage"].as_array().unwrap().len(), 1);
+    assert_eq!(mcp_payload["result"]["truncated"], true);
 }
 
 #[tokio::test]

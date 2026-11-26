@@ -419,22 +419,30 @@ now also asserts authenticated `GET /api/workflow/runs/missing/lineage` returns
 the lineage not-found branch for both supported Rust backend compositions only.
 Other HTTP/read ACL and backend cells remain open.
 
-DLFC-06 InMemory workflow-lineage route (2026-11-27): TDD first confirmed
-`supports_http_operation("GET", "/api/workflow/runs/{id}/lineage")` was false.
-Rust now serves lineage from the request's scoped conversation graph, applies
-graph ACL visibility and configured per-workflow `ro` checks, stops at an
-invisible parent, handles cycles/tombstones, returns 404 for a missing run,
-and supports the existing bounded `limit` response. Rust
+DLFC-06 InMemory workflow-lineage HTTP/MCP cell (2026-11-27): TDD first
+confirmed REST was unsupported, then proved MCP admission was denied because
+the service allowlist omitted `workflow.run_lineage`. Rust now serves lineage
+from the request's scoped conversation graph, applies graph ACL visibility and
+configured per-workflow `ro` checks, stops at an invisible parent, handles
+cycles/tombstones, returns 404 for a missing run, and supports the existing
+bounded `limit` response. MCP admission matches Python's role+workflow
+namespace policy; execution still requires `workflow.run.read`. Rust
 `tests::in_memory_workflow_lineage_route_matches_shared_contract` checks exact
 equality with `workflow-run-lineage-v1.json`, limit/truncation, missing-run
 404, wrong-namespace/capability denials, and parent-hidden visible-prefix
-(**1 passed**). Python lineage module
-`tests/server/test_workflow_lineage_api.py` (**8 passed**), including the real
-ACL-enabled in-memory `ChatRunService` oracle and missing-run 404; Rust
+(**1 passed**), plus an authenticated `/mcp/workflow` call checking the limited
+response. The existing InMemory MCP allowlist and admission now expose the
+tool only under Python-equivalent role/workflow-namespace policy; execution
+still enforces read capability and graph/workflow authority. Python REST lineage
+module `tests/server/test_workflow_lineage_api.py` (**8 passed**) and MCP
+selectors `test_mcp_workflow_run_lineage_matches_shared_contract` plus
+`test_mcp_workflow_run_lineage_denies_scope_capability_and_child_acl` (**2
+passed**), including the real ACL-enabled in-memory `ChatRunService` oracle and
+missing-run 404; Rust
 `test_rust_python_parity_annotations_resolve_to_shared_executable_contracts`
 (**1 passed**), `cargo fmt --all -- --check`, and
 `cargo clippy -p kogwistar-api --all-targets -- -D warnings` passed. This
-closes only the InMemory lineage REST cell; broader read/query operation/backend
+closes only the InMemory lineage HTTP/MCP cell; broader read/query operation/backend
 cells remain open, so DLFC-06 stays IN PROGRESS.
 
 | Coarse criterion | Required fine items | Close condition |
