@@ -1826,6 +1826,66 @@ async def test_mcp_workflow_run_steps_preserves_role_namespace_policy_without_ca
 
 
 @pytest.mark.asyncio
+async def test_mcp_workflow_run_steps_enforces_per_workflow_acl_before_returning_steps(
+    monkeypatch, engine_triplet
+):
+    from fastapi import HTTPException
+    from kogwistar.server.auth_middleware import (
+        NameSpace,
+        Role,
+        get_current_subject,
+        get_current_user_id,
+    )
+    from kogwistar.server.chat_mcp import build_workflow_mcp
+    from kogwistar.server.mcp_tools import require_ns, tool_roles
+
+    engine, conversation_engine, workflow_engine = engine_triplet
+    service = _configure_server(
+        monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
+    )
+    reads: list[str] = []
+    access_checks: list[tuple[str, str]] = []
+
+    def get_run(run_id: str) -> dict[str, str]:
+        reads.append(f"run:{run_id}")
+        return {"workflow_id": "private-workflow"}
+
+    def list_steps(run_id: str) -> list[dict[str, str]]:
+        reads.append(f"steps:{run_id}")
+        return [{"step_seq": 1}]
+
+    def deny_workflow_access(workflow_id: str, role: str) -> None:
+        access_checks.append((workflow_id, role))
+        raise HTTPException(status_code=403, detail="workflow denied")
+
+    monkeypatch.setattr(service, "get_run", get_run)
+    monkeypatch.setattr(service, "list_steps", list_steps)
+    workflow_mcp = build_workflow_mcp(
+        get_service=lambda: service,
+        tool_roles=tool_roles,
+        require_ns=require_ns,
+        role_ro=Role.RO,
+        role_rw=Role.RW,
+        ns_workflow=NameSpace.WORKFLOW,
+        get_subject=get_current_subject,
+        get_user_id=get_current_user_id,
+        require_workflow_access=deny_workflow_access,
+    )
+
+    with _claims("ro", "workflow", sub="outsider"):
+        with pytest.raises(HTTPException) as denied:
+            await workflow_mcp._execute(
+                "workflow.run_steps",
+                {"run_id": "private-run"},
+                enforce_visibility=True,
+            )
+
+    assert denied.value.status_code == 403
+    assert access_checks == [("private-workflow", "ro")]
+    assert reads == ["run:private-run"]
+
+
+@pytest.mark.asyncio
 async def test_mcp_workflow_checkpoint_get_denies_wrong_namespace_before_read(
     monkeypatch, engine_triplet
 ):
