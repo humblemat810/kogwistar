@@ -249,6 +249,12 @@ an edge to Bob-owned external endpoint (200): Python preflight checks raw
 backend existence, not ACL read visibility, and Rust now matches that contract
 while retaining scope, existence, and tombstone checks. Rust's Axum/JWT test
 confirms successful durable mutation for both cases.
+The empty-tree success envelope also matches
+`contracts/golden/document-upsert-tree-success-v1.json` exactly on Rust
+InMemory HTTP: `tests::in_memory_document_upsert_empty_tree_matches_shared_success_contract`
+(**1 passed**) checks the complete body and zero durable events. Python's
+`tests/server/test_chat_server_api.py::test_document_upsert_tree_uses_document_graph_extraction_entrypoint`
+(**1 passed**) checks the same fixture envelope and zero-item extractor call.
 This remains one backend cell and does not close other route/backend cells or
 the broader authorization matrix.
 

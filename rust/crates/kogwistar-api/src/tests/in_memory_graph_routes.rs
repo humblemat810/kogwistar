@@ -2734,4 +2734,70 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
     }
 }
 
+#[tokio::test]
+async fn in_memory_document_upsert_empty_tree_matches_shared_success_contract() {
+    use kogwistar_store::EventReadStore;
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/document-upsert-tree-success-v1.json"
+    )))
+    .unwrap();
+    let service = InMemoryGraphApplicationService::default();
+    let secret = "in-memory-empty-document-tree-test-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "user_id":"alice", "role":"rw",
+            "ns":["docs"], "storage_ns":"docs",
+            "capabilities":["write_graph"], "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service.clone()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(&fixture["request"]).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body, fixture["expected"]["body"]);
+    assert!(service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_visualization.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_visualization.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type
