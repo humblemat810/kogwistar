@@ -2892,6 +2892,18 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
                 [],
             )
             .unwrap();
+    auth_connection
+            .execute(
+                "INSERT INTO users (user_id, email, is_active, created_at) VALUES ('bob', 'bob@example.test', 1, CURRENT_TIMESTAMP)",
+                [],
+            )
+            .unwrap();
+    auth_connection
+            .execute(
+                "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('wf-child', 'bob', 'ro')",
+                [],
+            )
+            .unwrap();
     drop(auth_connection);
 
     let scope = GraphScope {
@@ -2981,6 +2993,20 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
         &EncodingKey::from_secret(secret.as_bytes()),
     )
     .unwrap();
+    let delegated_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "user_id": "bob",
+            "sub": "bob",
+            "roles": ["reader"],
+            "ns": ["workflow"],
+            "storage_ns": "conversation",
+            "capabilities": ["workflow.run.read"],
+            "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
     let app = router_with_application(
         ApiState {
             health: snapshot(),
@@ -3012,6 +3038,24 @@ async fn postgres_workflow_lineage_route_checks_each_workflow_acl() {
     assert_eq!(
         serde_json::from_slice::<Value>(&denied_body).unwrap()["code"],
         "KOGWISTAR_WORKFLOW_FORBIDDEN"
+    );
+
+    let delegated_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/workflow/runs/lineage-child")
+                .header("authorization", format!("Bearer {delegated_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delegated_status.status(), StatusCode::OK);
+    let delegated_status_body = to_bytes(delegated_status.into_body(), 8192).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&delegated_status_body).unwrap()["user_id"],
+        "alice"
     );
 
     rusqlite::Connection::open(&auth_path)

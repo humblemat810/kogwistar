@@ -262,6 +262,18 @@ and deny tests in `tests/server/test_workflow_lineage_api.py` (**5 passed**).
 Rust integrated regression (**1 passed**). This closes only these InMemory
 workflow run-read cells; DLFC-05 and DLFC-10 remain IN PROGRESS.
 
+Delegated workflow-run read parity also has persistent-backend evidence: SQLite
+`tests::sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl`
+proves no-ACL denial and status/steps success for a non-owner `ro` ACL reader
+(**1 passed**); PostgreSQL
+`tests::postgres_workflow_lineage_route_checks_each_workflow_acl` proves a
+non-owner ACL reader can fetch run status (**1 passed** against disposable
+pgvector:pg16). Python
+`tests/server/test_workflow_lineage_api.py::test_run_status_allows_acl_reader_who_does_not_own_run`
+is the route counterpart. This verifies the bounded delegated-read behavior over
+InMemory, SQLite, and PostgreSQL; it does not close the broader authorization
+operation/backend matrix.
+
 DLFC-03 additional InMemory cell (2026-11-26): Rust now serves authenticated
 `POST /api/document.upsert_tree` using the shared graph-extraction normalizer,
 scope/endpoint existence and tombstone checks, default owner ACL derivation, and

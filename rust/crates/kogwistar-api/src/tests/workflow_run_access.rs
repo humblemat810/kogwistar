@@ -170,6 +170,17 @@ async fn sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl() {
     })
     .await
     .unwrap();
+    auth.resolve_external_identity(ResolveExternalIdentity {
+        issuer: "test".to_owned(),
+        subject: "steps-acl-reader".to_owned(),
+        email: "steps-acl-reader@example.test".to_owned(),
+        display_name: None,
+        new_user_id: "steps-acl-reader".to_owned(),
+        default_role: "ro".to_owned(),
+        default_ns: "workflow".to_owned(),
+    })
+    .await
+    .unwrap();
     drop(auth);
 
     let auth_config = AuthConfig {
@@ -234,6 +245,37 @@ async fn sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl() {
         serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
         "KOGWISTAR_WORKFLOW_FORBIDDEN"
     );
+
+    rusqlite::Connection::open(&auth_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('private-steps-workflow', 'steps-acl-reader', 'ro')",
+            [],
+        )
+        .unwrap();
+    let delegated_principal = json!({
+        "user_id": "steps-acl-reader",
+        "role": "ro",
+        "ns": ["workflow"],
+        "capabilities": ["workflow.run.read"]
+    });
+    for (path, expected_field) in [
+        ("/api/workflow/runs/private-steps-run", "workflow_id"),
+        ("/api/workflow/runs/private-steps-run/steps?limit=25", "steps"),
+    ] {
+        let delegated = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: path.to_owned(),
+                body: Vec::new(),
+                principal: delegated_principal.clone(),
+            })
+            .await;
+        assert_eq!(delegated.status, StatusCode::OK.as_u16(), "{path}");
+        let payload: Value = serde_json::from_slice(&delegated.body).unwrap();
+        assert!(payload.get(expected_field).is_some(), "{path}");
+    }
     drop(service);
     let _ = std::fs::remove_file(sqlite_path);
     let _ = std::fs::remove_file(auth_path);
