@@ -4562,6 +4562,44 @@ async def test_mcp_conversation_cancel_run_denies_unauthorized_effects(
     assert run["terminal"] is False
     assert run["cancel_requested"] is False
 
+    service.run_registry.create_run(
+        run_id="cancel-terminal-retry-run",
+        conversation_id="cancel-terminal-retry-conversation",
+        workflow_id="agentic_answering.v2",
+        user_id="cancel-auth-owner",
+        user_turn_node_id="cancel-terminal-retry-turn",
+        status="cancelled",
+    )
+    terminal_events_before = service.run_registry.list_events(
+        "cancel-terminal-retry-run"
+    )
+    with _claims(
+        "rw",
+        "conversation",
+        sub="cancel-auth-owner",
+        scope_parts={"capabilities": []},
+    ):
+        terminal_retry = _structured(
+            await server.mcp._execute(
+                "conversation.cancel_run",
+                {"run_id": "cancel-terminal-retry-run"},
+                enforce_visibility=True,
+            )
+        )
+    assert terminal_retry["status"] == "cancelled"
+    assert terminal_retry["terminal"] is True
+    assert terminal_retry["cancel_requested"] is False
+    assert service.run_registry.list_events("cancel-terminal-retry-run") == terminal_events_before
+    assert conversation_engine.get_nodes(
+        where={
+            "$and": [
+                {"entity_type": "workflow_cancel_request"},
+                {"run_id": "cancel-terminal-retry-run"},
+            ]
+        },
+        limit=10,
+    ) == []
+
 
 @pytest.mark.asyncio
 async def test_mcp_conversation_run_status_matches_shared_contract(

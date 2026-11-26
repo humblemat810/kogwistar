@@ -316,7 +316,7 @@
         assert!(request.body.is_empty());
     }
 
-    // PYTHON_PARITY_NOTE_V1: Conversation-scoped MCP status/cancel paths enforce conversation namespace and cancel capability; successful cancel response matches the shared fixture. rust=rust/crates/kogwistar-api/src/tests/conversation_mcp.rs#mcp_conversation_run_operations_use_conversation_scope_end_to_end; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_chat_submit_cancel_and_workflow_diagnostics+test_mcp_conversation_cancel_run_matches_shared_contract; fixture=contracts/golden/conversation-run-status-mcp-v1.json,contracts/golden/conversation-cancel-run-mcp-v1.json
+    // PYTHON_PARITY_NOTE_V1: Conversation-scoped MCP status/cancel paths enforce namespace and active-cancel capability; terminal retry without write capability returns unchanged state. rust=rust/crates/kogwistar-api/src/tests/conversation_mcp.rs#mcp_conversation_run_operations_use_conversation_scope_end_to_end; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_chat_submit_cancel_and_workflow_diagnostics+test_mcp_conversation_cancel_run_matches_shared_contract+test_mcp_conversation_cancel_run_denies_unauthorized_effects; fixture=contracts/golden/conversation-run-status-mcp-v1.json,contracts/golden/conversation-cancel-run-mcp-v1.json
     #[tokio::test]
     async fn mcp_conversation_run_operations_use_conversation_scope_end_to_end() {
         use axum::body::{Body, to_bytes};
@@ -347,10 +347,19 @@
             "user_turn_node_id":"cancel-denied-turn",
             "status":"running"
         });
+        let terminal_cancel_run = json!({
+            "run_id":"terminal-cancel-retry-run",
+            "conversation_id":"terminal-cancel-retry-conversation",
+            "workflow_id":"agentic_answering.v2",
+            "user_id":"alice",
+            "user_turn_node_id":"terminal-cancel-retry-turn",
+            "status":"cancelled"
+        });
         for run in [
             &status_contract["result"],
             &cancel_contract["result"],
             &denied_run,
+            &terminal_cancel_run,
         ] {
             service
                 .store
@@ -483,6 +492,7 @@
         assert!(!unchanged.cancel_requested);
 
         let cancel_response = app
+            .clone()
             .oneshot(request(
                 "cancel-allowed",
                 cancel_contract["tool"].as_str().unwrap(),
@@ -497,6 +507,33 @@
         cancel_result["created_at_ms"] = json!("<generated>");
         cancel_result["updated_at_ms"] = json!("<generated>");
         assert_eq!(cancel_result, cancel_contract["result"]);
+
+        let terminal_events_before = service
+            .store
+            .list_server_run_events("terminal-cancel-retry-run", 0, 100)
+            .unwrap();
+        let terminal_retry = app
+            .oneshot(request(
+                "cancel-terminal-retry",
+                "conversation.cancel_run",
+                json!({"run_id":"terminal-cancel-retry-run"}),
+                &make_token("rw", "conversation", &[]),
+            ))
+            .await
+            .unwrap();
+        let terminal_body = to_bytes(terminal_retry.into_body(), 8192).await.unwrap();
+        let terminal_value: Value = serde_json::from_slice(&terminal_body).unwrap();
+        assert_eq!(terminal_value["result"]["status"], "cancelled");
+        assert_eq!(terminal_value["result"]["terminal"], true);
+        assert_eq!(terminal_value["result"]["cancel_requested"], false);
+        assert_eq!(
+            service
+                .store
+                .list_server_run_events("terminal-cancel-retry-run", 0, 100)
+                .unwrap(),
+            terminal_events_before,
+            "terminal MCP retry without write capability must not append an event"
+        );
 
         drop(service);
         let _ = std::fs::remove_file(path);
