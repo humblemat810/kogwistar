@@ -2885,10 +2885,16 @@ fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
     None
 }
 
+// PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#runtime_run_namespace; python=kogwistar/server/chat_api.py#create_chat_router.get_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture
 fn runtime_run_namespace(path_and_query: &str) -> Option<&'static str> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     if path.starts_with("/api/workflow/runs/")
-        || runtime_run_route(path).is_some_and(|(_, tail)| tail.as_slice() == ["evidence"])
+        || runtime_run_route(path).is_some_and(|(_, tail)| {
+            matches!(
+                tail.first().map(String::as_str),
+                Some("steps" | "checkpoints" | "evidence" | "replay" | "resume-contract" | "resume")
+            )
+        })
     {
         Some("workflow")
     } else if path.starts_with("/api/runs/") {

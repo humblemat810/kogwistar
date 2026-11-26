@@ -1348,6 +1348,27 @@ fn runtime_run_route_decodes_encoded_run_id_without_splitting_it() {
         runtime_run_namespace("/api/runs/evidence-run/evidence"),
         Some("workflow")
     );
+    for suffix in [
+        "steps",
+        "checkpoints",
+        "checkpoints/0",
+        "replay?target_step_seq=0",
+        "resume-contract",
+        "resume",
+    ] {
+        assert_eq!(
+            runtime_run_namespace(&format!("/api/runs/workflow-run/{suffix}")),
+            Some("workflow"),
+            "{suffix}"
+        );
+    }
+    for suffix in ["events", "events/poll", "cancel"] {
+        assert_eq!(
+            runtime_run_namespace(&format!("/api/runs/conversation-run/{suffix}")),
+            Some("conversation"),
+            "{suffix}"
+        );
+    }
     assert_eq!(
         runtime_run_namespace("/api/workflow/runs/workflow-run"),
         Some("workflow")

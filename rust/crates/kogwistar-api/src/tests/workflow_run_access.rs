@@ -369,6 +369,102 @@ async fn in_memory_run_events_poll_matches_shared_contract() {
 }
 
 #[tokio::test]
+async fn in_memory_run_steps_route_matches_shared_python_projection() {
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-step-inspection-v1.json"
+    ))
+    .unwrap();
+    let seed = &contract["parity_seed"];
+    let run_id = seed["run_id"].as_str().unwrap();
+    let workflow_id = seed["workflow_id"].as_str().unwrap();
+    let operation = seed["op"].as_str().unwrap();
+    let workflow_node_id = format!("wf:{workflow_id}:{operation}");
+    let service = InMemoryGraphApplicationService::default();
+    kogwistar_store::ServerRunWriteStore::create_server_run(
+        &service.store,
+        ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: "conversation-1".to_owned(),
+            workflow_id: workflow_id.to_owned(),
+            user_id: Some("user-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "running".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    for (event_type, payload) in [
+        (
+            "workflow.recorded_transition.v1",
+            json!({
+                "transition_id":"transition-1",
+                "reduced": {
+                    "state": {
+                        "last_step_seq":seed["step_seq"],
+                        "workflow_id":workflow_id,
+                        "last_node_id":workflow_node_id,
+                        "state": {
+                            "_rt_node_ops": {workflow_node_id.clone():operation},
+                            "frontier":{"pending":[]}
+                        }
+                    },
+                    "state_update":seed["state_update"],
+                    "update":null,
+                    "result":seed["result_fields"],
+                    "errors":[],
+                    "server_status":"running"
+                }
+            }),
+        ),
+        (
+            "workflow.trace.v1",
+            json!({
+                "trace": {
+                    "event":"runtime.native.step.completed",
+                    "step_seq":seed["step_seq"],
+                    "node_id":workflow_node_id,
+                    "operation":operation,
+                    "duration_ms":1,
+                    "trace_id":seed["trace_context"]["trace_id"],
+                    "span_id":seed["trace_context"]["span_id"],
+                    "parent_span_id":seed["trace_context"]["parent_span_id"],
+                    "attempt":seed["trace_context"]["attempt"]
+                }
+            }),
+        ),
+    ] {
+        kogwistar_store::ServerRunWriteStore::append_server_run_event(
+            &service.store,
+            run_id,
+            event_type,
+            payload.to_string(),
+        )
+        .await
+        .unwrap();
+    }
+    let response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: format!("/api/runs/{run_id}/steps"),
+            body: Vec::new(),
+            principal: json!({
+                "sub":"user-1", "user_id":"user-1", "role":"ro",
+                "ns":["workflow"], "capabilities":["workflow.run.read"]
+            }),
+        })
+        .await;
+    assert_eq!(response.status as u64, contract["success_status"]);
+    let body: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["run_id"], run_id);
+    assert_eq!(body["steps"].as_array().unwrap().len(), 1);
+    let expected = contract["parity_step"].as_object().unwrap();
+    for (field, value) in expected {
+        assert_eq!(&body["steps"][0][field], value, "{field}");
+    }
+}
+
+#[tokio::test]
 async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
     let service = PostgresRunApplicationService::from_dsn(
         "postgres://unused:unused@127.0.0.1:1/unused",
