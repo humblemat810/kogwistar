@@ -1056,7 +1056,7 @@
         let _ = std::fs::remove_file(path);
     }
 
-    // PYTHON_PARITY_V1: REST workflow-design history matches Python role defaults, explicit empty-capability denial, and namespace rejection; rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.workflow_design_history+kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-rest-authority-v1.json,contracts/golden/workflow-design-empty-history-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_history_rest_matches_python_role_namespace_policy; python_test=tests/server/test_chat_server_api.py#test_workflow_design_empty_history_matches_shared_contract
+    // PYTHON_PARITY_V1: REST workflow-design history matches Python role defaults, explicit empty-capability denial, and namespace rejection; rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.workflow_design_history+kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-rest-authority-v1.json,contracts/golden/workflow-design-empty-history-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_history_rest_matches_python_role_namespace_policy; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_design_empty_history_matches_shared_contract
     #[tokio::test]
     async fn workflow_design_history_rest_matches_python_role_namespace_policy() {
         use std::time::{SystemTime, UNIX_EPOCH};

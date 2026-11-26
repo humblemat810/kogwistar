@@ -1,7 +1,7 @@
 // Public graph and document-tree write effects.
 // Python counterparts: engine_core.subsystems.ingest/write graph-upsert paths.
 impl PostgresRunApplicationService {
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_public_graph_effects.rs#public_graph_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/document-upsert-tree-success-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_graph_mutations.rs#postgres_document_tree_upsert_requires_rw_role_before_storage; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_requires_rw_even_with_write_graph_capability
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_public_graph_effects.rs#public_graph_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/document-upsert-tree-success-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_graph_mutations.rs#postgres_document_tree_upsert_requires_rw_role_before_storage; python_test=tests/server/test_chat_server_api_documents.py#test_document_upsert_tree_requires_rw_even_with_write_graph_capability
     async fn public_graph_upsert_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let graph_store = self.graph_store_for_type(&self.graph_role);
         if !graph_store
@@ -493,7 +493,7 @@ impl PostgresRunApplicationService {
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_public_graph_effects.rs#public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/document-upsert-tree-success-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_graph_mutations.rs#postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_uses_document_graph_extraction_entrypoint
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_public_graph_effects.rs#public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/document-upsert-tree-success-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_graph_mutations.rs#postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available; python_test=tests/server/test_chat_server_api_documents.py#test_document_upsert_tree_uses_document_graph_extraction_entrypoint
     async fn public_document_tree_upsert_effect(
         &self,
         request: &ApiEffectRequest,

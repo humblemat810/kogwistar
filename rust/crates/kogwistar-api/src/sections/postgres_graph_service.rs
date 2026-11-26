@@ -395,7 +395,7 @@ enum NativeEvidenceRecordError {
 }
 
 impl PostgresRunApplicationService {
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_propose_vector_returns_only_acl_visible_pairs
     async fn graph_propose_vector_effect(
         &self,
         request: &ApiEffectRequest,
@@ -1831,7 +1831,7 @@ impl PostgresRunApplicationService {
         }
     }
 
-    // PYTHON_PARITY_V1: require ro/rw role, conversation namespace, and user identity; owner and ACL filters scope results. rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#conversation_list_effect; python=kogwistar/server/chat_api.py#create_chat_router.list_conversations; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_read_authorization.rs#conversation_list_http_denials_precede_storage_read; python_test=tests/server/test_chat_server_api.py#test_conversation_list_http_denials_precede_service_read
+    // PYTHON_PARITY_V1: require ro/rw role, conversation namespace, and user identity; owner and ACL filters scope results. rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#conversation_list_effect; python=kogwistar/server/chat_api.py#create_chat_router.list_conversations; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_read_authorization.rs#conversation_list_http_denials_precede_storage_read; python_test=tests/server/test_chat_server_api_conversations.py#test_conversation_list_http_denials_precede_service_read
     async fn conversation_list_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let namespaces = principal_strings(&request.principal, "ns");
         let namespaces = if namespaces.is_empty() {
@@ -2366,7 +2366,7 @@ impl PostgresRunApplicationService {
         )
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_vector_query_effect; python=kogwistar/engine_core/subsystems/acl.py#ACLAwareReadSubsystem.query_nodes; fixture=contracts/golden/graph-acl-vector-query-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_acl_vector_query_matches_shared_python_rust_ranking_fixture
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_vector_query_effect; python=kogwistar/engine_core/subsystems/acl.py#ACLAwareReadSubsystem.query_nodes; fixture=contracts/golden/graph-acl-vector-query-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_acl_vector_query_matches_shared_python_rust_ranking_fixture
     async fn graph_vector_query_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(

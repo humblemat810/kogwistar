@@ -1637,7 +1637,7 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
         .collect()
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api_run_inspection.py#test_run_steps_matches_shared_rust_projection_fixture
 fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
     let trace_events = events
         .iter()

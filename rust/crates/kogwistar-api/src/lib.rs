@@ -121,7 +121,10 @@ include!("sections/provider_event_publication.rs");
 include!("sections/application_services.rs");
 include!("sections/sqlite_application_service.rs");
 include!("sections/sqlite_automation_services.rs");
-include!("sections/in_memory_service.rs");
+#[path = "sections/in_memory_service.rs"]
+mod in_memory_service;
+use in_memory_service::InMemoryGraphApplicationService;
+use in_memory_service::graph_operations::{graph_vector_proposal_pairs, invalid_graph_request};
 include!("sections/auth_state.rs");
 include!("sections/auth_handlers.rs");
 include!("sections/http_transport.rs");

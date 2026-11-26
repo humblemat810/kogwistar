@@ -875,7 +875,7 @@ async fn mcp_dispatch(
                 body: serde_json::to_vec(&arguments).expect("MCP graph arguments serialize"),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_graph_routes.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_graph_routes.rs#in_memory_backend_routes_authenticated_graph_write_and_mcp_read; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_propose_vector_returns_only_acl_visible_pairs
             "propose_vector" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
@@ -960,7 +960,7 @@ async fn mcp_dispatch(
                     .expect("MCP graph semantic arguments serialize"),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_NOTE_V1: conversation status must use the conversation-scoped route; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/conversation-run-status-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_run_status_matches_shared_contract
+            // PYTHON_PARITY_NOTE_V1: conversation status must use the conversation-scoped route; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/conversation-run-status-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_conversation_tools.py#test_mcp_conversation_run_status_matches_shared_contract
             "workflow.run_status" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
@@ -979,7 +979,7 @@ async fn mcp_dispatch(
                     principal: principal.clone(),
                 })
             }
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-run-steps-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_workflow_run_steps_mcp_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_steps_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps; fixture=contracts/golden/workflow-run-steps-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_workflow_run_steps_mcp_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_steps_matches_shared_contract
             "workflow.run_steps" if !run_id.is_empty() => {
                 let valid_arguments = !arguments
                     .keys()
@@ -1009,7 +1009,7 @@ async fn mcp_dispatch(
                     }
                 })
             }
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_cancel; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_run_cancel_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_cancel_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_cancel; fixture=contracts/golden/workflow-run-cancel-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_run_cancel_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_cancel_matches_shared_contract
             "workflow.run_cancel" if !run_id.is_empty() => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
@@ -1019,7 +1019,7 @@ async fn mcp_dispatch(
                     principal: principal.clone(),
                 })
             }
-            // PYTHON_PARITY_NOTE_V1: conversation cancellation must use the conversation-scoped route; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_api.py#create_chat_router.cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/conversation_mcp.rs#mcp_conversation_run_operations_use_conversation_scope_end_to_end; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
+            // PYTHON_PARITY_NOTE_V1: conversation cancellation must use the conversation-scoped route; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_api.py#create_chat_router.cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/conversation_mcp.rs#mcp_conversation_run_operations_use_conversation_scope_end_to_end; python_test=tests/mcp/test_chat_mcp_conversation_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
             "conversation.cancel_run" if !run_id.is_empty() && arguments.len() == 1 => {
                 Some(ApiEffectRequest {
                     contract_version: 1,
@@ -1144,7 +1144,7 @@ async fn mcp_dispatch(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_replay; fixture=contracts/golden/workflow-run-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_run_replay_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_replay_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_replay; fixture=contracts/golden/workflow-run-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_run_replay_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_replay_matches_shared_contract
             "workflow.run_replay" if !run_id.is_empty() => arguments
                 .get("target_step_seq")
                 .and_then(Value::as_i64)
@@ -1164,7 +1164,7 @@ async fn mcp_dispatch(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: authenticated user_id overrides caller argument; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_submit; fixture=contracts/golden/workflow-run-submit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_submit_uses_authenticated_user_over_argument
+            // PYTHON_PARITY_V1: authenticated user_id overrides caller argument; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_submit; fixture=contracts/golden/workflow-run-submit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_submit_uses_authenticated_user_over_argument
             "workflow.run_submit" => {
                 let mut submit_arguments = arguments.clone();
                 if let Some(authenticated_user_id) = principal
@@ -1202,7 +1202,7 @@ async fn mcp_dispatch(
                 .expect("MCP arguments serialize"),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_NOTE_V1: require workflow role/scope plus project_view and read_security_scope before ledger access; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+kogwistar/server/chat_service.py#ChatRunService.budget_snapshot; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_snapshot_denies_before_ledger_read; contract=contracts/golden/workflow-budget-http-v1.json
+            // PYTHON_PARITY_NOTE_V1: require workflow role/scope plus project_view and read_security_scope before ledger access; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+kogwistar/server/chat_service.py#ChatRunService.budget_snapshot; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read; contract=contracts/golden/workflow-budget-http-v1.json
             "workflow.budget_snapshot" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
@@ -1210,7 +1210,7 @@ async fn mcp_dispatch(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#workflow_budget_history; fixture=contracts/golden/workflow-budget-history-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_budget_history_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_history_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#workflow_budget_history; fixture=contracts/golden/workflow-budget-history-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_budget_history_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_budget_history_matches_shared_contract
             "workflow.budget_history" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
@@ -1224,7 +1224,7 @@ async fn mcp_dispatch(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_tool_audit; fixture=contracts/golden/workflow-tool-audit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_tool_audit_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_tool_audit_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_tool_audit; fixture=contracts/golden/workflow-tool-audit-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_tool_audit_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_tool_audit_matches_shared_contract
             "workflow.tool_audit" => {
                 let conversation_id =
                     match arguments.get("conversation_id") {
@@ -1339,7 +1339,7 @@ async fn mcp_dispatch(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_scheduler_timeline; fixture=contracts/golden/workflow-scheduler-timeline-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_scheduler_timeline_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_scheduler_timeline; fixture=contracts/golden/workflow-scheduler-timeline-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_scheduler_timeline_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_scheduler_timeline_matches_shared_contract
             "workflow.scheduler_timeline" => {
                 let limit = arguments
                     .get("limit")
@@ -1479,7 +1479,7 @@ async fn mcp_dispatch(
                     principal: principal.clone(),
                 })
             }
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_list; fixture=contracts/golden/workflow-service-list-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_list_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_list_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_list; fixture=contracts/golden/workflow-service-list-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_list_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_list_matches_shared_contract
             "workflow.service_list" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
@@ -1493,7 +1493,7 @@ async fn mcp_dispatch(
                 body: Vec::new(),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get; fixture=contracts/golden/workflow-service-get-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_get_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_get_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get; fixture=contracts/golden/workflow-service-get-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_get_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_get_matches_shared_contract
             "workflow.service_get" => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1505,7 +1505,7 @@ async fn mcp_dispatch(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_events; fixture=contracts/golden/workflow-service-events-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_events_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_events_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_events; fixture=contracts/golden/workflow-service-events-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_events_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_events_matches_shared_contract
             "workflow.service_events" => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1523,7 +1523,7 @@ async fn mcp_dispatch(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_repair; fixture=contracts/golden/workflow-service-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_repair_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_repair_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_repair; fixture=contracts/golden/workflow-service-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_repair_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_repair_matches_shared_contract
             "workflow.service_repair" => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1535,8 +1535,8 @@ async fn mcp_dispatch(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_enable; fixture=contracts/golden/workflow-service-enable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_enable_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_enable_matches_shared_contract
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_disable; fixture=contracts/golden/workflow-service-disable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_disable_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_disable_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_enable; fixture=contracts/golden/workflow-service-enable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_enable_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_enable_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_disable; fixture=contracts/golden/workflow-service-disable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_disable_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_disable_matches_shared_contract
             name @ ("workflow.service_enable" | "workflow.service_disable") => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1555,7 +1555,7 @@ async fn mcp_dispatch(
                     body: Vec::new(),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_heartbeat_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_heartbeat_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_heartbeat_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_heartbeat_matches_shared_contract
             "workflow.service_heartbeat" => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1575,7 +1575,7 @@ async fn mcp_dispatch(
                     .expect("heartbeat request serializes"),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_trigger; fixture=contracts/golden/workflow-service-trigger-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_service_trigger_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_trigger_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_trigger; fixture=contracts/golden/workflow-service-trigger-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_service_trigger_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_service_trigger_matches_shared_contract
             "workflow.service_trigger" => arguments
                 .get("service_id")
                 .and_then(Value::as_str)
@@ -1595,7 +1595,7 @@ async fn mcp_dispatch(
                     .expect("MCP arguments serialize"),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_declare_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_declare_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_service_declare_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_declare_matches_shared_contract
             "workflow.service_declare" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
@@ -1603,7 +1603,7 @@ async fn mcp_dispatch(
                 body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
                 principal: principal.clone(),
             }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_services_repair; fixture=contracts/golden/workflow-services-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_services_repair_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_services_repair_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_services_repair; fixture=contracts/golden/workflow-services-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_service_mcp.rs#mcp_workflow_services_repair_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_services_repair_matches_shared_contract
             "workflow.services_repair" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
@@ -1690,7 +1690,7 @@ async fn mcp_dispatch(
                     body: serde_json::to_vec(&arguments).expect("MCP arguments serialize"),
                     principal: principal.clone(),
                 }),
-            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_visibility_snapshot; fixture=contracts/golden/workflow-visibility-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_visibility_snapshot_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_visibility_snapshot_matches_shared_contract
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_visibility_snapshot; fixture=contracts/golden/workflow-visibility-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_workflow_contracts.rs#mcp_workflow_visibility_snapshot_matches_shared_contract; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_visibility_snapshot_matches_shared_contract
             "workflow.visibility_snapshot" => Some(ApiEffectRequest {
                 contract_version: 1,
                 method: "GET".to_owned(),
@@ -1888,7 +1888,7 @@ async fn mcp_dispatch(
                 "conversation_id": conversation_id,
                 "turns": turns,
             });
-        // PYTHON_PARITY_NOTE_V1: preserve filename and return a caller-scoped reversible short ID; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/mcp_tools.py#document_id_from_file_name; fixture=contracts/golden/document-id-from-file-name-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/document_validation.rs#sqlite_document_id_mcp_returns_python_compatible_short_id_mapping; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_mcp_matches_shared_contract
+        // PYTHON_PARITY_NOTE_V1: preserve filename and return a caller-scoped reversible short ID; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_dispatch; python=kogwistar/server/mcp_tools.py#document_id_from_file_name; fixture=contracts/golden/document-id-from-file-name-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/document_validation.rs#sqlite_document_id_mcp_returns_python_compatible_short_id_mapping; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_document_id_from_file_name_mcp_matches_shared_contract
         } else if tool_name == "document_id_from_file_name" {
             let Some(ids) = result.get("ids").and_then(Value::as_array) else {
                 return Json(json!({
@@ -1962,7 +1962,7 @@ async fn application_effect_handler(
     let bundle_path_and_query = uri.to_string();
     let (method, path_and_query, body) = public_visualization_effect(&method, &uri, body);
     let mut path_and_query = path_and_query;
-    // PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#application_effect_handler; python=kogwistar/server/chat_api.py#create_chat_router.get_run_events_poll; fixture=contracts/golden/run-events-poll-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_events_poll_matches_shared_contract; python_test=tests/server/test_chat_server_api.py#test_chat_rest_events_poll_matches_rust_seeded_contract
+    // PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#application_effect_handler; python=kogwistar/server/chat_api.py#create_chat_router.get_run_events_poll; fixture=contracts/golden/run-events-poll-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_events_poll_matches_shared_contract; python_test=tests/server/test_chat_server_api_run_inspection.py#test_chat_rest_events_poll_matches_rust_seeded_contract
     if method == "GET"
         && runtime_run_route(&path_and_query)
             .is_some_and(|(_, tail)| tail.as_slice() == ["events", "poll"])

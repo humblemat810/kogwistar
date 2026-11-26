@@ -435,7 +435,7 @@ fn without_internal_transport_marker(mut principal: Value) -> Value {
     principal
 }
 
-// PYTHON_PARITY_NOTE_V1: derive one request-local principal and role set from verified claims before MCP role/tool checks; rust=rust/crates/kogwistar-api/src/sections/auth_state.rs#request_auth_context; python=kogwistar/server/auth_middleware.py#_decode_role_from_headers+kogwistar/server/mcp_tools.py#_tool_allowed; rust_test=rust/crates/kogwistar-api/src/tests/mcp_auth_timing.rs#mcp_authenticated_call_verifies_once_and_attributes_authorization_stages; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
+// PYTHON_PARITY_NOTE_V1: derive one request-local principal and role set from verified claims before MCP role/tool checks; rust=rust/crates/kogwistar-api/src/sections/auth_state.rs#request_auth_context; python=kogwistar/server/auth_middleware.py#_decode_role_from_headers+kogwistar/server/mcp_tools.py#_tool_allowed; rust_test=rust/crates/kogwistar-api/src/tests/mcp_auth_timing.rs#mcp_authenticated_call_verifies_once_and_attributes_authorization_stages; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
 fn request_auth_context(
     headers: &HeaderMap,
     config: &AuthConfig,

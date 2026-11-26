@@ -1247,7 +1247,7 @@ impl SqliteRunApplicationService {
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#sqlite_public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_wisdom_retrieval.rs#sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#sqlite_public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_wisdom_retrieval.rs#sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract; python_test=tests/server/test_chat_server_api_documents.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
     async fn sqlite_public_document_tree_upsert_effect(
         &self,
         request: &ApiEffectRequest,
@@ -1937,7 +1937,7 @@ fn syscall_read_effect(
     }
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#designer_capabilities_effect; python=kogwistar/server_mcp_with_admin.py#designer_capabilities; fixture=contracts/golden/workflow-designer-capabilities-schema-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api.py#test_designer_capabilities_endpoint
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#designer_capabilities_effect; python=kogwistar/server_mcp_with_admin.py#designer_capabilities; fixture=contracts/golden/workflow-designer-capabilities-schema-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api_admin.py#test_designer_capabilities_endpoint
 fn designer_capabilities_effect(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
@@ -2076,7 +2076,7 @@ fn operational_path(path_and_query: &str) -> Option<&str> {
     .then_some(path)
 }
 
-// PYTHON_PARITY_NOTE_V1: Preserve Python list-slice limit semantics, including zero/negative limits, after graph ACL filtering; rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operator_inbox_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_operator_inbox; fixture=contracts/golden/workflow-operator-inbox-limit-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_run_observability.rs#operator_inbox_filters_graph_visibility_and_security_scope_before_limit; python_test=tests/mcp/test_chat_mcp_tools.py#test_chat_run_service_operator_inbox_respects_security_scope
+// PYTHON_PARITY_NOTE_V1: Preserve Python list-slice limit semantics, including zero/negative limits, after graph ACL filtering; rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operator_inbox_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_operator_inbox; fixture=contracts/golden/workflow-operator-inbox-limit-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_run_observability.rs#operator_inbox_filters_graph_visibility_and_security_scope_before_limit; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_chat_run_service_operator_inbox_respects_security_scope
 fn operator_inbox_effect(
     request: &ApiEffectRequest,
     lanes: &[ProjectedLaneMessage],
@@ -2698,7 +2698,7 @@ fn operational_effect(
                 },
             ]),
         ),
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_monitoring.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api.py#test_runtime_resource_snapshot_reports_pressure
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_monitoring.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api_runtime_workflow.py#test_runtime_resource_snapshot_reports_pressure
         "/api/workflow/resources" => json_effect(StatusCode::OK, resources),
         // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot; fixture=contracts/golden/workflow-budget-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_capability_kernel_contract.py#test_workflow_budget_route_matches_contract_and_requires_security_scope
         "/api/workflow/budget" => json_effect(
@@ -2738,7 +2738,7 @@ fn operational_effect(
                 "limit": limit,
             }),
         ),
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_lane_message_progress; python_service=kogwistar/server/chat_service.py#ChatRunService.lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_lane_progress_matches_shared_contract
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_lane_message_progress; python_service=kogwistar/server/chat_service.py#ChatRunService.lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_lane_progress_matches_shared_contract
         "/api/workflow/lane/progress" => {
             let run_id = query_string(&request.path_and_query, "run_id");
             let conversation_id = query_string(&request.path_and_query, "conversation_id");
@@ -2889,7 +2889,7 @@ fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
     None
 }
 
-// PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#runtime_run_namespace; python=kogwistar/server/chat_api.py#create_chat_router.get_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api.py#test_run_steps_matches_shared_rust_projection_fixture
+// PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#runtime_run_namespace; python=kogwistar/server/chat_api.py#create_chat_router.get_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api_run_inspection.py#test_run_steps_matches_shared_rust_projection_fixture
 fn runtime_run_namespace(path_and_query: &str) -> Option<&'static str> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
     if path.starts_with("/api/workflow/runs/")

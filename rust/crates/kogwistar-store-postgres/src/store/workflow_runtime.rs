@@ -202,7 +202,7 @@ impl PostgresStore {
         .await
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/workflow_runtime.rs#resume_recorded_runtime_token; python=kogwistar/server/chat_service_run_execution.py#_default_resume_runner; python_service=kogwistar/server/chat_service.py#ChatRunService.resume_run; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_mcp_resume_continues_persisted_suspended_token; python_test=tests/server/test_chat_server_api.py#test_python_resume_syscall_continues_persisted_workflow
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-postgres/src/store/workflow_runtime.rs#resume_recorded_runtime_token; python=kogwistar/server/chat_service_run_execution.py#_default_resume_runner; python_service=kogwistar/server/chat_service.py#ChatRunService.resume_run; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_mcp_resume_continues_persisted_suspended_token; python_test=tests/server/test_chat_server_api_run_inspection.py#test_python_resume_syscall_continues_persisted_workflow
     pub async fn resume_recorded_runtime_token(
         &self,
         run_id: &str,

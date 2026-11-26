@@ -46,7 +46,10 @@ include!("sections/conversation_list.rs");
 mod tests {
     use super::*;
 
-    include!("tests/part_01.rs");
-    include!("tests/part_02.rs");
-    include!("tests/part_03.rs");
+    include!("tests/scope_and_vector_contracts.rs");
+    include!("tests/graph_visualization.rs");
+    include!("tests/graph_traversal.rs");
+    include!("tests/graph_acl.rs");
+    include!("tests/record_projections.rs");
+    include!("tests/graph_mutation_and_rollback.rs");
 }

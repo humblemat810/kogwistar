@@ -478,7 +478,7 @@ impl SqliteRunApplicationService {
                         schema_version: 1,
                     })?;
                     uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
-                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_undo+workflow_design_redo; fixture=contracts/golden/workflow-design-redo-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api.py#test_workflow_design_redo_matches_shared_contract; note=internal projection status is not part of Python's undo/redo mutation response.
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_undo+workflow_design_redo; fixture=contracts/golden/workflow-design-redo-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_design_redo_matches_shared_contract; note=internal projection status is not part of Python's undo/redo mutation response.
                     let _ = folded
                         .as_object_mut()
                         .and_then(|value| value.remove("materialization_status"));
@@ -529,7 +529,7 @@ impl SqliteRunApplicationService {
                     let folded = workflow_design_history_value(workflow_id, folded_events, "ready")
                         .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
                     uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
-                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
                     let mut response = json!({"workflow_id": workflow_id, "namespace": namespace,
                         if deleted { if action == "node_delete" { "node_id" } else { "edge_id" } } else if action == "node_upsert" { "node_id" } else { "edge_id" }: entity_id,
                         "designer_id": designer, "version": folded["current_version"],
@@ -762,7 +762,7 @@ impl SqliteRunApplicationService {
     }
 
     fn repair_orphaned_messages(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#repair_orphaned_messages; python=kogwistar/server/runtime_api.py#repair_orphaned_claimed_messages+kogwistar/server/chat_service.py#repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_repair_orphans_matches_shared_contract; note=only expired claims in the selected inbox are requeued; active leases remain claimed.
+        // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#repair_orphaned_messages; python=kogwistar/server/runtime_api.py#repair_orphaned_claimed_messages+kogwistar/server/chat_service.py#repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_repair_orphans_matches_shared_contract; note=only expired claims in the selected inbox are requeued; active leases remain claimed.
         if principal_role(&request.principal) != "rw"
             || !principal_strings(&request.principal, "ns")
                 .iter()
