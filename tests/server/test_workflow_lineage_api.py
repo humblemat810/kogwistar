@@ -113,14 +113,7 @@ def test_lineage_returns_visible_prefix_when_graph_read_omits_parent():
     }
 
 
-def test_python_lineage_stops_at_parent_hidden_by_graph_acl(tmp_path):
-    engine = GraphKnowledgeEngine(
-        persist_directory=str(tmp_path / "lineage-acl"),
-        kg_graph_type="conversation",
-        embedding_function=ConstantEmbeddingFunction(dim=3),
-        backend_factory=build_in_memory_backend,
-        acl_enabled=True,
-    )
+def _seed_workflow_lineage_acl(engine):
     mention = Grounding(spans=[Span.from_dummy_for_conversation()])
     for run_id, workflow_id, parent_run_id in (
         ("lineage-child", "wf.child", "lineage-parent"),
@@ -174,6 +167,9 @@ def test_python_lineage_stops_at_parent_hidden_by_graph_acl(tmp_path):
         mode="private",
         owner_id="bob",
     )
+
+
+def _assert_python_lineage_visible_prefix(engine):
     registry = RunRegistry(engine.meta_sqlite)
     registry.create_run(
         run_id="lineage-child",
@@ -219,6 +215,49 @@ def test_python_lineage_stops_at_parent_hidden_by_graph_acl(tmp_path):
             }
         ],
     }
+
+
+def test_python_lineage_stops_at_parent_hidden_by_graph_acl(tmp_path):
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "lineage-acl"),
+        kg_graph_type="conversation",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+        backend_factory=build_in_memory_backend,
+        acl_enabled=True,
+    )
+    try:
+        _seed_workflow_lineage_acl(engine)
+        _assert_python_lineage_visible_prefix(engine)
+    finally:
+        engine.close()
+
+
+def test_python_postgres_lineage_stops_at_parent_hidden_by_graph_acl(
+    tmp_path, pg_dsn, pg_schema
+):
+    if not pg_dsn or not pg_schema:
+        pytest.skip("PostgreSQL fixture is unavailable")
+
+    import sqlalchemy as sa
+
+    from kogwistar.engine_core.postgres_backend import PgVectorBackend
+
+    postgres_engine = sa.create_engine(pg_dsn, future=True, pool_pre_ping=True)
+    engine = GraphKnowledgeEngine(
+        persist_directory=str(tmp_path / "lineage-postgres-acl"),
+        backend=PgVectorBackend(
+            engine=postgres_engine, embedding_dim=3, schema=pg_schema
+        ),
+        kg_graph_type="conversation",
+        embedding_function=ConstantEmbeddingFunction(dim=3),
+        acl_enabled=True,
+    )
+    try:
+        _seed_workflow_lineage_acl(engine)
+        _assert_python_lineage_visible_prefix(engine)
+    finally:
+        engine.close()
+        postgres_engine.dispose()
 
 
 def test_run_status_denies_unauthorized_workflow():

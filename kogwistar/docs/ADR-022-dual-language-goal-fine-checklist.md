@@ -371,9 +371,13 @@ node, grounding, and span grants are public while parent node is private to
 another principal. With the run registry seeded, authenticated REST
 `GET /api/workflow/runs/lineage-child/lineage` returns `200` and only the
 visible child, matching Rust's live Chroma route case. The full Python
-route/service module now passes (**7 passed**). This closes only the Python
-in-memory lineage ACL cell; broader HTTP/read ACL and backend cells keep
-DLFC-06 IN PROGRESS.
+route/service module passed (**7 passed** at that point). The equivalent
+`tests/server/test_workflow_lineage_api.py::test_python_postgres_lineage_stops_at_parent_hidden_by_graph_acl`
+now passes against live testcontainers PostgreSQL/pgvector using an isolated
+schema; same principal, ACL grants, REST route, and visible-prefix assertion.
+Current full Python route/service module: **8 passed**. These close only the
+Python in-memory and PostgreSQL lineage ACL cells; broader HTTP/read ACL and
+backend cells keep DLFC-06 IN PROGRESS.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
