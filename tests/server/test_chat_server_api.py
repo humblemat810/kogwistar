@@ -5836,6 +5836,12 @@ def test_workflow_design_empty_history_matches_shared_contract(
     _configure_server(
         monkeypatch, engine, conversation_engine, workflow_engine, _success_runner
     )
+    authority = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/workflow-design-rest-authority-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     contract = json.loads(
         (
             Path(__file__).resolve().parents[2]
@@ -5843,14 +5849,17 @@ def test_workflow_design_empty_history_matches_shared_contract(
         ).read_text(encoding="utf-8")
     )
     with TestClient(server.app) as client:
-        headers = _token_header(client, role="ro", ns="workflow")
-        response = client.get(
-            f"/api/workflow/design/{contract['workflow_id']}/history",
-            headers=headers,
-        )
-
-    assert response.status_code == contract["success_status"], response.text
-    assert response.json() == contract["response_body"]
+        for case in authority["cases"]:
+            principal = case["principal"]
+            claims = {**principal, "sub": "tester", "username": "tester"}
+            token = jwt.encode(claims, TEST_JWT_SECRET, algorithm=TEST_JWT_ALG)
+            response = client.get(
+                authority["path"],
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code == case["expected_status"], case["name"]
+            if case["expected_status"] == contract["success_status"]:
+                assert response.json() == contract["response_body"]
 
 
 def test_workflow_design_node_upsert_matches_shared_contract(

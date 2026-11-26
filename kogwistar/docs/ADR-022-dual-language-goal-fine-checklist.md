@@ -410,6 +410,18 @@ repeats the denial against unreachable PostgreSQL, proving auth precedes DB
 access. Rust focused selector: **4 passed**; Python status + parity crosswalk:
 **2 passed**. This closes one capability cell only; DLFC-05 remains IN PROGRESS.
 
+DLFC-05 REST workflow-design history defaults (2026-11-27): shared
+`contracts/golden/workflow-design-rest-authority-v1.json` proves `ro` plus
+workflow namespace inherits `workflow.design.inspect` when capability claims
+are absent; an explicit empty capability list and wrong namespace both deny.
+Python `tests/server/test_chat_server_api.py::test_workflow_design_empty_history_matches_shared_contract`
+and Rust
+`tests::workflow_design_history_rest_matches_python_role_namespace_policy`
+consume the authority cases and shared empty-history response (**1 passed each**).
+Python MCP denial and Rust MCP admission/effect rechecks remain intact (**1 + 5
+passed**). No authorization policy changed; broader DLFC-05 route/backend matrix
+remains open.
+
 DLFC-06 live Chroma lineage cell (2026-11-26): the existing ignored Rust
 integration test now seeds both workflow-run graph nodes and canonical SQLite
 run/ACL records, then GETs lineage through the SQLite+Chroma service and exactly

@@ -1,0 +1,22 @@
+{
+  "schema_version": "workflow-design-rest-authority/v1",
+  "path": "/api/workflow/design/wf-empty-history/history",
+  "cases": [
+    {
+      "name": "role_default_capabilities",
+      "principal": {"role": "ro", "ns": ["workflow"]},
+      "expected_status": 200,
+      "response_fixture": "workflow-design-empty-history-http-v1.json"
+    },
+    {
+      "name": "explicit_empty_capabilities",
+      "principal": {"role": "ro", "ns": ["workflow"], "capabilities": []},
+      "expected_status": 403
+    },
+    {
+      "name": "wrong_namespace",
+      "principal": {"role": "ro", "ns": ["conversation"]},
+      "expected_status": 403
+    }
+  ]
+}

@@ -1056,6 +1056,53 @@
         let _ = std::fs::remove_file(path);
     }
 
+    // PYTHON_PARITY_V1: REST workflow-design history matches Python role defaults, explicit empty-capability denial, and namespace rejection; rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.workflow_design_history+kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-rest-authority-v1.json,contracts/golden/workflow-design-empty-history-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_history_rest_matches_python_role_namespace_policy; python_test=tests/server/test_chat_server_api.py#test_workflow_design_empty_history_matches_shared_contract
+    #[tokio::test]
+    async fn workflow_design_history_rest_matches_python_role_namespace_policy() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-design-rest-read-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let authority: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-design-rest-authority-v1.json"
+        ))
+        .unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-design-empty-history-http-v1.json"
+        ))
+        .unwrap();
+        for case in authority["cases"].as_array().unwrap() {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: authority["path"].as_str().unwrap().to_owned(),
+                    body: Vec::new(),
+                    principal: case["principal"].clone(),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                case["expected_status"].as_u64().unwrap() as u16,
+                "case {}",
+                case["name"]
+            );
+            if response.status == contract["success_status"].as_u64().unwrap() as u16 {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&response.body).unwrap(),
+                    contract["response_body"]
+                );
+            }
+        }
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
     #[tokio::test]
     async fn mcp_workflow_design_history_matches_shared_contract() {
         use axum::body::{Body, to_bytes};
