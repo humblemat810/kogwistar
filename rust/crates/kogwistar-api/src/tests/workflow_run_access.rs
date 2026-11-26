@@ -209,6 +209,7 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
     assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), expected);
 
     let mcp_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -532,6 +533,7 @@ async fn in_memory_workflow_lineage_route_matches_shared_contract() {
         Arc::new(service),
     );
     let mcp_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -551,6 +553,41 @@ async fn in_memory_workflow_lineage_route_matches_shared_contract() {
     assert_eq!(mcp_payload["result"]["run_id"], "lineage-child");
     assert_eq!(mcp_payload["result"]["lineage"].as_array().unwrap().len(), 1);
     assert_eq!(mcp_payload["result"]["truncated"], true);
+
+    let denied_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "user_id":"alice", "role":"ro",
+            "storage_ns":"conversation", "workspace_id":"workspace-a",
+            "graph_space":"conversation", "ns":["workflow"],
+            "capabilities":[], "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let denied_response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"workflow.run_lineage","arguments":{"run_id":"lineage-child"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_response.status(), StatusCode::OK);
+    let denied_body = to_bytes(denied_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let denied_payload: Value = serde_json::from_slice(&denied_body).unwrap();
+    assert_eq!(
+        denied_payload["error"]["data"]["code"],
+        "KOGWISTAR_CAPABILITY_FORBIDDEN"
+    );
 }
 
 #[tokio::test]
