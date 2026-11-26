@@ -2072,9 +2072,14 @@ async def test_mcp_workflow_run_resume_denies_missing_write_capability_before_ef
 async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
     monkeypatch, engine_triplet
 ):
+    import asyncio
+    import threading
+
+    import kogwistar.server.chat_service_run_execution as run_execution_module
     from kogwistar.runtime.models import RunSuccess, RunSuspended
     from kogwistar.runtime.resolvers import MappingStepResolver
     from kogwistar.runtime.runtime import WorkflowRuntime
+    from kogwistar.runtime.runtime_checkpoints import WorkflowRunOwnershipError
     from kogwistar.server.auth_middleware import (
         NameSpace,
         Role,
@@ -2143,6 +2148,8 @@ async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
         )
 
     resolver = MappingStepResolver()
+    finish_calls = []
+    finish_calls_lock = threading.Lock()
 
     @resolver.register("mcp-resume-start")
     def _start(_context):
@@ -2154,6 +2161,8 @@ async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
 
     @resolver.register("mcp-resume-finish")
     def _finish(context):
+        with finish_calls_lock:
+            finish_calls.append(context.state_view.get("approved"))
         return RunSuccess(
             state_update=[
                 ("u", {"finished": True, "approved": context.state_view.get("approved")})
@@ -2228,10 +2237,41 @@ async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
         sub=owner,
         scope_parts={"capabilities": ["workflow.run.write", "approve_action"]},
     ):
-        result = await workflow_mcp.call_tool(
-            "workflow.run_resume",
-            resume_arguments,
+        original_load_checkpoint = run_execution_module.load_checkpoint
+        after_checkpoint_read = threading.Barrier(2)
+
+        def synchronized_load_checkpoint(*args, **kwargs):
+            checkpoint = original_load_checkpoint(*args, **kwargs)
+            after_checkpoint_read.wait(timeout=5)
+            return checkpoint
+
+        monkeypatch.setattr(
+            run_execution_module, "load_checkpoint", synchronized_load_checkpoint
         )
+
+        def concurrent_resume():
+            return asyncio.run(
+                workflow_mcp.call_tool("workflow.run_resume", resume_arguments)
+            )
+
+        results = await asyncio.gather(
+            asyncio.to_thread(concurrent_resume),
+            asyncio.to_thread(concurrent_resume),
+            return_exceptions=True,
+        )
+        monkeypatch.setattr(
+            run_execution_module, "load_checkpoint", original_load_checkpoint
+        )
+        successful_results = [
+            result for result in results if not isinstance(result, BaseException)
+        ]
+        rejected_results = [
+            result for result in results if isinstance(result, BaseException)
+        ]
+        assert len(successful_results) == 1, results
+        assert len(rejected_results) == 1, results
+        assert isinstance(rejected_results[0], WorkflowRunOwnershipError), rejected_results
+        assert finish_calls == [True]
         checkpoint_count = len(
             conversation_engine.read.get_nodes(
                 where={
@@ -2245,8 +2285,8 @@ async def test_mcp_workflow_run_resume_continues_persisted_suspended_workflow(
         with pytest.raises(ValueError, match="not found in suspended runtime state"):
             await workflow_mcp.call_tool("workflow.run_resume", resume_arguments)
 
-    payload = _structured(result)
-    assert result.is_error is False
+    payload = _structured(successful_results[0])
+    assert successful_results[0].is_error is False
     assert payload["workflow_status"] == "succeeded"
     assert payload["final_state"]["started"] is True
     assert payload["final_state"]["approved"] is True
