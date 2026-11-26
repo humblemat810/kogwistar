@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Goal Closure Checklist
 
-**Updated:** 2026-11-25
+**Updated:** 2026-11-26
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
 **Status summary:** **6 bounded criteria PASS; 1 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
