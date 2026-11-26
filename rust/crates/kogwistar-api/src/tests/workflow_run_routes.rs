@@ -930,7 +930,7 @@ async fn sqlite_mcp_run_steps_enforces_workflow_acl_end_to_end() {
     remove_test_sqlite(&auth_path);
 }
 
-// PYTHON_PARITY_NOTE_V1: SQLite MCP submit/cancel persist effects and terminal retry adds no run event; Python counterparts verify submit/cancel behavior and authorization. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-submit-mcp-v1.json
+// PYTHON_PARITY_NOTE_V1: SQLite MCP submit/cancel persist effects, cancel response matches shared schema, and terminal retry adds no run event; Python counterparts verify submit/cancel behavior and authorization. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#sqlite_mcp_run_submit_persists_admission; python=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_runtime_submit_cancel+test_mcp_workflow_run_cancel_matches_shared_contract+test_mcp_workflow_run_submit_matches_shared_contract+test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission; fixture=contracts/golden/workflow-run-submit-mcp-v1.json,contracts/golden/workflow-run-cancel-mcp-v1.json
 #[tokio::test]
 async fn sqlite_mcp_run_submit_persists_admission() {
     use axum::body::{Body, to_bytes};
@@ -1169,10 +1169,28 @@ async fn sqlite_mcp_run_submit_persists_admission() {
         .find_map(|line| line.strip_prefix("data: "))
         .unwrap();
     let cancelled_payload: Value = serde_json::from_str(cancelled_message).unwrap();
-    assert_eq!(
-        cancelled_payload["result"]["structuredContent"]["status"],
-        "cancelled"
-    );
+    let cancel_result = &cancelled_payload["result"]["structuredContent"];
+    let cancel_fixture: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-cancel-mcp-v1.json"
+    ))
+    .unwrap();
+    let expected_cancel = &cancel_fixture["result"];
+    let mut actual_fields: Vec<_> = cancel_result.as_object().unwrap().keys().collect();
+    let mut expected_fields: Vec<_> = expected_cancel.as_object().unwrap().keys().collect();
+    actual_fields.sort();
+    expected_fields.sort();
+    assert_eq!(actual_fields, expected_fields, "MCP cancel response fields");
+    assert_eq!(cancel_result["run_id"], run_id);
+    assert_eq!(cancel_result["conversation_id"], expected["conversation_id"]);
+    assert_eq!(cancel_result["workflow_id"], expected["workflow_id"]);
+    assert_eq!(cancel_result["user_id"], expected_owner);
+    assert_eq!(cancel_result["user_turn_node_id"], "turn-contract");
+    assert_eq!(cancel_result["assistant_turn_node_id"], expected_cancel["assistant_turn_node_id"]);
+    assert_eq!(cancel_result["status"], "cancelled");
+    assert_eq!(cancel_result["cancel_requested"], true);
+    assert_eq!(cancel_result["result"], expected_cancel["result"]);
+    assert_eq!(cancel_result["error"], expected_cancel["error"]);
+    assert_eq!(cancel_result["terminal"], true);
 
     let after_cancel = kogwistar_store_sqlite::SqliteStore::open(&path).unwrap();
     assert_eq!(after_cancel.get_server_run(run_id).unwrap().unwrap().status, "cancelled");
