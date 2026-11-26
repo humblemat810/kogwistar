@@ -1238,6 +1238,112 @@
         assert_eq!(response["status"], "ok");
         assert_eq!(response["result"], fixture);
 
+        let evidence_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-evidence-v1.json"
+        ))
+        .unwrap();
+        let run_id = evidence_fixture["run_id"].as_str().unwrap();
+        let conversation_id = evidence_fixture["conversation_id"].as_str().unwrap();
+        let snapshot_id = evidence_fixture["snapshot_node_id"].as_str().unwrap();
+        service
+            .store
+            .create_server_run(kogwistar_store::ServerRunCreate {
+                run_id: run_id.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                workflow_id: "evidence-workflow".to_owned(),
+                user_id: Some("reader-1".to_owned()),
+                user_turn_node_id: fixture["messages"][0]["node_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                status: "succeeded".to_owned(),
+            })
+            .unwrap();
+        let snapshot_metadata = evidence_fixture["snapshot_metadata"].clone();
+        graph
+            .upsert_graph_record_of_kind(
+                &namespace,
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: snapshot_id.to_owned(),
+                    document: Some(
+                        json!({
+                            "metadata": snapshot_metadata,
+                            "properties": {
+                                "evidence_pack_digest": evidence_fixture["source_summary"]["evidence_pack_digest"]
+                            }
+                        })
+                        .to_string(),
+                    ),
+                    metadata: serde_json::from_value(json!({
+                        "entity_type":"context_snapshot",
+                        "conversation_id":conversation_id,
+                        "run_id":run_id,
+                        "run_step_seq":evidence_fixture["snapshot_metadata"]["run_step_seq"],
+                        "used_node_ids":evidence_fixture["evidence_refs"],
+                        "workspace_id":"workspace-a",
+                        "graph_space":"conversation",
+                        "lifecycle_status":"active",
+                        "level_from_root":0
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+        let acl_id = format!("acl-{snapshot_id}");
+        service
+            .store
+            .append_raw_entity_event(
+                &namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: format!("event-{acl_id}"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: acl_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({
+                        "id":acl_id,
+                        "document":null,
+                        "metadata":{
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"conversation",
+                            "acl_target_grain":"node",
+                            "acl_target_entity_id":snapshot_id,
+                            "acl_version":1,
+                            "acl_mode":"public",
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation"
+                        }
+                    })
+                    .to_string(),
+                },
+            )
+            .unwrap();
+        let evidence = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/evidence"),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"reader-1",
+                    "user_id":"reader-1",
+                    "role":"ro",
+                    "storage_ns":namespace,
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":["workflow"],
+                    "capabilities":["workflow.run.read","project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(evidence.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&evidence.body).unwrap(),
+            evidence_fixture
+        );
+
         drop(graph);
         drop(service);
         let _ = std::fs::remove_file(database);
