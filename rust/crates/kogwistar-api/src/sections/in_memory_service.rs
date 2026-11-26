@@ -2281,67 +2281,6 @@ impl InMemoryGraphApplicationService {
                 "Graph upsert endpoint is tombstoned",
             );
         }
-        let endpoint_ids = external_nodes
-            .iter()
-            .chain(external_edges.keys())
-            .cloned()
-            .collect::<Vec<_>>();
-        let mut existing_endpoint_acl = Vec::new();
-        for target_id in endpoint_ids {
-            let mut filter = MetadataFilter::default();
-            filter
-                .equals
-                .insert("entity_type".to_owned(), json!("acl_record"));
-            filter
-                .equals
-                .insert("acl_truth_graph".to_owned(), json!("knowledge"));
-            filter
-                .equals
-                .insert("acl_target_entity_id".to_owned(), json!(target_id));
-            let records = match self
-                .store
-                .graph_projection_records(GraphProjectionRead {
-                    scope: scope.clone(),
-                    table: "gke_nodes".to_owned(),
-                    ids: None,
-                    metadata: filter,
-                    limit: 10_000,
-                })
-                .await
-            {
-                Ok(records) => records,
-                Err(error) => {
-                    return effect_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "KOGWISTAR_ACL_READ_FAILED",
-                        error.to_string(),
-                    );
-                }
-            };
-            existing_endpoint_acl.extend(records);
-        }
-        let mut endpoint_acl_index = GraphAclIndex::default();
-        endpoint_acl_index.extend_from_records(&existing_endpoint_acl, "knowledge");
-        let acl_principal = graph_acl_principal_from_claims(
-            &request.principal,
-            security_scope["security_scope"].as_str(),
-        );
-        let (visible_nodes, visible_edges) = graph_records_visible_by_acl_with_index(
-            &external_node_records,
-            &external_edges.values().cloned().collect::<Vec<_>>(),
-            &endpoint_acl_index,
-            &acl_principal,
-        );
-        if visible_nodes.len() != external_node_records.len()
-            || visible_edges.len() != external_edges.len()
-        {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_GRAPH_ENDPOINT_FORBIDDEN",
-                "Graph upsert endpoint is not visible to the authenticated principal",
-            );
-        }
-
         let mut external = GraphUpsertExternalEndpoints::default();
         external.node_ids = external_nodes;
         external.edge_ids = external_edges.keys().cloned().collect();

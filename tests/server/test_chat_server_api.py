@@ -377,12 +377,25 @@ def test_document_upsert_tree_accepts_nonempty_shared_graph_extraction(
         other_writer_headers = token_header(
             client, role="rw", ns="docs,conversation,workflow", username="alice"
         )
+        external_request = json.loads(json.dumps(stable_request))
+        external_node = "44444444-4444-4444-8444-444444444444"
+        external_request["nodes"] = [external_request["nodes"][1]]
+        external_request["nodes"][0]["id"] = external_node
+        external_request["edges"][0]["id"] = "55555555-5555-4555-8555-555555555555"
+        external_request["edges"][0]["source_ids"] = [stable_nodes[0]]
+        external_request["edges"][0]["target_ids"] = [external_node]
+        external_endpoint_response = client.post(
+            "/api/document.upsert_tree",
+            json=external_request,
+            headers=other_writer_headers,
+        )
         other_writer_response = client.post(
             "/api/document.upsert_tree",
             json=stable_request,
             headers=other_writer_headers,
         )
     assert other_writer_response.status_code == 200, other_writer_response.text
+    assert external_endpoint_response.status_code == 200, external_endpoint_response.text
 
 
 def test_document_validate_graph_matches_shared_success_contract(

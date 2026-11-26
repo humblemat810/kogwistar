@@ -2605,6 +2605,29 @@ async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
         .await
         .unwrap()
         .len();
+    let mut external_extraction = stable_extraction.clone();
+    let external_node = "44444444-4444-4444-8444-444444444444";
+    external_extraction["nodes"] = json!([stable_extraction["nodes"][1].clone()]);
+    external_extraction["nodes"][0]["id"] = json!(external_node);
+    external_extraction["nodes"][0]["local_id"] = json!(external_node);
+    external_extraction["edges"][0]["id"] = json!("55555555-5555-4555-8555-555555555555");
+    external_extraction["edges"][0]["local_id"] = json!("55555555-5555-4555-8555-555555555555");
+    external_extraction["edges"][0]["source_ids"] = json!([stable_nodes[0]]);
+    external_extraction["edges"][0]["target_ids"] = json!([external_node]);
+    let external_endpoint_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("alice", "rw")))
+                .body(Body::from(serde_json::to_vec(&external_extraction).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(external_endpoint_write.status(), StatusCode::OK);
     let other_writer_write = app
         .clone()
         .oneshot(

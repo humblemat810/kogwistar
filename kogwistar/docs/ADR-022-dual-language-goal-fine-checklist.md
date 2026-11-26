@@ -228,9 +228,9 @@ passed (**1**) against the shared result fixture. No broader MCP matrix closure 
 
 DLFC-03 additional InMemory cell (2026-11-26): Rust now serves authenticated
 `POST /api/document.upsert_tree` using the shared graph-extraction normalizer,
-scope/endpoint visibility checks, default owner ACL derivation, and one atomic
-graph/index batch. The fixture source document is pre-seeded, matching Python's
-existing-document contract. Rust
+scope/endpoint existence and tombstone checks, default owner ACL derivation, and
+one atomic graph/index batch. The fixture source document is pre-seeded, matching
+Python's existing-document contract. Rust
 `tests::in_memory_document_tree_upsert_matches_graph_extraction_contract`
 (**1 passed through Axum/JWT HTTP**) verifies read-only denial before events,
 successful graph event and projection persistence, owner ACL rows, and local
@@ -244,8 +244,11 @@ Python characterization additionally shows the existing route contract: Bob
 creates stable-ID graph entities, then Alice with authorized `rw` namespace
 access can upsert those IDs successfully (200). Rust was initially stricter
 (409), which changed authorization behavior; it now matches Python while still
-checking external endpoint visibility and deriving ACL records for writes.
-Rust's Axum/JWT test confirms successful durable mutation after the second write.
+deriving ACL records for writes. Both HTTP tests also verify Alice can create
+an edge to Bob-owned external endpoint (200): Python preflight checks raw
+backend existence, not ACL read visibility, and Rust now matches that contract
+while retaining scope, existence, and tombstone checks. Rust's Axum/JWT test
+confirms successful durable mutation for both cases.
 This remains one backend cell and does not close other route/backend cells or
 the broader authorization matrix.
 
