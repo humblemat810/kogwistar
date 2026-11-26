@@ -1130,6 +1130,29 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
     )
     .unwrap();
+    let run_status_without_acl = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/workflow/runs/{run_id}"))
+                .header(
+                    "authorization",
+                    format!("Bearer {workflow_read_token}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_status_without_acl.status(), StatusCode::FORBIDDEN);
+    rusqlite::Connection::open(&auth_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?1, ?2, 'ro')",
+            rusqlite::params![workflow_id, "conversation-owner"],
+        )
+        .unwrap();
     let run_status = app
         .clone()
         .oneshot(

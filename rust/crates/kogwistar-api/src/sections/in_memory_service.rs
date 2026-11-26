@@ -5459,11 +5459,11 @@ impl InMemoryGraphApplicationService {
                 || tail.as_slice() == ["steps"]
                 || tail.as_slice() == ["events"]
                 || tail.as_slice() == ["events", "poll"]);
+        let delegated_workflow_read = workflow_run_read
+            && (self.owner_auth_store.is_some() || is_mcp_workflow_status_read(request));
         let run = match kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id).await
         {
-            Ok(Some(run))
-                if run.user_id.as_deref() == Some(owner_id) || workflow_run_read =>
-            {
+            Ok(Some(run)) if run.user_id.as_deref() == Some(owner_id) || delegated_workflow_read => {
                 run
             }
             Ok(Some(_)) => {
