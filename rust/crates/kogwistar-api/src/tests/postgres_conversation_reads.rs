@@ -1771,3 +1771,82 @@
             .await
             .unwrap();
     }
+
+    // PYTHON_PARITY_V1: Conversation transcript ACL filtering must precede the bounded result window on PostgreSQL, matching Python's uncapped projection-before-limit behavior. rust=rust/crates/kogwistar-api/src/sections/postgres_native_conversation.rs; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_transcript; fixture=contracts/golden/conversation-transcript-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_transcript_filters_hidden_rows_before_limit; python_test=tests/server/test_conversation_graph_scope.py#test_conversation_read_acl_scope_matrix
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_conversation_transcript_filters_hidden_rows_before_limit() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_conversation_acl_limit_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
+        service
+            .conversation_store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let table = format!("\"{schema}_conversation\".gke_nodes");
+        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .expect("connect to isolated PostgreSQL test database");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                "INSERT INTO {table}(id, document, metadata, embedding) VALUES \
+                 ('matrix-start', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"conversation_start\",\"conversation_id\":\"matrix-conversation\",\"user_id\":\"alice\",\"status\":\"active\"}}'::jsonb, NULL), \
+                 ('matrix-acl-start', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"acl_record\",\"acl_truth_graph\":\"conversation\",\"acl_target_entity_id\":\"matrix-start\",\"acl_target_grain\":\"node\",\"acl_version\":1,\"acl_mode\":\"public\"}}'::jsonb, NULL); \
+                 INSERT INTO {table}(id, document, metadata, embedding) \
+                 SELECT 'matrix-hidden-' || n, NULL, jsonb_build_object(\
+                     'namespace','conversation','entity_type','conversation_turn',\
+                     'conversation_id','matrix-conversation','turn_index',n,\
+                     'role','assistant','summary','hidden'), NULL \
+                 FROM generate_series(1, 10001) AS n; \
+                 INSERT INTO {table}(id, document, metadata, embedding) \
+                 SELECT 'matrix-acl-hidden-' || n, NULL, jsonb_build_object(\
+                     'namespace','conversation','entity_type','acl_record',\
+                     'acl_truth_graph','conversation','acl_target_entity_id','matrix-hidden-' || n,\
+                     'acl_target_grain','node','acl_version',1,'acl_mode','private','owner_id','bob'), NULL \
+                 FROM generate_series(1, 10001) AS n; \
+                 INSERT INTO {table}(id, document, metadata, embedding) VALUES \
+                 ('matrix-visible', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"conversation_turn\",\"conversation_id\":\"matrix-conversation\",\"turn_index\":10002,\"role\":\"assistant\",\"summary\":\"visible-after-hidden\"}}'::jsonb, NULL), \
+                 ('matrix-acl-visible', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"acl_record\",\"acl_truth_graph\":\"conversation\",\"acl_target_entity_id\":\"matrix-visible\",\"acl_target_grain\":\"node\",\"acl_version\":1,\"acl_mode\":\"public\"}}'::jsonb, NULL);"
+            ))
+            .await
+            .expect("seed hidden-before-visible conversation rows");
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/matrix-conversation/turns".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice",
+                    "user_id":"alice",
+                    "role":"ro",
+                    "ns":"conversation",
+                    "storage_ns":"conversation",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload["conversation_id"], "matrix-conversation");
+        assert_eq!(payload["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["turns"][0]["node_id"], "matrix-visible");
+        assert_eq!(payload["turns"][0]["content"], "visible-after-hidden");
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
+            .await
+            .expect("drop isolated PostgreSQL test schemas");
+    }

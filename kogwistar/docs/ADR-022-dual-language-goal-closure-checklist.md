@@ -257,11 +257,15 @@ selector `postgres_conversation_routes_project_authorized_summary_and_transcript
 passed (**1 passed**, disposable pgvector; 2026-11-27), covering scoped
 list/detail/transcript, private-turn filtering, foreign workspace/graph-space,
 and foreign-owner 404; now also asserts missing list identity returns 401 and
-wrong-namespace detail returns 403. Still missing for AUTH-PAR-02: explicit
-large hidden-before-visible coverage on PostgreSQL and a consolidated
-per-backend response-projection oracle. InMemory, SQLite+Chroma, and PostgreSQL
-cover missing identity and wrong namespace. AUTH-PAR-02 stays `IN PROGRESS`;
-it does not reopen DLFC-05.
+wrong-namespace detail returns 403. New focused PostgreSQL selector
+`postgres_conversation_transcript_filters_hidden_rows_before_limit` seeds
+10,001 ACL-hidden turns before one visible turn via bulk SQL and verifies the
+visible turn survives transcript projection (**1 passed**, disposable
+pgvector:pg17; 2026-11-27). No production change was needed: the route already
+reads all graph projection pages before ACL filtering. Still missing for
+AUTH-PAR-02: a consolidated per-backend response-projection oracle. InMemory,
+SQLite+Chroma, and PostgreSQL cover missing identity and wrong namespace.
+AUTH-PAR-02 stays `IN PROGRESS`; it does not reopen DLFC-05.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |
