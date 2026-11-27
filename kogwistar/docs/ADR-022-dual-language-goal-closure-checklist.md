@@ -215,6 +215,30 @@ and Rust selectors must be executable and recorded in the existing operation
 tasklet rows. A selector's existence is only mapping evidence, not proof that
 the assertion is sufficient or currently passing.
 
+### Remaining Authorization/ACL Cases For GOAL-06/08
+
+The DLFC-05 bounded ACL/authority cases are passing and are closed. Broader
+operation/backend parity remains in GOAL-06/08, whose existing matrix requires
+per-operation evidence. These fixed case families clarify the previously vague
+ACL/backend gap without increasing either checklist denominator. Instantiate
+backend parameters only from the existing support matrix. For unsupported
+operation/backend pairs, assert explicit fail-closed behavior and no side
+effect. Do not add cases after execution starts unless a concrete regression
+or approved contract change requires it.
+
+| Case ID | Python test selector | Rust test selector | Required cases and oracle |
+| --- | --- | --- | --- |
+| AUTH-PAR-01 | `test_workflow_design_route_acl_matrix` | `workflow_design_route_acl_matrix_matches_python` | Every supported backend; workflow graph/history reads, node/edge upsert/delete, undo, redo. Missing ACL and `ro` deny mutations before effects; `ro` permits reads; `rw` permits writes; responses and durable graph/history state match Python. |
+| AUTH-PAR-02 | `test_conversation_read_acl_scope_matrix` | `conversation_read_acl_scope_matrix_matches_python` | Every supported backend; conversation list/detail/transcript. Check missing identity, wrong namespace, owner isolation, ACL-hidden entities, workspace/graph-space mismatch, and ACL filtering before limit. Denials precede protected reads; visible response projection matches Python. |
+| AUTH-PAR-03 | `test_workflow_run_rest_authority_matrix` | `workflow_run_rest_authority_matrix_matches_python` | Every supported backend; submit, status, steps, evidence, lineage, resume, cancel. Preserve each Python route's distinct role/namespace, capability, owner, and per-workflow ACL rules; denied calls have no mutation or identifier leak; retry/effect state matches Python. |
+| AUTH-PAR-04 | `test_workflow_mcp_authority_matrix` | `workflow_mcp_authority_matrix_matches_python` | Every supported backend; workflow and conversation MCP operations with authority boundaries. Check role, namespace, capability, ACL, authenticated principal binding, deny-before-dispatch, and no duplicate effects on retry; preserve intentional REST/MCP policy differences from Python. |
+| AUTH-PAR-05 | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
+
+These five selector pairs are not yet implemented as matrix tests. Existing
+focused selectors below are passing evidence for individual cells, not a
+substitute for the fixed cases above. They remain under GOAL-06/08; they do not
+reopen DLFC-05.
+
 | Case family | Required oracle for each applicable operation |
 | --- | --- |
 | Contract success | Same versioned fixture/request through Python and Rust; compare normalized status, response fields, defaults, IDs, and error-free result. Compare order only where Python's contract declares it; ignore only declared nondeterministic fields. |

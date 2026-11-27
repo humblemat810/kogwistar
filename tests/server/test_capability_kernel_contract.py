@@ -13,12 +13,12 @@ import kogwistar.server_mcp_with_admin as server
 from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.capability_kernel import CapabilityKernel
-from tests.server.test_chat_server_api import (
+from tests.server.chat_server_api_support import (
     _configure_server,
     _runtime_success_runner,
     _token_header,
 )
-from tests.server.test_chat_server_api import (
+from tests.server.chat_server_api_support import (
     # Imported for pytest fixture discovery in this module.
     engine_triplet as engine_triplet,  # noqa: F401
 )

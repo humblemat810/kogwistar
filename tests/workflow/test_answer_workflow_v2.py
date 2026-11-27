@@ -389,7 +389,7 @@ def test_python_agent_postgres_2k_request_profile(
     # Match the native HTTP profile's TCP request boundary; runner remains Python.
     import httpx
 
-    from tests.server.test_chat_server_api import (
+    from tests.server.chat_server_api_support import (
         _configure_server,
         server as chat_server,
     )

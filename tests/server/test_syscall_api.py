@@ -15,14 +15,14 @@ from kogwistar.engine_core.models import Grounding, Span
 import kogwistar.server_mcp_with_admin as server
 from kogwistar.server.auth_middleware import claims_ctx
 from tests.server.auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
-from tests.server.test_chat_server_api import (
+from tests.server.chat_server_api_support import (
     _configure_server,
     _runtime_success_runner,
     _seed_checkpoint,
     _token_header,
 )
 from kogwistar.server.syscall_api import _invoke_builtin_tool, create_syscall_router
-from tests.server.test_chat_server_api import (
+from tests.server.chat_server_api_support import (
     # Imported for pytest fixture discovery in this module.
     engine_triplet as engine_triplet,  # noqa: F401
 )

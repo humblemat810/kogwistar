@@ -18,7 +18,7 @@ import re
 from typing import Any, Protocol, cast
 
 import httpx
-from mcp import types as mcp_types
+import mcp.types as mcp_types
 
 # ---------- helpers ----------
 
