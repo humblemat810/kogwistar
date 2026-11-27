@@ -455,6 +455,34 @@
     }
 
     #[tokio::test]
+    async fn in_memory_service_list_fails_closed_without_effects() {
+        use kogwistar_store::ProjectionReadStore;
+
+        let service = InMemoryGraphApplicationService::default();
+        let path = "/api/workflow/services?limit=1";
+        assert!(!service.supports_http_operation("GET", "/api/workflow/services"));
+
+        let before = service.store.named_projections("service_registry").await.unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: path.to_owned(),
+                body: Vec::new(),
+                principal: json!({"sub":"reader", "role":"rw", "ns":["workflow"]}),
+            })
+            .await;
+        let after = service.store.named_projections("service_registry").await.unwrap();
+
+        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(before, after, "unsupported route must not mutate service registry");
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["code"], "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER");
+        assert_eq!(body["method"], "GET");
+        assert_eq!(body["path"], path);
+    }
+
+    #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_admin_document_delete_enforces_scope_and_commits_rollback() {
         use axum::{
