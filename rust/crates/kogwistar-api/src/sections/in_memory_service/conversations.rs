@@ -58,13 +58,15 @@ impl InMemoryGraphApplicationService {
         let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
         let workspace_id = scope.workspace_id.clone();
         let graph_space = scope.graph_space.clone();
-        let (nodes, edges) = match self.graph_snapshot(scope).await {
+        // Python conversation queries intentionally read without a pre-ACL
+        // row cap; hidden records must not crowd visible conversations out.
+        let (nodes, edges) = match self.store.graph_node_edge_snapshot(&scope, usize::MAX) {
             Ok(records) => records,
             Err(error) => {
                 return effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "KOGWISTAR_STORE_ERROR",
-                    error,
+                    error.to_string(),
                 );
             }
         };

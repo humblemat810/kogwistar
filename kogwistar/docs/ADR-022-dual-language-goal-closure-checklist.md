@@ -242,19 +242,22 @@ Python selector covers hidden-before-limit filtering. Rust InMemory selector
 `conversation_read_acl_scope_matrix_matches_python` passes list/detail/
 transcript, required identity, namespace denial, owner-filtered listing,
 private-turn ACL filtering, workspace and graph-space mismatch, and shared
-list response fields. Rust SQLite+Chroma selector
+list response fields. It also seeds 9,993 ACL-hidden turns; the pre-fix
+10,000-record graph snapshot cap returned 500, while conversation reads now
+use the full in-memory snapshot before ACL projection, matching Python's
+uncapped query behavior. The expanded Rust selector passed (**1 passed**), and
+Python matrix plus parity crosswalk passed (**2 passed**). Rust SQLite+Chroma selector
 `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` passes
 authenticated list/detail/transcript scope checks. Live Rust PostgreSQL
 selector `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
 passed (**1 passed**, disposable pgvector; 2026-11-27), covering scoped
 list/detail/transcript, private-turn filtering, foreign workspace/graph-space,
-and foreign-owner 404. Python matrix and parity crosswalk passed (**2 passed**).
-Still missing for AUTH-PAR-02: Rust REST proof that ACL filtering occurs before
-the result limit, and a complete applicable matrix (including missing
-identity and wrong namespace) across each supported backend with the required
-assertions and response-projection oracle. These selectors are partial backend
-evidence, not substitutes. AUTH-PAR-02 stays `IN PROGRESS`; it does not reopen
-DLFC-05.
+and foreign-owner 404. Still missing for AUTH-PAR-02: equivalent ACL-before-
+limit evidence on the SQLite+Chroma and PostgreSQL REST paths, plus the complete
+applicable missing-identity/wrong-namespace matrix and response-projection
+oracle across each supported backend. Existing selectors remain partial
+backend evidence, not substitutes. AUTH-PAR-02 stays `IN PROGRESS`; it does
+not reopen DLFC-05.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |

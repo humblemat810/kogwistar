@@ -1613,6 +1613,21 @@ async fn conversation_read_acl_scope_matrix_matches_python() {
         }
         add_node(&format!("acl-{id}"), acl);
     }
+    for index in 0..9_993 {
+        let id = format!("turn-hidden-{index}");
+        add_node(
+            &id,
+            json!({
+                "entity_type":"conversation_turn",
+                "conversation_id":"c1",
+                "turn_index":index + 3,
+                "role":"assistant",
+                "summary":"hidden",
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation"
+            }),
+        );
+    }
     GraphMutationStore::apply_graph_mutations_atomic(&service.store, mutations)
         .await
         .unwrap();
