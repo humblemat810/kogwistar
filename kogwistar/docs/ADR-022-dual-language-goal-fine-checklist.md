@@ -740,7 +740,10 @@ plus the ignored `tests::postgres_workflow_lineage_route_checks_each_workflow_ac
 explicitly run against disposable local pgvector (**1 passed**). This verifies
 the named lifecycle, redirect, stale-tombstone, metric/order, lineage ACL, and
 not-found cases covered by these selectors; it does not exhaust all DLFC-06
-read/query/backend cells.
+read/query/backend cells. Rust edge redirect resolution also passed
+`cargo test -p kogwistar-store edge_redirect_resolution_matches_python_lifecycle_modes`
+(**1 passed**), paired with Python `test_python_edge_reads_follow_redirect_chain`
+in the lifecycle batch.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
