@@ -767,9 +767,17 @@ PostgreSQL reconstructs them from normalized endpoint rows. Their existing
 route selectors `tests::in_memory_backend_routes_authenticated_graph_write_and_mcp_read`
 and `tests::sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered`
 were rerun (**1 passed each**) and cover scoped/ACL-filtered graph route reads;
-they do not use the hyperedge fixture. Thus no separate InMemory/SQLite
-hydration implementation is missing, while exact same-fixture HTTP projection
-across those routes remains unverified.
+they did not use the hyperedge fixture. Exact same-fixture HTTP projection is
+now verified by Rust
+`tests::in_memory_visualization_http_hyperedges_match_shared_fixture` and
+`tests::sqlite_chroma_visualization_http_hyperedges_match_shared_fixture`
+(**1 passed each**); each exercises authenticated D3/Cytoscape routes in
+reify/classic modes against `visualization-hyperedge-v1.json`, without imposing
+cross-backend ordering. Python
+`tests/test_visualization.py::test_hyperedge_visualization_matches_shared_python_contract`
+and Rust/Python parity-marker checks passed (**1 each**). This closes only
+these two visualization HTTP evidence cells; other DLFC-06 read/query cells
+and backend combinations remain open.
 
 DLFC-06 source-span provenance filtering (2026-11-27): Python
 `tests/mcp/test_chat_mcp_graph_reads.py::test_vector_query_requires_exact_source_span_acl_reference`

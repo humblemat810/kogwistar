@@ -43,6 +43,9 @@
   before changing code. Add all planned tests for all selected items first;
   only then implement the batch. Do not expand the frozen set mid-implementation
   unless a reproduced regression or approved contract change requires it.
+  Once implementation begins, this is a locked acceptance batch: a failing
+  case calls for implementation fixes, not new requirements or replacement
+  tests. Passing every frozen required case closes its mapped existing item.
 
 ## SQLite Authority
 

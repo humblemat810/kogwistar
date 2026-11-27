@@ -267,6 +267,7 @@ mod tests {
     include!("tests/in_memory_semantic_retrieval.rs");
     include!("tests/inline_owner_authority.rs");
     include!("tests/in_memory_graph_routes.rs");
+    include!("tests/visualization_hyperedge_routes.rs");
     include!("tests/postgres_visualization.rs");
     include!("tests/vector_query_acl.rs");
     include!("tests/postgres_graph_types.rs");
