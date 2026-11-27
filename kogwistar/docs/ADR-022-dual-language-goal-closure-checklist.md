@@ -343,38 +343,6 @@ then focused Python/Rust tests passed (**1 Python, 2 Rust**); parity-annotation
 crosswalk also passed. This closes only the operator-inbox read filter/limit
 cell; DLFC-06 and GOAL-06/08 remain open.
 
-Conversation read scope cross-check (2026-11-27): Python
-`tests/server/test_conversation_graph_scope.py` plus the existing list/detail/
-transcript route selectors passed (**20 passed**); Rust
-`tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
-passed (**1 passed**) with authenticated HTTP list/detail/transcript checks.
-This confirms those existing SQLite+Chroma and Python cells only. The fixed
-AUTH-PAR-02's Python selector now exists; its Rust paired matrix selector
-remains unimplemented. A live PostgreSQL
-rerun of `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
-also passed (**1 passed**, disposable pgvector), verifying scoped list/detail/
-transcript, private-turn filtering, foreign workspace/graph-space exclusion,
-and foreign-owner 404. Python AUTH-PAR-02 selector now exists; paired Rust
-matrix selector, missing-identity/namespace matrix, and complete backend
-crosswalk remain unverified; DLFC-06 stays IN PROGRESS and DLFC-05 stays PASS.
-
-Python ACL-hidden conversation queries now also assert owner-list projection
-after ACL filtering (visible start retained, private turn omitted, turn count
-zero; foreign owner's list empty); focused ACL/list-denial batch **3 passed**.
-AUTH-PAR-02's Python selector `test_conversation_read_acl_scope_matrix` first
-failed as expected: 10,000 hidden turns consumed the hardcoded read limit and
-hid a later visible turn. Removing the internal cap from list/detail/transcript
-reads makes the visible turn survive ACL filtering. The selector plus existing
-Python ACL/scope/route regressions passed (**6 passed**); Rust's existing
-`tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
-passed (**1 passed**). The exact Rust matrix selector, full PG/backend matrix,
-and missing-identity/namespace cases remain incomplete; DLFC-05 remains PASS.
-Rust store primitive `tests::paged_conversation_acl_uses_rules_from_other_pages`
-also passed (**1 passed**), proving cross-page ACL rules apply to earlier
-candidates; this is primitive-level evidence, not the missing REST matrix.
-Rust `cargo test -p kogwistar-api conversation_ --lib`: **35 passed, 5
-ignored**; ignored tests require explicit live backend configuration.
-
 In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/scope and active-run capability checks, shared cancel response fields, terminal-repeat idempotency, and atomic recorded-transition/lane cleanup pass `in_memory_run_cancel_matches_shared_contract_and_authority` and `cancel_commits_runtime_transition_and_lane_cleanup_atomically`. Python MCP and in-memory-store comparison tests also pass. This closes only the named memory cancellation cell; GOAL-06 and GOAL-08 remain OPEN pending the full operation/backend matrix.
 
 MCP transport is also exercised end to end: missing `workflow.run.write` returns an MCP tool error without changing run state; an authorized call reaches the Rust in-memory store and cancels the run (`in_memory_workflow_cancel_mcp_reaches_authorized_store_effect`; full API suite: 418 passed, 41 ignored).
