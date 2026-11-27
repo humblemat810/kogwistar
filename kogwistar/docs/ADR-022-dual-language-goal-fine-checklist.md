@@ -454,6 +454,18 @@ annotation crosswalk: **1 passed**; Rust Axum/PostgreSQL selector: **1 passed**
 against disposable pgvector:pg16. This closes the named PostgreSQL HTTP success
 cell only; other applicable HTTP/backend cells remain open.
 
+DLFC-03 SQLite+Chroma source-document upsert HTTP cell (2026-11-27): the
+existing Rust `tests::sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable`
+now reaches the authenticated Axum `/api/document` route and consumes the same
+`document-upsert-http-v1.json` response fixture. TDD reproduced a backend
+envelope mismatch (`{"ok":true}` vs Python/PostgreSQL `{"status":"ok"}`);
+`sqlite_document_projection_effect` now returns Python's `status` envelope.
+The same test still verifies scope isolation, denied write, and close/reopen
+durability. Rust selector: **1 passed**; Python FastAPI selector plus parity
+crosswalk: **2 passed**; `cargo fmt`, Ruff, and `git diff --check` passed. This
+closes the named SQLite+Chroma HTTP response cell only; DLFC-03 remains
+IN PROGRESS.
+
 DLFC-05 workflow status capability cell (2026-11-26): with valid workflow
 namespace and role but only `project_view` (no `workflow.run.read`), Python
 `test_run_status_route_matches_shared_v1_contract` and Rust

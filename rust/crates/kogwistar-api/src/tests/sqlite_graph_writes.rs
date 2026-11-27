@@ -123,7 +123,13 @@ async fn sqlite_run_admission_persists_authenticated_owner_binding() {
 
 #[tokio::test]
 async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
+    use axum::{
+        body::{Body, to_bytes},
+        http::Request,
+    };
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -189,6 +195,11 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         .unwrap()
         .with_chroma_graph(graph);
     assert!(service.supports_http_operation("POST", "/api/document"));
+    let http_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/document-upsert-http-v1.json"
+    )))
+    .unwrap();
     let body = json!({
         "contract_version": 1,
         "doc_id": "source-doc-1",
@@ -207,16 +218,55 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         "graph_space": "knowledge",
         "capabilities": ["write_graph"]
     });
-    let response = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/document".to_owned(),
-            body: serde_json::to_vec(&body).unwrap(),
-            principal: principal.clone(),
-        })
+    let secret = "sqlite-chroma-document-http-contract-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut claims = principal.clone();
+    claims["iss"] = json!("local");
+    claims["exp"] = json!(now + 300);
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http_contract["method"].as_str().unwrap())
+                .uri(http_contract["path"].as_str().unwrap())
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
         .await;
-    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let response = response.unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        http_contract["success_status"].as_u64().unwrap() as u16
+    );
+    let response_body = to_bytes(response.into_body(), 4096).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&response_body).unwrap(),
+        http_contract["success_response"]
+    );
     let scope = GraphScope {
         namespace: "docs".to_owned(),
         workspace_id: Some("workspace-a".to_owned()),

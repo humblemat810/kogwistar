@@ -229,6 +229,7 @@ impl SqliteRunApplicationService {
         )
     }
 
+    // PYTHON_PARITY_NOTE_V1: Return Python's success envelope for POST /api/document across SQLite+Chroma, matching PostgreSQL; rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_document_projection_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_graph_writes.rs#sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
     async fn sqlite_document_projection_effect(
         &self,
         request: &ApiEffectRequest,
@@ -248,7 +249,7 @@ impl SqliteRunApplicationService {
             Err(response) => return response,
         };
         match self.store.upsert_document_projection(write).await {
-            Ok(()) => json_effect(StatusCode::OK, json!({"ok": true})),
+            Ok(()) => json_effect(StatusCode::OK, json!({"status": "ok"})),
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
