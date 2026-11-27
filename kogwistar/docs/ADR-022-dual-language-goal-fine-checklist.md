@@ -861,7 +861,7 @@ inventory has no operation-by-backend test-cell mapping, so a reliable count
 of remaining DLFC-06 cells cannot yet be derived from it. Concrete example:
 `GET /api/workflow/services` has a Rust PostgreSQL handler and a declared
 PostgreSQL application-service path, while `FW-03-03A-HTTP-GET-ea5861b7`
-covers SQLite success. Rust `tests::postgres_service_list_matches_shared_http_contract_when_dsn_available` was rerun against temporary pgvector:pg16 (**1 passed**, container removed). Rust InMemory `tests::in_memory_service_list_fails_closed_without_effects` passes (**1 passed**) through the router with a signed JWT, returning 501 with unchanged registry projections. The test does not instrument registry reads. MCP admission test `tests::workflow_service_read_mcp_admission_matches_python_policy_for_all_stores` (**1 passed**) is separate evidence. These close named service-list cells only; DLFC-03/06 remain IN PROGRESS.
+covers SQLite success. Rust `tests::postgres_service_list_matches_shared_http_contract_when_dsn_available` now exercises both the service effect and authenticated Axum GET with the same golden fixture (**1 passed** against disposable pgvector:pg16; container removed). Rust InMemory `tests::in_memory_service_list_fails_closed_without_effects` passes (**1 passed**) through the router with a signed JWT, returning 501 with unchanged registry projections. MCP admission test `tests::workflow_service_read_mcp_admission_matches_python_policy_for_all_stores` (**1 passed**) is separate evidence. These close named service-list cells only; DLFC-03/06 remain IN PROGRESS.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
