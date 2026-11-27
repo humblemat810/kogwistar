@@ -417,7 +417,11 @@ parity-annotation crosswalk: **3 passed**. Rust selector
 `tests::admin_document_delete_commits_rollback_and_index_intent`: **1 passed**.
 Rust parity annotation resolves both language selectors to the shared fixture.
 `ruff check` and `cargo fmt --all --check` passed. One HTTP/backend cell only;
-DLFC-03 remains IN PROGRESS.
+DLFC-03 remains IN PROGRESS. Broader regressions: the complete Python admin
+route module plus document-delete interoperability and annotation crosswalk
+passed (**8 passed**, 2026-11-27); Rust `cargo test --manifest-path
+rust/Cargo.toml -p kogwistar-api --lib` passed (**477 passed, 58 ignored**).
+Ignored Rust tests are not counted as passing evidence.
 
 DLFC-05 workflow status capability cell (2026-11-26): with valid workflow
 namespace and role but only `project_view` (no `workflow.run.read`), Python
