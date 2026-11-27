@@ -820,6 +820,15 @@ guarantee was added. This closes the two previously open visualization HTTP
 backend cells only; DLFC-06 remains IN PROGRESS pending its full read/query
 matrix.
 
+PostgreSQL visualization read recheck (2026-11-28): Rust
+`tests::postgres_visualization_read_matches_shared_python_selection_and_acl`
+passed against disposable pgvector 16 (**1 passed**); the already-mapped
+hyperedge endpoint-hydration fixture selector also reran (**1 passed**). The
+first verifies authenticated HTTP graph selection/ACL; hydration verifies
+hyperedge endpoint IDs but not the full HTTP hyperedge payload. These are
+distinct PostgreSQL read cells; DLFC-06 remains IN PROGRESS pending the full
+read/query matrix.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
