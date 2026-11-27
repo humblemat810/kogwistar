@@ -2018,6 +2018,11 @@ async fn application_effect_handler(
         body: body.to_vec(),
         principal,
     };
+    if let Some(error) = workflow_run_submit_namespace_error(&request) {
+        let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return (status, [("content-type", error.content_type)], Body::from(error.body))
+            .into_response();
+    }
     if let Some(error) = workflow_run_submit_acl_error(state.application.as_ref(), &request).await {
         let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return (status, [("content-type", error.content_type)], Body::from(error.body))
@@ -2046,6 +2051,25 @@ async fn application_effect_handler(
         Body::from(response.body),
     )
         .into_response()
+}
+
+// PYTHON_PARITY_NOTE_V1: REST submit checks runtime namespace before workflow ACL and run admission, matching runtime_api.submit_workflow_run. MCP submit retains its own namespace policy. rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#workflow_run_rest_authority_matrix_matches_python; python=kogwistar/server/runtime_api.py#create_runtime_router.submit_workflow_run.
+fn workflow_run_submit_namespace_error(
+    request: &ApiEffectRequest,
+) -> Option<ApiEffectResponse> {
+    if request.method != "POST"
+        || request.path_and_query.split('?').next() != Some("/api/workflow/runs")
+        || principal_strings(&request.principal, "ns")
+            .iter()
+            .any(|namespace| namespace == "*" || namespace == "workflow")
+    {
+        return None;
+    }
+    Some(effect_error(
+        StatusCode::FORBIDDEN,
+        "KOGWISTAR_NAMESPACE_FORBIDDEN",
+        "Workflow run submission requires workflow namespace",
+    ))
 }
 
 async fn workflow_run_submit_acl_error(

@@ -1299,6 +1299,132 @@ async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
     }
 }
 
+// PYTHON_PARITY_NOTE_V1: Exercise REST namespace/capability denial before run storage for the supported application backends. Python route-policy oracle is the workflow/run inspection and runtime API suite; this test complements operation-specific success/ACL tests listed in ADR-022.
+#[tokio::test]
+async fn workflow_run_rest_authority_matrix_matches_python() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let sqlite_path = std::env::temp_dir().join(format!(
+        "kogwistar-rest-authority-matrix-{}.sqlite",
+        uuid::Uuid::new_v4().simple()
+    ));
+    let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+    let memory = InMemoryGraphApplicationService::default();
+    let postgres = PostgresRunApplicationService::from_dsn(
+        "postgres://unused:unused@127.0.0.1:1/unused",
+        "rest_authority_matrix",
+    )
+    .unwrap();
+    let services: [(&str, Arc<dyn ApplicationService>); 3] = [
+        ("in_memory", Arc::new(memory)),
+        ("sqlite_metadata", Arc::new(sqlite.clone())),
+        ("postgres", Arc::new(postgres)),
+    ];
+    let routes = [
+        ("submit", "POST", "/api/workflow/runs", json!({
+            "workflow_id":"matrix-workflow",
+            "conversation_id":"matrix-conversation",
+            "initial_state":{}
+        }), "workflow.run.write"),
+        ("status", "GET", "/api/workflow/runs/matrix-run", json!({}), "workflow.run.read"),
+        ("steps", "GET", "/api/workflow/runs/matrix-run/steps", json!({}), "workflow.run.read"),
+        ("evidence", "GET", "/api/runs/matrix-run/evidence", json!({}), "workflow.run.read"),
+        ("lineage", "GET", "/api/workflow/runs/matrix-run/lineage", json!({}), "workflow.run.read"),
+        ("resume", "POST", "/api/workflow/runs/matrix-run/resume", json!({}), "workflow.run.write"),
+        ("cancel", "POST", "/api/workflow/runs/matrix-run/cancel", json!({}), "workflow.run.write"),
+    ];
+
+    let secret = b"workflow-run-rest-authority-matrix";
+    for (backend, service) in services {
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            service,
+        );
+        for (operation, method, path, body, required_capability) in &routes {
+            let mut denied_principals = vec![
+                (
+                    json!({"sub":"matrix-user", "user_id":"matrix-user", "role":"rw", "ns":["conversation"], "capabilities":[required_capability, "spawn_process", "project_view"]}),
+                    "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                ),
+            ];
+            // Python permits an idempotent cancel of an already-terminal run
+            // before checking workflow.run.write; active-run denial is covered
+            // by the backend-specific cancellation contract tests.
+            if *operation != "cancel" {
+                denied_principals.push((
+                    json!({"sub":"matrix-user", "user_id":"matrix-user", "role":"rw", "ns":["workflow"], "capabilities":["project_view"]}),
+                    "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                ));
+            }
+            for (principal, expected_code) in denied_principals {
+                let token = encode(
+                    &Header::new(Algorithm::HS256),
+                    &json!({
+                        "sub":principal["sub"],
+                        "user_id":principal["user_id"],
+                        "role":principal["role"],
+                        "ns":principal["ns"],
+                        "capabilities":principal["capabilities"],
+                        "iss":"local",
+                        "exp":4102444800_u64
+                    }),
+                    &EncodingKey::from_secret(secret),
+                )
+                .unwrap();
+                let response = app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(*method)
+                            .uri(*path)
+                            .header("authorization", format!("Bearer {token}"))
+                            .header("content-type", "application/json")
+                            .body(if *method == "POST" {
+                                Body::from(serde_json::to_vec(body).unwrap())
+                            } else {
+                                Body::empty()
+                            })
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status().as_u16(),
+                    StatusCode::FORBIDDEN.as_u16(),
+                    "{backend}/{operation}"
+                );
+                let response_body: Value = serde_json::from_slice(
+                    &to_bytes(response.into_body(), 65_536).await.unwrap(),
+                )
+                .unwrap();
+                assert_eq!(response_body["code"], expected_code, "{backend}/{operation}");
+                assert!(
+                    !response_body.to_string().contains("matrix-run"),
+                    "{backend}/{operation} leaked run id"
+                );
+            }
+        }
+    }
+
+    drop(sqlite);
+    remove_test_sqlite(&sqlite_path);
+}
+
 #[test]
 fn public_http_principal_cannot_supply_internal_mcp_transport_marker() {
     let principal = without_internal_transport_marker(json!({
