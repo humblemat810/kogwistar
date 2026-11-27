@@ -725,6 +725,9 @@ graph ACL/scope filter, matching Python `ChatRunService.run_evidence` followed
 by `latest_snapshot`. This closes only the InMemory run-evidence HTTP cell;
 the Rust `cargo test -p kogwistar-api run_evidence --lib` family also passes
 (**4 passed, 1 ignored**; live PostgreSQL requires `KOGWISTAR_TEST_PG_DSN`).
+The ignored PostgreSQL selector was separately run against a disposable local
+pgvector container (**1 passed**); it verifies authorized-owner projection,
+not the non-owner private-snapshot 404 case.
 DLFC-03 and DLFC-06 remain IN PROGRESS pending their frozen full test batches.
 
 | Coarse criterion | Required fine items | Close condition |
