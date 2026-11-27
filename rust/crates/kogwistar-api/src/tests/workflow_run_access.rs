@@ -1078,6 +1078,7 @@ async fn sqlite_workflow_run_steps_mcp_matches_shared_contract() {
     let _ = std::fs::remove_file(format!("{}-shm", path.display()));
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service/run_lifecycle.rs#read_runtime_run_effect; python=kogwistar/server/chat_api.py#create_chat_router.get_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api_run_inspection.py#test_run_steps_matches_shared_rust_projection_fixture
 #[tokio::test]
 async fn in_memory_run_steps_route_matches_shared_python_projection() {
     let contract: Value = serde_json::from_str(include_str!(
@@ -1171,6 +1172,68 @@ async fn in_memory_run_steps_route_matches_shared_python_projection() {
     let expected = contract["parity_step"].as_object().unwrap();
     for (field, value) in expected {
         assert_eq!(&body["steps"][0][field], value, "{field}");
+    }
+
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let secret = "run-steps-projection-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"user-1", "user_id":"user-1", "role":"ro",
+            "ns":["workflow"], "capabilities":["workflow.run.read"],
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service),
+    );
+    for path in [
+        format!("/api/runs/{run_id}/steps"),
+        format!("/api/workflow/runs/{run_id}/steps"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16() as u64,
+            contract["success_status"].as_u64().unwrap()
+        );
+        let http_body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(http_body["run_id"], run_id);
+        assert_eq!(http_body["steps"].as_array().unwrap().len(), 1);
+        for (field, value) in expected {
+            assert_eq!(&http_body["steps"][0][field], value, "{field}");
+        }
     }
 }
 
