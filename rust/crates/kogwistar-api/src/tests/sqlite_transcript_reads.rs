@@ -856,6 +856,46 @@
         assert_eq!(private_snapshot.status, StatusCode::NOT_FOUND.as_u16());
         assert!(!String::from_utf8_lossy(&private_snapshot.body).contains("snapshot-private"));
 
+        let snapshot_token = encode(
+            &Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "workspace_id":"workspace-a", "graph_space":"conversation",
+                "ns":["workflow"], "capabilities":["project_view"], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(b"sqlite-chroma-transcript-secret"),
+        )
+        .unwrap();
+        let snapshot_http = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        )
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/conversations/c1/snapshots/latest?run_id=run-a&stage=answer")
+                .header("authorization", format!("Bearer {snapshot_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(snapshot_http.status(), StatusCode::OK);
+        let snapshot_http_body = to_bytes(snapshot_http.into_body(), 65_536).await.unwrap();
+        let snapshot_http_payload: Value = serde_json::from_slice(&snapshot_http_body).unwrap();
+        assert_eq!(snapshot_http_payload["snapshot_node_id"], "snapshot");
+        assert_eq!(snapshot_http_payload["metadata"]["summary"], "stored summary");
+
         assert!(service.supports_mcp_tool("conversation", "conversation.get_transcript"));
         let mcp_app = router_with_application(
             ApiState {
