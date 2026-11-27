@@ -238,11 +238,17 @@ backend/case in the row; focused selectors alone do not close a row.
 | AUTH-PAR-05 | IN PROGRESS | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
 
 These five selector pairs are not yet complete matrix tests. AUTH-PAR-02's
-Python selector now covers its hidden-before-limit regression; its paired Rust
-matrix selector and the remaining matrix cases are still missing. Existing
-focused selectors below are passing evidence for individual cells, not a
-substitute for the fixed cases above. They remain under GOAL-06/08; they do not
-reopen DLFC-05.
+Python selector covers hidden-before-limit filtering. Its Rust selector now
+passes the InMemory list/detail/transcript cell, including required identity,
+namespace denial, owner-filtered listing, private-turn ACL filtering, scoped
+workspace mismatch, and shared list response fields. Focused verification:
+Rust `cargo test -p kogwistar-api conversation_ --lib` (**36 passed, 5 ignored**);
+Python `test_conversation_read_acl_scope_matrix` and parity-annotation
+crosswalk (**2 passed**); Ruff and Rust formatting pass. Remaining fixed cells:
+graph-space mismatch, ACL-before-limit proof, and full corresponding matrix on
+each other supported Rust backend. Existing focused selectors below remain
+single-cell evidence, not substitutes for these cases. AUTH-PAR-02 stays
+`IN PROGRESS`; it does not reopen DLFC-05.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |

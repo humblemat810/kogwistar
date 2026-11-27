@@ -210,6 +210,13 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        if method == "GET"
+            && (is_conversation_list_route(path)
+                || conversation_detail_id(path).is_some()
+                || conversation_transcript_id(path).is_some())
+        {
+            return true;
+        }
         if method == "DELETE" && admin_document_delete_id(path).is_some() {
             return self.store.supports_document_rollback();
         }
@@ -356,6 +363,13 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     syscall_audit_status(&response),
                 );
                 return response;
+            }
+            if request.method == "GET"
+                && (is_conversation_list_route(&request.path_and_query)
+                    || conversation_detail_id(&request.path_and_query).is_some()
+                    || conversation_transcript_id(&request.path_and_query).is_some())
+            {
+                return self.in_memory_conversation_read_effect(&request).await;
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next()

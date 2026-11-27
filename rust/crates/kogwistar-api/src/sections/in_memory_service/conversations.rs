@@ -2,6 +2,167 @@ use super::*;
 use serde_json::json;
 
 impl InMemoryGraphApplicationService {
+    // PYTHON_PARITY_V1: Preserve Python conversation read scope and visibility projections. rust=rust/crates/kogwistar-api/src/sections/in_memory_service/conversations.rs#in_memory_conversation_read_effect; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService; fixture=contracts/golden/conversation-list-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#conversation_read_acl_scope_matrix_matches_python; python_test=kogwistar/tests/server/test_conversation_graph_scope.py#test_conversation_read_acl_scope_matrix
+    pub(crate) async fn in_memory_conversation_read_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Conversation reads require conversation namespace",
+            );
+        }
+
+        let is_list = is_conversation_list_route(&request.path_and_query);
+        let transcript_id = conversation_transcript_id(&request.path_and_query);
+        let is_transcript = transcript_id.is_some();
+        let conversation_id = if is_list {
+            None
+        } else if let Some(conversation_id) = transcript_id {
+            Some(conversation_id)
+        } else {
+            conversation_detail_id(&request.path_and_query)
+        };
+        if !is_list && conversation_id.is_none() {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation route was not found",
+            );
+        }
+        let user_id = request
+            .principal
+            .get("user_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if is_list && user_id.is_none() {
+            return effect_error(
+                StatusCode::UNAUTHORIZED,
+                "KOGWISTAR_USER_IDENTITY_REQUIRED",
+                "User Identity required",
+            );
+        }
+
+        let (scope, acl_principal) = conversation_graph_scope_and_acl_principal(&request.principal);
+        let workspace_id = scope.workspace_id.clone();
+        let graph_space = scope.graph_space.clone();
+        let (nodes, edges) = match self.graph_snapshot(scope).await {
+            Ok(records) => records,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error,
+                );
+            }
+        };
+        let (mut visible_nodes, _) =
+            graph_records_visible_by_acl(&nodes, &edges, "conversation", &acl_principal);
+        visible_nodes.retain(|record| {
+            (workspace_id.is_none()
+                || record.metadata.get("workspace_id").and_then(Value::as_str)
+                    == workspace_id.as_deref())
+                && (graph_space.is_none()
+                    || record.metadata.get("graph_space").and_then(Value::as_str)
+                        == graph_space.as_deref())
+        });
+
+        if is_list {
+            let user_id = user_id.expect("list identity validated above");
+            let candidates = compact_conversation_list_candidates(&visible_nodes);
+            let mut accumulator = ConversationListAccumulator::new(user_id);
+            accumulator.extend_visible_records(&candidates);
+            let conversations = accumulator
+                .finish()
+                .into_iter()
+                .map(|entry| {
+                    json!({
+                        "id": entry.id,
+                        "start_node_id": entry.start_node_id,
+                        "status": entry.status,
+                        "turn_count": entry.turn_count,
+                    })
+                })
+                .collect::<Vec<_>>();
+            return json_effect(StatusCode::OK, json!({"conversations": conversations}));
+        }
+
+        let conversation_id = conversation_id.expect("non-list route parsed above");
+        let exists = visible_nodes.iter().any(|record| {
+            conversation_record_string(record, "conversation_id").as_deref()
+                == Some(conversation_id.as_str())
+                && !matches!(
+                    conversation_record_string(record, "lifecycle_status").as_deref(),
+                    Some("tombstoned" | "deleted")
+                )
+        });
+        if !exists {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                format!("Unknown conversation_id: {conversation_id}"),
+            );
+        }
+
+        if is_transcript {
+            let transcript = match conversation_transcript_from_visible_records(
+                &visible_nodes,
+                &conversation_id,
+                usize::MAX,
+            ) {
+                Ok(transcript) => transcript,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_INVALID_TRANSCRIPT",
+                        error.to_string(),
+                    );
+                }
+            };
+            let mut payload = serde_json::to_value(transcript).expect("transcript serializes");
+            if let Some(object) = payload.as_object_mut() {
+                object.remove("schema_version");
+                if let Some(turns) = object.get_mut("turns").and_then(Value::as_array_mut) {
+                    for turn in turns {
+                        if let Some(turn) = turn.as_object_mut() {
+                            turn.remove("schema_version");
+                        }
+                    }
+                }
+            }
+            return json_effect(StatusCode::OK, payload);
+        }
+
+        let summary =
+            match conversation_summary_from_visible_records(&visible_nodes, &conversation_id) {
+                Ok(summary) => summary,
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::NOT_FOUND,
+                        "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                        error.to_string(),
+                    );
+                }
+            };
+        let mut payload = serde_json::to_value(summary).expect("conversation summary serializes");
+        if let Some(object) = payload.as_object_mut() {
+            object.remove("schema_version");
+        }
+        json_effect(StatusCode::OK, payload)
+    }
+
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service/conversations.rs#in_memory_mount_memory_effect; python=kogwistar/server/syscall_api.py#mount_memory; fixture=contracts/golden/mount-memory-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#in_memory_mount_memory_matches_shared_contract_and_authority; python_test=tests/server/test_mount_memory_wire_contract.py#test_python_mount_memory_result_matches_shared_wire_fixture
     pub(crate) async fn in_memory_mount_memory_effect(
         &self,

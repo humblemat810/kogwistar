@@ -1531,3 +1531,179 @@ async fn in_memory_invoke_tool_checks_capability_before_missing_conversation() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
+
+// PYTHON_PARITY_V1: Rust conversation REST reads must preserve Python's identity, namespace, owner-list, graph-scope, and ACL visibility rules. rust=rust/crates/kogwistar-api/src/sections/in_memory_service/conversations.rs#in_memory_conversation_read_effect; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService; fixture=contracts/golden/conversation-list-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_conversations.rs#conversation_read_acl_scope_matrix_matches_python; python_test=kogwistar/tests/server/test_conversation_graph_scope.py#test_conversation_read_acl_scope_matrix
+#[tokio::test]
+async fn conversation_read_acl_scope_matrix_matches_python() {
+    let service = InMemoryGraphApplicationService::default();
+    let scope = GraphScope {
+        namespace: "conversation".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("conversation".to_owned()),
+    };
+    let mut mutations = Vec::new();
+    let mut add_node = |id: &str, metadata: Value| {
+        mutations.push(GraphMutation {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            entity_kind: "node".to_owned(),
+            event_id: format!("event-{id}"),
+            op: "ADD".to_owned(),
+            payload: json!({"id":id,"metadata":metadata}),
+            record: GraphRecord {
+                id: id.to_owned(),
+                document: Some(metadata.to_string()),
+                metadata: serde_json::from_value(metadata).unwrap(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        });
+    };
+    for (conversation_id, owner) in [("c1", "alice"), ("c2", "bob")] {
+        let start_id = format!("start-{conversation_id}");
+        add_node(
+            &start_id,
+            json!({
+                "entity_type":"conversation_start",
+                "conversation_id":conversation_id,
+                "user_id":owner,
+                "status":"active",
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation"
+            }),
+        );
+        add_node(
+            &format!("acl-{start_id}"),
+            json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"conversation",
+                "acl_target_grain":"node",
+                "acl_target_entity_id":start_id,
+                "acl_version":1,
+                "acl_mode":"public"
+            }),
+        );
+    }
+    for (id, turn_index, summary, acl_mode, owner_id) in [
+        ("turn-visible", 1, "visible", "public", ""),
+        ("turn-private", 2, "hidden", "private", "bob"),
+    ] {
+        add_node(
+            id,
+            json!({
+                "entity_type":"conversation_turn",
+                "conversation_id":"c1",
+                "turn_index":turn_index,
+                "role":"assistant",
+                "summary":summary,
+                "workspace_id":"workspace-a",
+                "graph_space":"conversation"
+            }),
+        );
+        let mut acl = json!({
+            "entity_type":"acl_record",
+            "acl_truth_graph":"conversation",
+            "acl_target_grain":"node",
+            "acl_target_entity_id":id,
+            "acl_version":1,
+            "acl_mode":acl_mode
+        });
+        if !owner_id.is_empty() {
+            acl["acl_owner_id"] = json!(owner_id);
+        }
+        add_node(&format!("acl-{id}"), acl);
+    }
+    GraphMutationStore::apply_graph_mutations_atomic(&service.store, mutations)
+        .await
+        .unwrap();
+
+    let principal = |user_id: Option<&str>, namespace: &str, workspace_id: &str| {
+        let mut claims = json!({
+            "sub":"alice",
+            "role":"ro",
+            "storage_ns":"conversation",
+            "ns":[namespace],
+            "workspace_id":workspace_id,
+            "graph_space":"conversation",
+            "capabilities":[]
+        });
+        if let Some(user_id) = user_id {
+            claims["user_id"] = json!(user_id);
+        }
+        claims
+    };
+    let request = |path: &str, user_id: Option<&str>, namespace: &str, workspace: &str| {
+        ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: path.to_owned(),
+            body: Vec::new(),
+            principal: principal(user_id, namespace, workspace),
+        }
+    };
+
+    for path in ["/api/conversations", "/api/conversations/c1", "/api/conversations/c1/turns"] {
+        assert!(service.supports_http_operation("GET", path), "{path}");
+    }
+    let listed = service
+        .execute(request("/api/conversations", Some("alice"), "conversation", "workspace-a"))
+        .await;
+    assert_eq!(listed.status, StatusCode::OK.as_u16());
+    let listed: Value = serde_json::from_slice(&listed.body).unwrap();
+    let list_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/conversation-list-http-v1.json"
+    ))
+    .unwrap();
+    let response_fields = list_contract["response_fields"].as_array().unwrap();
+    let conversation_fields = list_contract["conversation_fields"].as_array().unwrap();
+    assert_eq!(listed.as_object().unwrap().len(), response_fields.len());
+    assert!(response_fields
+        .iter()
+        .all(|field| listed.get(field.as_str().unwrap()).is_some()));
+    assert_eq!(listed["conversations"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        listed["conversations"][0].as_object().unwrap().len(),
+        conversation_fields.len()
+    );
+    assert!(conversation_fields.iter().all(|field| listed["conversations"][0]
+        .get(field.as_str().unwrap())
+        .is_some()));
+    assert_eq!(listed["conversations"][0]["id"], "c1");
+    assert_eq!(listed["conversations"][0]["turn_count"], 1);
+
+    let detail = service
+        .execute(request("/api/conversations/c1", Some("alice"), "conversation", "workspace-a"))
+        .await;
+    assert_eq!(detail.status, StatusCode::OK.as_u16());
+    let detail: Value = serde_json::from_slice(&detail.body).unwrap();
+    assert_eq!(detail["turn_count"], 1);
+    assert_eq!(detail["tail_node_id"], "turn-visible");
+
+    let transcript = service
+        .execute(request("/api/conversations/c1/turns", Some("alice"), "conversation", "workspace-a"))
+        .await;
+    assert_eq!(transcript.status, StatusCode::OK.as_u16());
+    let transcript: Value = serde_json::from_slice(&transcript.body).unwrap();
+    assert_eq!(transcript["turns"].as_array().unwrap().len(), 1);
+    assert_eq!(transcript["turns"][0]["node_id"], "turn-visible");
+
+    let bob_list = service
+        .execute(request("/api/conversations", Some("bob"), "conversation", "workspace-a"))
+        .await;
+    let bob_list: Value = serde_json::from_slice(&bob_list.body).unwrap();
+    assert_eq!(bob_list["conversations"][0]["id"], "c2");
+    assert_eq!(bob_list["conversations"].as_array().unwrap().len(), 1);
+
+    let missing_identity = service
+        .execute(request("/api/conversations", None, "conversation", "workspace-a"))
+        .await;
+    assert_eq!(missing_identity.status, StatusCode::UNAUTHORIZED.as_u16());
+    let wrong_namespace = service
+        .execute(request("/api/conversations/c1", Some("alice"), "docs", "workspace-a"))
+        .await;
+    assert_eq!(wrong_namespace.status, StatusCode::FORBIDDEN.as_u16());
+    let wrong_workspace = service
+        .execute(request("/api/conversations/c1", Some("alice"), "conversation", "workspace-b"))
+        .await;
+    assert_eq!(wrong_workspace.status, StatusCode::NOT_FOUND.as_u16());
+}

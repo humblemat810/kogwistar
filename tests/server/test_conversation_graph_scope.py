@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from types import SimpleNamespace
 from typing import cast
@@ -458,3 +461,12 @@ def test_conversation_read_acl_scope_matrix() -> None:
     assert detail["tail_node_id"] == "visible-turn"
     assert [turn["node_id"] for turn in transcript] == ["visible-turn"]
     assert read.limits and all(limit is None for limit in read.limits)
+    list_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts"
+            / "golden"
+            / "conversation-list-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert set(listed[0]) == set(list_contract["conversation_fields"])
