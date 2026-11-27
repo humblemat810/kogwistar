@@ -248,18 +248,20 @@ use the full in-memory snapshot before ACL projection, matching Python's
 uncapped query behavior. The expanded Rust selector passed (**1 passed**), and
 Python matrix plus parity crosswalk passed (**2 passed**). Rust SQLite+Chroma selector
 `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` passes
-authenticated list/detail/transcript scope checks. Live Rust PostgreSQL
+authenticated list/detail/transcript scope checks and verifies that 10,001
+ACL-hidden records preceding visible conversation rows do not exhaust the
+result cap (**1 passed**, 2026-11-27). Conversation routes page the Chroma
+projection before ACL projection; unrelated snapshot routes retain their
+existing 10,000-record bound. Live Rust PostgreSQL
 selector `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
 passed (**1 passed**, disposable pgvector; 2026-11-27), covering scoped
 list/detail/transcript, private-turn filtering, foreign workspace/graph-space,
 and foreign-owner 404; now also asserts missing list identity returns 401 and
 wrong-namespace detail returns 403. Still missing for AUTH-PAR-02: explicit
-large hidden-before-visible coverage on SQLite+Chroma (whose Chroma graph
-snapshot currently has a 10,000-record cap) and PostgreSQL, plus a consolidated
-per-backend response-projection oracle. InMemory and PostgreSQL cover missing
-identity and wrong namespace; SQLite+Chroma's existing selector covers both
-denials but does not yet exercise the large ACL-hidden set. AUTH-PAR-02 stays
-`IN PROGRESS`; it does not reopen DLFC-05.
+large hidden-before-visible coverage on PostgreSQL and a consolidated
+per-backend response-projection oracle. InMemory, SQLite+Chroma, and PostgreSQL
+cover missing identity and wrong namespace. AUTH-PAR-02 stays `IN PROGRESS`;
+it does not reopen DLFC-05.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |

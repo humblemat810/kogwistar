@@ -5,12 +5,15 @@
         use axum::http::Request;
         use jsonwebtoken::{EncodingKey, Header, encode};
         use sha2::Digest;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tower::ServiceExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (stop_chroma, mut stop_chroma_rx) = tokio::sync::oneshot::channel();
+        let large_snapshot_enabled = std::sync::Arc::new(AtomicBool::new(false));
+        let large_snapshot_enabled_for_fake = std::sync::Arc::clone(&large_snapshot_enabled);
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
             loop {
@@ -51,7 +54,22 @@
                         "metadata": {"hnsw:space": "cosine"}
                     })
                 } else if head.lines().next().unwrap().contains("collection-nodes/get") {
-                    let nodes = [
+                    let mut nodes = Vec::new();
+                    if large_snapshot_enabled_for_fake.load(Ordering::Relaxed) {
+                        nodes.extend((0..10_001).map(|index| {
+                            (
+                                format!("acl-overflow-{index}"),
+                                json!({
+                                    "entity_type":"conversation_turn",
+                                    "conversation_id":"unrelated-hidden",
+                                    "turn_index":index,
+                                    "role":"assistant",
+                                    "summary":"hidden before visible rows"
+                                }),
+                            )
+                        }));
+                    }
+                    nodes.extend([
                         ("start", json!({"entity_type":"conversation_start","conversation_id":"c1","user_id":"reader-1","status":"active"})),
                         ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
                         ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
@@ -79,7 +97,7 @@
                         ("acl-snapshot-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
                         ("foreign-start", json!({"entity_type":"conversation_start","conversation_id":"c-foreign","user_id":"other-user","status":"active"})),
                         ("acl-foreign-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"foreign-start","acl_version":1,"acl_mode":"public"})),
-                    ];
+                    ].into_iter().map(|(id, metadata)| (id.to_owned(), metadata)));
                     let metadatas = nodes
                         .iter()
                         .map(|(_, metadata)| {
@@ -100,19 +118,35 @@
                             })
                         })
                         .collect::<Vec<_>>();
-                    json!({
-                        "ids": nodes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                        "documents": nodes.iter().map(|(id, _)| {
-                            if *id == "snapshot" {
+                    let ids = nodes
+                        .iter()
+                        .map(|(id, _)| id.clone())
+                        .collect::<Vec<_>>();
+                    let documents = nodes
+                        .iter()
+                        .map(|(id, _)| {
+                            if id == "snapshot" {
                                 r#"{"metadata":{"summary":"stored summary"},"properties":{"references":["evidence-1"]}}"#.to_owned()
-                            } else if *id == "9553a4db-7963-57ac-97b3-6dbd96366bc5" {
+                            } else if id == "9553a4db-7963-57ac-97b3-6dbd96366bc5" {
                                 r#"{"metadata":{"entity_type":"context_snapshot","conversation_id":"evidence-conversation","run_id":"evidence-run","run_step_seq":5,"used_node_ids":["evidence-node-1","evidence-node-2"]},"properties":{"evidence_pack_digest":"{\"items\":2}"}}"#.to_owned()
                             } else {
                                 "{}".to_owned()
                             }
-                        }).collect::<Vec<_>>(),
-                        "metadatas": metadatas,
-                        "embeddings": nodes.iter().map(|_| Value::Null).collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    let embeddings = vec![Value::Null; nodes.len()];
+                    let offset = body["offset"].as_u64().unwrap_or_default() as usize;
+                    let limit = body["limit"]
+                        .as_u64()
+                        .map(|limit| limit as usize)
+                        .unwrap_or(nodes.len());
+                    let start = offset.min(nodes.len());
+                    let end = start.saturating_add(limit).min(nodes.len());
+                    json!({
+                        "ids": &ids[start..end],
+                        "documents": &documents[start..end],
+                        "metadatas": &metadatas[start..end],
+                        "embeddings": &embeddings[start..end]
                     })
                 } else {
                     json!({"ids": [], "documents": [], "metadatas": [], "embeddings": []})
@@ -825,6 +859,22 @@
         assert!(transcript_payload["turns"][0].get("schema_version").is_none());
         assert!(service.supports_http_operation("GET", "/api/conversations/c1/turns"));
 
+        large_snapshot_enabled.store(true, Ordering::Relaxed);
+        let large_transcript = service
+            .execute(read_request(
+                "/api/conversations/c1/turns",
+                principal.clone(),
+            ))
+            .await;
+        assert_eq!(
+            large_transcript.status,
+            StatusCode::OK.as_u16(),
+            "conversation transcript must apply ACL before any result bound"
+        );
+        let large_transcript: Value = serde_json::from_slice(&large_transcript.body).unwrap();
+        assert_eq!(large_transcript, transcript_payload);
+        large_snapshot_enabled.store(false, Ordering::Relaxed);
+
         assert!(service.supports_http_operation(
             "GET",
             "/api/conversations/c1/snapshots/latest?run_id=run-a&stage=answer"
@@ -955,6 +1005,7 @@
         assert_eq!(mcp_transcript_value["result"]["turns"].as_array().unwrap().len(), 2);
         assert_eq!(mcp_transcript_value["result"]["turns"][0]["node_id"], "turn-1");
 
+        large_snapshot_enabled.store(true, Ordering::Relaxed);
         for (uri, expected_path) in [
             ("/api/conversations/c1", "detail"),
             ("/api/conversations", "list"),
@@ -1037,6 +1088,7 @@
                 _ => unreachable!(),
             }
         }
+        large_snapshot_enabled.store(false, Ordering::Relaxed);
 
         let detail = service
             .execute(read_request("/api/conversations/c1", principal.clone()))

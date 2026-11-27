@@ -1687,15 +1687,47 @@ impl SqliteRunApplicationService {
         request: &ApiEffectRequest,
         truth_graph: &str,
     ) -> Result<GraphAclProjection, ApiEffectResponse> {
-        self.chroma_graph_snapshot_and_candidates(request, truth_graph)
+        self.chroma_graph_snapshot_with_limit(request, truth_graph, 10_000)
             .await
-            .map(|(_, _, projection)| projection)
+    }
+
+    async fn chroma_conversation_graph_snapshot(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> Result<GraphAclProjection, ApiEffectResponse> {
+        self.chroma_graph_snapshot_with_limit(request, "conversation", usize::MAX)
+            .await
+    }
+
+    async fn chroma_graph_snapshot_with_limit(
+        &self,
+        request: &ApiEffectRequest,
+        truth_graph: &str,
+        max_records: usize,
+    ) -> Result<GraphAclProjection, ApiEffectResponse> {
+        self.chroma_graph_snapshot_and_candidates_with_limit(
+            request,
+            truth_graph,
+            max_records,
+        )
+        .await
+        .map(|(_, _, projection)| projection)
     }
 
     async fn chroma_graph_snapshot_and_candidates(
         &self,
         request: &ApiEffectRequest,
         truth_graph: &str,
+    ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>, GraphAclProjection), ApiEffectResponse> {
+        self.chroma_graph_snapshot_and_candidates_with_limit(request, truth_graph, 10_000)
+            .await
+    }
+
+    async fn chroma_graph_snapshot_and_candidates_with_limit(
+        &self,
+        request: &ApiEffectRequest,
+        truth_graph: &str,
+        max_records: usize,
     ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>, GraphAclProjection), ApiEffectResponse> {
         let scope_value = security_scope_value(&request.principal);
         let namespace = scope_value["storage_namespace"]
@@ -1726,19 +1758,18 @@ impl SqliteRunApplicationService {
                 "The SQLite service has no configured graph projection",
             ));
         };
-        const MAX_GRAPH_SNAPSHOT_RECORDS: usize = 10_000;
         let (mut nodes, mut edges) = match tokio::try_join!(
             graph.graph_records_of_kind_bounded(
                 namespace,
                 GraphEntityKind::Node,
                 &filter,
-                MAX_GRAPH_SNAPSHOT_RECORDS,
+                max_records,
             ),
             graph.graph_records_of_kind_bounded(
                 namespace,
                 GraphEntityKind::Edge,
                 &filter,
-                MAX_GRAPH_SNAPSHOT_RECORDS,
+                max_records,
             ),
         ) {
             Ok(records) => records,
@@ -1765,7 +1796,7 @@ impl SqliteRunApplicationService {
                 entity_kind,
                 &filter,
                 records,
-                MAX_GRAPH_SNAPSHOT_RECORDS,
+                max_records,
             ) {
                 return Err(effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1783,11 +1814,11 @@ impl SqliteRunApplicationService {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        if entity_ids.len() > MAX_GRAPH_SNAPSHOT_RECORDS {
+        if entity_ids.len() > max_records {
             return Err(effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "KOGWISTAR_GRAPH_QUERY_ERROR",
-                "graph snapshot ACL set exceeds the 10000-record limit",
+                format!("graph snapshot ACL set exceeds the {max_records}-record limit"),
             ));
         }
         let acl_scope = kogwistar_store::GraphScope {
@@ -1807,7 +1838,15 @@ impl SqliteRunApplicationService {
         let acl_records = self
             .store
             .immediate_transaction(|uow| {
-                uow.graph_acl_records_for_entities(&acl_scope, truth_graph, &entity_ids)
+                let mut records = Vec::new();
+                for entity_id_batch in entity_ids.chunks(5_000) {
+                    records.extend(uow.graph_acl_records_for_entities(
+                        &acl_scope,
+                        truth_graph,
+                        entity_id_batch,
+                    )?);
+                }
+                Ok(records)
             })
             .map_err(|error| {
                 effect_error(

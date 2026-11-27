@@ -238,7 +238,7 @@ impl SqliteRunApplicationService {
                 "Conversation transcript route was not found",
             );
         };
-        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_conversation_graph_snapshot(request).await {
             Ok(records) => records,
             Err(response) => return response,
         };
@@ -295,7 +295,7 @@ impl SqliteRunApplicationService {
                 "Conversation route was not found",
             );
         };
-        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_conversation_graph_snapshot(request).await {
             Ok(records) => records,
             Err(response) => return response,
         };
@@ -351,7 +351,7 @@ impl SqliteRunApplicationService {
                 "User Identity required",
             );
         };
-        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_conversation_graph_snapshot(request).await {
             Ok(records) => records,
             Err(response) => return response,
         };
