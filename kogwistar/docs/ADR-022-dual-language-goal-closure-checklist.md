@@ -215,6 +215,17 @@ and Rust selectors must be executable and recorded in the existing operation
 tasklet rows. A selector's existence is only mapping evidence, not proof that
 the assertion is sufficient or currently passing.
 
+Mapping audit (2026-11-28): the inventory contains 84 HTTP operations; the
+route-tasklet map has 84 entries (83 `FW-03-03A-HTTP-*`, plus `SRV-01`). The
+worklist has 88 passing HTTP tasklet rows: those 83 mapped rows plus five
+supplemental authorization/backend rows. The 62 MCP operations have 124
+passing `FW-03-04A/B-MCP-*` rows. The executable mapping check and pivot-table
+consistency check both pass (**2 passed**). These counts prove selector
+presence and current table consistency only. They do not prove that each
+operation's supported backend compositions have matching response/read
+behavior tests; that operation × backend evidence remains the open GOAL-06/08
+matrix requirement. Do not interpret tasklet-row totals as parity coverage.
+
 ### Remaining Authorization/ACL Cases For GOAL-06/08
 
 The DLFC-05 bounded ACL/authority cases are passing and are closed. Broader
