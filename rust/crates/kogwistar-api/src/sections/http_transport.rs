@@ -2035,6 +2035,7 @@ async fn workflow_run_submit_acl_error(
     application: &dyn ApplicationService,
     request: &ApiEffectRequest,
 ) -> Option<ApiEffectResponse> {
+    // PYTHON_PARITY_NOTE_V1: Preserve Python's workflow-ACL bypass when no user identity is available, after the transport role/namespace checks; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#workflow_run_submit_acl_error; python=kogwistar/server/auth_middleware.py#require_workflow_access; rust_test=tests/server/test_rust_api_postgres_live.py#test_rust_postgres_server_submit_claim_read_cancel_true_socket; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_submit_matches_shared_contract; note=identity-bearing requests still require configured workflow rw ACL.
     if request.method != "POST"
         || request.path_and_query.split('?').next() != Some("/api/workflow/runs")
     {
@@ -2047,16 +2048,14 @@ async fn workflow_run_submit_acl_error(
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
     let user_id = authenticated_run_owner_id(&request.principal).map(str::to_owned);
+    let Some(user_id) = user_id else {
+        return None;
+    };
     match application
-        .workflow_run_submit_allowed(workflow_id.to_owned(), user_id.clone())
+        .workflow_run_submit_allowed(workflow_id.to_owned(), Some(user_id))
         .await
     {
         Ok(true) => None,
-        Ok(false) if user_id.is_none() => Some(effect_error(
-            StatusCode::FORBIDDEN,
-            "KOGWISTAR_RUN_OWNER_FORBIDDEN",
-            "Workflow run admission requires an authenticated owner",
-        )),
         Ok(false) => Some(effect_error(
             StatusCode::FORBIDDEN,
             "KOGWISTAR_WORKFLOW_FORBIDDEN",
