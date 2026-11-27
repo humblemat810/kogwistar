@@ -38,6 +38,11 @@
   passes, mark that existing item `PASS` immediately and update its mapped
   coarse status. Keep IDs and denominators unchanged; skipped or unrun tests
   are not passes.
+- Multi-item Rust batch: when one implementation slice targets several
+  existing DLFC items, freeze each item's complete test set and baseline counts
+  before changing code. Add all planned tests for all selected items first;
+  only then implement the batch. Do not expand the frozen set mid-implementation
+  unless a reproduced regression or approved contract change requires it.
 
 ## SQLite Authority
 
