@@ -311,7 +311,13 @@ temporary `pgvector/pgvector:pg16` instance (**1 passed each**), as was
 `postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability`
 (**1 passed**). The existing
 `test_rust_postgres_synchronous_resume_matches_shared_contract` integration
-selector also passed (**1 passed**).
+selector also passed (**1 passed**). Python lineage oracles
+`test_lineage_checks_parent_and_every_child_acl` and
+`test_lineage_denies_unauthorized_parent_or_child` passed (**2 passed**);
+Rust `workflow_lineage_checks_authority_before_run_lookup` and
+`in_memory_workflow_lineage_route_matches_shared_contract` passed (**2
+passed**). The broader run returned the PostgreSQL lineage selector as ignored
+without a DSN; its explicit disposable-PostgreSQL run above passed.
 owner/per-workflow ACL across remaining routes, mutation-state, retry/effect,
 and all supported backend-operation cells are not yet proven.
 The coarse status remains **2/5 PASS; 3 IN PROGRESS**; fine checklist remains
