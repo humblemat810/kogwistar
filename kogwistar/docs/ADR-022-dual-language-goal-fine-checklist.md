@@ -61,8 +61,13 @@ Red test first proved the route was not advertised; Rust
 through Axum (**1 passed**). Python
 `tests/server/test_chat_server_api_workflow_design.py::test_workflow_dead_letter_replay_missing_run_matches_contract`
 and parity-annotation crosswalk passed (**1 each**). Successful CAS replay is
-already tested through MCP; this closes only the InMemory HTTP missing-run
-response cell, not full HTTP replay parity. DLFC-03 remains IN PROGRESS.
+also verified over authenticated Axum HTTP:
+`tests::in_memory_dead_letter_replay_http_commits_once_and_retry_is_noop`
+checks first-call success, durable `dead-letter`→`pending`, and event-free
+retry (**1 passed**). Python MCP success oracle and focused Rust replay family
+passed (Rust **7 passed, 1 ignored**; Python selectors **3 passed**). This
+closes InMemory HTTP replay success/retry response cells only; DLFC-03 remains
+IN PROGRESS for the other inventory operation/backend cells.
 
 SQLite+Chroma MCP resume evidence (2026-11-26): existing ignored test
 `tests::sqlite_runtime_worker_lifecycle::sqlite_chroma_mcp_resume_continues_persisted_suspended_token`

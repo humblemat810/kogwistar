@@ -1002,6 +1002,104 @@
         assert_eq!(body, contract["response_body"]);
     }
 
+    #[tokio::test]
+    async fn in_memory_dead_letter_replay_http_commits_once_and_retry_is_noop() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use kogwistar_store::{LaneMessageReadStore, LaneMessageWriteStore};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let service = InMemoryGraphApplicationService::default();
+        let message_id = "memory-http-dead-letter";
+        let run_id = "memory-http-replay-run";
+        service
+            .store
+            .project_lane_message(kogwistar_store::NewProjectedLaneMessage {
+                message_id: message_id.to_owned(),
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: "memory-http-replay-conversation".to_owned(),
+                recipient_id: "rust-native-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "dead-letter".to_owned(),
+                created_at: 1,
+                available_at: 1,
+                run_id: Some(run_id.to_owned()),
+                step_id: Some("step-1".to_owned()),
+                correlation_id: Some(run_id.to_owned()),
+                payload_json: Some("{}".to_owned()),
+                error_json: Some("{\"message\":\"failed\"}".to_owned()),
+            })
+            .await
+            .unwrap();
+
+        let secret = "memory-dead-letter-replay-http-success-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "role":"rw", "ns":["workflow"],
+                "capabilities":["service.manage"], "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let path = format!("/api/workflow/dead-letters/{run_id}/replay");
+        let send = || {
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(&path)
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+        };
+        let first = send().await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = to_bytes(first.into_body(), 8192).await.unwrap();
+        let first: Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(first["run_id"], run_id);
+        assert_eq!(first["replayed"], true);
+        assert_eq!(first["dead_letter"]["message_id"], message_id);
+        assert_eq!(first["dead_letter"]["status"], "dead-letter");
+        assert_eq!(
+            service
+                .store
+                .projected_lane_message(message_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+
+        let retry = send().await.unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        let retry = to_bytes(retry.into_body(), 8192).await.unwrap();
+        let retry: Value = serde_json::from_slice(&retry).unwrap();
+        assert_eq!(retry, json!({"run_id":run_id, "replayed":false}));
+    }
+
     #[test]
     fn workflow_design_edge_delete_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
