@@ -295,7 +295,7 @@ def test_acl_hidden_turn_is_filtered_by_python_conversation_queries(tmp_path) ->
         {"sub": "alice", "user_id": "alice", "ns": "conversation"}
     )
     try:
-        conversation_id, _start_id = conversation.create_conversation(
+        conversation_id, start_id = conversation.create_conversation(
             user_id="alice", conv_id="acl-scope-conversation"
         )
         engine.write.add_node(
@@ -349,8 +349,17 @@ def test_acl_hidden_turn_is_filtered_by_python_conversation_queries(tmp_path) ->
         )
         detail = queries.get_conversation(conversation_id)
         transcript = queries.list_transcript(conversation_id)
+        listed = queries.list_conversations_for_user("alice")
         assert detail["turn_count"] == 0
         assert transcript == []
+        assert listed == [
+            {
+                "id": conversation_id,
+                "start_node_id": start_id,
+                "status": "active",
+                "turn_count": 0,
+            }
+        ]
     finally:
         reset_claims_ctx(owner_token)
 
@@ -362,6 +371,7 @@ def test_acl_hidden_turn_is_filtered_by_python_conversation_queries(tmp_path) ->
             queries.get_conversation(conversation_id)
         with pytest.raises(KeyError, match="Unknown conversation_id"):
             queries.list_transcript(conversation_id)
+        assert queries.list_conversations_for_user("bob") == []
     finally:
         reset_claims_ctx(outsider_token)
         engine.close()
