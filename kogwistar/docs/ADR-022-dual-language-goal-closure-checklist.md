@@ -329,8 +329,12 @@ transcript route selectors passed (**20 passed**); Rust
 `tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
 passed (**1 passed**) with authenticated HTTP list/detail/transcript checks.
 This confirms those existing SQLite+Chroma and Python cells only. The fixed
-AUTH-PAR-02 matrix selector pair and PostgreSQL scope/identity matrix remain
-unverified; DLFC-06 stays IN PROGRESS and DLFC-05 stays PASS.
+AUTH-PAR-02 matrix selector pair remains unimplemented. A live PostgreSQL
+rerun of `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
+also passed (**1 passed**, disposable pgvector), verifying scoped list/detail/
+transcript, private-turn filtering, foreign workspace/graph-space exclusion,
+and foreign-owner 404. Missing-identity/namespace matrix and complete backend
+crosswalk remain unverified; DLFC-06 stays IN PROGRESS and DLFC-05 stays PASS.
 
 In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/scope and active-run capability checks, shared cancel response fields, terminal-repeat idempotency, and atomic recorded-transition/lane cleanup pass `in_memory_run_cancel_matches_shared_contract_and_authority` and `cancel_commits_runtime_transition_and_lane_cleanup_atomically`. Python MCP and in-memory-store comparison tests also pass. This closes only the named memory cancellation cell; GOAL-06 and GOAL-08 remain OPEN pending the full operation/backend matrix.
 

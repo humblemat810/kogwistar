@@ -1120,6 +1120,174 @@
             transcript_contract["response"]
         );
 
+        // Keep the legacy unscoped assertions above isolated from the scoped fixture.
+        for (id, entity_type, workspace_id, graph_space, extra, acl_mode, acl_owner) in [
+            (
+                "scope-start",
+                "conversation_start",
+                "workspace-a",
+                "conversation",
+                json!({"user_id":"alice","status":"active"}),
+                "public",
+                None,
+            ),
+            (
+                "scope-visible-turn",
+                "conversation_turn",
+                "workspace-a",
+                "conversation",
+                json!({"turn_index":1,"role":"assistant","summary":"scoped visible"}),
+                "public",
+                None,
+            ),
+            (
+                "scope-hidden-turn",
+                "conversation_turn",
+                "workspace-a",
+                "conversation",
+                json!({"turn_index":2,"role":"assistant","summary":"scoped private"}),
+                "private",
+                Some("bob"),
+            ),
+            (
+                "scope-foreign-workspace-turn",
+                "conversation_turn",
+                "workspace-b",
+                "conversation",
+                json!({"turn_index":3,"role":"assistant","summary":"foreign workspace"}),
+                "public",
+                None,
+            ),
+            (
+                "scope-foreign-graph-turn",
+                "conversation_turn",
+                "workspace-a",
+                "knowledge",
+                json!({"turn_index":4,"role":"assistant","summary":"foreign graph space"}),
+                "public",
+                None,
+            ),
+        ] {
+            let scoped_scope = GraphScope {
+                namespace: "conversation".to_owned(),
+                workspace_id: Some(workspace_id.to_owned()),
+                graph_space: Some(graph_space.to_owned()),
+            };
+            let mut metadata = Map::from_iter([
+                ("entity_type".to_owned(), json!(entity_type)),
+                ("conversation_id".to_owned(), json!("scope-matrix-conversation")),
+            ]);
+            metadata.extend(extra.as_object().unwrap().clone());
+            service
+                .conversation_store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scoped_scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: None,
+                        metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+            let mut acl = Map::from_iter([
+                ("entity_type".to_owned(), json!("acl_record")),
+                ("acl_truth_graph".to_owned(), json!("conversation")),
+                ("acl_target_entity_id".to_owned(), json!(id)),
+                ("acl_target_grain".to_owned(), json!("node")),
+                ("acl_version".to_owned(), json!(1)),
+                ("acl_mode".to_owned(), json!(acl_mode)),
+            ]);
+            if let Some(owner) = acl_owner {
+                acl.insert("owner_id".to_owned(), json!(owner));
+            }
+            service
+                .conversation_store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scoped_scope,
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: acl,
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+        }
+
+        let scoped_principal = json!({
+            "sub":"alice", "user_id":"alice", "role":"ro", "ns":"conversation",
+            "storage_ns":"conversation", "workspace_id":"workspace-a",
+            "graph_space":"conversation", "capabilities":["read_graph"]
+        });
+        let scoped_list = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: scoped_principal.clone(),
+            })
+            .await;
+        assert_eq!(scoped_list.status, StatusCode::OK.as_u16());
+        let scoped_list: Value = serde_json::from_slice(&scoped_list.body).unwrap();
+        assert_eq!(scoped_list["conversations"].as_array().unwrap().len(), 1);
+        assert_eq!(scoped_list["conversations"][0]["id"], "scope-matrix-conversation");
+        assert_eq!(scoped_list["conversations"][0]["turn_count"], 1);
+
+        let scoped_detail = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/scope-matrix-conversation".to_owned(),
+                body: Vec::new(),
+                principal: scoped_principal.clone(),
+            })
+            .await;
+        assert_eq!(scoped_detail.status, StatusCode::OK.as_u16());
+        let scoped_detail: Value = serde_json::from_slice(&scoped_detail.body).unwrap();
+        assert_eq!(scoped_detail["start_node_id"], "scope-start");
+        assert_eq!(scoped_detail["tail_node_id"], "scope-visible-turn");
+        assert_eq!(scoped_detail["turn_count"], 1);
+
+        let scoped_transcript = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/scope-matrix-conversation/turns".to_owned(),
+                body: Vec::new(),
+                principal: scoped_principal.clone(),
+            })
+            .await;
+        assert_eq!(scoped_transcript.status, StatusCode::OK.as_u16());
+        let scoped_transcript: Value = serde_json::from_slice(&scoped_transcript.body).unwrap();
+        assert_eq!(scoped_transcript["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(scoped_transcript["turns"][0]["node_id"], "scope-visible-turn");
+        let scoped_body = scoped_transcript.to_string();
+        assert!(!scoped_body.contains("scoped private"));
+        assert!(!scoped_body.contains("foreign workspace"));
+        assert!(!scoped_body.contains("foreign graph space"));
+
+        let foreign_owner = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conversation-other".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice", "user_id":"alice", "role":"ro", "ns":"conversation",
+                    "storage_ns":"conversation", "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(foreign_owner.status, StatusCode::NOT_FOUND.as_u16());
+
         let audit_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -1548,7 +1716,12 @@
                 }),
             })
             .await;
-        assert_eq!(scoped_receive.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            scoped_receive.status,
+            StatusCode::OK.as_u16(),
+            "scoped receive response: {}",
+            String::from_utf8_lossy(&scoped_receive.body)
+        );
         let scoped_receive: Value = serde_json::from_slice(&scoped_receive.body).unwrap();
         assert_eq!(scoped_receive["result"]["messages"].as_array().unwrap().len(), 2);
         assert_eq!(scoped_receive["result"]["messages"][0]["node_id"], "scoped-turn-1");
