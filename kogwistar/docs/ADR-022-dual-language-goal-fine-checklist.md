@@ -803,13 +803,21 @@ passed (**1**, SQLite run-service aggregate). Rust
 `tests::postgres_run_steps_http_matches_shared_python_projection` now matches
 the same `workflow-step-inspection-v1.json` result (**1 passed** against a
 disposable pgvector schema, exercising service-level GET dispatch rather than
-the outer HTTP transport). Same-fixture hyperedge HTTP projection remains
-unverified on InMemory and SQLite+Chroma (their existing route tests do not use
-that fixture). MCP replay and run-step tests are tracked under DLFC-08, not
-credited to this HTTP-read item. This rechecks named HTTP poll, step,
-lane-progress, SQLite handlers, and PostgreSQL run-step cells only; DLFC-06
-remains IN PROGRESS because hyperedge projection and the full read/query matrix
-are not exhausted.
+the outer HTTP transport). At this check, same-fixture hyperedge HTTP projection
+was unverified on InMemory and SQLite+Chroma. This historical gap was closed by
+the following verification; MCP replay and run-step tests remain tracked under
+DLFC-08, not credited to this HTTP-read item. DLFC-06 remains IN PROGRESS
+because the full read/query matrix is not exhausted.
+
+DLFC-06 hyperedge HTTP fixture verification (2026-11-28): Python
+`tests/test_visualization.py::test_hyperedge_visualization_matches_shared_python_contract`,
+Rust `tests::in_memory_visualization_http_hyperedges_match_shared_fixture`,
+and Rust `tests::sqlite_chroma_visualization_http_hyperedges_match_shared_fixture`
+all passed (**1 each**). Rust tests exercise authenticated D3/Cytoscape routes
+in reify/classic modes against `visualization-hyperedge-v1.json`; no ordering
+guarantee was added. This closes the two previously open visualization HTTP
+backend cells only; DLFC-06 remains IN PROGRESS pending its full read/query
+matrix.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
