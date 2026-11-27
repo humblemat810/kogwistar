@@ -825,6 +825,37 @@
         assert!(transcript_payload["turns"][0].get("schema_version").is_none());
         assert!(service.supports_http_operation("GET", "/api/conversations/c1/turns"));
 
+        assert!(service.supports_http_operation(
+            "GET",
+            "/api/conversations/c1/snapshots/latest?run_id=run-a&stage=answer"
+        ));
+        let workflow_reader = json!({
+            "sub":"reader-1", "user_id":"reader-1", "storage_ns":"scope-a",
+            "workspace_id":"workspace-a", "graph_space":"conversation",
+            "ns":["workflow"], "capabilities":["project_view"]
+        });
+        let latest_snapshot = service
+            .execute(read_request(
+                "/api/conversations/c1/snapshots/latest?run_id=run-a&stage=answer",
+                workflow_reader.clone(),
+            ))
+            .await;
+        assert_eq!(latest_snapshot.status, StatusCode::OK.as_u16());
+        let latest_snapshot: Value = serde_json::from_slice(&latest_snapshot.body).unwrap();
+        assert_eq!(latest_snapshot["snapshot_node_id"], "snapshot");
+        assert_eq!(latest_snapshot["conversation_id"], "c1");
+        assert_eq!(latest_snapshot["metadata"]["summary"], "stored summary");
+        assert_eq!(latest_snapshot["properties"]["references"][0], "evidence-1");
+
+        let private_snapshot = service
+            .execute(read_request(
+                "/api/conversations/c1/snapshots/latest?run_id=run-private&stage=answer",
+                workflow_reader,
+            ))
+            .await;
+        assert_eq!(private_snapshot.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&private_snapshot.body).contains("snapshot-private"));
+
         assert!(service.supports_mcp_tool("conversation", "conversation.get_transcript"));
         let mcp_app = router_with_application(
             ApiState {

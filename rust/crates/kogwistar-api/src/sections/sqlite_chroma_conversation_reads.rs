@@ -145,6 +145,72 @@ impl SqliteRunApplicationService {
         )
     }
 
+    // Python parity: chat_api.latest_snapshot delegates to ChatService.latest_snapshot;
+    // see tests/server/test_chat_server_api_conversations.py::
+    // test_latest_snapshot_uses_python_defaults_and_checks_namespace.
+    async fn sqlite_chroma_latest_snapshot_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation" | "workflow"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Context snapshot reads require conversation or workflow namespace",
+            );
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Context snapshot reads require project_view capability",
+            );
+        }
+        let Some(conversation_id) = latest_snapshot_conversation_id(&request.path_and_query)
+        else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation snapshot route was not found",
+            );
+        };
+        let (run_id, stage) = context_snapshot_query(&request.path_and_query);
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+            graph_snapshot.nodes(),
+            &conversation_id,
+            run_id.as_deref(),
+            stage.as_deref(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                    "No context snapshot found",
+                );
+            }
+        };
+        json_effect(StatusCode::OK, public_context_snapshot_value(snapshot))
+    }
+
     async fn sqlite_chroma_conversation_transcript_effect(
         &self,
         request: &ApiEffectRequest,

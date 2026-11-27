@@ -965,6 +965,9 @@ impl ApplicationService for SqliteRunApplicationService {
             && conversation_detail_id(path).is_some();
         let is_composed_conversation_list =
             self.chroma_graph.is_some() && method == "GET" && is_conversation_list_route(path);
+        let is_composed_conversation_snapshot = self.chroma_graph.is_some()
+            && method == "GET"
+            && latest_snapshot_conversation_id(path).is_some();
         let is_composed_conversation_create = self.chroma_graph.is_some()
             && method == "POST"
             && path.split('?').next() == Some("/api/conversations");
@@ -982,6 +985,7 @@ impl ApplicationService for SqliteRunApplicationService {
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
             || is_composed_conversation_list
+            || is_composed_conversation_snapshot
             || is_composed_conversation_create
             || is_composed_conversation_answer
             || is_composed_search_index
@@ -1001,6 +1005,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
                 || is_composed_conversation_list
+                || is_composed_conversation_snapshot
                 || is_composed_conversation_create
                 || is_composed_conversation_answer
                 || is_composed_search_index
@@ -1204,6 +1209,9 @@ impl ApplicationService for SqliteRunApplicationService {
                     .await;
             }
             if request.method == "GET" && self.chroma_graph.is_some() {
+                if latest_snapshot_conversation_id(&request.path_and_query).is_some() {
+                    return self.sqlite_chroma_latest_snapshot_effect(&request).await;
+                }
                 if conversation_detail_id(&request.path_and_query).is_some() {
                     return self
                         .sqlite_chroma_conversation_detail_effect(&request)

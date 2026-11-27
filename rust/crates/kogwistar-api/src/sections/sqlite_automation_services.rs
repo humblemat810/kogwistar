@@ -1350,6 +1350,7 @@ impl SqliteRunApplicationService {
             );
         }
         if request.method == "GET"
+            && self.chroma_graph.is_none()
             && latest_snapshot_conversation_id(&request.path_and_query).is_some()
         {
             return effect_error(
