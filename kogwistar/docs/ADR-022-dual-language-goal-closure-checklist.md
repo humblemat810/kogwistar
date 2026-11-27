@@ -303,6 +303,10 @@ occurs before run-store access. The focused Rust workflow-run suite passed
 (**15 passed, 2 ignored**), Python route oracles passed (**6 passed**), Rust
 API build succeeded, and the live Rust PostgreSQL HTTP smoke passed (**1
 passed**). These results close only these preflight defects;
+the PostgreSQL-specific existing selectors
+`postgres_run_evidence_route_returns_only_authorized_run_snapshot` and
+`postgres_workflow_lineage_route_checks_each_workflow_acl` were also run
+against a temporary `pgvector/pgvector:pg16` instance (**1 passed each**).
 owner/per-workflow ACL across remaining routes, mutation-state, retry/effect,
 and all supported backend-operation cells are not yet proven.
 The coarse status remains **2/5 PASS; 3 IN PROGRESS**; fine checklist remains
