@@ -255,12 +255,13 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-dead-letter-mcp-{nonce}.sqlite3"));
         let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let memory = InMemoryGraphApplicationService::default();
         let postgres = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "dead_letter_mcp_admission",
         )
         .unwrap();
-        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let services: [&dyn ApplicationService; 3] = [&memory, &sqlite, &postgres];
 
         for service in services {
             let tool = "workflow.dead_letter_replay";
@@ -299,12 +300,13 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-dead-letter-effect-{nonce}.sqlite3"));
         let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let memory = InMemoryGraphApplicationService::default();
         let postgres = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "dead_letter_effect_auth",
         )
         .unwrap();
-        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let services: [&dyn ApplicationService; 3] = [&memory, &sqlite, &postgres];
 
         for service in services {
             for principal in [
@@ -414,6 +416,120 @@
             contract["rust_request"]["path_and_query"]
         );
         assert_eq!(request.body, contract["rust_request"]["body"].as_str().unwrap().as_bytes());
+    }
+
+    #[tokio::test]
+    async fn in_memory_dead_letter_replay_mcp_requeues_once_under_concurrency() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use kogwistar_store::{LaneMessageReadStore, LaneMessageWriteStore};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-dead-letter-replay-mcp-v1.json"
+        ))
+        .unwrap();
+        let tool = contract["tool"].as_str().unwrap();
+        let required_capability = contract["caller_capabilities"][0].as_str().unwrap();
+        let service = InMemoryGraphApplicationService::default();
+        let run_id = "memory-dead-letter-run";
+        service
+            .store
+            .project_lane_message(kogwistar_store::NewProjectedLaneMessage {
+                message_id: "memory-dead-letter-message".to_owned(),
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: "memory-dead-letter-conversation".to_owned(),
+                recipient_id: "rust-native-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "dead-letter".to_owned(),
+                created_at: 1,
+                available_at: 1,
+                run_id: Some(run_id.to_owned()),
+                step_id: Some("step-1".to_owned()),
+                correlation_id: Some(run_id.to_owned()),
+                payload_json: Some("{}".to_owned()),
+                error_json: Some("{\"message\":\"worker failed\"}".to_owned()),
+            })
+            .await
+            .unwrap();
+
+        let secret = "memory-dead-letter-test-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "user_id":"operator", "role":"rw",
+                "ns":["workflow"], "capabilities":[required_capability],
+                "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"memory-replay", "method":"tools/call",
+                        "params":{"name":tool, "arguments":{"run_id":run_id}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(request()),
+            app.clone().oneshot(request())
+        );
+        let parse_result = |response: axum::response::Response| async move {
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 8192).await.unwrap();
+            let data = String::from_utf8(body.to_vec()).unwrap();
+            let message = data
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("MCP response event");
+            serde_json::from_str::<Value>(message).unwrap()["result"]["structuredContent"].clone()
+        };
+        let (first_result, second_result) =
+            tokio::join!(parse_result(first.unwrap()), parse_result(second.unwrap()));
+        let replays = [
+            first_result["replayed"].as_bool().unwrap(),
+            second_result["replayed"].as_bool().unwrap(),
+        ];
+        assert_eq!(replays.iter().filter(|replayed| **replayed).count(), 1);
+        assert_eq!(first_result["run_id"], run_id);
+        assert_eq!(second_result["run_id"], run_id);
+        let lane = service
+            .store
+            .projected_lane_message("memory-dead-letter-message")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(lane.status, "pending");
     }
 
     #[tokio::test]

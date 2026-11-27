@@ -57,6 +57,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     | "workflow.run_resume"
                     | "workflow.run_cancel"
                     | "workflow.run_submit"
+                    | "workflow.dead_letter_replay"
             )
         {
             return true;
@@ -194,6 +195,22 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 )
                 .contains("read_graph");
         }
+        if name == "workflow.dead_letter_replay" {
+            let effective = effective_capabilities(
+                principal,
+                &self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            return surface == "workflow"
+                && principal_role(principal) == "rw"
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && effective.contains("service.manage")
+                && self.supports_mcp_tool(surface, name);
+        }
         if !self.supports_mcp_tool(surface, name)
             || !matches!(principal_role(principal).as_str(), "ro" | "rw")
             || !principal_strings(principal, "ns")
@@ -328,6 +345,11 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["cancel"]
             {
                 return self.cancel_runtime_run_effect(&request, &run_id).await;
+            }
+            if request.method == "POST"
+                && let Some(run_id) = dead_letter_replay_run_id(&request.path_and_query)
+            {
+                return self.replay_dead_letter(&request, &run_id).await;
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next() == Some("/api/syscall/v1/send_message")

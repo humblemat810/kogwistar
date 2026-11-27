@@ -1,4 +1,5 @@
 use super::*;
+use kogwistar_store::{LaneMessageReadStore, LaneMessageWriteStore};
 use serde_json::json;
 
 impl InMemoryGraphApplicationService {
@@ -1287,5 +1288,86 @@ impl InMemoryGraphApplicationService {
                 limit,
             ),
         )
+    }
+
+    // PYTHON_PARITY_NOTE_V1: Replay one workflow dead-letter with store-level CAS so concurrent MCP retries yield at most one success. rust=rust/crates/kogwistar-api/src/sections/in_memory_service/run_lifecycle.rs#replay_dead_letter; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay+kogwistar/server/chat_service.py#ChatRunService.replay_dead_letter; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#in_memory_dead_letter_replay_mcp_requeues_once_under_concurrency; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_dead_letter_replay_dispatches_effect_once
+    pub(crate) async fn replay_dead_letter(
+        &self,
+        request: &ApiEffectRequest,
+        run_id: &str,
+    ) -> ApiEffectResponse {
+        if principal_role(&request.principal) != "rw"
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "workflow" || namespace == "*")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Replaying dead letters requires rw role and workflow namespace",
+            );
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "service.manage",
+            &["service.manage"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Replaying dead letters requires service.manage capability",
+            );
+        }
+        let lanes = match self
+            .store
+            .projected_lane_messages(kogwistar_store::LaneMessageFilter {
+                namespace: Some("workflow".to_owned()),
+                status: Some("dead-letter".to_owned()),
+                limit: 10_000,
+                ..kogwistar_store::LaneMessageFilter::default()
+            })
+            .await
+        {
+            Ok(lanes) => lanes,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        let Some(lane) = lanes
+            .into_iter()
+            .find(|lane| lane.run_id.as_deref() == Some(run_id))
+        else {
+            return json_effect(StatusCode::OK, json!({"run_id": run_id, "replayed": false}));
+        };
+        match self
+            .store
+            .compare_and_set_projected_lane_message_status(
+                &lane.message_id,
+                "dead-letter",
+                "pending",
+                None,
+            )
+            .await
+        {
+            Ok(true) => json_effect(
+                StatusCode::OK,
+                json!({
+                    "run_id": run_id,
+                    "replayed": true,
+                    "dead_letter": lane_progress_value(&lane),
+                }),
+            ),
+            Ok(false) => json_effect(StatusCode::OK, json!({"run_id": run_id, "replayed": false})),
+            Err(error) => effect_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "KOGWISTAR_STORE_ERROR",
+                error.to_string(),
+            ),
+        }
     }
 }
