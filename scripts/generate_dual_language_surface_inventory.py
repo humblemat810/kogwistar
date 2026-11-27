@@ -22,7 +22,7 @@ PYTHON_SYSCALLS = ROOT / "kogwistar" / "server" / "syscall_api.py"
 RUST_SYSCALLS = RUST_API / "sections" / "response_policy.rs"
 RUST_SQLITE_SERVICE = RUST_API / "sections" / "sqlite_automation_services.rs"
 RUST_SQLITE_CHROMA_SERVICE = RUST_API / "sections" / "sqlite_application_service.rs"
-RUST_MEMORY_SERVICE = RUST_API / "sections" / "in_memory_service.rs"
+RUST_MEMORY_SERVICE = RUST_API / "sections" / "in_memory_service" / "application_service.rs"
 RUST_POSTGRES_SERVICE = RUST_API / "sections" / "postgres_graph_service.rs"
 
 
@@ -163,7 +163,7 @@ def _rust_backend_syscall_inventory(operations: list[str]) -> dict[str, Any]:
             "unavailable": sorted(operation_set - sqlite_chroma),
         },
         "in-memory": {
-            "source": "rust/crates/kogwistar-api/src/sections/in_memory_service.rs#InMemoryRunApplicationService.execute",
+            "source": "rust/crates/kogwistar-api/src/sections/in_memory_service/application_service.rs#InMemoryGraphApplicationService.execute",
             "dispatches": sorted(memory_routes),
             "unavailable": sorted(operation_set - memory_routes),
         },

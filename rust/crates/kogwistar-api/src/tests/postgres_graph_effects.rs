@@ -97,7 +97,7 @@
         let secret = "native-graph-test-secret";
         let token = |subject: &str, namespace: &str, caps: &[&str]| encode(
             &Header::new(Algorithm::HS256),
-            &json!({"sub": subject, "role": "rw", "roles": ["reader"], "ns": namespace,
+            &json!({"sub": subject, "role": "rw", "roles": ["reader"], "ns": [namespace, "workflow"],
                 "storage_ns": namespace, "capabilities": caps, "exp": 4102444800_u64}),
             &EncodingKey::from_secret(secret.as_bytes()),
         ).unwrap();

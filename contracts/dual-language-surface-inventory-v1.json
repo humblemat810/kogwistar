@@ -998,7 +998,7 @@
       "dispatch_scope": "source-level dispatch only; not behavioral parity evidence"
     },
     "in-memory": {
-      "source": "rust/crates/kogwistar-api/src/sections/in_memory_service.rs#InMemoryRunApplicationService.execute",
+      "source": "rust/crates/kogwistar-api/src/sections/in_memory_service/application_service.rs#InMemoryGraphApplicationService.execute",
       "dispatches": [
         "checkpoint",
         "create_conversation",
