@@ -244,6 +244,10 @@ impl ApplicationService for InMemoryGraphApplicationService {
     }
 
     fn supports_http_operation(&self, method: &str, path: &str) -> bool {
+        // PYTHON_PARITY_NOTE_V1: Public dead-letter listing is an implemented HTTP operation, not a deferred route; rust=rust/crates/kogwistar-api/src/sections/in_memory_service/application_service.rs#supports_http_operation; python=kogwistar/server/runtime_api.py#create_runtime_router.dead_letters; fixture=contracts/golden/workflow-dead-letters-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#in_memory_dead_letters_http_matches_shared_python_contract; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_dead_letters_matches_shared_contract
+        if method == "GET" && path.split('?').next() == Some("/api/workflow/dead-letters") {
+            return true;
+        }
         if method == "GET"
             && (is_conversation_list_route(path)
                 || conversation_detail_id(path).is_some()

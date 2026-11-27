@@ -876,6 +876,69 @@
         assert_eq!(content["runs"][0]["event_type"], "worker.dead-letter");
     }
 
+    #[tokio::test]
+    async fn in_memory_dead_letters_http_matches_shared_python_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-dead-letters-http-v1.json"
+        ))
+        .unwrap();
+        let service = InMemoryGraphApplicationService::default();
+        let path = format!(
+            "/api/workflow/dead-letters?limit={}",
+            contract["query_limit"].as_i64().unwrap()
+        );
+        assert!(service.supports_http_operation("GET", &path));
+        let secret = "memory-dead-letters-http-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "role":"ro", "ns":["workflow"],
+                "storage_ns":"workflow", "capabilities":["project_view"],
+                "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(&path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body, contract["response_body"]);
+    }
+
     #[test]
     fn workflow_design_edge_delete_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};

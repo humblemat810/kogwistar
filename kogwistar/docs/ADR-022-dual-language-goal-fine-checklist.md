@@ -42,6 +42,18 @@
 
 Terminal workflow-cancel retry parity now has live persistent-backend evidence. Python and Rust InMemory selectors passed with an `rw`/workflow caller lacking `workflow.run.write`; active cancellation remains denied, while already-terminal cancellation returns unchanged status without another event. Rust PostgreSQL `tests::postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` now seeds a terminal run and exercises authenticated MCP retry through the live router; no write capability is granted and event history remains empty (**1 passed**, disposable pgvector:pg16, 2026-11-26). `cargo fmt --manifest-path rust/Cargo.toml --all --check` passes. This closes the named terminal-retry/backend cell only; DLFC-10 remains IN PROGRESS because the broader MCP operation/backend retry matrix remains open.
 
+### DLFC-03 Evidence Update (Existing Tasklet)
+
+InMemory authenticated HTTP `GET /api/workflow/dead-letters` now advertises and
+serves the inventory-listed operation, using the shared
+`workflow-dead-letters-http-v1.json` response contract. Red test first proved
+the route was not advertised; Rust
+`tests::in_memory_dead_letters_http_matches_shared_python_contract` then
+passed through the Axum router (**1 passed**). Python
+`tests/server/test_chat_server_api_workflow_design.py::test_workflow_dead_letters_matches_shared_contract`
+and the parity-annotation crosswalk passed (**1 each**). This closes one
+InMemory HTTP response cell only; DLFC-03 remains IN PROGRESS.
+
 SQLite+Chroma MCP resume evidence (2026-11-26): existing ignored test
 `tests::sqlite_runtime_worker_lifecycle::sqlite_chroma_mcp_resume_continues_persisted_suspended_token`
 passed against disposable live `chromadb/chroma:latest` (**1 passed**, no skip).
