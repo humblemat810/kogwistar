@@ -776,13 +776,18 @@ than the Python shared fixture. Other DLFC-06 read/query cells remain open.
 
 DLFC-06 run inspection/read subset recheck (2026-11-27): Python shared-fixture
 `tests/server/test_chat_server_api_run_inspection.py::test_chat_rest_events_poll_matches_rust_seeded_contract`
-and `::test_run_steps_matches_shared_rust_projection_fixture` (**2 passed**).
-Rust `tests::in_memory_run_events_poll_matches_shared_contract` and
-`tests::in_memory_run_steps_route_matches_shared_python_projection` passed
+and `::test_run_steps_matches_shared_rust_projection_fixture` (**2 passed**),
+plus `tests/server/test_chat_server_api_workflow_design.py::test_workflow_lane_progress_matches_shared_contract`
+(**1 passed**). Rust `tests::in_memory_run_events_poll_matches_shared_contract`
+and `tests::in_memory_run_steps_route_matches_shared_python_projection` passed
 (**1 each**); `tests::sqlite_run_service_handles_get_events_and_cancel`
-passed (**1**, SQLite run-service aggregate). This rechecks the named poll,
-step-projection, and SQLite handler cells only; DLFC-06 remains IN PROGRESS
-because its full read/query/backend matrix is not exhausted.
+passed (**1**, SQLite run-service aggregate). Workflow replay MCP shared
+fixture passed on both sides: Python
+`tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_replay_matches_shared_contract`
+and Rust `tests::mcp_workflow_run_replay_matches_shared_contract` (**1 each**).
+This rechecks named poll, step, lane-progress, replay, and SQLite handler cells
+only; DLFC-06 remains IN PROGRESS because its full read/query/backend matrix is
+not exhausted.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
