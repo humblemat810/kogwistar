@@ -323,6 +323,15 @@ then focused Python/Rust tests passed (**1 Python, 2 Rust**); parity-annotation
 crosswalk also passed. This closes only the operator-inbox read filter/limit
 cell; DLFC-06 and GOAL-06/08 remain open.
 
+Conversation read scope cross-check (2026-11-27): Python
+`tests/server/test_conversation_graph_scope.py` plus the existing list/detail/
+transcript route selectors passed (**20 passed**); Rust
+`tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
+passed (**1 passed**) with authenticated HTTP list/detail/transcript checks.
+This confirms those existing SQLite+Chroma and Python cells only. The fixed
+AUTH-PAR-02 matrix selector pair and PostgreSQL scope/identity matrix remain
+unverified; DLFC-06 stays IN PROGRESS and DLFC-05 stays PASS.
+
 In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/scope and active-run capability checks, shared cancel response fields, terminal-repeat idempotency, and atomic recorded-transition/lane cleanup pass `in_memory_run_cancel_matches_shared_contract_and_authority` and `cancel_commits_runtime_transition_and_lane_cleanup_atomically`. Python MCP and in-memory-store comparison tests also pass. This closes only the named memory cancellation cell; GOAL-06 and GOAL-08 remain OPEN pending the full operation/backend matrix.
 
 MCP transport is also exercised end to end: missing `workflow.run.write` returns an MCP tool error without changing run state; an authorized call reaches the Rust in-memory store and cancels the run (`in_memory_workflow_cancel_mcp_reaches_authorized_store_effect`; full API suite: 418 passed, 41 ignored).
