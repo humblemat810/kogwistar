@@ -546,6 +546,21 @@ closes the node-upsert ACL cell only; DLFC-05 remains IN PROGRESS and its broade
 route/backend matrix is unchanged. Rust also asserts history denial creates no
 named workflow-design projection.
 
+Live PostgreSQL graph-read ACL parity (2026-11-27):
+`tests/server/test_rust_api_postgres_live.py::test_rust_postgres_graph_read_tools_match_python_over_shared_projection`
+initially skipped on a stale server binary, then ran after rebuilding. It
+exposed JSON payload drift: Rust serialized stored
+`f32` embeddings with shorter decimal text than Python `float` serialization.
+`graph_record_document_json` now widens each stored `f32` exactly to `f64`
+before JSON projection, matching Python's `Node.model_dump_json()` behavior.
+The same live PostgreSQL test then passed (**1 passed**, 141.62s), including
+reader/owner ACL visibility, scope filtering, vector ranking, and canonical
+visible-node payload equality. Rust in-memory and Python semantic retrieval
+oracles pass (**1 + 1 passed**), as do the existing SQLite+Chroma graph-topology
+and Wisdom semantic retrieval tests (**2 passed**) and parity-annotation
+crosswalk. This closes only this PostgreSQL graph-read projection mismatch and
+ACL/read cell; DLFC-05 and DLFC-06 remain IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

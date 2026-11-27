@@ -13,6 +13,7 @@ struct SemanticSeedExpandRequest {
     doc_ids: Option<String>,
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/wisdom_retrieval.rs#graph_record_document_json; python=kogwistar/graph_query.py#GraphQuery.semantic_seed_then_expand_text; fixture=contracts/golden/semantic-seed-expand-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
 fn graph_record_document_json(record: &GraphRecord) -> Option<String> {
     let mut document: Value = serde_json::from_str(record.document.as_deref()?).ok()?;
     let object = document.as_object_mut()?;
@@ -21,7 +22,14 @@ fn graph_record_document_json(record: &GraphRecord) -> Option<String> {
         .entry("redirect_to_id".to_owned())
         .or_insert(Value::Null);
     object.insert("metadata".to_owned(), json!(metadata));
-    object.insert("embedding".to_owned(), json!(record.embedding));
+    let embedding = record.embedding.as_ref().map(|values| {
+        values
+            .iter()
+            .copied()
+            .map(f64::from)
+            .collect::<Vec<_>>()
+    });
+    object.insert("embedding".to_owned(), json!(embedding));
 
     if let Some(mentions) = object.get_mut("mentions").and_then(Value::as_array_mut) {
         for grounding in mentions {
