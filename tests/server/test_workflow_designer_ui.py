@@ -190,7 +190,11 @@ def test_workflow_design_remaining_routes_enforce_acl_before_effect() -> None:
 
     def require_access(workflow_id: str, role: str) -> None:
         acl_checks.append((workflow_id, role))
-        acl_role = {"read-only-wf": "ro", "visible-wf": "ro"}.get(workflow_id)
+        acl_role = {
+            "read-only-wf": "ro",
+            "visible-wf": "ro",
+            "writable-wf": "rw",
+        }.get(workflow_id)
         if acl_role is None or (role == "rw" and acl_role != "rw"):
             raise HTTPException(status_code=403, detail="workflow ACL denied")
 
@@ -240,13 +244,39 @@ def test_workflow_design_remaining_routes_enforce_acl_before_effect() -> None:
         ("DELETE", "/api/workflow/design/read-only-wf/edges/e1", write_body, 403),
         ("POST", "/api/workflow/design/read-only-wf/undo", write_body, 403),
         ("POST", "/api/workflow/design/read-only-wf/redo", write_body, 403),
+        (
+            "POST",
+            "/api/workflow/design/writable-wf/edges",
+            {
+                "designer_id": "alice",
+                "edge_id": "e1",
+                "src": "n1",
+                "dst": "n2",
+                "relation": "next",
+            },
+            200,
+        ),
+        ("DELETE", "/api/workflow/design/writable-wf/nodes/n1", write_body, 200),
+        ("DELETE", "/api/workflow/design/writable-wf/edges/e1", write_body, 200),
+        ("POST", "/api/workflow/design/writable-wf/undo", write_body, 200),
+        ("POST", "/api/workflow/design/writable-wf/redo", write_body, 200),
     ]
     with TestClient(app) as client:
         for method, path, body, expected_status in cases:
             response = client.request(method, path, json=body)
             assert response.status_code == expected_status, path
 
-    assert effects == [("graph", "visible-wf", False)]
+    assert effects[0] == ("graph", "visible-wf", False)
+    assert [
+        (effect[0], effect[1]["workflow_id"])
+        for effect in effects[1:]
+    ] == [
+        ("edge_upsert", "writable-wf"),
+        ("node_delete", "writable-wf"),
+        ("edge_delete", "writable-wf"),
+        ("undo", "writable-wf"),
+        ("redo", "writable-wf"),
+    ]
     assert acl_checks == [
         ("no-acl-wf", "ro"),
         ("visible-wf", "ro"),
@@ -260,6 +290,11 @@ def test_workflow_design_remaining_routes_enforce_acl_before_effect() -> None:
         ("read-only-wf", "rw"),
         ("read-only-wf", "rw"),
         ("read-only-wf", "rw"),
+        ("writable-wf", "rw"),
+        ("writable-wf", "rw"),
+        ("writable-wf", "rw"),
+        ("writable-wf", "rw"),
+        ("writable-wf", "rw"),
     ]
 
 

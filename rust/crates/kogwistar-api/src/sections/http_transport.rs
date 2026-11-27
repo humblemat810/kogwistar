@@ -228,10 +228,14 @@ async fn mcp_handler(
 ) -> Response {
     let mut timings = McpRequestTimings::default();
     let auth_context = timings.authentication(|| request_auth_context(&headers, &state.api.auth));
-    let (principal, roles) = match auth_context {
+    let (mut principal, roles) = match auth_context {
         Ok(context) => context,
         Err(_) => return attach_mcp_request_timings(forbidden_response(), timings),
     };
+    // This marker is server-owned REST authorization context, never a trusted JWT claim.
+    if let Some(claims) = principal.as_object_mut() {
+        claims.remove("_kogwistar_rest_design_acl_checked");
+    }
     let role_allowed = timings.required_role_authorization(|| {
         authorize(&ApiAuthRequest {
             roles,
@@ -1994,12 +1998,25 @@ async fn application_effect_handler(
         path_and_query.push_str("?after_seq=");
         path_and_query.push_str(last_event_id);
     }
+    let mut principal = request_principal(&headers, &state.api.auth);
+    let rest_design_undo_redo = method == "POST"
+        && path_and_query
+            .split('?')
+            .next()
+            .is_some_and(|path| {
+                path.starts_with("/api/workflow/design/")
+                    && (path.ends_with("/undo") || path.ends_with("/redo"))
+            });
+    if rest_design_undo_redo {
+        // The REST route runs role, namespace, and workflow-ACL guards before dispatch.
+        principal["_kogwistar_rest_design_acl_checked"] = Value::Bool(true);
+    }
     let request = ApiEffectRequest {
         contract_version: 1,
         method,
         path_and_query,
         body: body.to_vec(),
-        principal: request_principal(&headers, &state.api.auth),
+        principal,
     };
     if let Some(error) = workflow_run_submit_acl_error(state.application.as_ref(), &request).await {
         let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);

@@ -891,6 +891,76 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
             .unwrap();
         assert_eq!(response.status(), expected, "workflow {workflow_id}");
     }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workflow/design/writable-wf/nodes")
+                .header("authorization", format!("Bearer {write_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "designer_id": "alice",
+                        "node_id": "finish",
+                        "label": "Finish",
+                        "op": "finish"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workflow/design/writable-wf/edges")
+                .header("authorization", format!("Bearer {write_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "designer_id": "alice",
+                        "edge_id": "start-to-finish",
+                        "src": "start",
+                        "dst": "finish",
+                        "relation": "next"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    for (method, suffix, body) in [
+        ("DELETE", "edges/start-to-finish", json!({"designer_id":"alice"})),
+        ("POST", "undo", json!({"designer_id":"alice"})),
+        ("POST", "redo", json!({"designer_id":"alice"})),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!("/api/workflow/design/writable-wf/{suffix}"))
+                    .header("authorization", format!("Bearer {write_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method} {suffix}");
+    }
+    assert!(!service
+        .store
+        .replay_raw_events("wf_design:writable-wf", 0, 100)
+        .unwrap()
+        .is_empty());
     assert!(service
         .store
         .replay_raw_events("wf_design:missing-acl-wf", 0, 10)

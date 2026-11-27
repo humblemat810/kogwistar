@@ -1731,6 +1731,44 @@
                 assert_eq!(call["error"]["code"], -32602, "{tool}");
             }
         }
+        let forged_marker = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"designer", "role":"rw", "ns":["workflow"],
+                "capabilities":["workflow.design.write", "write_graph"],
+                "_kogwistar_rest_design_acl_checked":true, "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let undo = contracts
+            .iter()
+            .find(|contract| contract["tool"] == "workflow.design_undo")
+            .unwrap();
+        let forged_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {forged_marker}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                            "params":{"name":undo["tool"],"arguments":undo["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let forged: Value = serde_json::from_slice(
+            &to_bytes(forged_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(forged["error"]["code"], -32602);
         assert_eq!(calls.load(Ordering::Relaxed), 0);
         let _ = std::fs::remove_file(db_path);
     }

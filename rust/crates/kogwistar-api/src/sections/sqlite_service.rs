@@ -376,12 +376,20 @@ impl SqliteRunApplicationService {
         } else {
             &[required]
         };
-        if !capability_allowed(
-            request,
-            &self.capabilities,
-            required,
-            required_capabilities,
-        ) {
+        let rest_undo_redo = matches!(&route, DesignRoute::Undo | DesignRoute::Redo)
+            && request
+                .principal
+                .get("_kogwistar_rest_design_acl_checked")
+                .and_then(Value::as_bool)
+                == Some(true);
+        if !rest_undo_redo
+            && !capability_allowed(
+                request,
+                &self.capabilities,
+                required,
+                required_capabilities,
+            )
+        {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
