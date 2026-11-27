@@ -38,6 +38,12 @@
 | DLFC-17 | GOAL-08 | PASS | Bounded transport/CLI contract closes: health, authenticated agent SSE ordering, Streamable MCP initialize/session/tool-call, and Python CLI HTTP client pass the supported CPython 3.12/3.13/3.14 + PyPy 3.11 CI matrix (no Chroma on PyPy): `tests/core/test_rust_port_contract_manifest.py::test_python_transport_contract_subset_runs_in_supported_interpreter_matrix`; hosted CI #872 (`45529522041`) passed all four. PyPy 3.12 beta remains non-gating and failed. Rust MCP SDK ignored smoke passed (**1**) with ordered notification assertions. On current checkout, Rust `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --test cli` (**49 passed**) and Python `tests/core/test_rust_port_contract_manifest.py -k python_cli_` (**49 passed**, 2026-11-25). These assert command HTTP method/path/query/default/payload contracts and fail-closed error cases, including `workflow.blocked_runs` rejected in both clients before dispatch; Rust/Python tests confirm no route is invented. This closes only this transport/CLI subset. Remaining REST operation parity stays under DLFC-03 through DLFC-07; remaining MCP effect/retry parity stays under DLFC-10; GOAL-08 remains open for those behavior families and durable/runtime lifecycle cells. |
 | DLFC-18 | GOAL-09 | IN PROGRESS | Existing SQLite resource-matched results remain PASS for their scoped traces. Authenticated agent benchmark emits common TCP latency/fixture/digest/mode fields; Python collects warm-up + 3 measured samples, poll=100 ms. Verifier and negative gates: `tests/core/test_agent_request_benchmark_report.py` (**9 passed**); Python profile collects 4 cases; Rust test compiles. Live low-fixture smoke: Python + Rust PostgreSQL HTTP each **1 passed**; same digest, 11 nodes, 100 ms poll; uncapped clients, so not perf evidence. Ruff/fmt pass. Fixed-limit remeasurement plus PostgreSQL and SQLite+Chroma performance traces remain open. |
 
+**Scope accounting correction (2026-11-27):** DLFC-06 is the HTTP read tasklet.
+MCP-only assertions mentioned in its historical evidence (operator inbox,
+`workflow.run_steps`, run replay/evidence, and the MCP portion of lineage tests)
+are supplemental DLFC-08 evidence and do not count toward DLFC-06. In a combined
+HTTP/MCP test, only assertions exercising the HTTP route count here.
+
 ### DLFC-10 Evidence Update (Existing Tasklet)
 
 Terminal workflow-cancel retry parity now has live persistent-backend evidence. Python and Rust InMemory selectors passed with an `rw`/workflow caller lacking `workflow.run.write`; active cancellation remains denied, while already-terminal cancellation returns unchanged status without another event. Rust PostgreSQL `tests::postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` now seeds a terminal run and exercises authenticated MCP retry through the live router; no write capability is granted and event history remains empty (**1 passed**, disposable pgvector:pg16, 2026-11-26). `cargo fmt --manifest-path rust/Cargo.toml --all --check` passes. This closes the named terminal-retry/backend cell only; DLFC-10 remains IN PROGRESS because the broader MCP operation/backend retry matrix remains open.
@@ -624,7 +630,8 @@ now also asserts authenticated `GET /api/workflow/runs/missing/lineage` returns
 the lineage not-found branch for both supported Rust backend compositions only.
 Other HTTP/read ACL and backend cells remain open.
 
-DLFC-06 InMemory workflow-lineage HTTP/MCP cell (2026-11-27): TDD first
+Workflow-lineage combined HTTP/MCP test evidence (2026-11-27; HTTP assertions
+count under DLFC-06, MCP assertions under DLFC-08): TDD first
 confirmed REST was unsupported, then proved MCP admission was denied because
 the service allowlist omitted `workflow.run_lineage`. Rust now serves lineage
 from the request's scoped conversation graph, applies graph ACL visibility and
@@ -649,11 +656,13 @@ passed**), including the real ACL-enabled in-memory `ChatRunService` oracle and
 missing-run 404; Rust
 `test_rust_python_parity_annotations_resolve_to_shared_executable_contracts`
 (**1 passed**), `cargo fmt --all -- --check`, and
-`cargo clippy -p kogwistar-api --all-targets -- -D warnings` passed. This
-closes only the InMemory lineage HTTP/MCP cell; broader read/query operation/backend
-cells remain open, so DLFC-06 stays IN PROGRESS.
+`cargo clippy -p kogwistar-api --all-targets -- -D warnings` passed. The REST
+lineage assertions close only the InMemory HTTP cell; MCP assertions are DLFC-08
+evidence. Broader read/query operation/backend cells remain open, so DLFC-06
+stays IN PROGRESS.
 
-DLFC-06 InMemory MCP `workflow.run_steps` cell (2026-11-27): an authenticated
+DLFC-08 InMemory MCP `workflow.run_steps` supplemental result evidence
+(2026-11-27): an authenticated
 Rust MCP request now reads seeded durable run events and matches the shared
 `workflow-run-steps-mcp-v1.json` result exactly. TDD exposed extra internal event
 fields in the public projection; Rust now returns Python's selected fields, and
@@ -662,18 +671,18 @@ Evidence: Rust `tests::in_memory_workflow_run_steps_mcp_matches_shared_contract`
 (**1 passed**) and focused Rust `run_steps` suite (**6 passed**); Python shared MCP
 and HTTP projection tests (**2 passed**); parity-annotation test (**1 passed**),
 the two checklist crosswalk tests (**2 passed**), and `cargo fmt --all -- --check`
-passed. This closes only this InMemory MCP projection cell; DLFC-06 remains IN
-PROGRESS.
+passed. This is supplemental DLFC-08 evidence; DLFC-06 is unaffected.
 
-DLFC-06 SQLite MCP `workflow.run_steps` cell (2026-11-27): an authenticated
+DLFC-08 SQLite MCP `workflow.run_steps` supplemental result evidence
+(2026-11-27): an authenticated
 Rust MCP call over `SqliteRunApplicationService` now reads the same seeded
 durable events and exact-matches `workflow-run-steps-mcp-v1.json`. Rust
 `tests::sqlite_workflow_run_steps_mcp_matches_shared_contract` (**1 passed**);
 Python oracle `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_steps_matches_shared_contract`
 (**1 passed**). The existing source annotation retains its single representative
 InMemory selector; this checklist records the additional SQLite oracle. This
-proves SQLite canonical event-store behavior only, not a live Chroma projection;
-DLFC-06 remains IN PROGRESS.
+proves SQLite canonical event-store behavior only, not a live Chroma projection.
+This is supplemental DLFC-08 evidence; DLFC-06 is unaffected.
 
 DLFC-10 SQLite MCP `workflow.budget_snapshot` result cell (2026-11-27): Python
 `tests/mcp/test_chat_mcp_operator_tools.py::test_mcp_workflow_budget_snapshot_matches_shared_contract`
