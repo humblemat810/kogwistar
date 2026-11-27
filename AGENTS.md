@@ -11,6 +11,14 @@
 
 ## Dual-Language Work
 
+- **Locked acceptance workflow:** For each existing goal item, first enumerate
+  its complete required test set and baseline; add that full set before
+  implementation, then freeze exact selectors. Next implement, run focused unit
+  tests, then the smallest relevant integration batch. No tests or checklist
+  requirements may be added mid-implementation to postpone closure. Add later
+  coverage only for a reproduced defect or approved contract change, with the
+  reason recorded separately. When every frozen required test passes, mark the
+  existing item `PASS` in that same slice; do not expand its denominator.
 - North star: keep Python and Rust stacks independently usable and
   interchangeable only at explicit, safe seams; pursue a Rust-native
   end-to-end path as an additional zero-cross-language-overhead option. Preserve
