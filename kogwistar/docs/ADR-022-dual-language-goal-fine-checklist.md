@@ -406,6 +406,19 @@ passed (**1**). The parity annotation crosswalk passed (**1**), validating the
 Rust SQLite service and Python `create_runtime_router.get_workflow_run`
 mapping. This adds one scoped route/backend cell; DLFC-03 remains IN PROGRESS.
 
+DLFC-03 document-delete HTTP cell (2026-11-27): Python and Rust now consume
+`contracts/golden/document-delete-http-v1.json` for `DELETE /admin/doc/{doc_id}`.
+Python exercises the authenticated FastAPI route (not only the handler) and
+asserts exact response/deleted field sets and deletion counts; Rust exercises
+the Axum route and additionally verifies tombstone/index intent survives store
+reopen. Python selectors `tests/server/test_chat_server_api_admin.py::test_admin_delete_doc_uses_engine_rollback_lifecycle`,
+`tests/runtime/test_rust_admin_document_delete_interop.py::test_rust_admin_delete_is_readable_by_python_sqlite_store`, and the
+parity-annotation crosswalk: **3 passed**. Rust selector
+`tests::admin_document_delete_commits_rollback_and_index_intent`: **1 passed**.
+Rust parity annotation resolves both language selectors to the shared fixture.
+`ruff check` and `cargo fmt --all --check` passed. One HTTP/backend cell only;
+DLFC-03 remains IN PROGRESS.
+
 DLFC-05 workflow status capability cell (2026-11-26): with valid workflow
 namespace and role but only `project_view` (no `workflow.run.read`), Python
 `test_run_status_route_matches_shared_v1_contract` and Rust

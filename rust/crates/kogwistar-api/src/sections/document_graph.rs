@@ -83,6 +83,7 @@ fn admin_document_delete_id(path_and_query: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
+// PYTHON_PARITY_NOTE_V1: Match Python's document rollback response and durable tombstone semantics; rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#admin_document_delete_effect; python=kogwistar/server_mcp_with_admin.py#admin_delete_doc; fixture=contracts/golden/document-delete-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/server_readiness.rs#admin_document_delete_commits_rollback_and_index_intent; python_test=tests/server/test_chat_server_api_admin.py#test_admin_delete_doc_uses_engine_rollback_lifecycle
 async fn admin_document_delete_effect<S: DocumentStore>(
     request: &ApiEffectRequest,
     store: &S,

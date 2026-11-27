@@ -1,0 +1,8 @@
+{
+  "contract_version": 1,
+  "method": "DELETE",
+  "path": "/admin/doc/{doc_id}",
+  "success_status": 200,
+  "response_fields": ["ok", "doc_id", "deleted"],
+  "deleted_fields": ["nodes", "edges"]
+}

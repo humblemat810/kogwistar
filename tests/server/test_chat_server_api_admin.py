@@ -132,6 +132,12 @@ def test_designer_capabilities_falls_back_to_default_resolver(
 def test_admin_delete_doc_uses_engine_rollback_lifecycle(monkeypatch):
     doc_id = "doc-1"
     calls: list[str] = []
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/document-delete-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
 
     def rollback_document(value):
         calls.append(value)
@@ -152,13 +158,21 @@ def test_admin_delete_doc_uses_engine_rollback_lifecycle(monkeypatch):
     )
     monkeypatch.setattr(server, "require_role", lambda role: None, raising=False)
 
-    payload = server.admin_delete_doc(doc_id)
+    with TestClient(server.app) as client:
+        headers = _token_header(client, role="rw", ns="docs")
+        response = client.request(
+            contract["method"],
+            contract["path"].replace("{doc_id}", doc_id),
+            headers=headers,
+        )
 
-    assert payload == {
-        "ok": True,
-        "doc_id": doc_id,
-        "deleted": {"nodes": 2, "edges": 1},
-    }
+    assert response.status_code == contract["success_status"]
+    payload = response.json()
+    assert set(payload) == set(contract["response_fields"])
+    assert payload["ok"] is True
+    assert payload["doc_id"] == doc_id
+    assert set(payload["deleted"]) == set(contract["deleted_fields"])
+    assert payload["deleted"] == {"nodes": 2, "edges": 1}
     assert calls == [doc_id]
 
 

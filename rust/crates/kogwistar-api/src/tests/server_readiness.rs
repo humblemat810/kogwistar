@@ -225,6 +225,12 @@
         use std::sync::Arc;
         use tower::ServiceExt;
 
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-delete-http-v1.json"
+        )))
+        .unwrap();
+
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-admin-delete-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -348,8 +354,8 @@
         );
         let request = |role: &str| {
             Request::builder()
-                .method("DELETE")
-                .uri(format!("/admin/doc/{doc_id}"))
+                .method(contract["method"].as_str().unwrap())
+                .uri(contract["path"].as_str().unwrap().replace("{doc_id}", doc_id))
                 .header("authorization", format!("Bearer {}", token_for_role(role)))
                 .body(Body::empty())
                 .unwrap()
@@ -363,11 +369,33 @@
         );
 
         let response = app.oneshot(request("rw")).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
         let body = to_bytes(response.into_body(), 8192).await.unwrap();
         let body: Value = serde_json::from_slice(&body).unwrap();
+        let response_fields = contract["response_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_fields = body.as_object().unwrap().keys().map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_fields, response_fields);
         assert_eq!(body["ok"], true);
         assert_eq!(body["doc_id"], doc_id);
+        let deleted_fields = contract["deleted_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_deleted_fields = body["deleted"].as_object().unwrap().keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_deleted_fields, deleted_fields);
         assert_eq!(body["deleted"], json!({"nodes": 1, "edges": 0}));
         let jobs = kogwistar_store::IndexJobReadStore::index_jobs(
             &service.store,
