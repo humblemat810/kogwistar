@@ -226,18 +226,32 @@ operation/backend pairs, assert explicit fail-closed behavior and no side
 effect. Do not add cases after execution starts unless a concrete regression
 or approved contract change requires it.
 
-Current status: **1/5 PASS; 4 IN PROGRESS**. `PASS` requires every applicable
+Current status: **2/5 PASS; 3 IN PROGRESS**. `PASS` requires every applicable
 backend/case in the row; focused selectors alone do not close a row.
 
 | Case ID | Status | Python test selector | Rust test selector | Required cases and oracle |
 | --- | --- | --- | --- | --- |
-| AUTH-PAR-01 | IN PROGRESS | `test_workflow_design_route_acl_matrix` | `workflow_design_route_acl_matrix_matches_python` | Every supported backend; workflow graph/history reads, node/edge upsert/delete, undo, redo. Missing ACL and `ro` deny mutations before effects; `ro` permits reads; `rw` permits writes; responses and durable graph/history state match Python. |
+| AUTH-PAR-01 | PASS | `test_workflow_design_history_denies_without_acl_before_read`; `test_workflow_design_node_upsert_requires_rw_acl_before_dispatch`; `test_workflow_design_remaining_routes_enforce_acl_before_effect`; `test_workflow_design_mutations_match_shared_event_contract`; `test_workflow_design_node_delete_matches_shared_contract`; `test_workflow_design_undo_matches_shared_contract`; `test_workflow_design_redo_matches_shared_contract` | `workflow_design_history_enforces_configured_workflow_acl`; `postgres_workflow_design_acl_matrix_matches_python`; `sqlite_design_capability_mutates_graph_and_undoes_atomically`; `postgres_design_capability_mutates_and_undoes_when_dsn_available` | Supported Rust REST stores (SQLite and PostgreSQL): history/graph reads, node/edge upsert/delete, undo, redo. Missing ACL and `ro` deny mutations before effects; `ro` permits reads; `rw` permits writes. Python ACL/shared-contract oracles and Rust backend tests pass; unsupported InMemory workflow-design REST is not claimed. Evidence below. |
 | AUTH-PAR-02 | PASS | `test_conversation_read_acl_scope_matrix` | `conversation_read_acl_scope_matrix_matches_python`; `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`; `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`; `postgres_conversation_transcript_filters_hidden_rows_before_limit`; `sqlite_application_route_inventory_has_no_unclassified_cutover_drift` | InMemory, SQLite+Chroma, and PostgreSQL each cover list/detail/transcript, identity/namespace, owner and ACL visibility, workspace/graph-space scope, response projections, and ACL-before-limit. SQLite metadata-only explicitly returns NOT_IMPLEMENTED for conversation routes. Focused backend, applicability, and Python oracle selectors passed 2026-11-27. |
 | AUTH-PAR-03 | IN PROGRESS | `test_workflow_run_rest_authority_matrix` | `workflow_run_rest_authority_matrix_matches_python` | Every supported backend; submit, status, steps, evidence, lineage, resume, cancel. Preserve each Python route's distinct role/namespace, capability, owner, and per-workflow ACL rules; denied calls have no mutation or identifier leak; retry/effect state matches Python. |
 | AUTH-PAR-04 | IN PROGRESS | `test_workflow_mcp_authority_matrix` | `workflow_mcp_authority_matrix_matches_python` | Every supported backend; workflow and conversation MCP operations with authority boundaries. Check role, namespace, capability, ACL, authenticated principal binding, deny-before-dispatch, and no duplicate effects on retry; preserve intentional REST/MCP policy differences from Python. |
 | AUTH-PAR-05 | IN PROGRESS | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
 
-The four remaining selector pairs are not yet complete matrix tests. AUTH-PAR-02's
+The three remaining selector pairs are not yet complete matrix tests. AUTH-PAR-01
+is `PASS`: Python ACL oracles (**3 passed**); Rust SQLite REST ACL matrix
+`workflow_design_history_enforces_configured_workflow_acl` (**1 passed**, including
+the `rw` node-delete path and denied-before-event checks); PostgreSQL REST ACL
+matrix `postgres_workflow_design_acl_matrix_matches_python` (**1 passed**, disposable
+pgvector:pg17; missing/`ro` ACL denied for all six mutation routes with no
+workflow events, `ro` reads allowed, `rw` writes accepted); existing SQLite and
+PostgreSQL workflow-design mutation/history tests each passed (**1 passed**).
+Python shared-event, node-delete, undo, and redo contracts also passed (**4
+passed**). No production behavior change was needed: existing REST ACL gate and
+both store implementations already satisfy this matrix. InMemory workflow-design
+REST is not implemented and is not included as a supported cell. The temporary
+database was removed after testing.
+
+AUTH-PAR-02's
 Python selector covers hidden-before-limit filtering. Rust InMemory selector
 `conversation_read_acl_scope_matrix_matches_python` passes list/detail/
 transcript, required identity, namespace denial, owner-filtered listing,

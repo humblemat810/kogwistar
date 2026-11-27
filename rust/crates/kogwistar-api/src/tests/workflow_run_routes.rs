@@ -956,6 +956,20 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "{method} {suffix}");
     }
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/workflow/design/writable-wf/nodes/finish")
+                .header("authorization", format!("Bearer {write_token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"designer_id":"alice"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "DELETE nodes/finish");
     assert!(!service
         .store
         .replay_raw_events("wf_design:writable-wf", 0, 100)
@@ -1024,6 +1038,216 @@ async fn workflow_design_history_enforces_configured_workflow_acl() {
     drop(app);
     drop(service);
     remove_test_sqlite(&sqlite_path);
+    let _ = std::fs::remove_file(auth_path);
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+async fn postgres_workflow_design_acl_matrix_matches_python() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_workflow_design_acl_{}", uuid::Uuid::new_v4().simple());
+    let auth_path = std::env::temp_dir().join(format!(
+        "kogwistar-pg-design-acl-auth-{}.sqlite",
+        uuid::Uuid::new_v4()
+    ));
+    let auth_config = AuthConfig {
+        auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some("pg-design-acl-secret".to_owned()),
+        ..AuthConfig::default()
+    };
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+        .unwrap()
+        .with_owner_auth_config(&auth_config)
+        .await
+        .unwrap();
+    service.ensure_schema().await.unwrap();
+
+    let auth = rusqlite::Connection::open(&auth_path).unwrap();
+    auth.execute(
+        "INSERT INTO users (user_id, email, is_active, created_at) VALUES ('alice', 'alice@example.test', 1, CURRENT_TIMESTAMP)",
+        [],
+    )
+    .unwrap();
+    for (workflow_id, role) in [("read-only-wf", "ro"), ("writable-wf", "rw")] {
+        auth.execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?1, 'alice', ?2)",
+            rusqlite::params![workflow_id, role],
+        )
+        .unwrap();
+    }
+    drop(auth);
+
+    let token = |role: &str, capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "user_id": "alice",
+                "role": role,
+                "ns": ["workflow"],
+                "capabilities": capabilities,
+                "exp": 4102444800_u64
+            }),
+            &EncodingKey::from_secret(b"pg-design-acl-secret"),
+        )
+        .unwrap()
+    };
+    let read_token = token("ro", &["workflow.design.inspect"]);
+    let write_token = token(
+        "rw",
+        &[
+            "workflow.design.inspect",
+            "workflow.design.write",
+            "write_graph",
+            "approve_action",
+        ],
+    );
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: auth_config,
+        },
+        Arc::new(service.clone()),
+    );
+
+    let read = |workflow_id: &str, suffix: &str| {
+        app.clone().oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/workflow/design/{workflow_id}/{suffix}"))
+                .header("authorization", format!("Bearer {read_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+    };
+    for suffix in ["history", "graph"] {
+        for (workflow_id, expected) in [
+            ("missing-acl-wf", StatusCode::FORBIDDEN),
+            ("read-only-wf", StatusCode::OK),
+        ] {
+            assert_eq!(
+                read(workflow_id, suffix).await.unwrap().status(),
+                expected,
+                "GET {suffix} for {workflow_id}"
+            );
+        }
+    }
+
+    let mutations = [
+        (
+            "POST",
+            "nodes",
+            json!({"designer_id":"alice","node_id":"start","label":"Start","op":"start","start":true}),
+        ),
+        (
+            "POST",
+            "edges",
+            json!({"designer_id":"alice","edge_id":"edge","src":"start","dst":"finish","relation":"next"}),
+        ),
+        ("DELETE", "nodes/start", json!({"designer_id":"alice"})),
+        ("DELETE", "edges/edge", json!({"designer_id":"alice"})),
+        ("POST", "undo", json!({"designer_id":"alice"})),
+        ("POST", "redo", json!({"designer_id":"alice"})),
+    ];
+    for workflow_id in ["missing-acl-wf", "read-only-wf"] {
+        for (method, suffix, body) in &mutations {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(*method)
+                        .uri(format!("/api/workflow/design/{workflow_id}/{suffix}"))
+                        .header("authorization", format!("Bearer {write_token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {suffix} for {workflow_id}"
+            );
+        }
+    }
+
+    for (method, suffix, body) in [
+        ("POST", "nodes", json!({"designer_id":"alice","node_id":"start","label":"Start","op":"start","start":true})),
+        ("POST", "nodes", json!({"designer_id":"alice","node_id":"finish","label":"Finish","op":"finish"})),
+        ("POST", "edges", json!({"designer_id":"alice","edge_id":"edge","src":"start","dst":"finish","relation":"next"})),
+        ("DELETE", "edges/edge", json!({"designer_id":"alice"})),
+        ("POST", "undo", json!({"designer_id":"alice"})),
+        ("POST", "redo", json!({"designer_id":"alice"})),
+        ("DELETE", "nodes/finish", json!({"designer_id":"alice"})),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(format!("/api/workflow/design/writable-wf/{suffix}"))
+                    .header("authorization", format!("Bearer {write_token}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method} {suffix}");
+    }
+
+    for workflow_id in ["missing-acl-wf", "read-only-wf"] {
+        assert!(service
+            .store
+            .replay_raw_events(&format!("wf_design:{workflow_id}"), 0, 10)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+    assert!(!service
+        .store
+        .replay_raw_events("wf_design:writable-wf", 0, 100)
+        .await
+        .unwrap()
+        .is_empty());
+
+    drop(app);
+    drop(service);
+    let cleanup_dsn = dsn
+        .strip_prefix("postgresql+psycopg://")
+        .map(|rest| format!("postgresql://{rest}"))
+        .or_else(|| {
+            dsn.strip_prefix("postgresql+psycopg2://")
+                .map(|rest| format!("postgresql://{rest}"))
+        })
+        .unwrap_or(dsn);
+    let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(async move { connection.await });
+    client
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+             DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+        ))
+        .await
+        .unwrap();
+    drop(client);
+    connection_task.await.unwrap().unwrap();
     let _ = std::fs::remove_file(auth_path);
 }
 
