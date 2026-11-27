@@ -464,6 +464,31 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     )
 
 
+def test_auth_parity_matrix_has_explicit_consistent_statuses() -> None:
+    path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    content = path.read_text(encoding="utf-8")
+    rows = _markdown_table_rows(path, "| AUTH-PAR-")
+    expected_ids = {f"AUTH-PAR-{index:02}" for index in range(1, 6)}
+    assert {row[0] for row in rows} == expected_ids
+    assert all(
+        row[1] in {"PASS", "IN PROGRESS", "NOT STARTED", "FAIL", "BLOCKED"}
+        for row in rows
+    )
+    assert all(row[2] and row[3] for row in rows), (
+        "each matrix row must keep both selectors"
+    )
+
+    summary = re.search(
+        r"Current status: \*\*(\d+)/5 PASS; (\d+) IN PROGRESS\*\*", content
+    )
+    assert summary is not None, "AUTH-PAR matrix status summary is required"
+    counts = {
+        status: sum(row[1] == status for row in rows)
+        for status in ("PASS", "IN PROGRESS")
+    }
+    assert tuple(map(int, summary.groups())) == (counts["PASS"], counts["IN PROGRESS"])
+
+
 def test_native_operation_backend_evidence_matrix_is_complete() -> None:
     inventory = json.loads(
         (

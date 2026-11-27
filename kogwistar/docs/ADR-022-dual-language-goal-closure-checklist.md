@@ -226,13 +226,16 @@ operation/backend pairs, assert explicit fail-closed behavior and no side
 effect. Do not add cases after execution starts unless a concrete regression
 or approved contract change requires it.
 
-| Case ID | Python test selector | Rust test selector | Required cases and oracle |
-| --- | --- | --- | --- |
-| AUTH-PAR-01 | `test_workflow_design_route_acl_matrix` | `workflow_design_route_acl_matrix_matches_python` | Every supported backend; workflow graph/history reads, node/edge upsert/delete, undo, redo. Missing ACL and `ro` deny mutations before effects; `ro` permits reads; `rw` permits writes; responses and durable graph/history state match Python. |
-| AUTH-PAR-02 | `test_conversation_read_acl_scope_matrix` | `conversation_read_acl_scope_matrix_matches_python` | Every supported backend; conversation list/detail/transcript. Check missing identity, wrong namespace, owner isolation, ACL-hidden entities, workspace/graph-space mismatch, and ACL filtering before limit. Denials precede protected reads; visible response projection matches Python. |
-| AUTH-PAR-03 | `test_workflow_run_rest_authority_matrix` | `workflow_run_rest_authority_matrix_matches_python` | Every supported backend; submit, status, steps, evidence, lineage, resume, cancel. Preserve each Python route's distinct role/namespace, capability, owner, and per-workflow ACL rules; denied calls have no mutation or identifier leak; retry/effect state matches Python. |
-| AUTH-PAR-04 | `test_workflow_mcp_authority_matrix` | `workflow_mcp_authority_matrix_matches_python` | Every supported backend; workflow and conversation MCP operations with authority boundaries. Check role, namespace, capability, ACL, authenticated principal binding, deny-before-dispatch, and no duplicate effects on retry; preserve intentional REST/MCP policy differences from Python. |
-| AUTH-PAR-05 | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
+Current status: **0/5 PASS; 5 IN PROGRESS**. `PASS` requires every applicable
+backend/case in the row; focused selectors alone do not close a row.
+
+| Case ID | Status | Python test selector | Rust test selector | Required cases and oracle |
+| --- | --- | --- | --- | --- |
+| AUTH-PAR-01 | IN PROGRESS | `test_workflow_design_route_acl_matrix` | `workflow_design_route_acl_matrix_matches_python` | Every supported backend; workflow graph/history reads, node/edge upsert/delete, undo, redo. Missing ACL and `ro` deny mutations before effects; `ro` permits reads; `rw` permits writes; responses and durable graph/history state match Python. |
+| AUTH-PAR-02 | IN PROGRESS | `test_conversation_read_acl_scope_matrix` | `conversation_read_acl_scope_matrix_matches_python` | Every supported backend; conversation list/detail/transcript. Check missing identity, wrong namespace, owner isolation, ACL-hidden entities, workspace/graph-space mismatch, and ACL filtering before limit. Denials precede protected reads; visible response projection matches Python. |
+| AUTH-PAR-03 | IN PROGRESS | `test_workflow_run_rest_authority_matrix` | `workflow_run_rest_authority_matrix_matches_python` | Every supported backend; submit, status, steps, evidence, lineage, resume, cancel. Preserve each Python route's distinct role/namespace, capability, owner, and per-workflow ACL rules; denied calls have no mutation or identifier leak; retry/effect state matches Python. |
+| AUTH-PAR-04 | IN PROGRESS | `test_workflow_mcp_authority_matrix` | `workflow_mcp_authority_matrix_matches_python` | Every supported backend; workflow and conversation MCP operations with authority boundaries. Check role, namespace, capability, ACL, authenticated principal binding, deny-before-dispatch, and no duplicate effects on retry; preserve intentional REST/MCP policy differences from Python. |
+| AUTH-PAR-05 | IN PROGRESS | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
 
 These five selector pairs are not yet complete matrix tests. AUTH-PAR-02's
 Python selector now covers its hidden-before-limit regression; its paired Rust
