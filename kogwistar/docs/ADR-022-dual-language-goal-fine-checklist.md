@@ -858,8 +858,14 @@ are Rust application routes. This proves selector/tasklet coverage for each
 GET route, not every route's applicable backend or the DLFC-06 read semantics
 (filtering, limits, hydration, lifecycle, provenance, not-found). Existing
 inventory has no operation-by-backend test-cell mapping, so a reliable count
-of remaining DLFC-06 cells cannot yet be derived from it. No test or checklist
-item was added; DLFC-06 remains IN PROGRESS.
+of remaining DLFC-06 cells cannot yet be derived from it. Concrete example:
+`GET /api/workflow/services` has a Rust PostgreSQL handler and a declared
+PostgreSQL application-service path, while `FW-03-03A-HTTP-GET-ea5861b7`
+asserts the shared success body only for SQLite. The existing Rust
+`tests::workflow_service_read_mcp_admission_matches_python_policy_for_all_stores`
+passed (**1 passed**); it verifies MCP admission/denial for SQLite and
+PostgreSQL, not successful REST list projection. No test or checklist item was
+added; DLFC-06 remains IN PROGRESS.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
