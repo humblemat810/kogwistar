@@ -348,7 +348,7 @@ Python focused batch:
 `test_run_steps_matches_shared_rust_projection_fixture`, plus status ACL allow
 and deny tests in `tests/server/test_workflow_lineage_api.py` (**5 passed**).
 Rust integrated regression (**1 passed**). This closes only these InMemory
-workflow run-read cells; DLFC-05 and DLFC-10 remain IN PROGRESS.
+workflow run-read cells; DLFC-05 is subsequently closed as PASS. DLFC-10 remains IN PROGRESS.
 
 Delegated workflow-run read parity also has persistent-backend evidence: SQLite
 `tests::sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl`
