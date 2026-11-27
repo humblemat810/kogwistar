@@ -331,11 +331,13 @@ transcript route selectors passed (**20 passed**); Rust
 `tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
 passed (**1 passed**) with authenticated HTTP list/detail/transcript checks.
 This confirms those existing SQLite+Chroma and Python cells only. The fixed
-AUTH-PAR-02 matrix selector pair remains unimplemented. A live PostgreSQL
+AUTH-PAR-02's Python selector now exists; its Rust paired matrix selector
+remains unimplemented. A live PostgreSQL
 rerun of `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
 also passed (**1 passed**, disposable pgvector), verifying scoped list/detail/
 transcript, private-turn filtering, foreign workspace/graph-space exclusion,
-and foreign-owner 404. Missing-identity/namespace matrix and complete backend
+and foreign-owner 404. Python AUTH-PAR-02 selector now exists; paired Rust
+matrix selector, missing-identity/namespace matrix, and complete backend
 crosswalk remain unverified; DLFC-06 stays IN PROGRESS and DLFC-05 stays PASS.
 
 Python ACL-hidden conversation queries now also assert owner-list projection
