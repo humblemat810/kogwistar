@@ -752,7 +752,15 @@ and Rust live PostgreSQL
 `tests::postgres_edge_hydration_preserves_hyperedge_endpoint_ids` (**1 passed**,
 disposable pgvector). This confirms preserved hyperedge endpoint IDs for the
 shared projection and PostgreSQL hydration; it does not establish equivalent
-HTTP hydration coverage for every backend.
+HTTP hydration coverage for every backend. Architecture check: InMemory and
+SQLite+Chroma retain complete endpoint arrays in `GraphRecord` documents; only
+PostgreSQL reconstructs them from normalized endpoint rows. Their existing
+route selectors `tests::in_memory_backend_routes_authenticated_graph_write_and_mcp_read`
+and `tests::sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered`
+were rerun (**1 passed each**) and cover scoped/ACL-filtered graph route reads;
+they do not use the hyperedge fixture. Thus no separate InMemory/SQLite
+hydration implementation is missing, while exact same-fixture HTTP projection
+across those routes remains unverified.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
