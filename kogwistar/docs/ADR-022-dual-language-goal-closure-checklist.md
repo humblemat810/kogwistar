@@ -303,7 +303,11 @@ occurs before run-store access. The focused Rust workflow-run suite passed
 (**15 passed, 2 ignored**), Python route oracles passed (**6 passed**, plus
 `test_runtime_rest_cancel` **1 passed**), Rust
 API build succeeded, and the live Rust PostgreSQL HTTP smoke passed (**1
-passed**). These results close only these preflight defects;
+passed**). The existing
+`test_rust_postgres_server_submit_claim_read_cancel_true_socket` selector also
+passed against disposable pgvector (**1 passed**), covering live submit,
+claim/result, status, cancel, and resume paths. These results close only
+these preflight defects;
 the PostgreSQL-specific existing selectors
 `postgres_run_evidence_route_returns_only_authorized_run_snapshot` and
 `postgres_workflow_lineage_route_checks_each_workflow_acl` were run against a
