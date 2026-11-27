@@ -664,6 +664,86 @@ async fn workflow_run_submit_enforces_configured_workflow_acl() {
         );
     }
 
+    let route_services: [(&str, Arc<dyn ApplicationService>); 3] = [
+        ("sqlite_metadata", Arc::new(service.clone())),
+        ("in_memory", Arc::new(memory_service.clone())),
+        ("postgres", Arc::new(postgres_service.clone())),
+    ];
+    for (backend, route_service) in route_services {
+        let route_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            route_service,
+        );
+        for workflow_id in ["no-acl", "read-only"] {
+            let requests = [
+                (
+                    "submit",
+                    "/api/workflow/runs",
+                    json!({
+                        "run_id": format!("{backend}-{workflow_id}-submit"),
+                        "workflow_id": workflow_id,
+                        "conversation_id": "workflow-acl-conversation"
+                    }),
+                ),
+                (
+                    "resume",
+                    "/api/workflow/runs/missing-resume-run/resume",
+                    json!({
+                        "suspended_node_id": "node",
+                        "suspended_token_id": "token",
+                        "workflow_id": workflow_id,
+                        "conversation_id": "workflow-acl-conversation",
+                        "turn_node_id": "turn"
+                    }),
+                ),
+            ];
+            for (operation, path, body) in requests {
+                let response = route_app
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("POST")
+                            .uri(path)
+                            .header("content-type", "application/json")
+                            .header("authorization", format!("Bearer {token}"))
+                            .body(Body::from(body.to_string()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    response.status(),
+                    StatusCode::FORBIDDEN,
+                    "{backend}/{operation}/{workflow_id}"
+                );
+                let body: Value = serde_json::from_slice(
+                    &to_bytes(response.into_body(), 8192).await.unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    body["code"],
+                    "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                    "{backend}/{operation}/{workflow_id}"
+                );
+                assert!(
+                    !body.to_string().contains("missing-resume-run"),
+                    "{backend}/{operation}/{workflow_id}"
+                );
+            }
+        }
+    }
+
     for workflow_id in ["no-acl", "read-only"] {
         let response = app
             .clone()
