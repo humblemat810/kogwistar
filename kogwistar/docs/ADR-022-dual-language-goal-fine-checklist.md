@@ -790,14 +790,17 @@ plus `tests/server/test_chat_server_api_workflow_design.py::test_workflow_lane_p
 (**1 passed**). Rust `tests::in_memory_run_events_poll_matches_shared_contract`
 and `tests::in_memory_run_steps_route_matches_shared_python_projection` passed
 (**1 each**); `tests::sqlite_run_service_handles_get_events_and_cancel`
-passed (**1**, SQLite run-service aggregate). Coverage audit found no Rust
-PostgreSQL run-step HTTP shared-fixture selector; same-fixture hyperedge HTTP
-projection remains unverified on InMemory and SQLite+Chroma (their existing
-route tests do not use that fixture). MCP replay and run-step tests are tracked
-under DLFC-08, not credited to this HTTP-read item. This rechecks named HTTP
-poll, step, lane-progress, and SQLite handler cells only; DLFC-06 remains IN
-PROGRESS because these backend/fixture gaps and its full read/query matrix are
-not exhausted.
+passed (**1**, SQLite run-service aggregate). Rust
+`tests::postgres_run_steps_http_matches_shared_python_projection` now matches
+the same `workflow-step-inspection-v1.json` result (**1 passed** against a
+disposable pgvector schema, exercising service-level GET dispatch rather than
+the outer HTTP transport). Same-fixture hyperedge HTTP projection remains
+unverified on InMemory and SQLite+Chroma (their existing route tests do not use
+that fixture). MCP replay and run-step tests are tracked under DLFC-08, not
+credited to this HTTP-read item. This rechecks named HTTP poll, step,
+lane-progress, SQLite handlers, and PostgreSQL run-step cells only; DLFC-06
+remains IN PROGRESS because hyperedge projection and the full read/query matrix
+are not exhausted.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
