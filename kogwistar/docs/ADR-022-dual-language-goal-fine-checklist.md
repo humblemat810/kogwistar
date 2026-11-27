@@ -81,6 +81,17 @@ and the parity-annotation crosswalk passed (**1 each**). Existing Rust service
 logic already satisfied the contract; this closes the missing HTTP-level
 evidence cell only. DLFC-03 remains IN PROGRESS.
 
+DLFC-03 InMemory run-status HTTP cell (2026-11-27): Rust
+`tests::in_memory_run_status_http_matches_shared_contract_for_all_states`
+passes authenticated Axum HTTP for queued/running/succeeded/failed/cancelled
+through both `/api/runs/{id}` and `/api/workflow/runs/{id}` (**1 passed**).
+It checks each shared fixture's required fields, route-body equivalence,
+terminal/result/error/timestamps, and wrong-namespace denial without ID
+disclosure. Python legacy and workflow route oracles plus parity crosswalk
+passed (**3 passed**). Existing InMemory run projection already matched; no
+production change was required. This closes one HTTP/backend evidence cell;
+DLFC-03 remains IN PROGRESS.
+
 SQLite+Chroma MCP resume evidence (2026-11-26): existing ignored test
 `tests::sqlite_runtime_worker_lifecycle::sqlite_chroma_mcp_resume_continues_persisted_suspended_token`
 passed against disposable live `chromadb/chroma:latest` (**1 passed**, no skip).

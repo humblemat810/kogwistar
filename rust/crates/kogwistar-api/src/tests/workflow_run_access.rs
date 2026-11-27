@@ -1403,6 +1403,212 @@ async fn in_memory_checkpoint_list_http_matches_shared_python_contract() {
     assert!(!String::from_utf8_lossy(&denied_body).contains(run_id));
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#server_run_value; python=kogwistar/server/chat_api.py#create_chat_router.get_run; fixture=contracts/golden/run-status-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_status_http_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api_run_inspection.py#test_run_detail_uses_python_defaults_and_checks_namespace
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service/run_lifecycle.rs#read_runtime_run_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_run; fixture=contracts/golden/workflow-run-status-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_status_http_matches_shared_contract_for_all_states; python_test=tests/server/test_chat_server_api_runtime_workflow.py#test_run_status_route_matches_shared_v1_contract
+#[tokio::test]
+async fn in_memory_run_status_http_matches_shared_contract_for_all_states() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let service = Arc::new(InMemoryGraphApplicationService::default());
+    let status_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-status-v1.json"
+    ))
+    .unwrap();
+    let workflow_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-status-http-v1.json"
+    ))
+    .unwrap();
+    let statuses = ["queued", "running", "succeeded", "failed", "cancelled"];
+    let terminal_statuses = status_contract["terminal_statuses"].as_array().unwrap();
+
+    for status in statuses {
+        let run_id = format!("memory-status-{status}");
+        kogwistar_store::ServerRunWriteStore::create_server_run(
+            &service.store,
+            ServerRunCreate {
+                run_id: run_id.clone(),
+                conversation_id: "memory-status-conversation".to_owned(),
+                workflow_id: "memory-status-workflow".to_owned(),
+                user_id: Some("memory-status-owner".to_owned()),
+                user_turn_node_id: "memory-status-turn".to_owned(),
+                status: "queued".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+        if status != "queued" {
+            kogwistar_store::ServerRunWriteStore::update_server_run(
+                &service.store,
+                &run_id,
+                kogwistar_store::ServerRunUpdate {
+                    status: status.to_owned(),
+                    assistant_turn_node_id: (status == "succeeded")
+                        .then(|| "memory-status-assistant".to_owned()),
+                    result_json: (status == "succeeded")
+                        .then(|| r#"{"answer":"done"}"#.to_owned()),
+                    error_json: (status == "failed")
+                        .then(|| r#"{"code":"E_TEST","message":"failed"}"#.to_owned()),
+                    started_at_ms: Some(3),
+                    finished_at_ms: terminal_statuses
+                        .iter()
+                        .any(|terminal| terminal == status)
+                        .then_some(4),
+                    cancel_requested: Some(false),
+                },
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    let secret = b"memory-run-status-contract-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"memory-status-owner",
+            "user_id":"memory-status-owner",
+            "role":"ro",
+            "ns":["conversation", "workflow"],
+            "capabilities":["workflow.run.read"],
+            "iss":"local",
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(String::from_utf8(secret.to_vec()).unwrap()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        service,
+    );
+
+    for status in statuses {
+        let run_id = format!("memory-status-{status}");
+        let mut projected = None;
+        for (route, contract) in [
+            (format!("/api/runs/{run_id}"), &status_contract),
+            (format!("/api/workflow/runs/{run_id}"), &workflow_contract),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(&route)
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status().as_u16(),
+                contract["success_status"].as_u64().unwrap() as u16,
+                "{route}"
+            );
+            let body = to_bytes(response.into_body(), 16_384).await.unwrap();
+            let body: Value = serde_json::from_slice(&body).unwrap();
+            for field in contract["required_fields"].as_array().unwrap() {
+                let field = field.as_str().unwrap();
+                assert!(body.get(field).is_some(), "{route} missing {field}");
+            }
+            assert_eq!(body["run_id"], run_id);
+            assert_eq!(body["status"], status);
+            assert_eq!(body["conversation_id"], "memory-status-conversation");
+            assert_eq!(body["workflow_id"], "memory-status-workflow");
+            assert_eq!(body["user_id"], "memory-status-owner");
+            assert_eq!(body["user_turn_node_id"], "memory-status-turn");
+            assert_eq!(body["terminal"], terminal_statuses.contains(&json!(status)));
+            assert_eq!(body["cancel_requested"], false);
+            assert_eq!(
+                body["assistant_turn_node_id"],
+                if status == "succeeded" {
+                    json!("memory-status-assistant")
+                } else {
+                    Value::Null
+                }
+            );
+            assert_eq!(
+                body["result"],
+                if status == "succeeded" {
+                    json!({"answer":"done"})
+                } else {
+                    Value::Null
+                }
+            );
+            assert_eq!(
+                body["error"],
+                if status == "failed" {
+                    json!({"code":"E_TEST","message":"failed"})
+                } else {
+                    Value::Null
+                }
+            );
+            assert_eq!(body["started_at_ms"], json!((status != "queued").then_some(3)));
+            assert_eq!(
+                body["finished_at_ms"],
+                json!(terminal_statuses
+                    .iter()
+                    .any(|terminal| terminal == status)
+                    .then_some(4))
+            );
+            if let Some(previous) = &projected {
+                assert_eq!(&body, previous, "route projections differ for {status}");
+            } else {
+                projected = Some(body);
+            }
+        }
+    }
+
+    let denied = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/workflow/runs/memory-status-succeeded")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        encode(
+                            &Header::new(Algorithm::HS256),
+                            &json!({
+                                "sub":"memory-status-owner",
+                                "user_id":"memory-status-owner",
+                                "role":"ro",
+                                "ns":["wisdom"],
+                                "capabilities":["workflow.run.read"],
+                                "iss":"local",
+                                "exp":4102444800_u64
+                            }),
+                            &EncodingKey::from_secret(secret)
+                        )
+                        .unwrap()
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let denied_body = to_bytes(denied.into_body(), 4096).await.unwrap();
+    assert!(!String::from_utf8_lossy(&denied_body).contains("memory-status-succeeded"));
+}
+
 #[tokio::test]
 async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
     let service = PostgresRunApplicationService::from_dsn(
