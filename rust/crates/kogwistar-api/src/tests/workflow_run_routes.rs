@@ -1881,6 +1881,93 @@ async fn sqlite_mcp_run_submit_persists_admission() {
 }
 
 #[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses a disposable PostgreSQL schema"]
+// PYTHON_PARITY_NOTE_V1: Authenticated MCP workflow submission persists the principal owner, not caller-supplied user_id. rust=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#postgres_mcp_run_submit_persists_authenticated_owner; python=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_runtime_submit_cancel; fixture=contracts/golden/workflow-run-submit-mcp-v1.json
+async fn postgres_mcp_run_submit_persists_authenticated_owner() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_mcp_submit_{}", uuid::Uuid::new_v4().simple());
+    let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+    service.ensure_graph_type_schemas().await.unwrap();
+
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-run-submit-mcp-v1.json"
+    ))
+    .unwrap();
+    let expected_owner = contract["python_service_arguments"]["user_id"]
+        .as_str()
+        .unwrap();
+    let secret = "postgres-mcp-submit-test-secret";
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":expected_owner, "user_id":expected_owner, "role":"rw", "ns":["workflow"],
+            "capabilities":["spawn_process", "workflow.run.write"],
+            "iss":"local", "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                issuer: Some("local".to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let mut arguments = contract["arguments"].clone();
+    arguments["user_id"] = json!("caller-controlled-owner");
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"postgres-submit", "method":"tools/call",
+                        "params":{"name":contract["tool"], "arguments":arguments}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 8192).await.unwrap();
+    let data = String::from_utf8(body.to_vec()).unwrap();
+    let message = data
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("MCP submit response");
+    let payload: Value = serde_json::from_str(message).unwrap();
+    assert_ne!(payload["result"]["isError"], true, "{payload}");
+    let run_id = payload["result"]["structuredContent"]["run_id"]
+        .as_str()
+        .expect("submitted run ID");
+    let persisted = service.store.get_server_run(run_id).await.unwrap().unwrap();
+    assert_eq!(persisted.user_id.as_deref(), Some(expected_owner));
+    assert_eq!(persisted.workflow_id, contract["arguments"]["workflow_id"]);
+    assert_eq!(persisted.conversation_id, contract["arguments"]["conversation_id"]);
+}
+
+#[tokio::test]
 async fn run_evidence_checks_authority_before_run_lookup() {
     let sqlite_path = std::env::temp_dir().join(format!(
         "kogwistar-evidence-auth-order-{}.sqlite",
