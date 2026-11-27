@@ -785,9 +785,15 @@ passed (**1**, SQLite run-service aggregate). Workflow replay MCP shared
 fixture passed on both sides: Python
 `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_replay_matches_shared_contract`
 and Rust `tests::mcp_workflow_run_replay_matches_shared_contract` (**1 each**).
+The run-step MCP fixture also passed on Python
+`tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_steps_matches_shared_contract`
+and Rust `tests::sqlite_workflow_run_steps_mcp_matches_shared_contract`
+(**1 each**). Coverage audit found no Rust PostgreSQL run-step MCP shared-fixture
+selector; same-fixture hyperedge HTTP projection remains unverified on InMemory
+and SQLite+Chroma (their existing route tests do not use that fixture).
 This rechecks named poll, step, lane-progress, replay, and SQLite handler cells
-only; DLFC-06 remains IN PROGRESS because its full read/query/backend matrix is
-not exhausted.
+only; DLFC-06 remains IN PROGRESS because these backend/fixture gaps and its
+full read/query matrix are not exhausted.
 
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
