@@ -226,18 +226,18 @@ operation/backend pairs, assert explicit fail-closed behavior and no side
 effect. Do not add cases after execution starts unless a concrete regression
 or approved contract change requires it.
 
-Current status: **0/5 PASS; 5 IN PROGRESS**. `PASS` requires every applicable
+Current status: **1/5 PASS; 4 IN PROGRESS**. `PASS` requires every applicable
 backend/case in the row; focused selectors alone do not close a row.
 
 | Case ID | Status | Python test selector | Rust test selector | Required cases and oracle |
 | --- | --- | --- | --- | --- |
 | AUTH-PAR-01 | IN PROGRESS | `test_workflow_design_route_acl_matrix` | `workflow_design_route_acl_matrix_matches_python` | Every supported backend; workflow graph/history reads, node/edge upsert/delete, undo, redo. Missing ACL and `ro` deny mutations before effects; `ro` permits reads; `rw` permits writes; responses and durable graph/history state match Python. |
-| AUTH-PAR-02 | IN PROGRESS | `test_conversation_read_acl_scope_matrix` | `conversation_read_acl_scope_matrix_matches_python` | Every supported backend; conversation list/detail/transcript. Check missing identity, wrong namespace, owner isolation, ACL-hidden entities, workspace/graph-space mismatch, and ACL filtering before limit. Denials precede protected reads; visible response projection matches Python. |
+| AUTH-PAR-02 | PASS | `test_conversation_read_acl_scope_matrix` | `conversation_read_acl_scope_matrix_matches_python`; `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`; `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`; `postgres_conversation_transcript_filters_hidden_rows_before_limit`; `sqlite_application_route_inventory_has_no_unclassified_cutover_drift` | InMemory, SQLite+Chroma, and PostgreSQL each cover list/detail/transcript, identity/namespace, owner and ACL visibility, workspace/graph-space scope, response projections, and ACL-before-limit. SQLite metadata-only explicitly returns NOT_IMPLEMENTED for conversation routes. Focused backend, applicability, and Python oracle selectors passed 2026-11-27. |
 | AUTH-PAR-03 | IN PROGRESS | `test_workflow_run_rest_authority_matrix` | `workflow_run_rest_authority_matrix_matches_python` | Every supported backend; submit, status, steps, evidence, lineage, resume, cancel. Preserve each Python route's distinct role/namespace, capability, owner, and per-workflow ACL rules; denied calls have no mutation or identifier leak; retry/effect state matches Python. |
 | AUTH-PAR-04 | IN PROGRESS | `test_workflow_mcp_authority_matrix` | `workflow_mcp_authority_matrix_matches_python` | Every supported backend; workflow and conversation MCP operations with authority boundaries. Check role, namespace, capability, ACL, authenticated principal binding, deny-before-dispatch, and no duplicate effects on retry; preserve intentional REST/MCP policy differences from Python. |
 | AUTH-PAR-05 | IN PROGRESS | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
 
-These five selector pairs are not yet complete matrix tests. AUTH-PAR-02's
+The four remaining selector pairs are not yet complete matrix tests. AUTH-PAR-02's
 Python selector covers hidden-before-limit filtering. Rust InMemory selector
 `conversation_read_acl_scope_matrix_matches_python` passes list/detail/
 transcript, required identity, namespace denial, owner-filtered listing,
@@ -262,10 +262,15 @@ wrong-namespace detail returns 403. New focused PostgreSQL selector
 10,001 ACL-hidden turns before one visible turn via bulk SQL and verifies the
 visible turn survives transcript projection (**1 passed**, disposable
 pgvector:pg17; 2026-11-27). No production change was needed: the route already
-reads all graph projection pages before ACL filtering. Still missing for
-AUTH-PAR-02: a consolidated per-backend response-projection oracle. InMemory,
-SQLite+Chroma, and PostgreSQL cover missing identity and wrong namespace.
-AUTH-PAR-02 stays `IN PROGRESS`; it does not reopen DLFC-05.
+reads all graph projection pages before ACL filtering. Reverification on
+2026-11-27: Rust InMemory matrix (**1 passed**), SQLite+Chroma matrix
+(**1 passed**), PostgreSQL scoped list/detail/transcript (**1 passed**),
+PostgreSQL hidden-before-visible (**1 passed**), and Python matrix oracle
+(**1 passed**). `sqlite_application_route_inventory_has_no_unclassified_cutover_drift`
+passed and confirms conversation REST routes fail closed on SQLite metadata-only.
+Together these cover every declared backend in this row;
+AUTH-PAR-02 is `PASS`. This does not reopen DLFC-05 or imply the other four
+AUTH-PAR rows are complete.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |
