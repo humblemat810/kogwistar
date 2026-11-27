@@ -57,7 +57,7 @@ class _ConversationQueryService(_BaseComponent):
             self._conversation_engine().read.get_nodes(
                 where={"conversation_id": conversation_id},
                 node_type=ConversationNode,
-                limit=10_000,
+                limit=None,
             ),
         )
         nodes = [
@@ -104,7 +104,7 @@ class _ConversationQueryService(_BaseComponent):
                     ]
                 },
                 node_type=ConversationNode,
-                limit=10_000,
+                limit=None,
             ),
         )
 

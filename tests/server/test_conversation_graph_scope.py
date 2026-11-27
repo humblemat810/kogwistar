@@ -375,3 +375,86 @@ def test_acl_hidden_turn_is_filtered_by_python_conversation_queries(tmp_path) ->
     finally:
         reset_claims_ctx(outsider_token)
         engine.close()
+
+
+def test_conversation_read_acl_scope_matrix() -> None:
+    hidden_turns = [
+        SimpleNamespace(
+            id=f"private-{index}",
+            conversation_id="c1",
+            user_id="alice",
+            turn_index=index,
+            role="assistant",
+            summary="private",
+            properties={},
+            metadata={"entity_type": "assistant_turn", "acl_visible": False},
+        )
+        for index in range(10_000)
+    ]
+    visible_start = SimpleNamespace(
+        id="start-c1",
+        conversation_id="c1",
+        user_id="alice",
+        turn_index=0,
+        role="system",
+        summary="start",
+        properties={"status": "active"},
+        metadata={"entity_type": "conversation_start", "acl_visible": True},
+    )
+    visible_turn = SimpleNamespace(
+        id="visible-turn",
+        conversation_id="c1",
+        user_id="alice",
+        turn_index=10_001,
+        role="assistant",
+        summary="visible answer",
+        properties={},
+        metadata={"entity_type": "assistant_turn", "acl_visible": True},
+    )
+    nodes = [visible_start, *hidden_turns, visible_turn]
+
+    class AclRead:
+        def __init__(self) -> None:
+            self.limits: list[int | None] = []
+
+        def get_nodes(self, **kwargs: object) -> list[SimpleNamespace]:
+            where = kwargs.get("where")
+            if isinstance(where, dict) and "conversation_id" in where:
+                matched = [
+                    node for node in nodes if node.conversation_id == where["conversation_id"]
+                ]
+            else:
+                matched = [
+                    node
+                    for node in nodes
+                    if node.metadata["entity_type"] == "conversation_start"
+                    and node.user_id == "alice"
+                ]
+            limit = cast(int | None, kwargs.get("limit"))
+            self.limits.append(limit)
+            if limit is not None:
+                matched = matched[:limit]
+            return [node for node in matched if node.metadata["acl_visible"]]
+
+    read = AclRead()
+    service = _ConversationQueryService(
+        cast(
+            ChatRunService,
+            SimpleNamespace(
+                _conversation_engine=lambda: SimpleNamespace(read=read),
+                _conversation_service=lambda: SimpleNamespace(
+                    get_conversation_tail=lambda **_kwargs: visible_turn
+                ),
+            ),
+        )
+    )
+
+    listed = service.list_conversations_for_user("alice")
+    detail = service.get_conversation("c1")
+    transcript = service.list_transcript("c1")
+
+    assert listed[0]["turn_count"] == 1
+    assert detail["turn_count"] == 1
+    assert detail["tail_node_id"] == "visible-turn"
+    assert [turn["node_id"] for turn in transcript] == ["visible-turn"]
+    assert read.limits and all(limit is None for limit in read.limits)

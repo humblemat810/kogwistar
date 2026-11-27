@@ -234,7 +234,9 @@ or approved contract change requires it.
 | AUTH-PAR-04 | `test_workflow_mcp_authority_matrix` | `workflow_mcp_authority_matrix_matches_python` | Every supported backend; workflow and conversation MCP operations with authority boundaries. Check role, namespace, capability, ACL, authenticated principal binding, deny-before-dispatch, and no duplicate effects on retry; preserve intentional REST/MCP policy differences from Python. |
 | AUTH-PAR-05 | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
 
-These five selector pairs are not yet implemented as matrix tests. Existing
+These five selector pairs are not yet complete matrix tests. AUTH-PAR-02's
+Python selector now covers its hidden-before-limit regression; its paired Rust
+matrix selector and the remaining matrix cases are still missing. Existing
 focused selectors below are passing evidence for individual cells, not a
 substitute for the fixed cases above. They remain under GOAL-06/08; they do not
 reopen DLFC-05.
@@ -339,6 +341,14 @@ crosswalk remain unverified; DLFC-06 stays IN PROGRESS and DLFC-05 stays PASS.
 Python ACL-hidden conversation queries now also assert owner-list projection
 after ACL filtering (visible start retained, private turn omitted, turn count
 zero; foreign owner's list empty); focused ACL/list-denial batch **3 passed**.
+AUTH-PAR-02's Python selector `test_conversation_read_acl_scope_matrix` first
+failed as expected: 10,000 hidden turns consumed the hardcoded read limit and
+hid a later visible turn. Removing the internal cap from list/detail/transcript
+reads makes the visible turn survive ACL filtering. The selector plus existing
+Python ACL/scope/route regressions passed (**6 passed**); Rust's existing
+`tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
+passed (**1 passed**). The exact Rust matrix selector, full PG/backend matrix,
+and missing-identity/namespace cases remain incomplete; DLFC-05 remains PASS.
 Rust `cargo test -p kogwistar-api conversation_ --lib`: **35 passed, 5
 ignored**; ignored tests require explicit live backend configuration.
 
