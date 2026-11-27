@@ -423,6 +423,16 @@ passed (**8 passed**, 2026-11-27); Rust `cargo test --manifest-path
 rust/Cargo.toml -p kogwistar-api --lib` passed (**477 passed, 58 ignored**).
 Ignored Rust tests are not counted as passing evidence.
 
+DLFC-03 search-index upsert HTTP cell (2026-11-27): the already-mapped
+`POST /api/add_index_entries` contract passed in both languages. Python
+`tests/server/test_search_index_api_auth.py::test_add_index_entries_requires_write_role_and_keeps_payload`
+exercises the HTTP route, role denial, and payload preservation. Rust
+`search_index_fts::tests::search_index_upsert_effect_requires_write_scope_and_matches_python_response`
+passes the shared `search-index-entry-v1.json` response/scope checks. Existing
+tasklet mapping and parity-annotation crosswalk both pass. Results: Python
+route + mapping + annotation checks **3 passed**; Rust **1 passed**. This is
+one operation cell only; DLFC-03 remains IN PROGRESS.
+
 DLFC-05 workflow status capability cell (2026-11-26): with valid workflow
 namespace and role but only `project_view` (no `workflow.run.read`), Python
 `test_run_status_route_matches_shared_v1_contract` and Rust
