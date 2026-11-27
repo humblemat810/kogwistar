@@ -238,17 +238,23 @@ backend/case in the row; focused selectors alone do not close a row.
 | AUTH-PAR-05 | IN PROGRESS | `test_graph_route_acl_scope_matrix` | `graph_route_acl_scope_matrix_matches_python` | Every supported backend and graph role; graph reads/mutations and document graph writes. Check ACL visibility, tenant/workspace/graph-space/namespace scope, role/capability policy, and deny-before-storage; compare canonical graph/effect state with Python. |
 
 These five selector pairs are not yet complete matrix tests. AUTH-PAR-02's
-Python selector covers hidden-before-limit filtering. Its Rust selector now
-passes the InMemory list/detail/transcript cell, including required identity,
-namespace denial, owner-filtered listing, private-turn ACL filtering, scoped
-workspace mismatch, and shared list response fields. Focused verification:
-Rust `cargo test -p kogwistar-api conversation_ --lib` (**36 passed, 5 ignored**);
-Python `test_conversation_read_acl_scope_matrix` and parity-annotation
-crosswalk (**2 passed**); Ruff and Rust formatting pass. Remaining fixed cells:
-graph-space mismatch, ACL-before-limit proof, and full corresponding matrix on
-each other supported Rust backend. Existing focused selectors below remain
-single-cell evidence, not substitutes for these cases. AUTH-PAR-02 stays
-`IN PROGRESS`; it does not reopen DLFC-05.
+Python selector covers hidden-before-limit filtering. Rust InMemory selector
+`conversation_read_acl_scope_matrix_matches_python` passes list/detail/
+transcript, required identity, namespace denial, owner-filtered listing,
+private-turn ACL filtering, workspace and graph-space mismatch, and shared
+list response fields. Rust SQLite+Chroma selector
+`sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` passes
+authenticated list/detail/transcript scope checks. Live Rust PostgreSQL
+selector `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
+passed (**1 passed**, disposable pgvector; 2026-11-27), covering scoped
+list/detail/transcript, private-turn filtering, foreign workspace/graph-space,
+and foreign-owner 404. Python matrix and parity crosswalk passed (**2 passed**).
+Still missing for AUTH-PAR-02: Rust REST proof that ACL filtering occurs before
+the result limit, and a complete applicable matrix (including missing
+identity and wrong namespace) across each supported backend with the required
+assertions and response-projection oracle. These selectors are partial backend
+evidence, not substitutes. AUTH-PAR-02 stays `IN PROGRESS`; it does not reopen
+DLFC-05.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |

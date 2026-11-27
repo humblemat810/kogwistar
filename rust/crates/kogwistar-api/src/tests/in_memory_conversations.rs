@@ -1706,4 +1706,17 @@ async fn conversation_read_acl_scope_matrix_matches_python() {
         .execute(request("/api/conversations/c1", Some("alice"), "conversation", "workspace-b"))
         .await;
     assert_eq!(wrong_workspace.status, StatusCode::NOT_FOUND.as_u16());
+
+    let mut wrong_graph_space = principal(Some("alice"), "conversation", "workspace-a");
+    wrong_graph_space["graph_space"] = json!("knowledge");
+    let wrong_graph_space = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "GET".to_owned(),
+            path_and_query: "/api/conversations/c1".to_owned(),
+            body: Vec::new(),
+            principal: wrong_graph_space,
+        })
+        .await;
+    assert_eq!(wrong_graph_space.status, StatusCode::NOT_FOUND.as_u16());
 }
