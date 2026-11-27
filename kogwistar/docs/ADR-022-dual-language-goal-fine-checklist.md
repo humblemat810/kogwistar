@@ -762,6 +762,18 @@ they do not use the hyperedge fixture. Thus no separate InMemory/SQLite
 hydration implementation is missing, while exact same-fixture HTTP projection
 across those routes remains unverified.
 
+DLFC-06 source-span provenance filtering (2026-11-27): Python
+`tests/mcp/test_chat_mcp_graph_reads.py::test_vector_query_requires_exact_source_span_acl_reference`
+passed (**1 passed**); Rust InMemory
+`tests::in_memory_vector_query_requires_exact_source_span_acl_reference` and
+SQLite+Chroma `tests::sqlite_chroma_vector_query_enforces_source_span_acl`
+passed (**1 each**). Rust PostgreSQL
+`tests::postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available`
+was explicitly run against disposable pgvector (**1 passed**) and includes a
+private source-span ACL negative hit. This verifies source-span provenance
+filtering in all three Rust backend paths; PG uses its own in-test seed rather
+than the Python shared fixture. Other DLFC-06 read/query cells remain open.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
