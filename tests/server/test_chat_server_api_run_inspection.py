@@ -333,6 +333,15 @@ def test_run_evidence_uses_python_defaults_and_checks_namespace(
         }
         assert normalized_payload == contract
 
+        non_owner_headers = _token_header(
+            client, role="ro", ns="workflow", username="bob"
+        )
+        private_snapshot = client.get(
+            f"/api/runs/{run_id}/evidence", headers=non_owner_headers
+        )
+        assert private_snapshot.status_code == 404, private_snapshot.text
+        assert snapshot_id not in private_snapshot.text
+
         denied = client.get(
             f"/api/runs/{run_id}/evidence", headers=denied_headers
         )

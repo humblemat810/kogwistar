@@ -208,6 +208,46 @@ async fn in_memory_run_evidence_route_matches_shared_contract() {
     let body = to_bytes(response.into_body(), 65_536).await.unwrap();
     assert_eq!(serde_json::from_slice::<Value>(&body).unwrap(), expected);
 
+    let non_owner_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"bob",
+            "user_id":"bob",
+            "role":"ro",
+            "storage_ns":"conversation",
+            "workspace_id":"workspace-a",
+            "graph_space":"conversation",
+            "ns":["workflow"],
+            "capabilities":["workflow.run.read","project_view"],
+            "iss":"local",
+            "exp":4102444800_u64
+        }),
+        &EncodingKey::from_secret(secret),
+    )
+    .unwrap();
+    let private_snapshot = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!(
+                    "/api/runs/{}/evidence",
+                    expected["run_id"].as_str().unwrap()
+                ))
+                .header("authorization", format!("Bearer {non_owner_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let private_snapshot_status = private_snapshot.status();
+    let private_snapshot_body =
+        to_bytes(private_snapshot.into_body(), 16_384).await.unwrap();
+    assert_eq!(private_snapshot_status, StatusCode::NOT_FOUND);
+    let private_snapshot_body = String::from_utf8(private_snapshot_body.to_vec()).unwrap();
+    assert!(!private_snapshot_body.contains(expected["run_id"].as_str().unwrap()));
+    assert!(!private_snapshot_body.contains(snapshot_id));
+
     let mcp_response = app
         .clone()
         .oneshot(

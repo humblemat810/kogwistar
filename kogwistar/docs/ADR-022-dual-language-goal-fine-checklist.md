@@ -715,6 +715,16 @@ and Wisdom semantic retrieval tests (**2 passed**) and parity-annotation
 crosswalk. This closes only this PostgreSQL graph-read projection mismatch and
 ACL/read cell; DLFC-06 remains IN PROGRESS.
 
+Run-evidence private-snapshot read parity (2026-11-27): Python
+`tests/server/test_chat_server_api_run_inspection.py::test_run_evidence_uses_python_defaults_and_checks_namespace`
+and Rust `tests::in_memory_run_evidence_route_matches_shared_contract` both
+pass (**1 passed each**). Each confirms a non-owner with `workflow.run.read`
+and `project_view` receives 404 without the run or snapshot ID being
+disclosed; Rust now lets this evidence lookup reach the existing conversation
+graph ACL/scope filter, matching Python `ChatRunService.run_evidence` followed
+by `latest_snapshot`. This closes only the InMemory run-evidence HTTP cell;
+DLFC-03 and DLFC-06 remain IN PROGRESS pending their frozen full test batches.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

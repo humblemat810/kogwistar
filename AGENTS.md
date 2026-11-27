@@ -29,6 +29,14 @@
 - Run focused Rust tests and the corresponding Python contract/parity tests for
   each change. Preserve unrelated worktree changes and use the existing Cargo
   target directory unless isolation is necessary.
+- For an open DLFC item and approach applicable checklist goallist fine list items, freeze its complete required case set before any
+  implementation edit. Add all Python/Rust tests for the selected item or
+  batch first; do not implement a convenient subset and invent more cases
+  afterward. Then implement against that fixed set, run unit tests, and run
+  integration tests. Mark the item `PASS` only when every predeclared required
+  case passes; keep the existing ID and denominator unchanged. Add a case
+  later only for a reproduced regression or approved contract change, and
+  record why it was not in the frozen set.
 
 ## SQLite Authority
 

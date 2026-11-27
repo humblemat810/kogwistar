@@ -1039,8 +1039,12 @@ impl InMemoryGraphApplicationService {
                 || tail.as_slice() == ["lineage"]
                 || tail.as_slice() == ["events"]
                 || tail.as_slice() == ["events", "poll"]);
-        let delegated_workflow_read = workflow_run_read
-            && (self.owner_auth_store.is_some() || is_mcp_workflow_status_read(request));
+        // Evidence visibility is determined by the conversation graph ACL below,
+        // matching Python ChatRunService.run_evidence -> latest_snapshot. Do not
+        // expose the run or snapshot when that graph-scoped lookup finds nothing.
+        let delegated_workflow_read = run_evidence_read
+            || (workflow_run_read
+                && (self.owner_auth_store.is_some() || is_mcp_workflow_status_read(request)));
         let run = match kogwistar_store::ServerRunReadStore::server_run(&self.store, &run_id).await
         {
             Ok(Some(run))
