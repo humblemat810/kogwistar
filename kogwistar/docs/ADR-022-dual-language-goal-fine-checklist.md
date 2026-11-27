@@ -851,6 +851,16 @@ including redirect timing, scope filtering, and retained candidate scores.
 They do not establish full DLFC-06 HTTP operation/backend coverage; status
 remains IN PROGRESS.
 
+HTTP read-surface cross-check (2026-11-28): the frozen surface inventory has
+51 GET operations, all 51 map to existing `FW-03-03A` route tasklets, and all
+51 tasklets currently report `PASS`; 7 are classified transport-owned and 44
+are Rust application routes. This proves selector/tasklet coverage for each
+GET route, not every route's applicable backend or the DLFC-06 read semantics
+(filtering, limits, hydration, lifecycle, provenance, not-found). Existing
+inventory has no operation-by-backend test-cell mapping, so a reliable count
+of remaining DLFC-06 cells cannot yet be derived from it. No test or checklist
+item was added; DLFC-06 remains IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
