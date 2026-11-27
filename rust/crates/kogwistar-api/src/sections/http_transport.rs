@@ -2143,9 +2143,7 @@ async fn workflow_run_write_acl_error(
         .map(str::trim)
         .filter(|value| !value.is_empty())?;
     let user_id = authenticated_run_owner_id(&request.principal).map(str::to_owned);
-    let Some(user_id) = user_id else {
-        return None;
-    };
+    let user_id = user_id?;
     match application
         .workflow_run_submit_allowed(workflow_id.to_owned(), Some(user_id))
         .await
@@ -2182,15 +2180,12 @@ async fn workflow_design_acl_error(
         ("DELETE", "nodes" | "edges") => "rw",
         _ => return None,
     };
-    let Some(user_id) = request
+    let user_id = request
         .principal
         .get("user_id")
         .and_then(Value::as_str)
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    else {
-        return None;
-    };
+        .filter(|value| !value.is_empty())?;
     match application
         .workflow_access_allowed(workflow_id.to_owned(), user_id.to_owned(), required_role.to_owned())
         .await

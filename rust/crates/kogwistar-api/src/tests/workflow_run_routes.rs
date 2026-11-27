@@ -1348,7 +1348,7 @@ async fn postgres_workflow_design_acl_matrix_matches_python() {
     let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
         .await
         .unwrap();
-    let connection_task = tokio::spawn(async move { connection.await });
+    let connection_task = tokio::spawn(connection);
     client
         .batch_execute(&format!(
             "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \

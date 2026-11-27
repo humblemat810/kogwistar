@@ -1570,6 +1570,7 @@ fn server_run_event_value(event: ServerRunEvent) -> Value {
 struct RecordedInspectionSnapshot {
     event_seq: i64,
     created_at_ms: i64,
+    #[allow(dead_code)] // Required event field is validated and asserted by contract tests.
     transition_id: String,
     transition_kind: String,
     step_seq: i64,
