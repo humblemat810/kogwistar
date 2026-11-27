@@ -52,16 +52,28 @@ def test_auth_me_unauthorized(client):
 
 
 def test_auth_me_authorized(client):
-    # Create a user and a token
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/auth-me-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     auth_service = app.state.auth_service
     user_id = auth_service.resolve_user_from_external("iss", "sub", "test@example.com")
     token = auth_service.mint_token(user_id)
 
-    response = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
-    assert response.status_code == 200
+    response = client.request(
+        contract["method"],
+        contract["path"],
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert response.status_code == contract["success_status"]
     data = response.json()
+    assert set(data) == set(contract["response_fields"])
     assert data["user_id"] == user_id
     assert data["email"] == "test@example.com"
+    assert data["display_name"] is None
+    assert data["is_active"] is True
     assert data["role"] == "ro"
     assert data["ns"] == "docs"
 

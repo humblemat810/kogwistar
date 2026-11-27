@@ -333,7 +333,27 @@
         assert_eq!(me.status(), StatusCode::OK);
         let me_body = to_bytes(me.into_body(), 8192).await.unwrap();
         let me_value = serde_json::from_slice::<Value>(&me_body).unwrap();
+        let me_contract_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../contracts/golden/auth-me-v1.json");
+        let me_contract: Value = serde_json::from_slice(
+            &std::fs::read(me_contract_path).expect("read shared auth me contract"),
+        )
+        .expect("parse shared auth me contract");
+        let expected_fields = me_contract["response_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_fields = me_value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_fields, expected_fields);
         assert_eq!(me_value["email"], "dev@example.com");
+        assert_eq!(me_value["display_name"], Value::Null);
         assert_eq!(me_value["is_active"], true);
         assert_eq!(me_value["role"], "rw");
         assert_eq!(me_value["ns"], json!(["docs", "workflow"]));

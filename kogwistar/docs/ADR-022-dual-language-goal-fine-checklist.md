@@ -433,6 +433,16 @@ tasklet mapping and parity-annotation crosswalk both pass. Results: Python
 route + mapping + annotation checks **3 passed**; Rust **1 passed**. This is
 one operation cell only; DLFC-03 remains IN PROGRESS.
 
+DLFC-03 authenticated identity response cell (2026-11-27): existing Python
+`tests/auth/test_auth_router.py::test_auth_me_authorized` and Rust
+`tests::dev_token_me_and_logout_share_verified_jwt_contract` now consume
+`contracts/golden/auth-me-v1.json` and assert the exact six-field response
+schema, persisted identity fields, and claim-projected role/namespace. Python
+route plus parity-annotation crosswalk: **2 passed**; Rust selector: **1
+passed**; `cargo fmt --all --check` passed. This supplies the missing exact
+schema oracle for `/api/auth/me`; other HTTP operations/backend cells remain
+open, so DLFC-03 remains IN PROGRESS.
+
 DLFC-05 workflow status capability cell (2026-11-26): with valid workflow
 namespace and role but only `project_view` (no `workflow.run.read`), Python
 `test_run_status_route_matches_shared_v1_contract` and Rust
