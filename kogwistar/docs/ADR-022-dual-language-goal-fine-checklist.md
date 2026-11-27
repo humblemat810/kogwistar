@@ -723,6 +723,8 @@ and `project_view` receives 404 without the run or snapshot ID being
 disclosed; Rust now lets this evidence lookup reach the existing conversation
 graph ACL/scope filter, matching Python `ChatRunService.run_evidence` followed
 by `latest_snapshot`. This closes only the InMemory run-evidence HTTP cell;
+the Rust `cargo test -p kogwistar-api run_evidence --lib` family also passes
+(**4 passed, 1 ignored**; live PostgreSQL requires `KOGWISTAR_TEST_PG_DSN`).
 DLFC-03 and DLFC-06 remain IN PROGRESS pending their frozen full test batches.
 
 | Coarse criterion | Required fine items | Close condition |
