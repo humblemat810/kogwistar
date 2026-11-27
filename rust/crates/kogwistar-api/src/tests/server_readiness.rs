@@ -456,27 +456,67 @@
 
     #[tokio::test]
     async fn in_memory_service_list_fails_closed_without_effects() {
+        use axum::{body::Body, http::Request};
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
         use kogwistar_store::ProjectionReadStore;
+        use tower::ServiceExt;
 
         let service = InMemoryGraphApplicationService::default();
         let path = "/api/workflow/services?limit=1";
         assert!(!service.supports_http_operation("GET", "/api/workflow/services"));
+        let secret = "in-memory-service-list-test-secret";
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "reader",
+                "user_id": "reader",
+                "role": "ro",
+                "ns": ["workflow"],
+                "exp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 60,
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
 
         let before = service.store.named_projections("service_registry").await.unwrap();
-        let response = service
-            .execute(ApiEffectRequest {
-                contract_version: 1,
-                method: "GET".to_owned(),
-                path_and_query: path.to_owned(),
-                body: Vec::new(),
-                principal: json!({"sub":"reader", "role":"rw", "ns":["workflow"]}),
-            })
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await;
+        let response = response.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 16_384)
+            .await
+            .unwrap();
         let after = service.store.named_projections("service_registry").await.unwrap();
 
-        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
         assert_eq!(before, after, "unsupported route must not mutate service registry");
-        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["code"], "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER");
         assert_eq!(body["method"], "GET");
         assert_eq!(body["path"], path);
