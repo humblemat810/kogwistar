@@ -840,6 +840,17 @@ edge redirect-mode, and node as-of boundary cases only; it adds no acceptance
 case and does not establish complete HTTP read/query operation-by-backend
 coverage. DLFC-06 remains IN PROGRESS.
 
+Historical PostgreSQL read recheck (2026-11-28): Python/Rust PyO3 parity
+selector `tests/pg_sql/test_phase3_e2e_engine_pg.py::test_rust_postgres_historical_read_subsystem_matches_python`
+passed against disposable pgvector 16 (**1 passed**). The Rust-native store
+selector `tests::graph::postgres_historical_vector_query_resolves_redirects_and_keeps_candidate_scores`
+also passed against a separate disposable pgvector 16 service (**1 passed**);
+the temporary container was removed. Together these verify the existing
+historical-node projection parity and native PostgreSQL query/resolver cell,
+including redirect timing, scope filtering, and retained candidate scores.
+They do not establish full DLFC-06 HTTP operation/backend coverage; status
+remains IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
