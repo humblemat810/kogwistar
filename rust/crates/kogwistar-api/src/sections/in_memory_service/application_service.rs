@@ -57,6 +57,7 @@ impl ApplicationService for InMemoryGraphApplicationService {
                     | "workflow.run_resume"
                     | "workflow.run_cancel"
                     | "workflow.run_submit"
+                    | "workflow.dead_letters"
                     | "workflow.dead_letter_replay"
             )
         {
@@ -211,6 +212,22 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && effective.contains("service.manage")
                 && self.supports_mcp_tool(surface, name);
         }
+        if name == "workflow.dead_letters" {
+            let effective = effective_capabilities(
+                principal,
+                &self
+                    .capabilities
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            );
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && effective.contains("project_view")
+                && self.supports_mcp_tool(surface, name);
+        }
         if !self.supports_mcp_tool(surface, name)
             || !matches!(principal_role(principal).as_str(), "ro" | "rw")
             || !principal_strings(principal, "ns")
@@ -350,6 +367,11 @@ impl ApplicationService for InMemoryGraphApplicationService {
                 && let Some(run_id) = dead_letter_replay_run_id(&request.path_and_query)
             {
                 return self.replay_dead_letter(&request, &run_id).await;
+            }
+            if request.method == "GET"
+                && request.path_and_query.split('?').next() == Some("/api/workflow/dead-letters")
+            {
+                return self.dead_letters_snapshot(&request).await;
             }
             if request.method == "POST"
                 && request.path_and_query.split('?').next() == Some("/api/syscall/v1/send_message")

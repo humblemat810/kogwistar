@@ -124,6 +124,21 @@ and parity-annotation crosswalk passed (**1 each**). This closes only the
 InMemory dead-letter replay effect/retry cell; DLFC-10 remains IN PROGRESS for
 other operation/backend cells.
 
+DLFC-10 InMemory dead-letter listing cell (2026-11-27): test-first run exposed
+that InMemory neither advertised nor executed `workflow.dead_letters`. It now
+reuses projected lane storage, applies the existing role/workflow-namespace/
+`project_view` policy, filters to dead-letter rows in the caller's storage
+namespace, and preserves the requested limit. Rust
+`tests::workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores`,
+`tests::dead_letters_effect_rechecks_role_namespace_and_capability_for_all_stores`,
+and `tests::in_memory_dead_letters_mcp_lists_only_dead_letter_rows` passed
+(**1 each**). The route-level test seeds one dead-letter plus one pending row
+and proves only the former is returned. Python
+`test_mcp_workflow_dead_letters_matches_shared_contract`,
+`test_mcp_workflow_dead_letters_denies_before_read`, and the Rust/Python parity
+annotation crosswalk passed (**1 each**). This closes only InMemory dead-letter
+listing; DLFC-10 remains IN PROGRESS for other operation/backend cells.
+
 ### DLFC-05 Evidence Update (Existing Tasklet)
 
 Workflow-run read ACL parity: Python REST status and steps require per-workflow `ro` ACL; Rust SQLite previously missed status ACL preflight. Rust now matches REST. Separately, Python MCP status checks MCP role+workflow namespace, then `ChatRunService.get_run` checks `workflow.run.read`, but does not apply per-workflow ACL; MCP steps retain their ACL check. Rust previously routed MCP status through REST-only ACL and returned 403 where Python succeeds. TDD reproduced and fixed both distinctions without changing REST policy. Evidence: Python `tests/server/test_workflow_lineage_api.py` (**4 passed**) and `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_status_uses_capability_without_workflow_acl` (**1 passed**); Rust `tests::sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl`, `tests::workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores`, and `tests::only_mcp_workflow_status_request_gets_acl_parity_exception`; authenticated InMemory route test rejects forged public marker; live PostgreSQL `tests::postgres_workflow_lineage_route_checks_each_workflow_acl` (**1 passed**). These close named status authorization cells only.

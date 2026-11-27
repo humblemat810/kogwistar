@@ -3,6 +3,67 @@ use kogwistar_store::{LaneMessageReadStore, LaneMessageWriteStore};
 use serde_json::json;
 
 impl InMemoryGraphApplicationService {
+    // PYTHON_PARITY_NOTE_V1: Project authorized dead-letter lane rows for the MCP snapshot; rust=rust/crates/kogwistar-api/src/sections/in_memory_service/run_lifecycle.rs#dead_letters_snapshot; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letters+kogwistar/server/chat_service.py#ChatRunService.dead_letter_snapshot; fixture=contracts/golden/workflow-dead-letters-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#in_memory_dead_letters_mcp_lists_only_dead_letter_rows; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_dead_letters_matches_shared_contract
+    pub(crate) async fn dead_letters_snapshot(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        if !matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
+            || !principal_strings(&request.principal, "ns")
+                .iter()
+                .any(|namespace| namespace == "workflow" || namespace == "*")
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_SCOPE_FORBIDDEN",
+                "Reading dead letters requires ro/rw role and workflow namespace",
+            );
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Reading dead letters requires project_view capability",
+            );
+        }
+        let limit = query_integer(&request.path_and_query, "limit", 200).clamp(0, 10_000) as usize;
+        let namespace = security_scope_value(&request.principal)["storage_namespace"]
+            .as_str()
+            .unwrap_or("workflow")
+            .to_owned();
+        let lanes = match self
+            .store
+            .projected_lane_messages(LaneMessageFilter {
+                namespace: Some(namespace),
+                status: Some("dead-letter".to_owned()),
+                limit: 10_000,
+                ..LaneMessageFilter::default()
+            })
+            .await
+        {
+            Ok(lanes) => lanes,
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        };
+        json_effect(
+            StatusCode::OK,
+            json!({
+                "runs": lanes.iter().take(limit).map(lane_progress_value).collect::<Vec<_>>(),
+                "limit": limit,
+            }),
+        )
+    }
+
     pub(crate) async fn submit_run_effect(
         &self,
         request: &ApiEffectRequest,
