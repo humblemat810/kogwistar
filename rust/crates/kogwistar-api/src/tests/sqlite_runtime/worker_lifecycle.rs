@@ -1582,6 +1582,81 @@
                 assert!(result[key].get(field).is_some(), "missing {key}.{field}");
             }
         }
+
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let secret = "postgres-project-view-http-contract-secret";
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service),
+        );
+        let jwt = |capabilities: Value| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub":"project-view-reader", "role":"ro", "ns":["workflow"],
+                    "capabilities":capabilities, "iss":"local", "exp":4102444800_u64
+                }),
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let request = |token: String| {
+            Request::builder()
+                .method("POST")
+                .uri("/api/syscall/v1/project_view")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({"version":"v1", "op":"project_view", "args":{}}).to_string(),
+                ))
+                .unwrap()
+        };
+        let denied = app
+            .clone()
+            .oneshot(request(jwt(json!(["project_view"]))))
+            .await
+            .unwrap();
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+        let allowed = app
+            .oneshot(request(jwt(contract["required_capabilities"].clone())))
+            .await
+            .unwrap();
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let body: Value = serde_json::from_slice(
+            &to_bytes(allowed.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["status"], "ok");
+        let result = &body["result"];
+        for field in contract["required_fields"].as_array().unwrap() {
+            let field = field.as_str().unwrap();
+            assert!(result.get(field).is_some(), "missing HTTP field {field}");
+        }
+        for (key, fields) in contract["required_object_fields"].as_object().unwrap() {
+            for field in fields.as_array().unwrap() {
+                let field = field.as_str().unwrap();
+                assert!(
+                    result[key].get(field).is_some(),
+                    "missing HTTP field {key}.{field}"
+                );
+            }
+        }
     }
 
     // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_automation_services.rs#syscall_effect; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_chroma_project_view_matches_resource_fixture_and_authority; python_test=tests/server/test_chat_server_api_conversation_syscalls.py#test_project_view_syscall_uses_python_backend
