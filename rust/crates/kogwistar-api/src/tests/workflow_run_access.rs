@@ -1371,6 +1371,12 @@ async fn workflow_run_rest_authority_matrix_matches_python() {
                     "KOGWISTAR_CAPABILITY_FORBIDDEN",
                 ));
             }
+            if matches!(*operation, "submit" | "resume" | "cancel") {
+                denied_principals.push((
+                    json!({"sub":"matrix-user", "user_id":"matrix-user", "role":"ro", "ns":["workflow"], "capabilities":["workflow.run.write", "spawn_process", "project_view"]}),
+                    "PYTHON_ROLE_DETAIL",
+                ));
+            }
             for (principal, expected_code) in denied_principals {
                 let token = encode(
                     &Header::new(Algorithm::HS256),
@@ -1412,7 +1418,15 @@ async fn workflow_run_rest_authority_matrix_matches_python() {
                     &to_bytes(response.into_body(), 65_536).await.unwrap(),
                 )
                 .unwrap();
-                assert_eq!(response_body["code"], expected_code, "{backend}/{operation}");
+                if expected_code == "PYTHON_ROLE_DETAIL" {
+                    assert_eq!(
+                        response_body["detail"],
+                        "Forbidden: requires role 'rw', you have 'ro'",
+                        "{backend}/{operation}"
+                    );
+                } else {
+                    assert_eq!(response_body["code"], expected_code, "{backend}/{operation}");
+                }
                 assert!(
                     !response_body.to_string().contains("matrix-run"),
                     "{backend}/{operation} leaked run id"

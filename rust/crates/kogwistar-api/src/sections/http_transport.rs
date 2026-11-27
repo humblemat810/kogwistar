@@ -2018,6 +2018,11 @@ async fn application_effect_handler(
         body: body.to_vec(),
         principal,
     };
+    if let Some(error) = workflow_run_write_role_error(&request) {
+        let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+        return (status, [("content-type", error.content_type)], Body::from(error.body))
+            .into_response();
+    }
     if let Some(error) = workflow_run_submit_namespace_error(&request) {
         let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return (status, [("content-type", error.content_type)], Body::from(error.body))
@@ -2051,6 +2056,29 @@ async fn application_effect_handler(
         Body::from(response.body),
     )
         .into_response()
+}
+
+// PYTHON_PARITY_NOTE_V1: REST workflow-run mutations require role rw before namespace, workflow ACL, or run lookup, matching runtime_api.submit_workflow_run/cancel_workflow_run/resume_workflow_run; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#workflow_run_rest_authority_matrix_matches_python; python=kogwistar/server/runtime_api.py#create_runtime_router.submit_workflow_run+create_runtime_router.cancel_workflow_run+create_runtime_router.resume_workflow_run.
+fn workflow_run_write_role_error(request: &ApiEffectRequest) -> Option<ApiEffectResponse> {
+    let path = request.path_and_query.split('?').next()?;
+    let is_write = request.method == "POST"
+        && (path == "/api/workflow/runs"
+            || path
+                .strip_prefix("/api/workflow/runs/")
+                .is_some_and(|suffix| {
+                    let mut parts = suffix.split('/');
+                    matches!(
+                        (parts.next(), parts.next(), parts.next()),
+                        (Some(run_id), Some("resume" | "cancel"), None) if !run_id.is_empty()
+                    )
+                }));
+    if !is_write || principal_role(&request.principal) == "rw" {
+        return None;
+    }
+    Some(json_effect(
+        StatusCode::FORBIDDEN,
+        json!({"detail": "Forbidden: requires role 'rw', you have 'ro'"}),
+    ))
 }
 
 // PYTHON_PARITY_NOTE_V1: REST submit checks runtime namespace before workflow ACL and run admission, matching runtime_api.submit_workflow_run. MCP submit retains its own namespace policy. rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#workflow_run_rest_authority_matrix_matches_python; python=kogwistar/server/runtime_api.py#create_runtime_router.submit_workflow_run.
