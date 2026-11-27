@@ -349,6 +349,9 @@ Python ACL/scope/route regressions passed (**6 passed**); Rust's existing
 `tests::sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`
 passed (**1 passed**). The exact Rust matrix selector, full PG/backend matrix,
 and missing-identity/namespace cases remain incomplete; DLFC-05 remains PASS.
+Rust store primitive `tests::paged_conversation_acl_uses_rules_from_other_pages`
+also passed (**1 passed**), proving cross-page ACL rules apply to earlier
+candidates; this is primitive-level evidence, not the missing REST matrix.
 Rust `cargo test -p kogwistar-api conversation_ --lib`: **35 passed, 5
 ignored**; ignored tests require explicit live backend configuration.
 
