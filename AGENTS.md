@@ -11,6 +11,18 @@
 
 ## Dual-Language Work
 
+- North star: keep Python and Rust stacks independently usable and
+  interchangeable only at explicit, safe seams; pursue a Rust-native
+  end-to-end path as an additional zero-cross-language-overhead option. Preserve
+  auth, scope, provenance, durability, transaction ownership and wire behavior;
+  never infer full parity from a narrow passing slice.
+- Locked TDD sequence for every existing goal item: (1) enumerate the complete
+  required test set and baseline; (2) add all tests for the selected batch and
+  freeze selectors; (3) implement against that fixed set, run unit tests and
+  fix failures; (4) run integration tests and fix failures. Do not add or replace
+  tests mid-implementation to delay closure. When every frozen required test
+  passes, close the existing item in the same slice; do not grow its denominator.
+
 - Follow `kogwistar/docs/ADR-022-dual-language-capability-paths.md` and its
   checklist. Select an existing open checklist item before proposing new scope.
 - Keep Python and Rust implementations supported. Selecting one implementation
@@ -29,15 +41,21 @@
 - Run focused Rust tests and the corresponding Python contract/parity tests for
   each change. Preserve unrelated worktree changes and use the existing Cargo
   target directory unless isolation is necessary.
-- Fixed-batch rule: before editing an open DLFC item, record its complete
-  required test selectors and current pass/fail counts. Add the full Python/Rust
-  test batch first; freeze it before implementation starts. Then implement,
-  run focused unit tests, and run integration tests. Do not add cases mid-batch
-  to defer closure; add later only for a reproduced regression or approved
-  contract change, with the reason recorded. When every frozen required case
-  passes, mark that existing item `PASS` immediately and update its mapped
-  coarse status. Keep IDs and denominators unchanged; skipped or unrun tests
-  are not passes.
+- Fixed-batch rule: before editing an open DLFC item, enumerate every required
+  case by exact test name/selector, backend and contract cell; record baseline
+  pass/fail/unrun counts. Create the complete planned Python/Rust test batch
+  first, then freeze it before implementation starts. Implement against this
+  fixed acceptance set; run focused unit tests, then integration tests. Once
+  implementation starts, do not add, replace, or broaden tests to defer
+  closure. Only a reproduced regression or approved contract change may justify
+  an additional case, with its reason recorded separately. When every frozen
+  required case passes, mark that existing item `PASS` immediately and update
+  its mapped coarse status. Keep IDs and denominators unchanged; skipped or
+  unrun tests are not passes. Passing starter tests alone does not close an item
+  whose frozen acceptance set is incomplete.
+- At each implementation turn, name the selected existing DLFC item and report
+  its frozen case count plus passed/failed/unrun counts. Do not describe planned
+  tests as implemented; do not resume implementation until the batch is frozen.
 - Multi-item Rust batch: when one implementation slice targets several
   existing DLFC items, freeze each item's complete test set and baseline counts
   before changing code. Add all planned tests for all selected items first;
@@ -46,6 +64,12 @@
   Once implementation begins, this is a locked acceptance batch: a failing
   case calls for implementation fixes, not new requirements or replacement
   tests. Passing every frozen required case closes its mapped existing item.
+- Closure is mandatory, not discretionary: as soon as every frozen required
+  case passes, mark that existing DLFC `PASS` in the same slice and update its
+  coarse mapping. Do not leave it open for extra polish, add tests after seeing
+  results, or change the denominator. Preserve prior evidence and record a
+  separate regression or approved contract change only when one genuinely
+  invalidates the gate.
 
 ## SQLite Authority
 

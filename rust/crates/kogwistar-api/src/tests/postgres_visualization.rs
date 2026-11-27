@@ -531,3 +531,143 @@ async fn postgres_visualization_read_matches_shared_python_selection_and_acl() {
     drop(cleanup);
     cleanup_task.await.unwrap().unwrap();
 }
+
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_visualization_effect; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/visualization-hyperedge-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_visualization.rs#postgres_visualization_http_hyperedges_match_shared_fixture; python_test=tests/test_visualization.py#test_hyperedge_visualization_matches_shared_python_contract
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; uses disposable PostgreSQL schemas"]
+async fn postgres_visualization_http_hyperedges_match_shared_fixture() {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = format!("rust_viz_hyperedge_{}", uuid::Uuid::new_v4().simple());
+    let graph_schemas = [
+        format!("{schema}_knowledge"),
+        format!("{schema}_conversation"),
+        format!("{schema}_workflow"),
+        format!("{schema}_wisdom"),
+    ];
+    let service = PostgresRunApplicationService::from_dsn_with_graph_schemas(
+        &dsn,
+        &graph_schemas[0],
+        &graph_schemas[1],
+        &graph_schemas[2],
+        &graph_schemas[3],
+    )
+    .unwrap();
+    service.ensure_schema().await.unwrap();
+    for store in [
+        &service.store,
+        &service.conversation_store,
+        &service.workflow_store,
+        &service.wisdom_store,
+    ] {
+        store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+    }
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/visualization-hyperedge-v1.json"
+    )))
+    .expect("visualization hyperedge fixture is valid");
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("facts".to_owned()),
+    };
+    for (kind, field, table) in [
+        ("node", "nodes", "gke_nodes"),
+        ("edge", "edges", "gke_edges"),
+    ] {
+        for entity in fixture[field].as_array().unwrap() {
+            let id = entity["id"].as_str().unwrap();
+            let metadata = json!({
+                "entity_type":kind,
+                "lifecycle_status":"active",
+                "workspace_id":"workspace-a",
+                "graph_space":"facts"
+            });
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: table.to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: Some(entity.to_string()),
+                        metadata: metadata.as_object().unwrap().clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+            let acl = json!({
+                "entity_type":"acl_record",
+                "acl_truth_graph":"knowledge",
+                "acl_target_grain":kind,
+                "acl_target_entity_id":id,
+                "acl_version":1,
+                "acl_mode":"public",
+                "workspace_id":"workspace-a",
+                "graph_space":"facts"
+            });
+            service
+                .store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{kind}-{id}"),
+                        document: None,
+                        metadata: acl.as_object().unwrap().clone(),
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+        }
+    }
+
+    let secret = "postgres-hyperedge-visualization-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: visualization_auth(secret),
+        },
+        Arc::new(service.clone()),
+    );
+    let token = visualization_token(secret, now);
+    assert_visualization_http_routes(&app, &token, &fixture).await;
+
+    drop(app);
+    drop(service);
+    let cleanup_dsn = dsn
+        .strip_prefix("postgresql+psycopg://")
+        .map(|rest| format!("postgresql://{rest}"))
+        .or_else(|| {
+            dsn.strip_prefix("postgresql+psycopg2://")
+                .map(|rest| format!("postgresql://{rest}"))
+        })
+        .unwrap_or(dsn);
+    let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+        .await
+        .unwrap();
+    let connection_task = tokio::spawn(connection);
+    for graph_schema in graph_schemas.iter().rev() {
+        client
+            .batch_execute(&format!("DROP SCHEMA IF EXISTS \"{graph_schema}\" CASCADE"))
+            .await
+            .unwrap();
+    }
+    drop(client);
+    connection_task.await.unwrap().unwrap();
+}
