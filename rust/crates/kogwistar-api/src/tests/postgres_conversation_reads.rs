@@ -1051,6 +1051,34 @@
             })
         );
 
+        let missing_identity = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice", "role":"ro", "ns":"conversation",
+                    "storage_ns":"conversation", "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(missing_identity.status, StatusCode::UNAUTHORIZED.as_u16());
+
+        let wrong_namespace = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conversation-1".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice", "user_id":"alice", "role":"ro", "ns":"docs",
+                    "storage_ns":"conversation", "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(wrong_namespace.status, StatusCode::FORBIDDEN.as_u16());
+
         let transcript_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,

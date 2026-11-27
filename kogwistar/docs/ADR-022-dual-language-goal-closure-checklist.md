@@ -252,12 +252,14 @@ authenticated list/detail/transcript scope checks. Live Rust PostgreSQL
 selector `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
 passed (**1 passed**, disposable pgvector; 2026-11-27), covering scoped
 list/detail/transcript, private-turn filtering, foreign workspace/graph-space,
-and foreign-owner 404. Still missing for AUTH-PAR-02: equivalent ACL-before-
-limit evidence on the SQLite+Chroma and PostgreSQL REST paths, plus the complete
-applicable missing-identity/wrong-namespace matrix and response-projection
-oracle across each supported backend. Existing selectors remain partial
-backend evidence, not substitutes. AUTH-PAR-02 stays `IN PROGRESS`; it does
-not reopen DLFC-05.
+and foreign-owner 404; now also asserts missing list identity returns 401 and
+wrong-namespace detail returns 403. Still missing for AUTH-PAR-02: explicit
+large hidden-before-visible coverage on SQLite+Chroma (whose Chroma graph
+snapshot currently has a 10,000-record cap) and PostgreSQL, plus a consolidated
+per-backend response-projection oracle. InMemory and PostgreSQL cover missing
+identity and wrong namespace; SQLite+Chroma's existing selector covers both
+denials but does not yet exercise the large ACL-hidden set. AUTH-PAR-02 stays
+`IN PROGRESS`; it does not reopen DLFC-05.
 
 | Case family | Required oracle for each applicable operation |
 | --- | --- |
