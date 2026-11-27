@@ -753,8 +753,9 @@ not-found cases covered by these selectors; it does not exhaust all DLFC-06
 read/query/backend cells. Rust edge redirect resolution also passed
 `cargo test -p kogwistar-store edge_redirect_resolution_matches_python_lifecycle_modes`
 (**1 passed**), paired with Python `test_python_edge_reads_follow_redirect_chain`
-in the lifecycle batch. Hyperedge visualization/hydration now rechecked against
-`visualization-hyperedge-v1.json`: Python
+in the lifecycle batch. Both redirect-chain selectors rerun 2026-11-28 and
+passed (**1 Python + 1 Rust**). Hyperedge visualization/hydration now rechecked
+against `visualization-hyperedge-v1.json`: Python
 `tests/test_visualization.py::test_hyperedge_visualization_matches_shared_python_contract`
 (**1 passed**), Rust store
 `tests::graph_visualization_hyperedges_match_python_contract` (**1 passed**),
