@@ -662,6 +662,7 @@ async fn in_memory_workflow_lineage_route_matches_shared_contract() {
     let _ = std::fs::remove_file(auth_path);
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/in_memory_service/run_lifecycle.rs#read_runtime_run_effect; python=kogwistar/server/chat_api.py#create_chat_router.get_run_events_poll; fixture=contracts/golden/run-events-poll-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_events_poll_matches_shared_contract; python_test=tests/server/test_chat_server_api_run_inspection.py#test_chat_rest_events_poll_matches_rust_seeded_contract
 #[tokio::test]
 async fn in_memory_run_events_poll_matches_shared_contract() {
     let service = InMemoryGraphApplicationService::default();
@@ -768,6 +769,34 @@ async fn in_memory_run_events_poll_matches_shared_contract() {
         },
         Arc::new(service),
     );
+    let success = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/runs/run-1/events/poll?after_seq=0&limit=10")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(success.status().as_u16(), contract["success_status"].as_u64().unwrap() as u16);
+    let success_body = to_bytes(success.into_body(), 16_384).await.unwrap();
+    let success_value: Value = serde_json::from_slice(&success_body).unwrap();
+    for field in contract["required_fields"].as_array().unwrap() {
+        assert!(success_value.get(field.as_str().unwrap()).is_some(), "{field}");
+    }
+    assert_eq!(success_value["run_id"], "run-1");
+    assert_eq!(success_value["events"].as_array().unwrap().len(), 1);
+    let success_event = &success_value["events"][0];
+    for field in contract["required_event_fields"].as_array().unwrap() {
+        assert!(success_event.get(field.as_str().unwrap()).is_some(), "{field}");
+    }
+    assert_eq!(success_event["seq"], 1);
+    assert_eq!(success_event["event_type"], "run.started");
+    assert_eq!(success_event["payload"], json!({"source":"test"}));
+
     let invalid = app
         .clone()
         .oneshot(
