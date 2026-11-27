@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "method": "POST",
+  "path": "/api/document",
+  "success_status": 200,
+  "success_response": {"status": "ok"}
+}

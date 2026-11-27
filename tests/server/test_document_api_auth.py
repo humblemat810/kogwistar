@@ -63,6 +63,12 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
         / "document-upsert-v1.json"
     )
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    http_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/document-upsert-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     payload = server.DocumentUpsert.model_validate(fixture)
 
     token = claims_ctx.set({"role": "rw"})
@@ -106,14 +112,15 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
         algorithm=TEST_JWT_ALG,
     )
     with TestClient(server.app) as client:
-        response = client.post(
-            "/api/document",
+        response = client.request(
+            http_contract["method"],
+            http_contract["path"],
             json=fixture,
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.status_code == http_contract["success_status"]
+    assert response.json() == http_contract["success_response"]
     assert len(written) == 2
     assert written[1].id == fixture["doc_id"]
     server.app.state.auth_jwt_settings = _saved_jwt_settings

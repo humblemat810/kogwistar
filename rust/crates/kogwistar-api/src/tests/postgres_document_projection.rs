@@ -129,13 +129,22 @@
                 Arc::new(service.clone()),
             )
         };
+        let http_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-upsert-http-v1.json"
+        )))
+        .unwrap();
+        let method = http_contract["method"].as_str().unwrap().to_owned();
+        let path = http_contract["path"].as_str().unwrap().to_owned();
         let send = |app: Router, body: Value| {
             let token = token.clone();
+            let method = method.clone();
+            let path = path.clone();
             async move {
                 app.oneshot(
                     Request::builder()
-                        .method("POST")
-                        .uri(PUBLIC_DOCUMENT_UPSERT_ROUTE)
+                        .method(method.as_str())
+                        .uri(path)
                         .header("content-type", "application/json")
                         .header("authorization", format!("Bearer {token}"))
                         .body(Body::from(serde_json::to_vec(&body).unwrap()))
@@ -177,14 +186,14 @@
         let first_status = first.status();
         let first_body = to_bytes(first.into_body(), 4096).await.unwrap();
         assert_eq!(
-            first_status,
-            StatusCode::OK,
+            first_status.as_u16(),
+            http_contract["success_status"].as_u64().unwrap() as u16,
             "document upsert failed: {}",
             String::from_utf8_lossy(&first_body)
         );
         assert_eq!(
             serde_json::from_slice::<Value>(&first_body).unwrap(),
-            json!({"status": "ok"})
+            http_contract["success_response"]
         );
         let mut retry_payload = first_payload.clone();
         retry_payload["content"] = json!("updated body");

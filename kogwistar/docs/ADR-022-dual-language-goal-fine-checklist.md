@@ -443,6 +443,17 @@ passed**; `cargo fmt --all --check` passed. This supplies the missing exact
 schema oracle for `/api/auth/me`; other HTTP operations/backend cells remain
 open, so DLFC-03 remains IN PROGRESS.
 
+DLFC-03 source-document upsert HTTP cell (2026-11-27): existing Python
+`tests/server/test_document_api_auth.py::test_document_upsert_keeps_rw_write_path`
+and Rust
+`tests::postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available`
+now consume `contracts/golden/document-upsert-http-v1.json` for method, path,
+success status, and exact response, alongside the shared request fixture
+`document-upsert-v1.json`. Python FastAPI selector: **1 passed**; parity
+annotation crosswalk: **1 passed**; Rust Axum/PostgreSQL selector: **1 passed**
+against disposable pgvector:pg16. This closes the named PostgreSQL HTTP success
+cell only; other applicable HTTP/backend cells remain open.
+
 DLFC-05 workflow status capability cell (2026-11-26): with valid workflow
 namespace and role but only `project_view` (no `workflow.run.read`), Python
 `test_run_status_route_matches_shared_v1_contract` and Rust
