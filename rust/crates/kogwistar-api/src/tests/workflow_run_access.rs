@@ -1290,6 +1290,7 @@ async fn in_memory_checkpoint_and_replay_routes_match_python_contracts() {
 }
 
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_checkpoints; fixture=contracts/golden/run-checkpoints-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_checkpoint_list_http_matches_shared_python_contract; python_test=tests/server/test_chat_server_api_run_inspection.py#test_checkpoint_list_uses_python_defaults_and_checks_namespace
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_checkpoint; fixture=contracts/golden/run-checkpoint-detail-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_checkpoint_list_http_matches_shared_python_contract; python_test=tests/server/test_chat_server_api_run_inspection.py#test_checkpoint_detail_uses_python_defaults_and_checks_namespace
 #[tokio::test]
 async fn in_memory_checkpoint_list_http_matches_shared_python_contract() {
     use axum::body::{Body, to_bytes};
@@ -1373,6 +1374,10 @@ async fn in_memory_checkpoint_list_http_matches_shared_python_contract() {
         "../../../../../contracts/golden/run-checkpoints-v1.json"
     ))
     .unwrap();
+    let detail_contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-checkpoint-detail-v1.json"
+    ))
+    .unwrap();
 
     let mut canonical_body = None;
     for path in [
@@ -1413,6 +1418,42 @@ async fn in_memory_checkpoint_list_http_matches_shared_python_contract() {
             assert_eq!(&value, expected, "workflow-prefixed alias must match legacy route");
         } else {
             canonical_body = Some(value);
+        }
+    }
+
+    let mut canonical_detail = None;
+    for path in [
+        format!("/api/runs/{run_id}/checkpoints/3"),
+        format!("/api/workflow/runs/{run_id}/checkpoints/3"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&path)
+                    .header("authorization", format!("Bearer {}", token("workflow")))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16() as u64,
+            detail_contract["success_status"].as_u64().unwrap()
+        );
+        let body = to_bytes(response.into_body(), 16_384).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        for field in detail_contract["required_fields"].as_array().unwrap() {
+            assert!(value.get(field.as_str().unwrap()).is_some(), "{field}");
+        }
+        assert_eq!(value["run_id"], run_id);
+        assert_eq!(value["step_seq"], 3);
+        assert_eq!(value["state"], json!({"cursor":"later"}));
+        if let Some(expected) = &canonical_detail {
+            assert_eq!(&value, expected, "checkpoint route aliases differ");
+        } else {
+            canonical_detail = Some(value);
         }
     }
 

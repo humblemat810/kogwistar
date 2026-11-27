@@ -69,17 +69,16 @@ passed (Rust **7 passed, 1 ignored**; Python selectors **3 passed**). This
 closes InMemory HTTP replay success/retry response cells only; DLFC-03 remains
 IN PROGRESS for the other inventory operation/backend cells.
 
-DLFC-03 InMemory checkpoint-list HTTP cell (2026-11-27): Rust
+DLFC-03 InMemory checkpoint list/detail HTTP cells (2026-11-27): Rust
 `tests::in_memory_checkpoint_list_http_matches_shared_python_contract` passes
 through authenticated Axum (**1 passed**) against
-`contracts/golden/run-checkpoints-v1.json`. It checks both legacy and
-workflow-prefixed paths return identical checkpoint projections, required
-fields/state/step sequence, and wrong-namespace denial without run-ID
-disclosure. Python oracle
-`tests/server/test_chat_server_api_run_inspection.py::test_checkpoint_list_uses_python_defaults_and_checks_namespace`
-and the parity-annotation crosswalk passed (**1 each**). Existing Rust service
-logic already satisfied the contract; this closes the missing HTTP-level
-evidence cell only. DLFC-03 remains IN PROGRESS.
+`run-checkpoints-v1.json` and `run-checkpoint-detail-v1.json`. Both legacy and
+workflow-prefixed paths return equivalent projections; tests assert fixture
+fields, sequence/state, and list namespace denial without run-ID disclosure.
+Python list/detail oracles plus parity-annotation crosswalk passed (**4
+passed** across the focused checks). Existing Rust service logic already
+satisfied both contracts; this closes these HTTP evidence cells only.
+DLFC-03 remains IN PROGRESS.
 
 DLFC-03 InMemory run-status HTTP cell (2026-11-27): Rust
 `tests::in_memory_run_status_http_matches_shared_contract_for_all_states`
