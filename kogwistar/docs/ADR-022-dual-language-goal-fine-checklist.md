@@ -829,6 +829,17 @@ hyperedge endpoint IDs but not the full HTTP hyperedge payload. These are
 distinct PostgreSQL read cells; DLFC-06 remains IN PROGRESS pending the full
 read/query matrix.
 
+Lifecycle redirect/as-of rerun (2026-11-28): Python
+`tests/core/test_search_nodes_as_of.py::test_search_nodes_as_of_redirect_cycle_and_invalid_target_safety`
+passed for fake, Chroma, and disposable pgvector 16 (**3 passed**). Rust
+`cargo test -p kogwistar-store redirect_resolution_matches_python_lifecycle_modes --lib`
+passed node and edge redirect modes (**2 passed**), and
+`cargo test -p kogwistar-store node_as_of_resolution_matches_python_lifecycle_boundaries --lib`
+passed (**1 passed**). This verifies existing node redirect/cycle/invalid-target,
+edge redirect-mode, and node as-of boundary cases only; it adds no acceptance
+case and does not establish complete HTTP read/query operation-by-backend
+coverage. DLFC-06 remains IN PROGRESS.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |

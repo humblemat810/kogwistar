@@ -64,6 +64,18 @@
   Once implementation begins, this is a locked acceptance batch: a failing
   case calls for implementation fixes, not new requirements or replacement
   tests. Passing every frozen required case closes its mapped existing item.
+- Fixed-test-set execution rule: before any Rust implementation, enumerate the
+  existing item's complete acceptance cases by exact selector and backend, then
+  add the full planned test batch and freeze it. After implementation starts,
+  do not add tests opportunistically, split one requirement into new checklist
+  rows, or rerun already-passing unrelated suites as a substitute for progress.
+  Fix code against the frozen failures. Run targeted unit tests first, then the
+  smallest relevant integration batch. If all frozen required cases pass, mark
+  the item `PASS` and update its existing coarse mapping immediately in that
+  same slice. Report frozen total and pass/fail/unrun counts every turn; if no
+  test is missing, say so plainly. Add a case later only for a reproduced
+  defect or approved contract change, documenting why it does not move the
+  original goalpost.
 - Closure is mandatory, not discretionary: as soon as every frozen required
   case passes, mark that existing DLFC `PASS` in the same slice and update its
   coarse mapping. Do not leave it open for extra polish, add tests after seeing
