@@ -311,8 +311,9 @@ delegates ACL lookup to existing backend `AuthStore`; no new ACL representation
 or authorization policy was added. Python route tests and the Rust authenticated
 SQLite route test cover history/graph read policy plus node/edge upsert/delete,
 undo and redo deny-before-effect; focused Python and Rust selectors each passed.
-This closes only the named REST route ACL cells and adds no tasklet; DLFC-05
-remains IN PROGRESS, with GOAL-06/08 still OPEN.
+This closes the predeclared DLFC-05 ACL/authority cases; DLFC-05 is PASS.
+Broader operation/backend parity remains tracked under GOAL-06/08, which stay
+OPEN and do not reopen or block DLFC-05.
 
 DLFC-06: strengthened the existing operator-inbox scope oracle. Python and Rust
 omit orphan/inaccessible rows before limiting; shared fixture
