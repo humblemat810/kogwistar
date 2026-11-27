@@ -664,6 +664,38 @@ async fn workflow_run_submit_enforces_configured_workflow_acl() {
         );
     }
 
+    for workflow_id in ["no-acl", "read-only"] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/workflow/runs/missing-resume-run/resume")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        json!({
+                            "suspended_node_id": "node",
+                            "suspended_token_id": "token",
+                            "workflow_id": workflow_id,
+                            "conversation_id": "workflow-acl-conversation",
+                            "turn_node_id": "turn"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{workflow_id}");
+        let body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), 8192).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(body["code"], "KOGWISTAR_WORKFLOW_FORBIDDEN", "{workflow_id}");
+        assert!(!body.to_string().contains("missing-resume-run"));
+    }
+
     for (request_id, workflow_id, expected_error) in [
         ("mcp-no-acl", "no-acl", true),
         ("mcp-read-only", "read-only", true),

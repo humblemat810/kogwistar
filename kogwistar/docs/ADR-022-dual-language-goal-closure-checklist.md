@@ -293,12 +293,16 @@ InMemory, SQLite metadata, and PostgreSQL services. Red testing found two real
 REST gaps: a `conversation`-only namespace was admitted with 202, and a `ro`
 principal with write capabilities was admitted with 202. Rust now rejects
 these before ACL lookup/admission with Python-equivalent 403 namespace code
-and role detail; MCP policy is unchanged. The focused Rust workflow-run suite
-passed (**15 passed, 2 ignored**), Python route oracles passed (**6 passed**),
-Rust API build succeeded, and the live Rust PostgreSQL HTTP smoke passed
-(**1 passed**). These results close only these preflight defects;
-owner/per-workflow ACL, mutation-state, retry/effect, and all supported
-backend-operation cells are not yet proven.
+and role detail; MCP policy is unchanged. Extending the existing configured
+workflow ACL selector also found resume with a missing or read-only workflow
+ACL returned run-not-found 404 instead of Python's pre-lookup 403. Rust now
+checks resume's workflow write ACL after role/namespace and before run lookup;
+the configured ACL test passed (**1 passed**). The focused Rust workflow-run
+suite passed (**15 passed, 2 ignored**), Python route oracles passed (**6
+passed**), Rust API build succeeded, and the live Rust PostgreSQL HTTP smoke
+passed (**1 passed**). These results close only these preflight defects;
+owner/per-workflow ACL across remaining routes, mutation-state, retry/effect,
+and all supported backend-operation cells are not yet proven.
 The coarse status remains **2/5 PASS; 3 IN PROGRESS**; fine checklist remains
 **14/18 PASS (77.8%); 4 IN PROGRESS**.
 

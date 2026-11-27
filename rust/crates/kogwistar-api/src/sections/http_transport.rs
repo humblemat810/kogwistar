@@ -1733,7 +1733,7 @@ async fn mcp_dispatch(
             }))
             .into_response();
         };
-        if let Some(error) = workflow_run_submit_acl_error(state.application.as_ref(), &request).await
+        if let Some(error) = workflow_run_write_acl_error(state.application.as_ref(), &request).await
         {
             return Json(json!({
                 "jsonrpc": "2.0",
@@ -2023,12 +2023,12 @@ async fn application_effect_handler(
         return (status, [("content-type", error.content_type)], Body::from(error.body))
             .into_response();
     }
-    if let Some(error) = workflow_run_submit_namespace_error(&request) {
+    if let Some(error) = workflow_run_write_namespace_error(&request) {
         let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return (status, [("content-type", error.content_type)], Body::from(error.body))
             .into_response();
     }
-    if let Some(error) = workflow_run_submit_acl_error(state.application.as_ref(), &request).await {
+    if let Some(error) = workflow_run_write_acl_error(state.application.as_ref(), &request).await {
         let status = StatusCode::from_u16(error.status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
         return (status, [("content-type", error.content_type)], Body::from(error.body))
             .into_response();
@@ -2081,12 +2081,28 @@ fn workflow_run_write_role_error(request: &ApiEffectRequest) -> Option<ApiEffect
     ))
 }
 
-// PYTHON_PARITY_NOTE_V1: REST submit checks runtime namespace before workflow ACL and run admission, matching runtime_api.submit_workflow_run. MCP submit retains its own namespace policy. rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#workflow_run_rest_authority_matrix_matches_python; python=kogwistar/server/runtime_api.py#create_runtime_router.submit_workflow_run.
-fn workflow_run_submit_namespace_error(
-    request: &ApiEffectRequest,
-) -> Option<ApiEffectResponse> {
-    if request.method != "POST"
-        || request.path_and_query.split('?').next() != Some("/api/workflow/runs")
+// PYTHON_PARITY_NOTE_V1: REST submit/resume check runtime namespace before workflow ACL and run lookup, matching runtime_api.submit_workflow_run/resume_workflow_run. MCP policy remains separate. rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#workflow_run_rest_authority_matrix_matches_python; python=kogwistar/server/runtime_api.py#create_runtime_router.submit_workflow_run+create_runtime_router.resume_workflow_run.
+fn workflow_run_write_namespace_error(request: &ApiEffectRequest) -> Option<ApiEffectResponse> {
+    let path = request.path_and_query.split('?').next()?;
+    let (matches_route, message) = if request.method == "POST" && path == "/api/workflow/runs" {
+        (true, "Workflow run submission requires workflow namespace")
+    } else {
+        let is_resume = request.method == "POST"
+            && path
+                .strip_prefix("/api/workflow/runs/")
+                .is_some_and(|suffix| {
+                    let mut parts = suffix.split('/');
+                    matches!(
+                        (parts.next(), parts.next(), parts.next()),
+                        (Some(run_id), Some("resume"), None) if !run_id.is_empty()
+                    )
+                });
+        (
+            is_resume,
+            "Workflow run resume requires workflow namespace",
+        )
+    };
+    if !matches_route
         || principal_strings(&request.principal, "ns")
             .iter()
             .any(|namespace| namespace == "*" || namespace == "workflow")
@@ -2096,18 +2112,28 @@ fn workflow_run_submit_namespace_error(
     Some(effect_error(
         StatusCode::FORBIDDEN,
         "KOGWISTAR_NAMESPACE_FORBIDDEN",
-        "Workflow run submission requires workflow namespace",
+        message,
     ))
 }
 
-async fn workflow_run_submit_acl_error(
+async fn workflow_run_write_acl_error(
     application: &dyn ApplicationService,
     request: &ApiEffectRequest,
 ) -> Option<ApiEffectResponse> {
-    // PYTHON_PARITY_NOTE_V1: Preserve Python's workflow-ACL bypass when no user identity is available, after the transport role/namespace checks; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#workflow_run_submit_acl_error; python=kogwistar/server/auth_middleware.py#require_workflow_access; rust_test=tests/server/test_rust_api_postgres_live.py#test_rust_postgres_server_submit_claim_read_cancel_true_socket; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_submit_matches_shared_contract; note=identity-bearing requests still require configured workflow rw ACL.
-    if request.method != "POST"
-        || request.path_and_query.split('?').next() != Some("/api/workflow/runs")
-    {
+    // PYTHON_PARITY_NOTE_V1: Require configured workflow rw ACL before submit/resume dispatch; preserve Python's no-identity bypass after role/namespace checks. rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#workflow_run_write_acl_error; python=kogwistar/server/auth_middleware.py#require_workflow_access; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_routes.rs#workflow_run_submit_enforces_configured_workflow_acl; python_test=tests/server/test_chat_server_api_runtime_workflow.py#test_runtime_rest_submit_and_sse.
+    let path = request.path_and_query.split('?').next()?;
+    let is_write_route = request.method == "POST"
+        && (path == "/api/workflow/runs"
+            || path
+                .strip_prefix("/api/workflow/runs/")
+                .is_some_and(|suffix| {
+                    let mut parts = suffix.split('/');
+                    matches!(
+                        (parts.next(), parts.next(), parts.next()),
+                        (Some(run_id), Some("resume"), None) if !run_id.is_empty()
+                    )
+                }));
+    if !is_write_route {
         return None;
     }
     let body: Value = serde_json::from_slice(&request.body).ok()?;
