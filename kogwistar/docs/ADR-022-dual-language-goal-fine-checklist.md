@@ -730,6 +730,18 @@ pgvector container (**1 passed**); it verifies authorized-owner projection,
 not the non-owner private-snapshot 404 case.
 DLFC-03 and DLFC-06 remain IN PROGRESS pending their frozen full test batches.
 
+DLFC-06 read/query regression recheck (2026-11-27): Python
+`tests/core/test_lifecycle_read_contract.py`,
+`tests/core/test_search_nodes_as_of.py`, and
+`tests/server/test_workflow_lineage_api.py` (**46 passed**); Rust
+`cargo test -p kogwistar-api sqlite_chroma_vector_query --lib` (**2 passed**),
+`cargo test -p kogwistar-api workflow_lineage --lib` (**2 passed, 1 ignored**),
+plus the ignored `tests::postgres_workflow_lineage_route_checks_each_workflow_acl`
+explicitly run against disposable local pgvector (**1 passed**). This verifies
+the named lifecycle, redirect, stale-tombstone, metric/order, lineage ACL, and
+not-found cases covered by these selectors; it does not exhaust all DLFC-06
+read/query/backend cells.
+
 | Coarse criterion | Required fine items | Close condition |
 | --- | --- | --- |
 | GOAL-06 | DLFC-01 through DLFC-12 | Matrix complete; each applicable operation/backend/contract cell passes, or unsupported cell passes fail-closed test. |
