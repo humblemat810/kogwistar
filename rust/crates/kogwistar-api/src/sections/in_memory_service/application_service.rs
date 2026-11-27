@@ -248,6 +248,10 @@ impl ApplicationService for InMemoryGraphApplicationService {
         if method == "GET" && path.split('?').next() == Some("/api/workflow/dead-letters") {
             return true;
         }
+        // PYTHON_PARITY_NOTE_V1: Public replay endpoint uses the same lane CAS as MCP; rust=rust/crates/kogwistar-api/src/sections/in_memory_service/application_service.rs#supports_http_operation; python=kogwistar/server/runtime_api.py#create_runtime_router.replay_dead_letter; fixture=contracts/golden/workflow-dead-letter-replay-missing-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#in_memory_dead_letter_replay_http_matches_missing_run_contract; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_dead_letter_replay_missing_run_matches_contract
+        if method == "POST" && dead_letter_replay_run_id(path).is_some() {
+            return true;
+        }
         if method == "GET"
             && (is_conversation_list_route(path)
                 || conversation_detail_id(path).is_some()
