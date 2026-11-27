@@ -1260,6 +1260,149 @@ async fn in_memory_checkpoint_and_replay_routes_match_python_contracts() {
     }
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_workflow_checkpoints; fixture=contracts/golden/run-checkpoints-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_checkpoint_list_http_matches_shared_python_contract; python_test=tests/server/test_chat_server_api_run_inspection.py#test_checkpoint_list_uses_python_defaults_and_checks_namespace
+#[tokio::test]
+async fn in_memory_checkpoint_list_http_matches_shared_python_contract() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    let service = InMemoryGraphApplicationService::default();
+    let run_id = "checkpoint-http-run";
+    kogwistar_store::ServerRunWriteStore::create_server_run(
+        &service.store,
+        ServerRunCreate {
+            run_id: run_id.to_owned(),
+            conversation_id: "checkpoint-http-conversation".to_owned(),
+            workflow_id: "checkpoint-http-workflow".to_owned(),
+            user_id: Some("checkpoint-http-owner".to_owned()),
+            user_turn_node_id: "checkpoint-http-turn".to_owned(),
+            status: "running".to_owned(),
+        },
+    )
+    .await
+    .unwrap();
+    for (step_seq, cursor) in [(0, "start"), (3, "later")] {
+        kogwistar_store::ServerRunWriteStore::append_server_run_event(
+            &service.store,
+            run_id,
+            "workflow.recorded_transition.v1",
+            json!({
+                "transition_id": format!("checkpoint-http-transition-{step_seq}"),
+                "reduced": {
+                    "state": {
+                        "last_step_seq": step_seq,
+                        "workflow_id": "checkpoint-http-workflow",
+                        "last_node_id": "prepare",
+                        "state": {"cursor": cursor}
+                    },
+                    "state_update": [],
+                    "result": null,
+                    "errors": [],
+                    "server_status": "running"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .unwrap();
+    }
+
+    let secret = "in-memory-checkpoint-http-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let token = |namespace: &str| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"checkpoint-http-owner",
+                "role":"ro",
+                "ns":[namespace],
+                "capabilities":["workflow.run.read"],
+                "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service),
+    );
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/run-checkpoints-v1.json"
+    ))
+    .unwrap();
+
+    let mut canonical_body = None;
+    for path in [
+        format!("/api/runs/{run_id}/checkpoints"),
+        format!("/api/workflow/runs/{run_id}/checkpoints"),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(&path)
+                    .header("authorization", format!("Bearer {}", token("workflow")))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), contract["success_status"].as_u64().unwrap() as u16);
+        let body = to_bytes(response.into_body(), 16_384).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        for field in contract["required_envelope_fields"].as_array().unwrap() {
+            assert!(value.get(field.as_str().unwrap()).is_some(), "{field}");
+        }
+        assert_eq!(value["run_id"], run_id);
+        assert_eq!(value["checkpoints"].as_array().unwrap().len(), 2);
+        for checkpoint in value["checkpoints"].as_array().unwrap() {
+            for field in contract["required_checkpoint_fields"].as_array().unwrap() {
+                assert!(checkpoint.get(field.as_str().unwrap()).is_some(), "{field}");
+            }
+            assert_eq!(checkpoint["workflow_id"], "checkpoint-http-workflow");
+        }
+        assert_eq!(value["checkpoints"][0]["step_seq"], 0);
+        assert_eq!(value["checkpoints"][0]["state"], json!({"cursor":"start"}));
+        assert_eq!(value["checkpoints"][1]["step_seq"], 3);
+        assert_eq!(value["checkpoints"][1]["state"], json!({"cursor":"later"}));
+        if let Some(expected) = &canonical_body {
+            assert_eq!(&value, expected, "workflow-prefixed alias must match legacy route");
+        } else {
+            canonical_body = Some(value);
+        }
+    }
+
+    let denied = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/runs/{run_id}/checkpoints"))
+                .header("authorization", format!("Bearer {}", token("wisdom")))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    let denied_body = to_bytes(denied.into_body(), 4096).await.unwrap();
+    assert!(!String::from_utf8_lossy(&denied_body).contains(run_id));
+}
+
 #[tokio::test]
 async fn workflow_run_status_denies_wrong_scope_before_storage_access() {
     let service = PostgresRunApplicationService::from_dsn(
