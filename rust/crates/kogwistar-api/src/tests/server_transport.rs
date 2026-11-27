@@ -729,7 +729,7 @@
                 Request::builder()
                     .method("POST")
                     .uri("/api/workflow/runs")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::empty())
                     .unwrap(),
             )
