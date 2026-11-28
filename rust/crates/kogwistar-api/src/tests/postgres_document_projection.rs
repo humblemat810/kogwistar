@@ -1,6 +1,8 @@
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available() {
+        use crate::change_events::ChangeEventPublisher;
+
         struct FixedEmbeddingProvider {
             profile: kogwistar_engine::embedding::EmbeddingProfile,
             inputs: Arc<Mutex<Vec<String>>>,
@@ -66,7 +68,21 @@
 
         let embedding_inputs = Arc::new(Mutex::new(Vec::new()));
         let fail_next_embedding = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
+        let (change_sender, mut change_events) = tokio::sync::mpsc::unbounded_channel();
+        let change_app = Router::new().route(
+            "/ingest",
+            post(move |Json(event): Json<Value>| async move {
+                let _ = change_sender.send(event);
+                StatusCode::OK
+            }),
+        );
+        let change_listener = bind_reachable_loopback_listener().await;
+        let change_endpoint = format!("http://{}", change_listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(change_listener, change_app).await.unwrap();
+        });
+
+        let mut service = PostgresRunApplicationService::from_dsn(&dsn, &schema)
             .unwrap()
             .with_embedding_provider(Arc::new(FixedEmbeddingProvider {
                 profile: kogwistar_engine::embedding::EmbeddingProfile {
@@ -87,6 +103,7 @@
                 inputs: embedding_inputs.clone(),
                 fail_next: fail_next_embedding,
             }));
+        service.change_events = ChangeEventPublisher::new(Some(change_endpoint), 8);
         service.ensure_schema().await.unwrap();
         service
             .store
@@ -165,6 +182,12 @@
         let failed_body = to_bytes(failed.into_body(), 4096).await.unwrap();
         let failure: Value = serde_json::from_slice(&failed_body).unwrap();
         assert_eq!(failure["code"], "KOGWISTAR_EMBEDDING_FAILED");
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            change_events.recv()
+        )
+        .await
+        .is_err(), "embedding failure must not publish a document event");
         let unpersisted = service
             .store
             .graph_projection_records(GraphProjectionRead {
@@ -195,10 +218,59 @@
             serde_json::from_slice::<Value>(&first_body).unwrap(),
             http_contract["success_response"]
         );
+        let first_event = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            change_events.recv(),
+        )
+        .await
+        .expect("PostgreSQL upsert event delivery should be bounded")
+        .expect("successful PostgreSQL upsert should publish an event");
+        assert_eq!(first_event["op"], "doc.upsert");
+        assert_eq!(first_event["seq"], 1);
+        assert_eq!(first_event["entity"]["id"], first_payload["doc_id"]);
+        assert!(first_event["entity"]["url"].is_null());
+        assert_eq!(first_event["payload"]["content"], first_payload["content"]);
+
+        let trigger_ddl = format!(
+            r#"CREATE FUNCTION "{schema}".reject_test_document_write()
+                   RETURNS trigger LANGUAGE plpgsql AS $$
+               BEGIN
+                   IF NEW.id = 'storage-fail-doc' THEN
+                       RAISE EXCEPTION 'synthetic storage failure';
+                   END IF;
+                   RETURN NEW;
+               END;
+               $$;
+               CREATE TRIGGER reject_test_document_write
+                   BEFORE INSERT OR UPDATE ON "{schema}"."gke_documents"
+                   FOR EACH ROW EXECUTE FUNCTION "{schema}".reject_test_document_write();"#
+        );
+        client.batch_execute(&trigger_ddl).await.unwrap();
+
+        let mut storage_failure_payload = first_payload.clone();
+        storage_failure_payload["doc_id"] = json!("storage-fail-doc");
+        let storage_failure = send(make_app(), storage_failure_payload).await;
+        assert_eq!(storage_failure.status(), StatusCode::CONFLICT);
+        assert!(tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            change_events.recv()
+        )
+        .await
+        .is_err(), "storage failure must not publish a document event");
+
         let mut retry_payload = first_payload.clone();
         retry_payload["content"] = json!("updated body");
         let retry = send(make_app(), retry_payload).await;
         assert_eq!(retry.status(), StatusCode::OK);
+        let retry_event = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            change_events.recv(),
+        )
+        .await
+        .expect("retry event delivery should be bounded")
+        .expect("successful retry should publish an event");
+        assert_eq!(retry_event["seq"], 2);
+        assert_eq!(retry_event["payload"]["content"], "updated body");
 
         let ocr_content = json!({
             "scan.pdf": [{
@@ -222,6 +294,17 @@
             "OCR document upsert failed: {}",
             String::from_utf8_lossy(&ocr_body)
         );
+        let ocr_event = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            change_events.recv(),
+        )
+        .await
+        .expect("OCR event delivery should be bounded")
+        .expect("successful OCR upsert should publish an event");
+        assert_eq!(ocr_event["seq"], 3);
+        assert_eq!(ocr_event["entity"]["id"], "ocr-document-route-test");
+        assert_eq!(ocr_event["payload"]["type"], "ocr_document");
+        assert_eq!(ocr_event["payload"]["source_map"]["p1_c0"]["text"], "Hello");
 
         let reopened = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         let rows = reopened
@@ -274,6 +357,7 @@
         assert_eq!(
             *embedding_inputs.lock().unwrap(),
             vec![
+                first_payload["content"].as_str().unwrap().to_owned(),
                 first_payload["content"].as_str().unwrap().to_owned(),
                 "updated body".to_owned(),
                 "{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}".to_owned()
