@@ -4,13 +4,104 @@ from __future__ import annotations
 
 import statistics
 from collections.abc import Mapping
-from typing import Any
+from time import perf_counter, process_time
+from typing import Any, Protocol
 
 
 MIN_RUST_THROUGHPUT_RATIO = 0.95
 MAX_RUST_P95_LATENCY_RATIO = 1.10
 BACKENDS = frozenset({"postgres_pgvector", "chroma_sqlite_metadata"})
 MODES = frozenset({"python", "rust_native"})
+
+
+class TraceBackendAdapter(Protocol):
+    def write_record(self, operation: Mapping[str, Any]) -> None: ...
+
+    def read_event(self, operation: Mapping[str, Any]) -> str: ...
+
+    def read_projection(self, operation: Mapping[str, Any]) -> str: ...
+
+    def snapshot(self) -> Mapping[str, Any]: ...
+
+
+def _p95(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[max(0, int(len(ordered) * 0.95 + 0.999999) - 1)]
+
+
+def run_trace_sample(
+    adapter: TraceBackendAdapter,
+    trace: list[Mapping[str, Any]],
+    *,
+    trace_id: str,
+    trace_sha256: str,
+    resource_limits_verified: bool,
+    ffi_calls: int,
+) -> dict[str, Any]:
+    """Execute fixed read-after-write operations and collect measured evidence."""
+    if not trace:
+        raise ValueError("trace must contain operations")
+    if not trace_id or not trace_sha256:
+        raise ValueError("trace identity and digest are required")
+    if not resource_limits_verified or ffi_calls < 0:
+        raise ValueError("verified resource limits and non-negative FFI count are required")
+
+    elapsed_by_operation: dict[str, list[float]] = {}
+    wall_start = perf_counter()
+    cpu_start = process_time()
+    for operation in trace:
+        name = operation.get("operation")
+        operation_start = perf_counter()
+        if name == "write_record":
+            adapter.write_record(operation)
+        elif name == "read_event":
+            actual_id = adapter.read_event(operation)
+            if actual_id != operation.get("expected_entity_id"):
+                raise AssertionError(
+                    f"read_event returned {actual_id!r}, expected "
+                    f"{operation.get('expected_entity_id')!r}"
+                )
+        elif name == "read_projection":
+            actual_id = adapter.read_projection(operation)
+            if actual_id != operation.get("expected_entity_id"):
+                raise AssertionError(
+                    f"read_projection returned {actual_id!r}, expected "
+                    f"{operation.get('expected_entity_id')!r}"
+                )
+        else:
+            raise ValueError(f"unsupported trace operation: {name!r}")
+        elapsed_by_operation.setdefault(str(name), []).append(
+            (perf_counter() - operation_start) * 1000
+        )
+
+    snapshot = adapter.snapshot()
+    elapsed_ms = (perf_counter() - wall_start) * 1000
+    cpu_ms = (process_time() - cpu_start) * 1000
+    state_digest = snapshot.get("state_digest")
+    event_count = snapshot.get("canonical_event_count")
+    if not isinstance(state_digest, str) or not state_digest:
+        raise ValueError("backend snapshot must provide a canonical state digest")
+    if not isinstance(event_count, int) or event_count < 0:
+        raise ValueError("backend snapshot must provide a non-negative event count")
+    projection_converged = snapshot.get("projection_converged")
+    if not isinstance(projection_converged, bool):
+        raise ValueError("backend snapshot must report projection convergence")
+
+    return {
+        "trace_id": trace_id,
+        "trace_sha256": trace_sha256,
+        "state_digest": state_digest,
+        "canonical_event_count": event_count,
+        "projection_converged": projection_converged,
+        "elapsed_ms": elapsed_ms,
+        "cpu_ms": cpu_ms,
+        "throughput_ops_per_sec": len(trace) * 1000 / elapsed_ms,
+        "operation_p95_ms": {
+            name: _p95(values) for name, values in sorted(elapsed_by_operation.items())
+        },
+        "resource_limits_verified": resource_limits_verified,
+        "ffi_calls": ffi_calls,
+    }
 
 
 def verify_backend_report(

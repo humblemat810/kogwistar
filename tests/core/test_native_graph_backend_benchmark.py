@@ -4,7 +4,93 @@ import copy
 
 import pytest
 
-from scripts.native_graph_backend_benchmark import verify_backend_report
+from scripts.native_graph_backend_benchmark import run_trace_sample, verify_backend_report
+
+
+class TraceAdapter:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def write_record(self, operation: dict[str, object]) -> None:
+        self.calls.append("write_record")
+
+    def read_event(self, operation: dict[str, object]) -> str:
+        self.calls.append("read_event")
+        return str(operation["expected_entity_id"])
+
+    def read_projection(self, operation: dict[str, object]) -> str:
+        self.calls.append("read_projection")
+        return str(operation["expected_entity_id"])
+
+    def snapshot(self) -> dict[str, object]:
+        return {
+            "state_digest": "same-state",
+            "canonical_event_count": 1,
+            "projection_converged": True,
+        }
+
+
+def test_run_trace_sample_executes_each_operation_and_records_native_evidence() -> None:
+    adapter = TraceAdapter()
+    trace = [
+        {"operation": "write_record", "index": 0, "expected_entity_id": "node-0"},
+        {"operation": "read_event", "index": 0, "expected_entity_id": "node-0"},
+        {"operation": "read_projection", "index": 0, "expected_entity_id": "node-0"},
+    ]
+
+    sample = run_trace_sample(
+        adapter,
+        trace,
+        trace_id="trace-01",
+        trace_sha256="trace-sha",
+        resource_limits_verified=True,
+        ffi_calls=0,
+    )
+
+    assert adapter.calls == ["write_record", "read_event", "read_projection"]
+    assert sample["trace_id"] == "trace-01"
+    assert sample["trace_sha256"] == "trace-sha"
+    assert sample["canonical_event_count"] == 1
+    assert sample["state_digest"] == "same-state"
+    assert sample["resource_limits_verified"] is True
+    assert sample["ffi_calls"] == 0
+    assert set(sample["operation_p95_ms"]) == {"write_record", "read_event", "read_projection"}
+    assert sample["elapsed_ms"] > 0
+    assert sample["throughput_ops_per_sec"] > 0
+
+
+def test_run_trace_sample_fails_when_read_after_write_result_differs() -> None:
+    class WrongReadAdapter(TraceAdapter):
+        def read_event(self, operation: dict[str, object]) -> str:
+            self.calls.append("read_event")
+            return "wrong-node"
+
+    with pytest.raises(AssertionError, match="read_event"):
+        run_trace_sample(
+            WrongReadAdapter(),
+            [
+                {"operation": "write_record", "index": 0, "expected_entity_id": "node-0"},
+                {"operation": "read_event", "index": 0, "expected_entity_id": "node-0"},
+            ],
+            trace_id="trace-01",
+            trace_sha256="trace-sha",
+            resource_limits_verified=True,
+            ffi_calls=0,
+        )
+
+
+def test_run_trace_sample_rejects_unknown_operation_before_backend_call() -> None:
+    adapter = TraceAdapter()
+    with pytest.raises(ValueError, match="unsupported"):
+        run_trace_sample(
+            adapter,
+            [{"operation": "skip_write", "index": 0, "expected_entity_id": "node-0"}],
+            trace_id="trace-01",
+            trace_sha256="trace-sha",
+            resource_limits_verified=True,
+            ffi_calls=0,
+        )
+    assert adapter.calls == []
 
 
 @pytest.fixture
