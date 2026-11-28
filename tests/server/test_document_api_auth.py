@@ -37,6 +37,15 @@ def test_ocr_document_payload_matches_shared_source_map_contract() -> None:
     assert document.source_map == fixture["expected_source_map"]
     assert _entity_payload(document) == fixture["expected_change_payload"]
 
+    for case in fixture["parity_cases"]:
+        document = Document.from_ocr(
+            id=fixture["doc_id"],
+            ocr_content=case["ocr_content"],
+            type="ocr",
+        )
+        assert document.content == case["expected_content"], case["name"]
+        assert document.source_map == case["expected_source_map"], case["name"]
+
 
 @pytest.mark.ci
 @pytest.mark.parametrize(

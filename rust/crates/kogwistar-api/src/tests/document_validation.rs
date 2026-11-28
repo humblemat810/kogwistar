@@ -10,6 +10,19 @@
 
         assert_eq!(normalized_content, fixture["expected_content_repr"]);
         assert_eq!(serde_json::to_value(source_map).unwrap(), fixture["expected_source_map"]);
+
+        for case in fixture["parity_cases"].as_array().unwrap() {
+            let input = serde_json::to_string(&case["ocr_content"]).unwrap();
+            let (content, source_map) =
+                normalize_ocr_document_inner(&input, true).expect("valid OCR parity case");
+            assert_eq!(content, case["expected_content"], "{}", case["name"]);
+            assert_eq!(
+                Value::Object(source_map.unwrap()),
+                case["expected_source_map"],
+                "{}",
+                case["name"]
+            );
+        }
     }
 
     #[test]
