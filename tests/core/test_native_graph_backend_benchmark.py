@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
+from contextlib import nullcontext
 
 import pytest
 
 from scripts.native_graph_backend_benchmark import (
     build_backend_trace,
     build_backend_trace_document,
+    PostgresGraphTraceAdapter,
     run_trace_sample,
     verify_backend_report,
 )
@@ -195,6 +199,119 @@ def test_backend_trace_document_is_deterministic_and_has_a_shared_root() -> None
 def test_backend_trace_document_rejects_empty_workload() -> None:
     with pytest.raises(ValueError, match="positive"):
         build_backend_trace_document(0)
+
+
+def test_python_postgres_trace_adapter_matches_shared_event_and_projection_contract() -> None:
+    class FakeMeta:
+        def __init__(self) -> None:
+            self.events: list[tuple[int, str, str, str, str]] = []
+
+        def transaction(self) -> object:
+            return nullcontext()
+
+        def append_entity_event(self, **values: str) -> int:
+            seq = len(self.events) + 1
+            self.events.append(
+                (
+                    seq,
+                    values["entity_kind"],
+                    values["entity_id"],
+                    values["event_id"],
+                    values["payload_json"],
+                )
+            )
+            return seq
+
+        def iter_entity_events(
+            self, *, namespace: str, from_seq: int, batch_size: int, to_seq: int | None = None
+        ) -> list[tuple[int, str, str, str, str]]:
+            del namespace, batch_size
+            return [
+                row
+                for row in self.events
+                if row[0] >= from_seq and (to_seq is None or row[0] <= to_seq)
+            ]
+
+    class FakeVectorBackend:
+        def __init__(self) -> None:
+            self.rows: dict[str, dict[str, dict[str, object]]] = {"node": {}, "edge": {}}
+
+        def _upsert(
+            self,
+            kind: str,
+            ids: list[str],
+            documents: list[str],
+            metadatas: list[dict[str, object]],
+            embeddings: list[list[float]] | None = None,
+        ) -> None:
+            for index, entity_id in enumerate(ids):
+                self.rows[kind][entity_id] = {
+                    "document": documents[index],
+                    "metadata": metadatas[index],
+                    "embedding": embeddings[index] if embeddings else None,
+                }
+
+        def node_upsert(self, **values: object) -> None:
+            self._upsert("node", **values)  # type: ignore[arg-type]
+
+        def edge_upsert(self, **values: object) -> None:
+            self._upsert("edge", **values)  # type: ignore[arg-type]
+
+        def _get(self, kind: str, ids: list[str]) -> dict[str, object]:
+            rows = [self.rows[kind][entity_id] for entity_id in ids if entity_id in self.rows[kind]]
+            return {
+                "ids": [entity_id for entity_id in ids if entity_id in self.rows[kind]],
+                "documents": [row["document"] for row in rows],
+                "metadatas": [row["metadata"] for row in rows],
+            }
+
+        def node_get(self, *, ids: list[str], include: list[str]) -> dict[str, object]:
+            del include
+            return self._get("node", ids)
+
+        def edge_get(self, *, ids: list[str], include: list[str]) -> dict[str, object]:
+            del include
+            return self._get("edge", ids)
+
+    trace = build_backend_trace_document(1)
+    operation = trace["operations"][0]
+    meta = FakeMeta()
+    vector_backend = FakeVectorBackend()
+    adapter = PostgresGraphTraceAdapter(
+        meta,
+        vector_backend,
+        namespace="benchmark-native-graph",
+        trace_id=trace["trace_id"],
+    )
+
+    adapter.seed_root(trace["root_payload"])
+    adapter.write_record(operation)
+    event_result = adapter.read_event(trace["operations"][1])
+    projection_result = adapter.read_projection(trace["operations"][2])
+    snapshot = adapter.snapshot()
+
+    assert [row[1:3] for row in meta.events] == [
+        ("node", "mixed-node-root"),
+        ("node", "mixed-node-00000"),
+        ("edge", "mixed-edge-00000"),
+    ]
+    assert event_result == projection_result == {
+        "node_id": "mixed-node-00000",
+        "edge_id": "mixed-edge-00000",
+        "source_id": "mixed-node-root",
+        "target_id": "mixed-node-00000",
+    }
+    payloads = {
+        "node:mixed-node-root": trace["root_payload"],
+        "node:mixed-node-00000": operation["node_payload"],
+        "edge:mixed-edge-00000": operation["edge_payload"],
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(payloads, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert snapshot["canonical_event_count"] == 3
+    assert snapshot["projection_converged"] is True
+    assert snapshot["state_digest"] == expected_digest
 
 
 @pytest.fixture

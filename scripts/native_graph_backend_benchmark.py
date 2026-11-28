@@ -46,6 +46,208 @@ class TraceBackendAdapter(Protocol):
     def snapshot(self) -> Mapping[str, Any]: ...
 
 
+class PostgresGraphTraceAdapter:
+    """Python graph trace adapter over EnginePostgresMetaStore + PgVectorBackend."""
+
+    def __init__(
+        self,
+        metadata_store: Any,
+        vector_backend: Any,
+        *,
+        namespace: str,
+        trace_id: str,
+    ) -> None:
+        if not namespace or not trace_id:
+            raise ValueError("trace namespace and id are required")
+        self.metadata_store = metadata_store
+        self.vector_backend = vector_backend
+        self.namespace = namespace
+        self.trace_id = trace_id
+        self._node_ids: set[str] = set()
+        self._edge_ids: set[str] = set()
+
+    @staticmethod
+    def _canonical_json(value: Mapping[str, Any]) -> str:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+    def _write_entity(
+        self,
+        *,
+        kind: str,
+        entity_id: str,
+        payload: Mapping[str, Any],
+        vector: list[float] | None,
+    ) -> None:
+        if payload.get("id") != entity_id:
+            raise ValueError(f"{kind} payload id differs from requested id")
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{kind} payload metadata must be an object")
+        payload_json = self._canonical_json(payload)
+        with self.metadata_store.transaction():
+            self.metadata_store.append_entity_event(
+                namespace=self.namespace,
+                event_id=f"{self.trace_id}:{kind}:{entity_id}",
+                entity_kind=kind,
+                entity_id=entity_id,
+                op="ADD",
+                payload_json=payload_json,
+            )
+            upsert = (
+                self.vector_backend.node_upsert
+                if kind == "node"
+                else self.vector_backend.edge_upsert
+            )
+            values: dict[str, Any] = {
+                "ids": [entity_id],
+                "documents": [payload_json],
+                "metadatas": [metadata],
+            }
+            if vector is not None:
+                values["embeddings"] = [vector]
+            upsert(**values)
+        (self._node_ids if kind == "node" else self._edge_ids).add(entity_id)
+
+    def seed_root(self, root_payload: Mapping[str, Any]) -> None:
+        root_id = root_payload.get("id")
+        if not isinstance(root_id, str) or not root_id:
+            raise ValueError("root payload id is required")
+        self._write_entity(
+            kind="node", entity_id=root_id, payload=root_payload, vector=None
+        )
+
+    def write_record(self, operation: Mapping[str, Any]) -> None:
+        node = operation.get("node_payload")
+        edge = operation.get("edge_payload")
+        vector = operation.get("vector")
+        if not isinstance(node, Mapping) or not isinstance(edge, Mapping):
+            raise ValueError("write_record requires node and edge payloads")
+        if not isinstance(vector, list) or not vector:
+            raise ValueError("write_record requires a non-empty precomputed vector")
+        node_id = operation.get("expected_entity_id")
+        edge_id = operation.get("expected_edge_id")
+        if not isinstance(node_id, str) or not isinstance(edge_id, str):
+            raise ValueError("write_record requires expected node and edge ids")
+        self._write_entity(kind="node", entity_id=node_id, payload=node, vector=vector)
+        self._write_entity(kind="edge", entity_id=edge_id, payload=edge, vector=vector)
+
+    def read_event(self, operation: Mapping[str, Any]) -> Mapping[str, Any]:
+        index = operation.get("index")
+        if not isinstance(index, int) or index < 0:
+            raise ValueError("read_event requires a non-negative trace index")
+        first_seq = 2 + 2 * index
+        rows = list(
+            self.metadata_store.iter_entity_events(
+                namespace=self.namespace,
+                from_seq=first_seq,
+                to_seq=first_seq + 1,
+                batch_size=2,
+            )
+        )
+        if len(rows) != 2:
+            raise AssertionError("read_event did not return node and edge events")
+        node_row, edge_row = rows
+        node_payload = json.loads(node_row[4])
+        edge_payload = json.loads(edge_row[4])
+        expected_node = operation.get("expected_entity_id")
+        expected_edge = operation.get("expected_edge_id")
+        expected_source = operation.get("expected_source_id")
+        if (
+            (node_row[1], node_row[2], node_payload.get("id"))
+            != ("node", expected_node, expected_node)
+            or (edge_row[1], edge_row[2], edge_payload.get("id"))
+            != ("edge", expected_edge, expected_edge)
+            or edge_payload.get("source_ids") != [expected_source]
+            or edge_payload.get("target_ids") != [expected_node]
+        ):
+            raise AssertionError("canonical event read differs from shared graph trace")
+        return {
+            "node_id": expected_node,
+            "edge_id": expected_edge,
+            "source_id": expected_source,
+            "target_id": expected_node,
+        }
+
+    def _read_payload(self, kind: str, entity_id: str) -> dict[str, Any]:
+        getter = (
+            self.vector_backend.node_get
+            if kind == "node"
+            else self.vector_backend.edge_get
+        )
+        result = getter(ids=[entity_id], include=["documents", "metadatas"])
+        ids = result.get("ids", [])
+        documents = result.get("documents", [])
+        if not ids or ids[0] != entity_id or not documents or not isinstance(documents[0], str):
+            raise AssertionError(f"{kind} projection {entity_id!r} is missing")
+        payload = json.loads(documents[0])
+        if not isinstance(payload, dict) or payload.get("id") != entity_id:
+            raise AssertionError(f"{kind} projection {entity_id!r} has invalid document")
+        return payload
+
+    def read_projection(self, operation: Mapping[str, Any]) -> Mapping[str, Any]:
+        node_id = operation.get("expected_entity_id")
+        edge_id = operation.get("expected_edge_id")
+        source_id = operation.get("expected_source_id")
+        if not all(isinstance(value, str) for value in (node_id, edge_id, source_id)):
+            raise ValueError("read_projection requires graph ids")
+        node_payload = self._read_payload("node", node_id)
+        edge_payload = self._read_payload("edge", edge_id)
+        if edge_payload.get("source_ids") != [source_id] or edge_payload.get(
+            "target_ids"
+        ) != [node_id]:
+            raise AssertionError("edge projection endpoints differ from shared graph trace")
+        return {
+            "node_id": node_id,
+            "edge_id": edge_id,
+            "source_id": source_id,
+            "target_id": node_id,
+        }
+
+    def snapshot(self) -> Mapping[str, Any]:
+        records: dict[str, Any] = {}
+        converged = True
+        for kind, entity_ids in (
+            ("node", sorted(self._node_ids)),
+            ("edge", sorted(self._edge_ids)),
+        ):
+            for entity_id in entity_ids:
+                try:
+                    payload = self._read_payload(kind, entity_id)
+                except (AssertionError, KeyError, ValueError, json.JSONDecodeError):
+                    converged = False
+                    continue
+                records[f"{kind}:{entity_id}"] = payload
+        events = list(
+            self.metadata_store.iter_entity_events(
+                namespace=self.namespace,
+                from_seq=1,
+                batch_size=max(1, len(self._node_ids) + len(self._edge_ids) + 1),
+            )
+        )
+        serialized = json.dumps(
+            records, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        return {
+            "state_digest": hashlib.sha256(serialized).hexdigest(),
+            "canonical_event_count": len(events),
+            "peak_rss_bytes": _process_peak_rss_bytes(),
+            "projection_converged": converged
+            and len(records) == len(self._node_ids) + len(self._edge_ids),
+        }
+
+
+def _process_peak_rss_bytes() -> int | None:
+    """Return process high-water RSS where the OS exposes it; fail closed otherwise."""
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith("VmHWM:"):
+                    return int(line.split()[1]) * 1024
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _p95(values: list[float]) -> float:
     ordered = sorted(values)
     return ordered[max(0, int(len(ordered) * 0.95 + 0.999999) - 1)]
