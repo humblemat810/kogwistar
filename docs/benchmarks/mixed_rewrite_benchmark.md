@@ -2730,15 +2730,18 @@ Rust reported zero FFI calls.
 | Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Python | 24.79 ops/s | 13.00 ms | 26.39 ms | 67.74 ms | 168,058,880 B |
-| Rust-native | 19.07 ops/s | 22.36 ms | 12.80 ms | 130.96 ms | 19,472,384 B |
-| Rust/Python ratio | 0.769 | 1.720 | 0.485 | 1.933 | 0.116 |
+| Rust-native | 19.55 ops/s | 22.02 ms | 12.74 ms | 126.94 ms | 19,599,360 B |
+| Rust/Python ratio | 0.789 | 1.694 | 0.483 | 1.874 | 0.117 |
 
 The report verifier failed the existing thresholds: throughput must be at
 least 0.95; each operation p95 and peak RSS ratios must be at most 1.10.
 Projection-read latency and RSS passed; throughput, event-read p95, and write
 p95 did not. An earlier run omitted Python edge-endpoint cleanup and had
 different write transaction boundaries; its timings are superseded and are not
-gate evidence. This corrected run aligns those effects and boundaries, but is
-still a bounded sequential microtrace, not full request-path or concurrent
-evidence. DLFC-18 and GOAL-09 remain open; do not lower thresholds. The
-generated trace is ignored at `.tmp/dlfc18-pg-trace-100.json`.
+gate evidence. The Rust runner now reads the node+edge event pair with one
+bounded ordered replay, matching Python's single range read. This improved
+Rust median throughput from 19.07 to 19.55 ops/s, but did not meet the gate.
+This corrected run aligns trace effects and boundaries, but remains a bounded
+sequential microtrace, not full request-path or concurrent evidence. DLFC-18
+and GOAL-09 remain open; do not lower thresholds. The generated trace is
+ignored at `.tmp/dlfc18-pg-trace-100.json`.

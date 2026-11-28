@@ -292,16 +292,21 @@ async fn execute_trace(store: &PostgresStore, trace: &Value) -> BenchResult<Valu
                     .await?;
             }
             "read_event" => {
-                for (kind, id) in [
+                let index = operation["index"].as_i64().ok_or("trace index missing")?;
+                let first_seq = 2 + 2 * index;
+                let events = store
+                    .replay_raw_events(&scope.namespace, first_seq - 1, 2)
+                    .await?;
+                if events.len() != 2 {
+                    return Err("expected canonical node and edge events".into());
+                }
+                for (event, (kind, id)) in events.iter().zip([
                     ("node", operation["expected_entity_id"].as_str().unwrap()),
                     ("edge", operation["expected_edge_id"].as_str().unwrap()),
-                ] {
-                    let found = store
-                        .latest_entity_events(&scope.namespace, kind, &[id.to_owned()])
-                        .await?;
-                    let event = found
-                        .get(id)
-                        .ok_or("expected canonical graph event missing")?;
+                ]) {
+                    if event.entity_kind != kind || event.entity_id != id {
+                        return Err("canonical event identity differs from graph trace".into());
+                    }
                     let payload: Value = serde_json::from_str(&event.payload_json)?;
                     if payload["id"] != id {
                         return Err("canonical event entity id mismatch".into());
