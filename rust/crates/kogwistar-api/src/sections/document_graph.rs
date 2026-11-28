@@ -526,13 +526,6 @@ fn graph_upsert_request(
             error.to_string(),
         )
     })?;
-    if input.doc_type != "text" {
-        return Err(effect_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "KOGWISTAR_GRAPH_UPSERT_UNSUPPORTED",
-            "Rust graph upsert currently supports normalized text documents only",
-        ));
-    }
     Ok(input)
 }
 

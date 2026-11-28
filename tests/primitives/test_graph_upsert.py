@@ -123,9 +123,10 @@ def test_graph_upsert_legacy_request_reaches_existing_persistence_path(monkeypat
         def fetch_document_text(self, document_id: str) -> None:
             return None
 
-        def persist_graph_extraction(self, **_kwargs: object) -> dict[str, object]:
+        def persist_graph_extraction(self, **kwargs: object) -> dict[str, object]:
+            document = kwargs["document"]
             return {
-                "document_id": "legacy-doc",
+                "document_id": document.id,
                 "node_ids": [],
                 "edge_ids": [],
                 "nodes_added": 0,
@@ -142,6 +143,39 @@ def test_graph_upsert_legacy_request_reaches_existing_persistence_path(monkeypat
 
     assert response.document_id == "legacy-doc"
     assert len(fake_engine.documents_added) == 1
+
+    ocr_content = "Hello"
+    ocr_response = server.api_graph_upsert_llm(
+        server.GraphUpsertLLMIn(
+            doc_id="ocr-doc",
+            content=ocr_content,
+            doc_type="ocr",
+            nodes=[
+                {
+                    "id": "nn:hello",
+                    "label": "Hello",
+                    "type": "entity",
+                    "summary": "OCR source entity",
+                    "references": [
+                        {
+                            "collection_page_url": "document_collection/ocr-doc",
+                            "document_page_url": "document/ocr-doc",
+                            "doc_id": "ocr-doc",
+                            "start_char": 0,
+                            "end_char": 5,
+                            "excerpt": "Hello",
+                        }
+                    ],
+                }
+            ],
+            edges=[],
+        )
+    )
+
+    assert ocr_response.document_id == "ocr-doc"
+    assert len(fake_engine.documents_added) == 2
+    assert fake_engine.documents_added[1].type == "ocr"
+    assert fake_engine.documents_added[1].content == ocr_content
 
 # Import your FastAPI app
 

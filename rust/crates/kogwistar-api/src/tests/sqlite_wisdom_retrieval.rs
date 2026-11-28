@@ -1269,6 +1269,63 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         .collect::<Vec<_>>();
     assert_eq!(jobs_after_hyperedge_rejection, jobs_before_invalid);
 
+    let ocr_content = "Hello";
+    let ocr_request = json!({
+        "contract_version": 1,
+        "doc_id": "doc-ocr-upsert",
+        "content": ocr_content,
+        "doc_type": "ocr",
+        "insertion_method": "ocr-parser",
+        "nodes": [{
+            "id": "nn:hello",
+            "label": "Hello",
+            "type": "entity",
+            "summary": "OCR source entity",
+            "references": [{
+                "collection_page_url": "document_collection/doc-ocr-upsert",
+                "document_page_url": "document/doc-ocr-upsert",
+                "doc_id": "doc-ocr-upsert",
+                "start_char": 0,
+                "end_char": 5,
+                "excerpt": "Hello"
+            }]
+        }],
+        "edges": []
+    });
+    let ocr_response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&ocr_request).unwrap(),
+            principal: json!({
+                "sub": "alice", "user_id": "alice", "role": "rw",
+                "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(
+        ocr_response.status,
+        StatusCode::OK.as_u16(),
+        "OCR graph upsert failed: {}",
+        String::from_utf8_lossy(&ocr_response.body)
+    );
+    let ocr_projection = service
+        .store
+        .source_document_projection(
+            &GraphScope {
+                namespace: "docs".to_owned(),
+                workspace_id: Some(String::new()),
+                graph_space: Some(String::new()),
+            },
+            "doc-ocr-upsert",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ocr_projection.document.as_deref(), Some(ocr_content));
+    assert_eq!(ocr_projection.metadata["doc_type"], "ocr");
+    assert_eq!(ocr_projection.metadata["insertion_method"], "ocr-parser");
+
     drop(service);
     drop(standalone);
     remove_test_sqlite(&sqlite_path);
