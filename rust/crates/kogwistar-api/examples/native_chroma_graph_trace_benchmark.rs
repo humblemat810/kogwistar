@@ -418,13 +418,15 @@ async fn main() -> BenchResult<()> {
     let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")?;
     let node_config = ChromaStoreConfig {
         endpoint: endpoint.clone(),
-        collection: "kogwistar_dlfc18_trace_nodes".to_owned(),
+        collection: std::env::var("KOGWISTAR_BENCH_CHROMA_NODE_COLLECTION")
+            .unwrap_or_else(|_| "kogwistar_dlfc18_trace_nodes".to_owned()),
         metric: DistanceMetric::Cosine,
         request_timeout: Duration::from_secs(60),
         ..ChromaStoreConfig::default()
     };
     let edge_config = ChromaStoreConfig {
-        collection: "kogwistar_dlfc18_trace_edges".to_owned(),
+        collection: std::env::var("KOGWISTAR_BENCH_CHROMA_EDGE_COLLECTION")
+            .unwrap_or_else(|_| "kogwistar_dlfc18_trace_edges".to_owned()),
         ..node_config.clone()
     };
     let sqlite = SqliteStore::open(sqlite_path)?;

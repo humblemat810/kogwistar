@@ -2745,3 +2745,31 @@ tests passed (**3 passed**). This is a bounded sequential microtrace, not
 full request-path or concurrent evidence. SQLite+Chroma performance remains
 unverified, so DLFC-18 and GOAL-09 remain open; thresholds were not lowered.
 The generated trace is ignored at `.tmp/dlfc18-pg-trace-100.json`.
+
+#### 2026-11-28 capped SQLite + Chroma native graph trace (one backend cell passed)
+
+Compared the same shared 100-record read-after-write trace through Python
+`EngineSQLite + ChromaBackend` and the Rust-native example. The benchmark client
+ran in Linux Docker at 2 CPU / 4 GiB; the Chroma 1.5.9 service ran at 1 CPU /
+2 GiB. Docker uses cgroup v1 here; the runner verifies actual quota and memory
+limits for both cgroup v1 and v2. Each mode had one warm-up and three fresh
+samples with unique SQLite files, Chroma collections, and namespaces. The
+trace digest was
+`e9322aa484cbd33dcd21b78cacb7750de38faa558ba56cff900a087be53bf404`.
+All eight sample outcomes had 201 canonical events, converged Chroma
+projections, and identical state digest
+`22c6adf07ebd3593bce35353054bc82d575d6f6a4f3c6b1d77babf70a68cc44b`;
+Rust-native reported zero FFI calls.
+
+| Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python | 4.66 ops/s | 351.0 ms | 14.51 ms | 342.0 ms | 135,512,064 B |
+| Rust-native | 27.53 ops/s | 4.16 ms | 11.83 ms | 98.75 ms | 22,065,152 B |
+| Rust/Python ratio | 5.905 | 0.0118 | 0.815 | 0.301 | 0.163 |
+
+The existing verifier passed: minimum throughput ratio 0.95; maximum per-op
+p95 and peak-RSS ratios 1.10. Raw report and trace are retained locally at
+`.tmp/dlfc18-chroma-paired-run-20261128/` (ignored). This closes the
+SQLite+Chroma performance trace cell only. GOAL-09/DLFC-18 remain open because
+the current matched PostgreSQL graph-trace run still fails its performance
+thresholds (throughput ratio 0.811; event-read/write p95 ratios 1.778/1.672).
