@@ -84,37 +84,40 @@ class PostgresGraphTraceAdapter:
         if not isinstance(metadata, dict):
             raise ValueError(f"{kind} payload metadata must be an object")
         payload_json = self._canonical_json(payload)
-        with self.metadata_store.transaction():
-            self.metadata_store.append_entity_event(
-                namespace=self.namespace,
-                event_id=f"{self.trace_id}:{kind}:{entity_id}",
-                entity_kind=kind,
-                entity_id=entity_id,
-                op="ADD",
-                payload_json=payload_json,
-            )
-            upsert = (
-                self.vector_backend.node_upsert
-                if kind == "node"
-                else self.vector_backend.edge_upsert
-            )
-            values: dict[str, Any] = {
-                "ids": [entity_id],
-                "documents": [payload_json],
-                "metadatas": [metadata],
-            }
-            if vector is not None:
-                values["embeddings"] = [vector]
-            upsert(**values)
+        self.metadata_store.append_entity_event(
+            namespace=self.namespace,
+            event_id=f"{self.trace_id}:{kind}:{entity_id}",
+            entity_kind=kind,
+            entity_id=entity_id,
+            op="ADD",
+            payload_json=payload_json,
+        )
+        upsert = (
+            self.vector_backend.node_upsert
+            if kind == "node"
+            else self.vector_backend.edge_upsert
+        )
+        projection_metadata = {**metadata, "namespace": self.namespace}
+        values: dict[str, Any] = {
+            "ids": [entity_id],
+            "documents": [payload_json],
+            "metadatas": [projection_metadata],
+        }
+        if vector is not None:
+            values["embeddings"] = [vector]
+        upsert(**values)
+        if kind == "edge":
+            self.vector_backend.edge_endpoints_delete(where={"edge_id": entity_id})
         (self._node_ids if kind == "node" else self._edge_ids).add(entity_id)
 
     def seed_root(self, root_payload: Mapping[str, Any]) -> None:
         root_id = root_payload.get("id")
         if not isinstance(root_id, str) or not root_id:
             raise ValueError("root payload id is required")
-        self._write_entity(
-            kind="node", entity_id=root_id, payload=root_payload, vector=None
-        )
+        with self.metadata_store.transaction():
+            self._write_entity(
+                kind="node", entity_id=root_id, payload=root_payload, vector=None
+            )
 
     def write_record(self, operation: Mapping[str, Any]) -> None:
         node = operation.get("node_payload")
@@ -128,8 +131,9 @@ class PostgresGraphTraceAdapter:
         edge_id = operation.get("expected_edge_id")
         if not isinstance(node_id, str) or not isinstance(edge_id, str):
             raise ValueError("write_record requires expected node and edge ids")
-        self._write_entity(kind="node", entity_id=node_id, payload=node, vector=vector)
-        self._write_entity(kind="edge", entity_id=edge_id, payload=edge, vector=vector)
+        with self.metadata_store.transaction():
+            self._write_entity(kind="node", entity_id=node_id, payload=node, vector=vector)
+            self._write_entity(kind="edge", entity_id=edge_id, payload=edge, vector=vector)
 
     def read_event(self, operation: Mapping[str, Any]) -> Mapping[str, Any]:
         index = operation.get("index")

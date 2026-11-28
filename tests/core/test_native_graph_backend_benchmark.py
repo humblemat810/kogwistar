@@ -235,6 +235,7 @@ def test_python_postgres_trace_adapter_matches_shared_event_and_projection_contr
     class FakeVectorBackend:
         def __init__(self) -> None:
             self.rows: dict[str, dict[str, dict[str, object]]] = {"node": {}, "edge": {}}
+            self.endpoint_deletes: list[dict[str, object]] = []
 
         def _upsert(
             self,
@@ -256,6 +257,9 @@ def test_python_postgres_trace_adapter_matches_shared_event_and_projection_contr
 
         def edge_upsert(self, **values: object) -> None:
             self._upsert("edge", **values)  # type: ignore[arg-type]
+
+        def edge_endpoints_delete(self, **values: object) -> None:
+            self.endpoint_deletes.append(values)
 
         def _get(self, kind: str, ids: list[str]) -> dict[str, object]:
             rows = [self.rows[kind][entity_id] for entity_id in ids if entity_id in self.rows[kind]]
@@ -312,6 +316,7 @@ def test_python_postgres_trace_adapter_matches_shared_event_and_projection_contr
     assert snapshot["canonical_event_count"] == 3
     assert snapshot["projection_converged"] is True
     assert snapshot["state_digest"] == expected_digest
+    assert vector_backend.endpoint_deletes == [{"where": {"edge_id": "mixed-edge-00000"}}]
 
 
 @pytest.fixture

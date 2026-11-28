@@ -1,7 +1,8 @@
-use kogwistar_store::{
-    GraphMutation, GraphProjectionRead, GraphRecord, GraphScope, MetadataFilter,
+use kogwistar_store::{GraphProjectionRead, GraphRecord, GraphScope, MetadataFilter};
+use kogwistar_store_postgres::{
+    GraphProjectionUpsert, GraphTableNames, NewRawEntityEvent, PostgresStore, PostgresStoreError,
+    PostgresUnitOfWork,
 };
-use kogwistar_store_postgres::{GraphTableNames, PostgresStore};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -99,7 +100,8 @@ fn validate_trace_document(trace: &Value) -> Result<(), String> {
     Ok(())
 }
 
-fn projection_mutation(
+async fn write_trace_entity(
+    uow: &mut PostgresUnitOfWork<'_>,
     scope: &GraphScope,
     trace_id: &str,
     kind: &str,
@@ -107,24 +109,35 @@ fn projection_mutation(
     payload: &Value,
     vector: Option<Vec<f32>>,
     embedding_dim: usize,
-) -> GraphMutation {
+) -> Result<(), PostgresStoreError> {
     let id = payload["id"].as_str().expect("trace payload id validated");
     let metadata = payload["metadata"].as_object().cloned().unwrap_or_default();
-    GraphMutation {
+    let payload_json = serde_json::to_string(payload)
+        .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+    uow.append_raw_entity_event(
+        &scope.namespace,
+        NewRawEntityEvent {
+            event_id: format!("{trace_id}:{kind}:{id}"),
+            entity_kind: kind.to_owned(),
+            entity_id: id.to_owned(),
+            op: "ADD".to_owned(),
+            payload_json: payload_json.clone(),
+        },
+    )
+    .await?;
+    uow.upsert_graph_projection(GraphProjectionUpsert {
         scope: scope.clone(),
         table: table.to_owned(),
-        entity_kind: kind.to_owned(),
-        event_id: format!("{trace_id}:{kind}:{id}"),
-        op: "ADD".to_owned(),
-        payload: payload.clone(),
         record: GraphRecord {
             id: id.to_owned(),
-            document: Some(payload.to_string()),
+            document: Some(payload_json),
             metadata,
             embedding: vector,
         },
         embedding_dim,
-    }
+    })
+    .await?;
+    Ok(())
 }
 
 fn percentile95(values: &[f64]) -> f64 {
@@ -201,16 +214,27 @@ async fn execute_trace(store: &PostgresStore, trace: &Value) -> BenchResult<Valu
     if !root["metadata"].is_object() {
         root["metadata"] = serde_json::json!({});
     }
-    let root_mutation = projection_mutation(
-        &scope,
-        trace_id,
-        "node",
-        "gke_nodes",
-        &root,
-        None,
-        dimension,
-    );
-    store.apply_graph_mutation(root_mutation).await?;
+    let root_id = root["id"].as_str().ok_or("root id missing")?.to_owned();
+    let root_scope = scope.clone();
+    let root_trace_id = trace_id.to_owned();
+    let root_for_write = root.clone();
+    store
+        .transaction(move |uow| {
+            Box::pin(async move {
+                write_trace_entity(
+                    uow,
+                    &root_scope,
+                    &root_trace_id,
+                    "node",
+                    "gke_nodes",
+                    &root_for_write,
+                    None,
+                    dimension,
+                )
+                .await
+            })
+        })
+        .await?;
 
     let mut latency: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let wall_start = Instant::now();
@@ -234,25 +258,38 @@ async fn execute_trace(store: &PostgresStore, trace: &Value) -> BenchResult<Valu
                             .ok_or("invalid vector value")
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let node = projection_mutation(
-                    &scope,
-                    trace_id,
-                    "node",
-                    "gke_nodes",
-                    &operation["node_payload"],
-                    Some(vector.clone()),
-                    dimension,
-                );
-                let edge = projection_mutation(
-                    &scope,
-                    trace_id,
-                    "edge",
-                    "gke_edges",
-                    &operation["edge_payload"],
-                    Some(vector),
-                    dimension,
-                );
-                store.apply_graph_mutations_atomic(vec![node, edge]).await?;
+                let node_payload = operation["node_payload"].clone();
+                let edge_payload = operation["edge_payload"].clone();
+                let write_scope = scope.clone();
+                let write_trace_id = trace_id.to_owned();
+                store
+                    .transaction(move |uow| {
+                        Box::pin(async move {
+                            write_trace_entity(
+                                uow,
+                                &write_scope,
+                                &write_trace_id,
+                                "node",
+                                "gke_nodes",
+                                &node_payload,
+                                Some(vector.clone()),
+                                dimension,
+                            )
+                            .await?;
+                            write_trace_entity(
+                                uow,
+                                &write_scope,
+                                &write_trace_id,
+                                "edge",
+                                "gke_edges",
+                                &edge_payload,
+                                Some(vector),
+                                dimension,
+                            )
+                            .await
+                        })
+                    })
+                    .await?;
             }
             "read_event" => {
                 for (kind, id) in [
@@ -330,7 +367,7 @@ async fn execute_trace(store: &PostgresStore, trace: &Value) -> BenchResult<Valu
     if replayed.len() != 1 + 2 * operations.len() / 3 {
         return Err("canonical event count differs from expected graph writes".into());
     }
-    let root_id = root["id"].as_str().ok_or("root id missing")?;
+    let root_id = root_id.as_str();
     actual_rows.insert(format!("node:{root_id}"), root);
     let canonical_state = serde_json::to_vec(&actual_rows)?;
     let elapsed_ms = wall_start.elapsed().as_secs_f64() * 1000.0;

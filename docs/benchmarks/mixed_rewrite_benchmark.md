@@ -2712,14 +2712,16 @@ Thus it cannot close either missing DLFC-18 comparison. Reports and fresh
 sample data are ignored under `.tmp/dlfc18-python-{pg,chroma}-baseline/`; run
 IDs are `d70af036c7d5` and `195a226f3bca`.
 
-#### 2026-11-28 capped PostgreSQL native graph trace (gate failed)
+#### 2026-11-28 capped PostgreSQL native graph trace (matched effects; gate failed)
 
 Compared the shared versioned 100-record read-after-write trace through
 `PostgresGraphTraceAdapter` and the Rust `native_graph_trace_benchmark`
 example. Both clients ran in separate Linux containers capped at 3 CPU / 6 GiB;
 the disposable pgvector/pg16 service was capped at 1 CPU / 2 GiB. Docker
 inspection confirmed all limits. Each mode used one warm-up and three fresh
-schemas; each sample dropped its schema. Trace digest was
+schemas; each sample dropped its schema. Python and Rust both commit root seed
+separately and each node+edge write pair atomically; both upsert event and graph
+projection, and clear prior edge-endpoint rows. Trace digest was
 `e9322aa484cbd33dcd21b78cacb7750de38faa558ba56cff900a087be53bf404`; all eight
 sample outcomes had 201 canonical events, projection convergence, and matching
 state digest `22c6adf07ebd3593bce35353054bc82d575d6f6a4f3c6b1d77babf70a68cc44b`.
@@ -2727,15 +2729,16 @@ Rust reported zero FFI calls.
 
 | Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Python | 23.60 ops/s | 12.71 ms | 27.44 ms | 77.40 ms | 167,661,568 B |
-| Rust-native | 19.13 ops/s | 22.59 ms | 12.55 ms | 129.41 ms | 19,468,288 B |
-| Rust/Python ratio | 0.811 | 1.778 | 0.457 | 1.672 | 0.116 |
+| Python | 24.79 ops/s | 13.00 ms | 26.39 ms | 67.74 ms | 168,058,880 B |
+| Rust-native | 19.07 ops/s | 22.36 ms | 12.80 ms | 130.96 ms | 19,472,384 B |
+| Rust/Python ratio | 0.769 | 1.720 | 0.485 | 1.933 | 0.116 |
 
 The report verifier failed the existing thresholds: throughput must be at
 least 0.95; each operation p95 and peak RSS ratios must be at most 1.10.
 Projection-read latency and RSS passed; throughput, event-read p95, and write
-p95 did not. This is a bounded sequential microtrace, not full request-path or
-concurrent evidence. It exposes a real measured regression for this workload;
-DLFC-18 and GOAL-09 remain open. Investigate semantic/workload equivalence and
-Rust SQL hot paths before changing thresholds. The generated trace is ignored
-at `.tmp/dlfc18-pg-trace-100.json`.
+p95 did not. An earlier run omitted Python edge-endpoint cleanup and had
+different write transaction boundaries; its timings are superseded and are not
+gate evidence. This corrected run aligns those effects and boundaries, but is
+still a bounded sequential microtrace, not full request-path or concurrent
+evidence. DLFC-18 and GOAL-09 remain open; do not lower thresholds. The
+generated trace is ignored at `.tmp/dlfc18-pg-trace-100.json`.
