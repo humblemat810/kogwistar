@@ -190,31 +190,31 @@ where
     // A per-event advisory xact lock closes the absent-row unique-key race:
     // same-id retries observe the committed row before allocating a sequence.
     advisory_lock(client, &event.event_id, 0).await?;
-    if let Some(existing) = event_by_id(client, tables, &event.event_id).await? {
-        if existing.namespace != namespace {
-            return Err(PostgresStoreError::EventIdNamespaceCollision {
-                event_id: event.event_id,
-                existing_namespace: existing.namespace,
-                requested_namespace: namespace.to_owned(),
-            });
-        }
-        return Ok(AppendedRawEvent {
-            event: existing,
-            inserted: false,
-        });
-    }
-    let seq = allocate_event_seq(client, tables, namespace).await?;
+    // Combine the idempotency lookup, namespace sequence allocation, and insert
+    // in one DB round-trip; the lock above keeps same-ID retries race-free.
     let row = client
         .query_one(
             &format!(
-                "INSERT INTO {}(namespace, seq, event_id, entity_kind, entity_id, op, payload_json) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7) \
-                 RETURNING namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at::TEXT",
-                tables.entity_events
+                "WITH existing AS MATERIALIZED (\
+                     SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at::TEXT AS created_at \
+                     FROM {} WHERE event_id = $2\
+                 ), allocated AS (\
+                     INSERT INTO {} AS target(namespace, next_seq) \
+                     SELECT $1, 2 WHERE NOT EXISTS (SELECT 1 FROM existing) \
+                     ON CONFLICT(namespace) DO UPDATE SET next_seq = target.next_seq + 1 \
+                     RETURNING next_seq - 1 AS seq\
+                 ), inserted AS (\
+                     INSERT INTO {}(namespace, seq, event_id, entity_kind, entity_id, op, payload_json) \
+                     SELECT $1, allocated.seq, $2, $3, $4, $5, $6 FROM allocated \
+                     RETURNING namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at::TEXT AS created_at\
+                 ) \
+                 SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at, FALSE AS inserted FROM existing \
+                 UNION ALL \
+                 SELECT namespace, seq, event_id, entity_kind, entity_id, op, payload_json, created_at, TRUE AS inserted FROM inserted",
+                tables.entity_events, tables.namespace_seq, tables.entity_events
             ),
             &[
                 &namespace,
-                &seq,
                 &event.event_id,
                 &event.entity_kind,
                 &event.entity_id,
@@ -224,9 +224,17 @@ where
         )
         .await
         .map_err(backend)?;
+    let existing = raw_event_from_row(&row)?;
+    if existing.namespace != namespace {
+        return Err(PostgresStoreError::EventIdNamespaceCollision {
+            event_id: event.event_id,
+            existing_namespace: existing.namespace,
+            requested_namespace: namespace.to_owned(),
+        });
+    }
     Ok(AppendedRawEvent {
-        event: raw_event_from_row(&row)?,
-        inserted: true,
+        event: existing,
+        inserted: row.try_get(8).map_err(backend)?,
     })
 }
 

@@ -2773,3 +2773,38 @@ p95 and peak-RSS ratios 1.10. Raw report and trace are retained locally at
 SQLite+Chroma performance trace cell only. GOAL-09/DLFC-18 remain open because
 the current matched PostgreSQL graph-trace run still fails its performance
 thresholds (throughput ratio 0.811; event-read/write p95 ratios 1.778/1.672).
+
+#### 2026-11-28 capped PostgreSQL graph trace after SQL round-trip reduction
+
+Reran the same 100-record trace and resource profile after reducing PostgreSQL
+write overhead in Rust. The client containers were capped at 3 CPU / 6 GiB;
+the disposable pgvector service remained capped at 1 CPU / 2 GiB. Each mode
+used one warm-up and three fresh schemas. The trace digest remained
+`e9322aa484cbd33dcd21b78cacb7750de38faa558ba56cff900a087be53bf404`; all
+eight measured outcomes had 201 canonical events and the same state digest
+`22c6adf07ebd3593bce35353054bc82d575d6f6a4f3c6b1d77babf70a68cc44b`.
+Rust-native reported zero FFI calls.
+
+| Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python | 22.52 ops/s | 15.88 ms | 31.39 ms | 83.32 ms | 169,021,440 B |
+| Rust-native | 43.14 ops/s | 7.64 ms | 14.67 ms | 61.52 ms | 19,349,504 B |
+| Rust/Python ratio | 1.916 | 0.481 | 0.467 | 0.738 | 0.114 |
+
+The existing verifier passed unchanged: throughput ratio >= 0.95, every
+operation p95 ratio <= 1.10, and peak RSS ratio <= 1.10. Three live Rust
+PostgreSQL regression selectors passed, and the store-postgres unit suite
+passed (11 passed; 37 DSN-gated tests ignored in the unit invocation). The
+Rust event append now combines idempotency lookup, sequence allocation, and
+insert in one SQL statement after its per-event transaction advisory lock.
+Graph projection metadata and vector values are now bound parameters rather
+than interpolated SQL literals.
+
+This is a passing matched rerun, not a controlled per-change attribution
+experiment: it establishes that the current Rust path clears the gate under
+the capped profile, but does not quantify how much each SQL change contributed.
+The earlier 0.811 result was not caused by Python-to-Rust-per-record FFI; that
+run already used the Rust-native executable with zero FFI. No threshold
+relaxation is warranted by this evidence. Raw report and trace are retained
+locally at `.tmp/dlfc18-pg-optimized/` (ignored); runner was a temporary
+one-shot local harness, not a checked-in command.
