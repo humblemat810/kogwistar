@@ -34,9 +34,9 @@ except ImportError:
 class TraceBackendAdapter(Protocol):
     def write_record(self, operation: Mapping[str, Any]) -> None: ...
 
-    def read_event(self, operation: Mapping[str, Any]) -> str: ...
+    def read_event(self, operation: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
-    def read_projection(self, operation: Mapping[str, Any]) -> str: ...
+    def read_projection(self, operation: Mapping[str, Any]) -> Mapping[str, Any]: ...
 
     def snapshot(self) -> Mapping[str, Any]: ...
 
@@ -98,19 +98,11 @@ def run_trace_sample(
         if name == "write_record":
             adapter.write_record(operation)
         elif name == "read_event":
-            actual_id = adapter.read_event(operation)
-            if actual_id != operation.get("expected_entity_id"):
-                raise AssertionError(
-                    f"read_event returned {actual_id!r}, expected "
-                    f"{operation.get('expected_entity_id')!r}"
-                )
+            actual = adapter.read_event(operation)
+            _verify_graph_read(actual, operation, operation_name="read_event")
         elif name == "read_projection":
-            actual_id = adapter.read_projection(operation)
-            if actual_id != operation.get("expected_entity_id"):
-                raise AssertionError(
-                    f"read_projection returned {actual_id!r}, expected "
-                    f"{operation.get('expected_entity_id')!r}"
-                )
+            actual = adapter.read_projection(operation)
+            _verify_graph_read(actual, operation, operation_name="read_projection")
         else:
             raise ValueError(f"unsupported trace operation: {name!r}")
         elapsed_by_operation.setdefault(str(name), []).append(
@@ -145,6 +137,26 @@ def run_trace_sample(
         "resource_limits_verified": resource_limits_verified,
         "ffi_calls": ffi_calls,
     }
+
+
+def _verify_graph_read(
+    actual: Mapping[str, Any],
+    operation: Mapping[str, Any],
+    *,
+    operation_name: str,
+) -> None:
+    expected = {
+        "node_id": operation.get("expected_entity_id"),
+        "edge_id": operation.get("expected_edge_id"),
+        "source_id": operation.get("expected_source_id"),
+        "target_id": operation.get("expected_entity_id"),
+    }
+    for field, expected_value in expected.items():
+        if actual.get(field) != expected_value:
+            raise AssertionError(
+                f"{operation_name} {field} returned {actual.get(field)!r}, "
+                f"expected {expected_value!r}"
+            )
 
 
 def verify_backend_report(

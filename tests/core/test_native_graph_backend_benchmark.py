@@ -18,13 +18,23 @@ class TraceAdapter:
     def write_record(self, operation: dict[str, object]) -> None:
         self.calls.append("write_record")
 
-    def read_event(self, operation: dict[str, object]) -> str:
+    def read_event(self, operation: dict[str, object]) -> dict[str, object]:
         self.calls.append("read_event")
-        return str(operation["expected_entity_id"])
+        return {
+            "node_id": operation["expected_entity_id"],
+            "edge_id": operation["expected_edge_id"],
+            "source_id": operation["expected_source_id"],
+            "target_id": operation["expected_entity_id"],
+        }
 
-    def read_projection(self, operation: dict[str, object]) -> str:
+    def read_projection(self, operation: dict[str, object]) -> dict[str, object]:
         self.calls.append("read_projection")
-        return str(operation["expected_entity_id"])
+        return {
+            "node_id": operation["expected_entity_id"],
+            "edge_id": operation["expected_edge_id"],
+            "source_id": operation["expected_source_id"],
+            "target_id": operation["expected_entity_id"],
+        }
 
     def snapshot(self) -> dict[str, object]:
         return {
@@ -37,9 +47,18 @@ class TraceAdapter:
 def test_run_trace_sample_executes_each_operation_and_records_native_evidence() -> None:
     adapter = TraceAdapter()
     trace = [
-        {"operation": "write_record", "index": 0, "expected_entity_id": "node-0"},
-        {"operation": "read_event", "index": 0, "expected_entity_id": "node-0"},
-        {"operation": "read_projection", "index": 0, "expected_entity_id": "node-0"},
+        {
+            "operation": "write_record", "index": 0, "expected_entity_id": "node-0",
+            "expected_edge_id": "edge-0", "expected_source_id": "node-root",
+        },
+        {
+            "operation": "read_event", "index": 0, "expected_entity_id": "node-0",
+            "expected_edge_id": "edge-0", "expected_source_id": "node-root",
+        },
+        {
+            "operation": "read_projection", "index": 0, "expected_entity_id": "node-0",
+            "expected_edge_id": "edge-0", "expected_source_id": "node-root",
+        },
     ]
 
     sample = run_trace_sample(
@@ -65,9 +84,9 @@ def test_run_trace_sample_executes_each_operation_and_records_native_evidence() 
 
 def test_run_trace_sample_fails_when_read_after_write_result_differs() -> None:
     class WrongReadAdapter(TraceAdapter):
-        def read_event(self, operation: dict[str, object]) -> str:
+        def read_event(self, operation: dict[str, object]) -> dict[str, object]:
             self.calls.append("read_event")
-            return "wrong-node"
+            return {"node_id": "wrong-node"}
 
     with pytest.raises(AssertionError, match="read_event"):
         run_trace_sample(
@@ -76,6 +95,45 @@ def test_run_trace_sample_fails_when_read_after_write_result_differs() -> None:
                 {"operation": "write_record", "index": 0, "expected_entity_id": "node-0"},
                 {"operation": "read_event", "index": 0, "expected_entity_id": "node-0"},
             ],
+            trace_id="trace-01",
+            trace_sha256="trace-sha",
+            resource_limits_verified=True,
+            ffi_calls=0,
+        )
+
+
+@pytest.mark.parametrize("operation_name", ["read_event", "read_projection"])
+def test_run_trace_sample_rejects_graph_topology_mismatch(operation_name: str) -> None:
+    class WrongTopologyAdapter(TraceAdapter):
+        def read_event(self, operation: dict[str, object]) -> dict[str, object]:
+            self.calls.append("read_event")
+            return {
+                "node_id": operation["expected_entity_id"],
+                "edge_id": operation["expected_edge_id"],
+                "source_id": "wrong-source",
+                "target_id": operation["expected_entity_id"],
+            }
+
+        def read_projection(self, operation: dict[str, object]) -> dict[str, object]:
+            self.calls.append("read_projection")
+            return {
+                "node_id": operation["expected_entity_id"],
+                "edge_id": operation["expected_edge_id"],
+                "source_id": "wrong-source",
+                "target_id": operation["expected_entity_id"],
+            }
+
+    trace = {
+        "operation": operation_name,
+        "index": 0,
+        "expected_entity_id": "node-0",
+        "expected_edge_id": "edge-0",
+        "expected_source_id": "node-root",
+    }
+    with pytest.raises(AssertionError, match="source_id"):
+        run_trace_sample(
+            WrongTopologyAdapter(),
+            [trace],
             trace_id="trace-01",
             trace_sha256="trace-sha",
             resource_limits_verified=True,
