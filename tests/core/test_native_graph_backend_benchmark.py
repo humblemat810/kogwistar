@@ -400,6 +400,19 @@ def test_chroma_report_requires_eventual_projection_convergence(valid_report) ->
     assert any("converg" in error for error in result["errors"])
 
 
+def test_chroma_backend_report_accepts_equivalent_converged_traces(valid_report) -> None:
+    valid_report["backend"] = "chroma_sqlite_metadata"
+
+    result = verify_backend_report(
+        valid_report,
+        expected_backend="chroma_sqlite_metadata",
+        expected_samples=2,
+    )
+
+    assert result["passed"] is True
+    assert result["performance_gate"]["passed"] is True
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
