@@ -15,6 +15,7 @@ pub struct SqliteRunApplicationService {
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
     transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
+    change_events: crate::change_events::ChangeEventPublisher,
 }
 
 #[derive(Clone)]
@@ -947,6 +948,7 @@ impl SqliteRunApplicationService {
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations,
                 transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
+                change_events: crate::change_events::ChangeEventPublisher::from_env(),
             })
             .map_err(|error| error.to_string())
     }

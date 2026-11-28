@@ -207,7 +207,7 @@ impl PostgresRunApplicationService {
     }
 
     async fn document_projection_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        let write = match document_projection_write(request, &self.capabilities) {
+        let prepared = match document_projection_write(request, &self.capabilities) {
             Ok(write) => write,
             Err(response) => return response,
         };
@@ -221,7 +221,11 @@ impl PostgresRunApplicationService {
                 "The selected Rust store does not own document projections",
             );
         }
-        let write = match embed_document_projection(write, self.embedding_provider.as_deref()).await
+        let write = match embed_document_projection(
+            prepared.write,
+            self.embedding_provider.as_deref(),
+        )
+        .await
         {
             Ok(write) => write,
             Err(()) => {
@@ -233,7 +237,19 @@ impl PostgresRunApplicationService {
             }
         };
         match self.store.upsert_document_projection(write).await {
-            Ok(()) => json_effect(StatusCode::OK, json!({"ok": true})),
+            Ok(()) => {
+                self.change_events.publish(
+                    "doc.upsert",
+                    prepared.change_payload,
+                    json!({
+                        "kind": "doc_node",
+                        "id": prepared.doc_id,
+                        "kg_graph_type": self.graph_role,
+                        "url": null
+                    }),
+                );
+                json_effect(StatusCode::OK, json!({"ok": true}))
+            }
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",

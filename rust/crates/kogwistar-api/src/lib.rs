@@ -60,6 +60,7 @@ use kogwistar_store_sqlite::{
     SqliteAuthStore, SqliteStore, SqliteStoreError, SqliteUnitOfWork,
 };
 
+mod change_events;
 mod cutover;
 mod native_answer_generation;
 mod native_answer_lifecycle;
@@ -191,6 +192,7 @@ mod tests {
     include!("tests/postgres_configuration.rs");
     include!("tests/sqlite_service_events.rs");
     include!("tests/document_validation.rs");
+    include!("tests/document_change_events.rs");
     include!("tests/graph_mutation_contracts.rs");
     include!("tests/visualization_routes.rs");
     include!("tests/runtime_wire_contracts.rs");

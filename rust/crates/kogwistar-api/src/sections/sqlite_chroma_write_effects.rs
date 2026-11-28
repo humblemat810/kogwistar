@@ -244,12 +244,24 @@ impl SqliteRunApplicationService {
                 "The selected SQLite+Chroma service does not own source-document projections",
             );
         }
-        let write = match document_projection_write(request, &self.capabilities) {
+        let prepared = match document_projection_write(request, &self.capabilities) {
             Ok(write) => write,
             Err(response) => return response,
         };
-        match self.store.upsert_document_projection(write).await {
-            Ok(()) => json_effect(StatusCode::OK, json!({"status": "ok"})),
+        match self.store.upsert_document_projection(prepared.write).await {
+            Ok(()) => {
+                self.change_events.publish(
+                    "doc.upsert",
+                    prepared.change_payload,
+                    json!({
+                        "kind": "doc_node",
+                        "id": prepared.doc_id,
+                        "kg_graph_type": self.graph_role,
+                        "url": null
+                    }),
+                );
+                json_effect(StatusCode::OK, json!({"status": "ok"}))
+            }
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",

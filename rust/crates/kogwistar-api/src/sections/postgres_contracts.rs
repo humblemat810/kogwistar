@@ -17,6 +17,7 @@ pub struct PostgresRunApplicationService {
     wisdom_embedding_storage_scope: Result<String, String>,
     chat_completion_provider: Option<crate::native_answer_generation::OpenAiCompatibleChatConfig>,
     transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
+    change_events: crate::change_events::ChangeEventPublisher,
 }
 
 #[derive(Debug, serde::Deserialize)]

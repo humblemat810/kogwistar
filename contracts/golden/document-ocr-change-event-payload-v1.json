@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "input": {
+    "doc_id": "doc-ocr",
+    "doc_type": "ocr",
+    "insertion_method": "ocr-parser",
+    "content": "{\"scan.pdf\":[{\"pdf_page_num\":1,\"OCR_text_clusters\":[{\"text\":\"Hello\"}],\"non_text_objects\":[]}]}"
+  },
+  "expected_payload": {
+    "content": {
+      "scan.pdf": [
+        {
+          "OCR_text_clusters": [{"id": "p1_c0", "text": "Hello"}],
+          "non_text_objects": [],
+          "pdf_page_num": 1
+        }
+      ]
+    },
+    "domain_id": null,
+    "embeddings": null,
+    "id": "doc-ocr",
+    "metadata": {"insertion_method": "ocr-parser"},
+    "processed": false,
+    "source_map": {"p1_c0": {"id": "p1_c0", "text": "Hello"}},
+    "type": "ocr_document"
+  }
+}

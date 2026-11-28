@@ -125,6 +125,8 @@ async fn sqlite_run_admission_persists_authenticated_owner_binding() {
 async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
     use axum::{
         body::{Body, to_bytes},
+        routing::post,
+        Json, Router,
         http::Request,
     };
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -191,9 +193,26 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         "kogwistar-sqlite-chroma-source-document-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
-    let service = SqliteRunApplicationService::open(&path)
+    let (change_sender, mut change_events) = tokio::sync::mpsc::unbounded_channel();
+    let change_app = Router::new().route(
+        "/ingest",
+        post(move |Json(event): Json<Value>| async move {
+            let _ = change_sender.send(event);
+            StatusCode::OK
+        }),
+    );
+    let change_listener = bind_reachable_loopback_listener().await;
+    let change_endpoint = format!("http://{}", change_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(change_listener, change_app).await.unwrap();
+    });
+    let mut service = SqliteRunApplicationService::open(&path)
         .unwrap()
         .with_chroma_graph(graph);
+    service.change_events = crate::change_events::ChangeEventPublisher::new(
+        Some(change_endpoint),
+        1,
+    );
     assert!(service.supports_http_operation("POST", "/api/document"));
     let http_contract: Value = serde_json::from_str(include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -267,6 +286,20 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         serde_json::from_slice::<Value>(&response_body).unwrap(),
         http_contract["success_response"]
     );
+    let change_event = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        change_events.recv(),
+    )
+    .await
+    .expect("successful document upsert should publish change event")
+    .expect("change event should be delivered");
+    assert_eq!(change_event["op"], "doc.upsert");
+    assert_eq!(change_event["entity"]["id"], "source-doc-1");
+    assert_eq!(change_event["entity"]["kg_graph_type"], "knowledge");
+    assert_eq!(
+        change_event["payload"]["content"],
+        "The authoritative source text."
+    );
     let scope = GraphScope {
         namespace: "docs".to_owned(),
         workspace_id: Some("workspace-a".to_owned()),
@@ -312,6 +345,7 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         })
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(change_events.try_recv().is_err());
     assert!(
         service
             .store

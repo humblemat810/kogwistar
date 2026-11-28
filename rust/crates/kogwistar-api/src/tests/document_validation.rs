@@ -507,11 +507,11 @@
             &capabilities,
         )
         .unwrap();
-        assert_eq!(write.record.id, "doc-projection");
-        assert_eq!(write.record.document.as_deref(), Some("hello"));
-        assert_eq!(write.scope.namespace, "docs");
-        assert_eq!(write.record.metadata["doc_type"], "text");
-        assert_eq!(write.record.metadata["insertion_method"], "parser");
+        assert_eq!(write.write.record.id, "doc-projection");
+        assert_eq!(write.write.record.document.as_deref(), Some("hello"));
+        assert_eq!(write.write.scope.namespace, "docs");
+        assert_eq!(write.write.record.metadata["doc_type"], "text");
+        assert_eq!(write.write.record.metadata["insertion_method"], "parser");
 
         let ocr_request = ApiEffectRequest {
             body: serde_json::to_vec(&json!({
@@ -529,9 +529,9 @@
             }))
         };
         let ocr = document_projection_write(&ocr_request, &capabilities).unwrap();
-        assert_eq!(ocr.record.document.as_deref(), Some("{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}"));
-        assert_eq!(ocr.record.metadata["doc_type"], "ocr_document");
-        assert_eq!(ocr.record.metadata["insertion_method"], "ocr-parser");
+        assert_eq!(ocr.write.record.document.as_deref(), Some("{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}"));
+        assert_eq!(ocr.write.record.metadata["doc_type"], "ocr_document");
+        assert_eq!(ocr.write.record.metadata["insertion_method"], "ocr-parser");
     }
 
     #[tokio::test]
