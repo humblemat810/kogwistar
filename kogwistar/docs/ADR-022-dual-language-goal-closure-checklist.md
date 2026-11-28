@@ -6,6 +6,8 @@
 
 **Fine execution tracking:** GOAL-06/08/09 status derives from mapped items in [ADR-022 dual-language goal fine checklist](ADR-022-dual-language-goal-fine-checklist.md). Its denominator is independent from ADR-015 and the closed 177/911 evidence inventory. The closure table and summary are current; evidence and history below do not add separate acceptance gates.
 
+**Unmapped parity gap linked to GOAL-08 (outside the fixed 18-tasklet denominator): ontology — IN PROGRESS.** Rust `kogwistar-contracts` now provides package models, canonical Python-compatible digest, composition, payload validation, and edge-role validation; shared Python-generated fixtures and six Rust integration tests pass in commit `92657883`. Full ontology parity is not established: Rust catalog ACL/ranking integration, ontology CLI/schema command behavior, and the remaining Python ontology contract cases are not implemented or tested in Rust. Do not count this slice as DLFC completion or overall-goal completion.
+
 ## Closure Criteria
 
 | ID | Criterion | Status | Evidence and exact remaining condition |
