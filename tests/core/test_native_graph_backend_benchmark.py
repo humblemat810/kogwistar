@@ -319,6 +319,83 @@ def test_python_postgres_trace_adapter_matches_shared_event_and_projection_contr
     assert vector_backend.endpoint_deletes == [{"where": {"edge_id": "mixed-edge-00000"}}]
 
 
+def test_python_trace_adapter_supports_sqlite_metadata_with_chroma_projection(tmp_path) -> None:
+    from kogwistar.engine_core.engine_sqlite import EngineSQLite
+
+    class FakeChroma:
+        def __init__(self) -> None:
+            self.records: dict[str, dict[str, dict[str, object]]] = {
+                "node": {},
+                "edge": {},
+            }
+
+        def upsert(self, kind: str, **values: object) -> None:
+            ids = values["ids"]
+            docs = values["documents"]
+            metadata = values["metadatas"]
+            assert isinstance(ids, list) and isinstance(docs, list)
+            assert isinstance(metadata, list)
+            for index, entity_id in enumerate(ids):
+                self.records[kind][entity_id] = {
+                    "document": docs[index],
+                    "metadata": metadata[index],
+                }
+
+        def get(self, kind: str, *, ids: list[str], include: list[str]) -> dict[str, object]:
+            del include
+            found = [entity_id for entity_id in ids if entity_id in self.records[kind]]
+            return {
+                "ids": found,
+                "documents": [self.records[kind][entity_id]["document"] for entity_id in found],
+                "metadatas": [self.records[kind][entity_id]["metadata"] for entity_id in found],
+            }
+
+        def node_upsert(self, **values: object) -> None:
+            self.upsert("node", **values)
+
+        def edge_upsert(self, **values: object) -> None:
+            self.upsert("edge", **values)
+
+        def node_get(self, **values: object) -> dict[str, object]:
+            return self.get("node", **values)  # type: ignore[arg-type]
+
+        def edge_get(self, **values: object) -> dict[str, object]:
+            return self.get("edge", **values)  # type: ignore[arg-type]
+
+        def edge_endpoints_delete(self, **values: object) -> None:
+            del values
+
+    trace = build_backend_trace_document(1)
+    metadata = EngineSQLite(tmp_path)
+    metadata.ensure_initialized()
+    chroma = FakeChroma()
+    adapter = PostgresGraphTraceAdapter(
+        metadata,
+        chroma,
+        namespace="benchmark-native-graph",
+        trace_id=trace["trace_id"],
+    )
+
+    adapter.seed_root(trace["root_payload"])
+    adapter.write_record(trace["operations"][0])
+    snapshot = adapter.snapshot()
+    assert adapter.read_event(trace["operations"][1]) == adapter.read_projection(
+        trace["operations"][2]
+    )
+
+    expected_payloads = {
+        "node:mixed-node-root": trace["root_payload"],
+        "node:mixed-node-00000": trace["operations"][0]["node_payload"],
+        "edge:mixed-edge-00000": trace["operations"][0]["edge_payload"],
+    }
+    expected_digest = hashlib.sha256(
+        json.dumps(expected_payloads, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert snapshot["canonical_event_count"] == 3
+    assert snapshot["projection_converged"] is True
+    assert snapshot["state_digest"] == expected_digest
+
+
 @pytest.fixture
 def valid_report() -> dict[str, object]:
     sample = {
