@@ -1,0 +1,66 @@
+{
+  "descriptors": [
+    {
+      "aliases": [],
+      "descriptor_id": "name",
+      "extensions": {},
+      "kind": "ontology_property",
+      "max_count": 1,
+      "min_count": 1,
+      "name": "Name",
+      "summary": "",
+      "value_kind": "string"
+    },
+    {
+      "aliases": [],
+      "allow_additional_properties": false,
+      "descriptor_id": "Thing",
+      "extensions": {},
+      "kind": "ontology_class",
+      "name": "Thing",
+      "property_ids": [
+        "name"
+      ],
+      "summary": ""
+    },
+    {
+      "aliases": [],
+      "descriptor_id": "link",
+      "extensions": {},
+      "kind": "ontology_edge_shape",
+      "name": "Link",
+      "relation_id": null,
+      "roles": [
+        {
+          "allowed_class_ids": [
+            "Thing"
+          ],
+          "max_count": 1,
+          "min_count": 1,
+          "role_id": "source",
+          "target_kind": "node"
+        },
+        {
+          "allowed_class_ids": [
+            "link"
+          ],
+          "max_count": null,
+          "min_count": 0,
+          "role_id": "related",
+          "target_kind": "edge"
+        }
+      ],
+      "summary": ""
+    }
+  ],
+  "manifest": {
+    "content_sha256": "818fc29ebb90dc3ef6b8f2b120953a9edd34092f5511eceaef5d3d376d9c537c",
+    "extensions": {},
+    "imports": [],
+    "ontology_id": "interop",
+    "schema_version": 1,
+    "summary": "",
+    "title": "Interop",
+    "version": "1.0.0"
+  }
+}
