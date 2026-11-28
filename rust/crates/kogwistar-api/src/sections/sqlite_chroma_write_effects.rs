@@ -27,10 +27,9 @@ impl SqliteRunApplicationService {
             .filter(|name| !name.is_empty())
             .map(str::to_ascii_lowercase)
         else {
-            return effect_error(
+            return json_effect(
                 StatusCode::BAD_REQUEST,
-                "KOGWISTAR_INVALID_REQUEST",
-                "tool_name is required",
+                json!({"detail": "tool_name is required"}),
             );
         };
 
@@ -217,10 +216,9 @@ impl SqliteRunApplicationService {
                 json!({"tool_name": tool_name, "snapshot": snapshot})
             }
             _ => {
-                return effect_error(
+                return json_effect(
                     StatusCode::NOT_FOUND,
-                    "KOGWISTAR_TOOL_NOT_FOUND",
-                    format!("unknown built-in tool: {tool_name}"),
+                    json!({"detail": format!("'unknown tool: {tool_name}'")}),
                 );
             }
         };
@@ -231,6 +229,7 @@ impl SqliteRunApplicationService {
         )
     }
 
+    // PYTHON_PARITY_NOTE_V1: Return Python's success envelope for POST /api/document across SQLite+Chroma, matching PostgreSQL; rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_write_effects.rs#sqlite_document_projection_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_graph_writes.rs#sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
     async fn sqlite_document_projection_effect(
         &self,
         request: &ApiEffectRequest,
@@ -245,12 +244,39 @@ impl SqliteRunApplicationService {
                 "The selected SQLite+Chroma service does not own source-document projections",
             );
         }
-        let write = match document_projection_write(request, &self.capabilities) {
+        let prepared = match document_projection_write(request, &self.capabilities) {
             Ok(write) => write,
             Err(response) => return response,
         };
+        let write = match embed_document_projection(
+            prepared.write,
+            self.embedding_provider.as_deref(),
+        )
+        .await
+        {
+            Ok(write) => write,
+            Err(()) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "The configured embedding provider returned an invalid result or failed",
+                );
+            }
+        };
         match self.store.upsert_document_projection(write).await {
-            Ok(()) => json_effect(StatusCode::OK, json!({"ok": true})),
+            Ok(()) => {
+                self.change_events.publish(
+                    "doc.upsert",
+                    prepared.change_payload,
+                    json!({
+                        "kind": "doc_node",
+                        "id": prepared.doc_id,
+                        "kg_graph_type": self.graph_role,
+                        "url": null
+                    }),
+                );
+                json_effect(StatusCode::OK, json!({"status": "ok"}))
+            }
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",

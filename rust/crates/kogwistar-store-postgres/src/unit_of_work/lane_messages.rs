@@ -29,6 +29,23 @@ impl PostgresUnitOfWork<'_> {
         update_projected_lane_message_status(&self.transaction, &self.tables, id, status, error)
             .await
     }
+    pub async fn compare_and_set_projected_lane_message_status(
+        &mut self,
+        id: &str,
+        expected_status: &str,
+        status: &str,
+        error: Option<String>,
+    ) -> PostgresStoreResult<bool> {
+        compare_and_set_projected_lane_message_status(
+            &self.transaction,
+            &self.tables,
+            id,
+            expected_status,
+            status,
+            error,
+        )
+        .await
+    }
     pub async fn update_projected_lane_message_payload(
         &mut self,
         id: &str,

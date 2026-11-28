@@ -35,6 +35,21 @@ impl SqliteRunApplicationService {
             Err(response) => return response,
         };
         let nodes = graph_snapshot.nodes();
+        let conversation_exists = nodes.iter().any(|record| {
+            conversation_record_string(record, "conversation_id").as_deref()
+                == Some(conversation_id)
+                && !matches!(
+                    conversation_record_string(record, "lifecycle_status").as_deref(),
+                    Some("tombstoned" | "deleted")
+                )
+        });
+        if !conversation_exists {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                format!("Unknown conversation_id: {conversation_id}"),
+            );
+        }
         let transcript =
             match conversation_transcript_from_visible_records(nodes, conversation_id, 10_000) {
                 Ok(transcript) => transcript,
@@ -130,6 +145,72 @@ impl SqliteRunApplicationService {
         )
     }
 
+    // Python parity: chat_api.latest_snapshot delegates to ChatService.latest_snapshot;
+    // see tests/server/test_chat_server_api_conversations.py::
+    // test_latest_snapshot_uses_python_defaults_and_checks_namespace.
+    async fn sqlite_chroma_latest_snapshot_effect(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> ApiEffectResponse {
+        let namespaces = principal_strings(&request.principal, "ns");
+        let namespaces = if namespaces.is_empty() {
+            vec!["docs".to_owned()]
+        } else {
+            namespaces
+        };
+        if !namespaces
+            .iter()
+            .any(|namespace| matches!(namespace.as_str(), "*" | "conversation" | "workflow"))
+        {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                "Context snapshot reads require conversation or workflow namespace",
+            );
+        }
+        if !capability_allowed(
+            request,
+            &self.capabilities,
+            "project_view",
+            &["project_view"],
+        ) {
+            return effect_error(
+                StatusCode::FORBIDDEN,
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                "Context snapshot reads require project_view capability",
+            );
+        }
+        let Some(conversation_id) = latest_snapshot_conversation_id(&request.path_and_query)
+        else {
+            return effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_ROUTE_NOT_FOUND",
+                "Conversation snapshot route was not found",
+            );
+        };
+        let (run_id, stage) = context_snapshot_query(&request.path_and_query);
+        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+            Ok(records) => records,
+            Err(response) => return response,
+        };
+        let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+            graph_snapshot.nodes(),
+            &conversation_id,
+            run_id.as_deref(),
+            stage.as_deref(),
+        ) {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                    "No context snapshot found",
+                );
+            }
+        };
+        json_effect(StatusCode::OK, public_context_snapshot_value(snapshot))
+    }
+
     async fn sqlite_chroma_conversation_transcript_effect(
         &self,
         request: &ApiEffectRequest,
@@ -157,14 +238,7 @@ impl SqliteRunApplicationService {
                 "Conversation transcript route was not found",
             );
         };
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation transcript reads require read_graph capability",
-            );
-        }
-        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_conversation_graph_snapshot(request).await {
             Ok(records) => records,
             Err(response) => return response,
         };
@@ -214,13 +288,6 @@ impl SqliteRunApplicationService {
                 "Conversation reads require conversation namespace",
             );
         }
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation reads require read_graph capability",
-            );
-        }
         let Some(conversation_id) = conversation_detail_id(&request.path_and_query) else {
             return effect_error(
                 StatusCode::NOT_FOUND,
@@ -228,7 +295,7 @@ impl SqliteRunApplicationService {
                 "Conversation route was not found",
             );
         };
-        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_conversation_graph_snapshot(request).await {
             Ok(records) => records,
             Err(response) => return response,
         };
@@ -250,6 +317,7 @@ impl SqliteRunApplicationService {
         json_effect(StatusCode::OK, payload)
     }
 
+    // PYTHON_PARITY_V1: require ro/rw role, conversation namespace, and user identity; owner and ACL filters scope results. rust=rust/crates/kogwistar-api/src/sections/sqlite_chroma_conversation_reads.rs#sqlite_chroma_conversation_list_effect; python=kogwistar/server/chat_api.py#create_chat_router.list_conversations; fixture=contracts/golden/conversation-list-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python_test=tests/server/test_chat_server_api_conversations.py#test_conversation_list_is_user_scoped_and_has_stable_response_shape
     async fn sqlite_chroma_conversation_list_effect(
         &self,
         request: &ApiEffectRequest,
@@ -270,17 +338,9 @@ impl SqliteRunApplicationService {
                 "Conversation reads require conversation namespace",
             );
         }
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation reads require read_graph capability",
-            );
-        }
         let user_id = request
             .principal
-            .get("sub")
-            .or_else(|| request.principal.get("user_id"))
+            .get("user_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -291,7 +351,7 @@ impl SqliteRunApplicationService {
                 "User Identity required",
             );
         };
-        let graph_snapshot = match self.chroma_graph_snapshot(request, "conversation").await {
+        let graph_snapshot = match self.chroma_conversation_graph_snapshot(request).await {
             Ok(records) => records,
             Err(response) => return response,
         };

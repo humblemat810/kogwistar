@@ -68,15 +68,28 @@ run registry, queues/leases/lanes, PostgreSQL graph/vector operations, workflow
 runtime, and REST/SSE/MCP/CLI boundaries. Evidence is CI #859 on commit
 `2b53eab1`; these checks cover the named serialization, authority, recovery,
 ACL/scope, and backend contracts, not universal behavioral parity.
-The opt-in local Chroma interop suite passed on the current checkout:
-`tests/server/test_rust_api_chroma_interop_live.py` (**4 passed**, 100.82s).
+The opt-in local Chroma interop suite passed on the current checkout; latest
+test commands and detailed evidence are kept in the completion worklist below.
 It covers Python Chroma projection read/reconciliation by Rust, Rust-authenticated
 graph mutation projected to Chroma and read after Python engine reopen, idempotent
 retry of that mutation batch, Python readback of the three canonical SQLite events,
 Python Stage-1 promotion by the Rust-native worker, and Rust metadata Stage-1
 promotion by the Python worker. The four-test suite is now recorded as verified
-Rust↔Python interop evidence, while Chroma remains a non-authoritative eventual
-projection and therefore remains outside Rust cutover readiness.
+Rust↔Python interop evidence. Rust server has a separately selected Chroma
+GraphStore path; the Python embedded-Chroma `KOGWISTAR_IMPL_GRAPH_STORE`
+adapter remains Python-owned. Chroma is a non-authoritative eventual
+projection, so the Rust Chroma path remains opt-in rather than cutover-ready.
+The bounded Chroma completion/verification tasklets are tracked in
+[`chroma_rust_interop_worklist.md`](chroma_rust_interop_worklist.md). They may
+close on existing test evidence without code changes; closure does not change
+Chroma's SQLite-canonical/eventual-projection authority model.
+Chroma interop tasklets are closed; their sole progress count and exact
+current-checkout evidence are in that worklist. This completes the documented
+cutover/interoperability gates when combined with CI #859/#860 evidence for
+the six named non-Chroma capabilities. It does not prove every runtime/platform
+combination: `sqlite-meta` remains partial for PyPy 3.11 native-binding
+coverage; its POSIX CPython matrix passed CI #859. Nor does this make Chroma
+Rust's canonical writer or couple Chroma transactionally to SQLite.
 Across the same source/native identity, all five Phase 4 runtime-authority groups
 passed: durable-worker **185**, bijection
 **72**, bridge **30**, suspend-terminal **23**, and live PostgreSQL **10**;
@@ -218,18 +231,19 @@ gates remain separate evidence.
 
 `chroma-adapter` in the authority manifest refers to Python's embedded
 `persist_directory` adapter; it does not mean Rust lacks Chroma support. Rust
-also implements an HTTP `GraphReadStore`/`GraphWriteStore` adapter. In the
-SQLite+Chroma composition, SQLite remains canonical for events and index jobs;
-Chroma remains an eventual, non-transactional projection. Python and Rust
-interoperability is covered by the current-source local UAT above. This does
-not establish concurrent multi-writer guarantees or production promotion.
+server independently composes its HTTP `GraphReadStore`/`GraphWriteStore`
+adapter with SQLite metadata. In SQLite+Chroma, SQLite remains canonical for
+events and index jobs; Chroma remains an eventual, non-transactional projection.
+The current-source local UAT verifies Rust-server Chroma operation and
+bidirectional Python/Rust handoff. It does not establish concurrent multi-writer
+guarantees or make the Python embedded adapter Rust-selectable.
 LLM SDKs, OCR, LangGraph conversion, and user-authored Python callback bodies
 remain integrations/workers as allowed by ADR-015; they are not to be rewritten
 for language purity.
 
 ### Closed local implementation and evidence backlog
 
-Only these local items remain in scope before production rollout:
+Only these local items remain in scope before the library UAT gates close:
 
 - [x] Phase 3: run fake/memory, SQLite, and PostgreSQL contract gates from the
   current candidate; prove fault rollback, lease/CAS/sequence concurrency,
@@ -384,10 +398,10 @@ Only these local items remain in scope before production rollout:
   gate only. Production readiness flags remain unchanged; capability canary
   and explicit `workflow-runtime` readiness decision remain open in the
   cutover worklist.
-- [x] Phase 5: zero currently frozen HTTP operations; four syscall operations
-  remain explicitly deferred. The manifest records the remaining grouped
-  Python ownership, prerequisite Rust authorities, and exit evidence; its exact
-  operation set is bidirectionally checked against Rust's fail-closed inventory.
+- [x] Phase 5: zero currently frozen HTTP operations and zero deferred syscall
+  operations. The closed manifest records all four verified syscall selectors;
+  its empty pending set is checked against Rust's fail-closed inventory. Current
+  Phase-5 evidence remains required before release readiness is claimed.
 - [x] The PostgreSQL Rust service now serves
   `GET /api/conversations/{conversation_id}/snapshots/latest` through its
   existing ACL-filtered snapshot projection, with Python-compatible namespace,
@@ -432,10 +446,10 @@ Only these local items remain in scope before production rollout:
   storage-scope/ACL-principal derivation and one ACL-filtered record-read
   helper. The scope/principal invariant test and both live summary/transcript
   and latest-snapshot PostgreSQL integrations passed after refactoring.
-- [x] Phase 5: explicitly version/defer the four remaining conversation/tool syscall
-  sub-operations listed by `PENDING_SYSCALL_CUTOVER_OPS`. The same versioned
-  manifest entry records Python rollback ownership, the required worker/runtime
-  protocol authority, and required exit evidence.
+- [x] Phase 5: verify all conversation/tool syscall sub-operations and close the
+  deferral inventory. The v2 manifest records named test selectors for
+  `send_message`, `receive_message`, `mount_memory`, and `invoke_tool`; the
+  runtime-generated pending syscall list must remain empty.
 - [x] Phase 5: pass current-candidate local route/auth/capability/error,
   SSE-resume, MCP, and frozen OpenAPI/MCP no-drift conformance. Persisted
   `scripts/server_contract_gate.py` re-run produced local report
@@ -492,8 +506,9 @@ rollback evidence. No `0%`/`1%`/`10%`/`50%`/`100%` customer canary is required.
  authority explicitly after its evidence gates pass. It does not switch defaults,
  remove Python, or imply customer deployment. Python remains independently
  supported. Current ledger: **8/8 Rust-target capabilities ready** after merged
- candidate `2b53eab1` passed CI #859; `chroma-adapter` remains Python-owned and
- outside this denominator.
+candidate `2b53eab1` passed CI #859. The Python embedded-Chroma adapter remains
+Python-owned and outside this denominator; Rust-server Chroma interoperability
+is separately verified but is not cutover-ready.
 
 ### Historical local validation and release boundary
 
@@ -669,11 +684,11 @@ not authorize a broad authority-flag promotion or replace production canaries.
   service projection against concurrent duplicate spawn. REST and MCP share
   this path. Rust syscall dispatch now owns spawn/terminate process,
   checkpoint, resume, and approval branches over existing authoritative run
-  and capability services. Conversation/tool-dependent branches remain listed
-  in `PENDING_SYSCALL_CUTOVER_OPS` and are not cutover-ready; implemented
-  handlers may still run under explicit Rust selection in isolated UAT with
-  ordinary authorization checks. The inventory is a promotion gate, not a
-  runtime disable switch. The
+  and capability services. Conversation/tool-dependent branches now have
+  named Rust security, persistence, retry, and backend tests and are no longer
+  deferred. Explicit Rust selection still requires ordinary authorization and
+  backend authority checks. The inventory is a readiness gate, not a runtime
+  disable switch. The
   graph-validation route now validates frozen Node/Edge provenance shape and
   preserves Python's metadata-pointer lift without touching storage. Three
   visualization HTML shells are embedded from the existing packaged templates;
@@ -794,7 +809,9 @@ deployment canary evidence required to make Rust its live default writer.
   now routed through the coordinated native transaction owner. Derived
   node-ref/endpoint tables remain disposable Python adapters driven by native
   index jobs. `graph-pgvector` remains not ready pending capability-specific
-  production canaries. Chroma remains a Python single-writer adapter.
+  production canaries. Python `GraphKnowledgeEngine` Chroma remains a
+  single-writer adapter; Rust server uses its separate native Chroma adapter
+  with SQLite-canonical events and eventual Chroma projection.
 - Coordinated sync PostgreSQL routes base node/edge/document reads, including
   multi-ID gets with exact-equality metadata filters, through the native
   projection ABI. Rust projection reads accept legacy Python default-scope rows
@@ -824,22 +841,20 @@ deployment canary evidence required to make Rust its live default writer.
   executable evidence. Local runtime gaps and their acceptance oracles are
   tracked in `ADR-015-implementation-tasklets.md`; same-candidate four-layer proof
   remains pending.
-- Rust server binary and application services exist, but server and runtime
-  cutover readiness remain false.
-- Effective Rust server readiness now requires both pending HTTP-route and
-  pending syscall inventories to be empty, in addition to the declared flag
-  and route-count checks. `server_readiness_cannot_overclaim_pending_routes`
-  guards against manually setting the route count complete while syscalls
-  remain deferred. This is a fail-closed local invariant, not production
-  readiness evidence; Docker-backed runs remain UAT only.
-- The currently deferred Rust server routes and four remaining frozen
-  conversation/tool syscalls are classified in `server_operation_deferrals` in
-  `contracts/rust-port-v1.json`. Each records a prerequisite authority and
-  capability-specific exit evidence; a contract test requires an exact,
-  duplicate-free match with Rust's pending cutover inventories. Implemented
-  routes leave this inventory only after their native authority path and
-  capability-specific evidence are verified. This closes classification only,
-  not the remaining Rust authority or Phase 5 conformance gates.
+- Rust server binary and application services exist. Server readiness is
+  declared by the manifest and remains fail-closed on current Phase-5 evidence;
+  runtime readiness remains independently gated.
+- Effective Rust server readiness requires empty pending HTTP-route and
+  syscall inventories, the declared flag, reconciled route counts, and current
+  Phase-5 evidence. The v2 inventory closes all four former syscall deferrals;
+  tests reject reintroducing any. This is library readiness evidence; isolated
+  Docker-backed runs remain UAT.
+- The formerly deferred Rust server routes and four frozen conversation/tool
+  syscalls are verified in `server_operation_deferrals` in
+  `contracts/rust-port-v1.json`. The v2 contract has no pending routes or
+  syscalls and requires named verification selectors; build and release gates
+  fail if any operation is re-deferred. Full server readiness still requires
+  current Phase-5 conformance evidence.
 - `index_applied_state` has native SQLite schema/API parity; graph and derived
   index authority nevertheless remain Python-owned until graph-store cutover.
 - Customer traffic canary records do not exist and are not required for library

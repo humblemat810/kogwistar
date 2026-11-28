@@ -505,25 +505,23 @@
     }
   ],
   "server_operation_deferrals": {
-    "contract_version": 1,
-    "status": "versioned-intentionally-deferred",
-    "owner": "python-rollback-deployment",
-    "rule": "A deferred operation remains listed in Rust's PENDING_SERVER_CUTOVER_ROUTES or PENDING_SYSCALL_CUTOVER_OPS and retains the Python fallback route. Deferred means not approved for capability readiness; it does not disable an implemented Rust handler in an explicitly selected local or isolated Docker UAT path. Capability-specific authority and exit evidence remain required; transport registration alone is insufficient.",
-    "execution_policy": "Explicit Rust selection may exercise implemented handlers in local or isolated Docker UAT with normal authorization and authority checks. This inventory blocks capability-readiness claims, not handler execution. Library acceptance requires capability-specific tests and same-candidate Docker UAT; no customer traffic rollout is implied.",
+    "contract_version": 2,
+    "status": "closed-no-active-deferrals",
+    "owner": "kogwistar-rust-server",
+    "rule": "No route or syscall is deferred from the Rust server capability. Every operation must remain represented in the Rust inventory and pass its authorization, backend, transport, and current-candidate evidence gates; do not add a deferral without an explicit approved contract change.",
+    "execution_policy": "Explicit Rust selection executes Rust handlers with normal authorization and backend authority checks. Python remains independently selectable. Library acceptance requires capability-specific tests and same-candidate Docker UAT; no customer traffic rollout is implied.",
     "route_groups": [],
     "syscall_group": {
-      "owner": "python",
-      "status": "intentionally-deferred",
-      "required_authority": [
-        "workflow-runtime",
-        "graph-pgvector"
-      ],
-      "exit_evidence": "versioned worker protocol plus conversation/tool security, idempotency, restart, and REST/MCP conformance",
-      "operations": [
-        "send_message",
-        "receive_message",
-        "mount_memory",
-        "invoke_tool"
+      "owner": "kogwistar-rust-server",
+      "status": "verified",
+      "required_authority": [],
+      "exit_evidence": "Current server gate requires Rust REST/SSE/MCP, authenticated conversation admission/read, scoped snapshot access, tool capability checks, retry/idempotency, restart, and backend evidence. Selectors: postgres_send_message_admission_is_one_graph_run_event_lane_transaction; sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; mount_memory_syscall_checks_namespace_and_capability_before_storage; invoke_tool_checks_builtin_capabilities_before_storage.",
+      "operations": [],
+      "verified_operations": [
+        {"name": "send_message", "test_selector": "postgres_send_message_admission_is_one_graph_run_event_lane_transaction"},
+        {"name": "receive_message", "test_selector": "sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript"},
+        {"name": "mount_memory", "test_selector": "mount_memory_syscall_checks_namespace_and_capability_before_storage"},
+        {"name": "invoke_tool", "test_selector": "invoke_tool_checks_builtin_capabilities_before_storage"}
       ]
     }
   },

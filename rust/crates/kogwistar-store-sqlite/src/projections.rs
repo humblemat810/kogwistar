@@ -40,6 +40,7 @@ fn source_document_projection(write: DocumentProjectionUpsert) -> NamedProjectio
                 "id": write.record.id,
                 "document": write.record.document,
                 "metadata": write.record.metadata,
+                "embedding": write.record.embedding,
             }),
         ),
         (
@@ -127,11 +128,21 @@ fn source_document_from_projection(
                 "stored source-document projection has invalid metadata".to_owned(),
             )
         })?;
+    // Older source-document projections predate embedded document storage.
+    let embedding_value = record
+        .get("embedding")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    let embedding = serde_json::from_value::<Option<Vec<f32>>>(embedding_value).map_err(|_| {
+        SqliteStoreError::TransactionAborted(
+            "stored source-document projection has invalid embedding".to_owned(),
+        )
+    })?;
     Ok(Some(GraphRecord {
         id: id.to_owned(),
         document: Some(document.to_owned()),
         metadata,
-        embedding: None,
+        embedding,
     }))
 }
 

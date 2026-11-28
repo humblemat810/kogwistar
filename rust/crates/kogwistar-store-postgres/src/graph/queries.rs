@@ -257,8 +257,35 @@ pub(crate) async fn graph_projection_vector_query<C>(
 where
     C: GenericClient + Sync,
 {
-    graph_projection_vector_query_with_level_lte(client, tables, query, metadata_not_equals, None)
-        .await
+    graph_projection_vector_query_with_level_lte(
+        client,
+        tables,
+        query,
+        metadata_not_equals,
+        None,
+        false,
+    )
+    .await
+}
+
+pub(crate) async fn graph_projection_vector_query_including_tombstones<C>(
+    client: &C,
+    tables: &Tables,
+    query: GraphProjectionVectorQuery,
+    metadata_not_equals: &BTreeMap<String, Value>,
+) -> PostgresStoreResult<Vec<VectorMatch>>
+where
+    C: GenericClient + Sync,
+{
+    graph_projection_vector_query_with_level_lte(
+        client,
+        tables,
+        query,
+        metadata_not_equals,
+        None,
+        true,
+    )
+    .await
 }
 
 pub(crate) async fn graph_projection_vector_query_with_level_lte<C>(
@@ -267,6 +294,7 @@ pub(crate) async fn graph_projection_vector_query_with_level_lte<C>(
     query: GraphProjectionVectorQuery,
     metadata_not_equals: &BTreeMap<String, Value>,
     level_lte: Option<i64>,
+    include_tombstones: bool,
 ) -> PostgresStoreResult<Vec<VectorMatch>>
 where
     C: GenericClient + Sync,
@@ -286,7 +314,10 @@ where
         metadata_not_equals,
         1,
     )?;
-    let mut clauses = vec![filter_sql, ACTIVE_LIFECYCLE_PREDICATE.to_owned()];
+    let mut clauses = vec![filter_sql];
+    if !include_tombstones {
+        clauses.push(ACTIVE_LIFECYCLE_PREDICATE.to_owned());
+    }
     if let Some(level_lte) = level_lte {
         values.push(level_lte.to_string());
         let level_parameter = values.len();

@@ -17,6 +17,36 @@ from kogwistar.server.auth_middleware import claims_ctx
 from tests.auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 
+def test_ocr_document_payload_matches_shared_source_map_contract() -> None:
+    from kogwistar.engine_core.models import Document
+    from kogwistar.engine_core.subsystems.write import _entity_payload
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/document-ocr-source-map-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    document = Document.from_ocr(
+        id=fixture["doc_id"],
+        ocr_content=fixture["ocr_content"],
+        type="ocr",
+    )
+
+    assert str(document.content) == fixture["expected_content_repr"]
+    assert document.source_map == fixture["expected_source_map"]
+    assert _entity_payload(document) == fixture["expected_change_payload"]
+
+    for case in fixture["parity_cases"]:
+        document = Document.from_ocr(
+            id=fixture["doc_id"],
+            ocr_content=case["ocr_content"],
+            type="ocr",
+        )
+        assert document.content == case["expected_content"], case["name"]
+        assert document.source_map == case["expected_source_map"], case["name"]
+
+
 @pytest.mark.ci
 @pytest.mark.parametrize(
     "route_name",
@@ -63,6 +93,12 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
         / "document-upsert-v1.json"
     )
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    http_contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/document-upsert-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
     payload = server.DocumentUpsert.model_validate(fixture)
 
     token = claims_ctx.set({"role": "rw"})
@@ -76,6 +112,37 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
     assert written[0].id == fixture["doc_id"]
     assert written[0].content == fixture["content"]
     assert written[0].metadata["insertion_method"] == fixture["insertion_method"]
+
+    ocr_content = {
+        "scan.pdf": [
+            {
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"text": "Hello"}],
+                "non_text_objects": [],
+            }
+        ]
+    }
+    ocr_payload = server.DocumentUpsert(
+        doc_id="doc-ocr",
+        doc_type="ocr",
+        content=json.dumps(ocr_content),
+        insertion_method="ocr-parser",
+    )
+    token = claims_ctx.set({"role": "rw"})
+    try:
+        ocr_result = server.document_upsert(ocr_payload)
+    finally:
+        claims_ctx.reset(token)
+
+    assert ocr_result.status == "ok"
+    assert len(written) == 2
+    ocr_document = written[1]
+    assert ocr_document.type == "ocr_document"
+    assert ocr_document.content["scan.pdf"][0]["OCR_text_clusters"][0]["id"] == "p1_c0"
+    assert ocr_document.source_map == {
+        "p1_c0": {"text": "Hello", "id": "p1_c0"}
+    }
+    assert ocr_document.metadata["insertion_method"] == "ocr-parser"
 
     @asynccontextmanager
     async def noop_lifespan(_app):
@@ -106,14 +173,15 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
         algorithm=TEST_JWT_ALG,
     )
     with TestClient(server.app) as client:
-        response = client.post(
-            "/api/document",
+        response = client.request(
+            http_contract["method"],
+            http_contract["path"],
             json=fixture,
             headers={"Authorization": f"Bearer {token}"},
         )
 
-    assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
-    assert len(written) == 2
-    assert written[1].id == fixture["doc_id"]
+    assert response.status_code == http_contract["success_status"]
+    assert response.json() == http_contract["success_response"]
+    assert len(written) == 3
+    assert written[2].id == fixture["doc_id"]
     server.app.state.auth_jwt_settings = _saved_jwt_settings

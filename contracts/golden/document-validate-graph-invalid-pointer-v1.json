@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "request": {
+    "doc_id": "doc-invalid-pointer",
+    "nodes": [
+      {
+        "id": "node-incomplete-pointer",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer is missing required source_cluster_id",
+        "metadata": {
+          "pointers": [
+            {
+              "start_char": 0,
+              "end_char": 4,
+              "verbatim_text": "Node"
+            }
+          ]
+        }
+      },
+      {
+        "id": "node-null-pointer",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer entry is null",
+        "metadata": {
+          "pointers": [null]
+        }
+      },
+      {
+        "id": "node-non-string-excerpt",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer excerpt must be text",
+        "metadata": {
+          "pointers": [
+            {
+              "source_cluster_id": "cluster-1",
+              "start_char": 0,
+              "end_char": 4,
+              "verbatim_text": 123
+            }
+          ]
+        }
+      },
+      {
+        "id": "node-negative-start",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer start must be non-negative",
+        "metadata": {
+          "pointers": [
+            {
+              "source_cluster_id": "cluster-1",
+              "start_char": -1,
+              "end_char": 4,
+              "verbatim_text": "Node"
+            }
+          ]
+        }
+      },
+      {
+        "id": "node-reversed-span",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer end must follow start",
+        "metadata": {
+          "pointers": [
+            {
+              "source_cluster_id": "cluster-1",
+              "start_char": 5,
+              "end_char": 4,
+              "verbatim_text": "Node"
+            }
+          ]
+        }
+      },
+      {
+        "id": "node-object-pointer-list",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pointer collection must be an array",
+        "metadata": {
+          "pointers": {
+            "source_cluster_id": "cluster-1",
+            "start_char": 0,
+            "end_char": 4,
+            "verbatim_text": "Node"
+          }
+        }
+      }
+    ]
+  },
+  "status": 200,
+  "ok": false,
+  "node_error_ids": [
+    "node-incomplete-pointer",
+    "node-null-pointer",
+    "node-non-string-excerpt",
+    "node-negative-start",
+    "node-reversed-span",
+    "node-object-pointer-list"
+  ]
+}

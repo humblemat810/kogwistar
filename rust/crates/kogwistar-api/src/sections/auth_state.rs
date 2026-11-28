@@ -276,15 +276,6 @@ impl McpSessionRegistry {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn has_active_get(&self, session_id: &str) -> bool {
-        self.sessions
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get(session_id)
-            .is_some_and(|session| session.get_stream_active)
-    }
-
     pub fn close(
         &self,
         session_id: &str,
@@ -360,17 +351,23 @@ fn jwt_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>, &'
 }
 
 fn roles_from_claims(claims: &Value) -> Vec<String> {
-    let mut roles = Vec::new();
-    if let Some(role) = claims.get("role").and_then(Value::as_str) {
-        roles.push(role.to_ascii_lowercase());
-    }
+    let scalar_role = claims
+        .get("role")
+        .and_then(Value::as_str)
+        .map(|role| role.trim().to_ascii_lowercase())
+        .filter(|role| !role.is_empty());
+    let role = scalar_role.unwrap_or_else(|| "ro".to_owned());
+    let mut roles = vec![role];
     if let Some(values) = claims.get("roles").and_then(Value::as_array) {
-        roles.extend(
-            values
-                .iter()
-                .filter_map(Value::as_str)
-                .map(str::to_ascii_lowercase),
-        );
+        for custom_role in values.iter().filter_map(Value::as_str) {
+            let custom_role = custom_role.trim().to_ascii_lowercase();
+            if !custom_role.is_empty()
+                && !matches!(custom_role.as_str(), "ro" | "rw")
+                && !roles.contains(&custom_role)
+            {
+                roles.push(custom_role);
+            }
+        }
     }
     roles
 }
@@ -425,12 +422,20 @@ fn request_roles(headers: &HeaderMap, config: &AuthConfig) -> Result<Vec<String>
 }
 
 fn request_principal(headers: &HeaderMap, config: &AuthConfig) -> Value {
-    request_auth_context(headers, config)
+    let principal = request_auth_context(headers, config)
         .map(|(principal, _)| principal)
-        .unwrap_or_else(|_| json!({}))
+        .unwrap_or_else(|_| json!({}));
+    without_internal_transport_marker(principal)
 }
 
-// PYTHON_PARITY_NOTE_V1: derive one request-local principal and role set from verified claims before MCP role/tool checks; rust=rust/crates/kogwistar-api/src/sections/auth_state.rs#request_auth_context; python=kogwistar/server/auth_middleware.py#_decode_role_from_headers+kogwistar/server/mcp_tools.py#_tool_allowed; rust_test=rust/crates/kogwistar-api/src/tests/mcp_auth_timing.rs#mcp_authenticated_call_verifies_once_and_attributes_authorization_stages; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
+fn without_internal_transport_marker(mut principal: Value) -> Value {
+    if let Some(claims) = principal.as_object_mut() {
+        claims.remove(INTERNAL_MCP_TRANSPORT_CLAIM);
+    }
+    principal
+}
+
+// PYTHON_PARITY_NOTE_V1: derive one request-local principal and role set from verified claims before MCP role/tool checks; rust=rust/crates/kogwistar-api/src/sections/auth_state.rs#request_auth_context; python=kogwistar/server/auth_middleware.py#_decode_role_from_headers+kogwistar/server/mcp_tools.py#_tool_allowed; rust_test=rust/crates/kogwistar-api/src/tests/mcp_auth_timing.rs#mcp_authenticated_call_verifies_once_and_attributes_authorization_stages; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
 fn request_auth_context(
     headers: &HeaderMap,
     config: &AuthConfig,
@@ -707,7 +712,7 @@ impl AuthStore {
         .map_err(|error| error.to_string())
     }
 
-    async fn workflow_access_allowed(
+    pub(crate) async fn workflow_access_allowed(
         &self,
         workflow_id: &str,
         user_id: &str,

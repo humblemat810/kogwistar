@@ -346,6 +346,21 @@ impl PostgresStore {
             .await
     }
 
+    pub async fn graph_projection_vector_query_including_tombstones(
+        &self,
+        query: GraphProjectionVectorQuery,
+        metadata_not_equals: BTreeMap<String, Value>,
+    ) -> PostgresStoreResult<Vec<VectorMatch>> {
+        let client = self.client().await?;
+        super::super::graph::graph_projection_vector_query_including_tombstones(
+            &**client,
+            &self.tables,
+            query,
+            &metadata_not_equals,
+        )
+        .await
+    }
+
     pub async fn graph_projection_vector_query_excluding_metadata(
         &self,
         query: GraphProjectionVectorQuery,
@@ -368,6 +383,7 @@ impl PostgresStore {
             query,
             &metadata_not_equals,
             Some(level_lte),
+            false,
         )
         .await
     }

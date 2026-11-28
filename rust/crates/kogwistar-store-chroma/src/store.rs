@@ -1020,9 +1020,7 @@ mod tests {
     use super::ChromaGraphStore;
     use super::normalize_chroma_distance;
     use crate::ChromaStoreConfig;
-    use kogwistar_store::{
-        DistanceMetric, GraphEntityKind, GraphReadStore, VectorQuery, similarity_from_distance,
-    };
+    use kogwistar_store::{DistanceMetric, GraphReadStore, VectorQuery, similarity_from_distance};
     use serde_json::{Value, json};
     use std::time::Duration;
 
@@ -1160,7 +1158,7 @@ mod tests {
         }
     }
 
-    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#ChromaGraphStore::vector_query_in_collection; python=kogwistar/engine_core/subsystems/read.py#ReadSubsystem.query_nodes; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_http_graph_queries_match_shared_metric_order_and_scores; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_vector_distance_semantics_match_shared_rust_contract; note=Rust fake-HTTP query ordering and scores lack a paired Python test consuming this same contract fixture.
+    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-store-chroma/src/store.rs#ChromaGraphStore::vector_query_in_collection; python=kogwistar/engine_core/chroma_backend.py#ChromaBackend.call; fixture=contracts/golden/graph-vector-metric-semantics-v1.json; rust_test=rust/crates/kogwistar-store-chroma/src/store.rs#chroma_http_graph_queries_match_shared_metric_order_and_scores; python_test=tests/core/test_search_nodes_as_of.py#test_chroma_graph_query_scores_and_rows_match_shared_rust_contract_after_test_sort; note=Adapters preserve backend result order; each test canonicalizes only a copied result for fixture comparison.
     #[tokio::test]
     async fn chroma_http_graph_queries_match_shared_metric_order_and_scores() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -1276,7 +1274,9 @@ mod tests {
                             )
                         })
                         .collect::<Vec<_>>();
-                    results.sort_by(|left, right| left.2.total_cmp(&right.2));
+                    // Deliberately return backend order unrelated to distance;
+                    // the adapter must not impose a ranking policy of its own.
+                    results.reverse();
                     json!({
                         "ids": [results.iter().map(|result| result.0.clone()).collect::<Vec<_>>()],
                         "documents": [results.iter().map(|result| result.0.clone()).collect::<Vec<_>>()],
@@ -1324,18 +1324,41 @@ mod tests {
             .await
             .unwrap();
             let matches = store
-                .vector_query_of_kind(
+                .vector_query_nodes_as_of(
                     "metric-contract",
-                    GraphEntityKind::Node,
                     &VectorQuery {
                         embedding: query.iter().map(|value| *value as f32).collect(),
                         limit: vectors.len(),
                         metadata: Default::default(),
                         metric,
                     },
+                    "2026-01-02T00:00:00Z",
+                    true,
+                    16,
                 )
                 .await
                 .unwrap();
+            let backend_order = vectors
+                .iter()
+                .rev()
+                .map(|(id, _)| id.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matches
+                    .iter()
+                    .map(|item| item.record.id.as_str())
+                    .collect::<Vec<_>>(),
+                backend_order,
+                "adapter must preserve Chroma's backend order"
+            );
+
+            // Canonicalize a copy only for the order-insensitive metric fixture.
+            let mut canonical_matches = matches.clone();
+            canonical_matches.sort_by(|left, right| {
+                left.distance
+                    .total_cmp(&right.distance)
+                    .then_with(|| left.record.id.cmp(&right.record.id))
+            });
 
             let expected_ids = case["expected_ids"]
                 .as_array()
@@ -1344,13 +1367,13 @@ mod tests {
                 .map(|value| value.as_str().expect("expected id"))
                 .collect::<Vec<_>>();
             assert_eq!(
-                matches
+                canonical_matches
                     .iter()
                     .map(|item| item.record.id.as_str())
                     .collect::<Vec<_>>(),
                 expected_ids
             );
-            for (index, item) in matches.iter().enumerate() {
+            for (index, item) in canonical_matches.iter().enumerate() {
                 let expected_distance = case["expected_distances"][index]
                     .as_f64()
                     .expect("expected distance");

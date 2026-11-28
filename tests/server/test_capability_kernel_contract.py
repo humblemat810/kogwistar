@@ -13,12 +13,12 @@ import kogwistar.server_mcp_with_admin as server
 from kogwistar.runtime.runtime import WorkflowRuntime
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.capability_kernel import CapabilityKernel
-from tests.server.test_chat_server_api import (
+from tests.server.chat_server_api_support import (
     _configure_server,
     _runtime_success_runner,
     _token_header,
 )
-from tests.server.test_chat_server_api import (
+from tests.server.chat_server_api_support import (
     # Imported for pytest fixture discovery in this module.
     engine_triplet as engine_triplet,  # noqa: F401
 )
@@ -234,6 +234,7 @@ def test_workflow_budget_route_matches_contract_and_requires_security_scope(
         assert set(contract["required_cost_ledger_fields"]).issubset(
             payload["cost_ledger"]
         )
+        assert payload["cost_ledger"] == contract["expected_cost_ledger"]
         assert payload["budget_model"] == contract["budget_model"]
 
         denied = client.get(
@@ -577,6 +578,27 @@ def test_capability_kernel_materialize_includes_parent_minus_revoked_plus_subjec
     )
 
     assert effective == ("project_view", "read_security_scope")
+
+
+def test_capability_subject_falls_back_to_actor_id_claim():
+    from kogwistar.server.chat_service import ChatRunService
+
+    service = object.__new__(ChatRunService)
+    token = claims_ctx.set({"actor_id": "Actor-Only"})
+    try:
+        subject = service._capability_subject()
+        assert subject == "Actor-Only"
+        kernel = CapabilityKernel()
+        kernel.grant(
+            subject=subject,
+            action="workflow.run.write",
+            capabilities=["workflow.run.write"],
+        )
+        assert "workflow.run.write" in kernel.materialize_capabilities(
+            subject=subject
+        )
+    finally:
+        claims_ctx.reset(token)
 
 
 

@@ -15,6 +15,7 @@ pub struct SqliteRunApplicationService {
     capabilities: SharedCapabilityState,
     native_operations: kogwistar_runtime::NativeOperationRegistry,
     transient_run_deltas: crate::transient_deltas::TransientRunDeltas,
+    change_events: crate::change_events::ChangeEventPublisher,
 }
 
 #[derive(Clone)]
@@ -376,12 +377,20 @@ impl SqliteRunApplicationService {
         } else {
             &[required]
         };
-        if !capability_allowed(
-            request,
-            &self.capabilities,
-            required,
-            required_capabilities,
-        ) {
+        let rest_undo_redo = matches!(&route, DesignRoute::Undo | DesignRoute::Redo)
+            && request
+                .principal
+                .get("_kogwistar_rest_design_acl_checked")
+                .and_then(Value::as_bool)
+                == Some(true);
+        if !rest_undo_redo
+            && !capability_allowed(
+                request,
+                &self.capabilities,
+                required,
+                required_capabilities,
+            )
+        {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
@@ -478,7 +487,7 @@ impl SqliteRunApplicationService {
                         schema_version: 1,
                     })?;
                     uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
-                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_undo+workflow_design_redo; fixture=contracts/golden/workflow-design-redo-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api.py#test_workflow_design_redo_matches_shared_contract; note=internal projection status is not part of Python's undo/redo mutation response.
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_undo+workflow_design_redo; fixture=contracts/golden/workflow-design-redo-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_design_redo_matches_shared_contract; note=internal projection status is not part of Python's undo/redo mutation response.
                     let _ = folded
                         .as_object_mut()
                         .and_then(|value| value.remove("materialization_status"));
@@ -503,7 +512,7 @@ impl SqliteRunApplicationService {
                         })?;
                     }
                     let version = history["allocated_max_version"].as_i64().unwrap_or(0) + 1;
-                    let entity = design_entity_event(&action, &entity_id, &before, &graph);
+                    let entity = design_entity_event(&action, &entity_id, &designer, &before, &graph);
                     let data_event = uow.append_raw_entity_event(&namespace, SqliteNewRawEntityEvent {
                         event_id: entity.event_id, entity_kind: entity.entity_kind, entity_id: entity.entity_id,
                         op: entity.op, payload_json: entity.payload.to_string(),
@@ -529,7 +538,7 @@ impl SqliteRunApplicationService {
                     let folded = workflow_design_history_value(workflow_id, folded_events, "ready")
                         .map_err(kogwistar_store_sqlite::SqliteStoreError::TransactionAborted)?;
                     uow.replace_named_projection("workflow_design", workflow_id, workflow_design_projection_write(&folded))?;
-                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
                     let mut response = json!({"workflow_id": workflow_id, "namespace": namespace,
                         if deleted { if action == "node_delete" { "node_id" } else { "edge_id" } } else if action == "node_upsert" { "node_id" } else { "edge_id" }: entity_id,
                         "designer_id": designer, "version": folded["current_version"],
@@ -762,7 +771,7 @@ impl SqliteRunApplicationService {
     }
 
     fn repair_orphaned_messages(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#repair_orphaned_messages; python=kogwistar/server/runtime_api.py#repair_orphaned_claimed_messages+kogwistar/server/chat_service.py#repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_repair_orphans_matches_shared_contract; note=only expired claims in the selected inbox are requeued; active leases remain claimed.
+        // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#repair_orphaned_messages; python=kogwistar/server/runtime_api.py#repair_orphaned_claimed_messages+kogwistar/server/chat_service.py#repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_repair_orphans_matches_shared_contract; note=only expired claims in the selected inbox are requeued; active leases remain claimed.
         if principal_role(&request.principal) != "rw"
             || !principal_strings(&request.principal, "ns")
                 .iter()
@@ -849,9 +858,14 @@ impl SqliteRunApplicationService {
         };
         match self
             .store
-            .update_projected_lane_message_status(&lane.message_id, "pending", None)
+            .compare_and_set_projected_lane_message_status(
+                &lane.message_id,
+                "dead-letter",
+                "pending",
+                None,
+            )
         {
-            Ok(()) => json_effect(
+            Ok(true) => json_effect(
                 StatusCode::OK,
                 json!({
                     "run_id": run_id,
@@ -859,6 +873,7 @@ impl SqliteRunApplicationService {
                     "dead_letter": lane_progress_value(&lane),
                 }),
             ),
+            Ok(false) => json_effect(StatusCode::OK, json!({"run_id": run_id, "replayed": false})),
             Err(error) => effect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "KOGWISTAR_STORE_ERROR",
@@ -878,6 +893,23 @@ impl SqliteRunApplicationService {
                 );
             }
         };
+        match self.store.get_server_run(run_id) {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return effect_error(
+                    StatusCode::NOT_FOUND,
+                    "KOGWISTAR_RUN_NOT_FOUND",
+                    format!("Unknown run_id: {run_id}"),
+                );
+            }
+            Err(error) => {
+                return effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_STORE_ERROR",
+                    error.to_string(),
+                );
+            }
+        }
         match self.store.resume_recorded_runtime_token(
             run_id,
             &input.workflow_id,
@@ -916,6 +948,7 @@ impl SqliteRunApplicationService {
                 capabilities: Arc::new(Mutex::new(CapabilityState::default())),
                 native_operations,
                 transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
+                change_events: crate::change_events::ChangeEventPublisher::from_env(),
             })
             .map_err(|error| error.to_string())
     }
@@ -1656,15 +1689,47 @@ impl SqliteRunApplicationService {
         request: &ApiEffectRequest,
         truth_graph: &str,
     ) -> Result<GraphAclProjection, ApiEffectResponse> {
-        self.chroma_graph_snapshot_and_candidates(request, truth_graph)
+        self.chroma_graph_snapshot_with_limit(request, truth_graph, 10_000)
             .await
-            .map(|(_, _, projection)| projection)
+    }
+
+    async fn chroma_conversation_graph_snapshot(
+        &self,
+        request: &ApiEffectRequest,
+    ) -> Result<GraphAclProjection, ApiEffectResponse> {
+        self.chroma_graph_snapshot_with_limit(request, "conversation", usize::MAX)
+            .await
+    }
+
+    async fn chroma_graph_snapshot_with_limit(
+        &self,
+        request: &ApiEffectRequest,
+        truth_graph: &str,
+        max_records: usize,
+    ) -> Result<GraphAclProjection, ApiEffectResponse> {
+        self.chroma_graph_snapshot_and_candidates_with_limit(
+            request,
+            truth_graph,
+            max_records,
+        )
+        .await
+        .map(|(_, _, projection)| projection)
     }
 
     async fn chroma_graph_snapshot_and_candidates(
         &self,
         request: &ApiEffectRequest,
         truth_graph: &str,
+    ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>, GraphAclProjection), ApiEffectResponse> {
+        self.chroma_graph_snapshot_and_candidates_with_limit(request, truth_graph, 10_000)
+            .await
+    }
+
+    async fn chroma_graph_snapshot_and_candidates_with_limit(
+        &self,
+        request: &ApiEffectRequest,
+        truth_graph: &str,
+        max_records: usize,
     ) -> Result<(Vec<GraphRecord>, Vec<GraphRecord>, GraphAclProjection), ApiEffectResponse> {
         let scope_value = security_scope_value(&request.principal);
         let namespace = scope_value["storage_namespace"]
@@ -1695,19 +1760,18 @@ impl SqliteRunApplicationService {
                 "The SQLite service has no configured graph projection",
             ));
         };
-        const MAX_GRAPH_SNAPSHOT_RECORDS: usize = 10_000;
         let (mut nodes, mut edges) = match tokio::try_join!(
             graph.graph_records_of_kind_bounded(
                 namespace,
                 GraphEntityKind::Node,
                 &filter,
-                MAX_GRAPH_SNAPSHOT_RECORDS,
+                max_records,
             ),
             graph.graph_records_of_kind_bounded(
                 namespace,
                 GraphEntityKind::Edge,
                 &filter,
-                MAX_GRAPH_SNAPSHOT_RECORDS,
+                max_records,
             ),
         ) {
             Ok(records) => records,
@@ -1734,7 +1798,7 @@ impl SqliteRunApplicationService {
                 entity_kind,
                 &filter,
                 records,
-                MAX_GRAPH_SNAPSHOT_RECORDS,
+                max_records,
             ) {
                 return Err(effect_error(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -1752,11 +1816,11 @@ impl SqliteRunApplicationService {
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect::<Vec<_>>();
-        if entity_ids.len() > MAX_GRAPH_SNAPSHOT_RECORDS {
+        if entity_ids.len() > max_records {
             return Err(effect_error(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 "KOGWISTAR_GRAPH_QUERY_ERROR",
-                "graph snapshot ACL set exceeds the 10000-record limit",
+                format!("graph snapshot ACL set exceeds the {max_records}-record limit"),
             ));
         }
         let acl_scope = kogwistar_store::GraphScope {
@@ -1776,7 +1840,15 @@ impl SqliteRunApplicationService {
         let acl_records = self
             .store
             .immediate_transaction(|uow| {
-                uow.graph_acl_records_for_entities(&acl_scope, truth_graph, &entity_ids)
+                let mut records = Vec::new();
+                for entity_id_batch in entity_ids.chunks(5_000) {
+                    records.extend(uow.graph_acl_records_for_entities(
+                        &acl_scope,
+                        truth_graph,
+                        entity_id_batch,
+                    )?);
+                }
+                Ok(records)
             })
             .map_err(|error| {
                 effect_error(

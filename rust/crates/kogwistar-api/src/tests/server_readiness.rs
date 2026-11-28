@@ -1,13 +1,15 @@
     #[test]
-    fn server_readiness_cannot_overclaim_pending_routes() {
+    fn server_readiness_requires_declared_flag_and_reconciled_route_count() {
         let mut implementation = ImplementationSnapshot::default();
         assert!(!implementation.effective_server_cutover_ready());
 
         implementation.server_cutover_ready = true;
-        assert!(!implementation.effective_server_cutover_ready());
+        assert!(implementation.effective_server_cutover_ready());
 
         implementation.implemented_route_operations = implementation.frozen_route_operations;
         assert!(!implementation.effective_server_cutover_ready());
+        assert!(std::hint::black_box(PENDING_SERVER_CUTOVER_ROUTES).is_empty());
+        assert!(std::hint::black_box(PENDING_SYSCALL_CUTOVER_OPS).is_empty());
     }
 
     #[test]
@@ -49,6 +51,81 @@
             "GET",
             "/api/conversations/{conversation_id}/snapshots/latest"
         ));
+    }
+
+    #[test]
+    fn dlfc06_read_route_backend_applicability_matrix_is_explicit() {
+        let memory = InMemoryGraphApplicationService::default();
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-dlfc06-read-matrix-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "dlfc06_read_matrix_contract",
+        )
+        .unwrap();
+
+        // Python parity: runtime_api conversation reads and service-list routes.
+        // Plain SQLite is metadata-only; it must not claim conversation graph reads.
+        let cases = [
+            ("GET", "/api/conversations", true, false, true),
+            ("GET", "/api/workflow/services", false, true, true),
+        ];
+        for (method, path, memory_expected, sqlite_expected, postgres_expected) in cases {
+            assert_eq!(
+                memory.supports_http_operation(method, path),
+                memory_expected,
+                "InMemory applicability for {method} {path}"
+            );
+            assert_eq!(
+                sqlite.supports_http_operation(method, path),
+                sqlite_expected,
+                "SQLite metadata applicability for {method} {path}"
+            );
+            assert_eq!(
+                postgres.supports_http_operation(method, path),
+                postgres_expected,
+                "PostgreSQL applicability for {method} {path}"
+            );
+        }
+
+        drop(sqlite);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[tokio::test]
+    async fn dlfc06_unsupported_sqlite_conversation_read_fails_closed_without_writes() {
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-dlfc06-read-deny-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        assert!(!service.supports_http_operation("GET", "/api/conversations"));
+
+        let before = service.store.list_named_projections("conversation").unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: json!({"sub":"reader", "role":"ro", "ns":["conversation"]}),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER"
+        );
+        assert_eq!(
+            service.store.list_named_projections("conversation").unwrap(),
+            before
+        );
+
+        drop(service);
+        remove_test_sqlite(&sqlite_path);
     }
 
     #[test]
@@ -223,6 +300,12 @@
         use std::sync::Arc;
         use tower::ServiceExt;
 
+        let contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-delete-http-v1.json"
+        )))
+        .unwrap();
+
         let sqlite_path = std::env::temp_dir().join(format!(
             "kogwistar-admin-delete-{}.sqlite",
             uuid::Uuid::new_v4()
@@ -346,8 +429,8 @@
         );
         let request = |role: &str| {
             Request::builder()
-                .method("DELETE")
-                .uri(format!("/admin/doc/{doc_id}"))
+                .method(contract["method"].as_str().unwrap())
+                .uri(contract["path"].as_str().unwrap().replace("{doc_id}", doc_id))
                 .header("authorization", format!("Bearer {}", token_for_role(role)))
                 .body(Body::empty())
                 .unwrap()
@@ -361,11 +444,33 @@
         );
 
         let response = app.oneshot(request("rw")).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
         let body = to_bytes(response.into_body(), 8192).await.unwrap();
         let body: Value = serde_json::from_slice(&body).unwrap();
+        let response_fields = contract["response_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_fields = body.as_object().unwrap().keys().map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_fields, response_fields);
         assert_eq!(body["ok"], true);
         assert_eq!(body["doc_id"], doc_id);
+        let deleted_fields = contract["deleted_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_deleted_fields = body["deleted"].as_object().unwrap().keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_deleted_fields, deleted_fields);
         assert_eq!(body["deleted"], json!({"nodes": 1, "edges": 0}));
         let jobs = kogwistar_store::IndexJobReadStore::index_jobs(
             &service.store,
@@ -425,6 +530,74 @@
     }
 
     #[tokio::test]
+    async fn in_memory_service_list_fails_closed_without_effects() {
+        use axum::{body::Body, http::Request};
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use kogwistar_store::ProjectionReadStore;
+        use tower::ServiceExt;
+
+        let service = InMemoryGraphApplicationService::default();
+        let path = "/api/workflow/services?limit=1";
+        assert!(!service.supports_http_operation("GET", "/api/workflow/services"));
+        let secret = "in-memory-service-list-test-secret";
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "reader",
+                "user_id": "reader",
+                "role": "ro",
+                "ns": ["workflow"],
+                "exp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 60,
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+
+        let before = service.store.named_projections("service_registry").await.unwrap();
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        let response = response.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 16_384)
+            .await
+            .unwrap();
+        let after = service.store.named_projections("service_registry").await.unwrap();
+
+        assert_eq!(status, StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(before, after, "unsupported route must not mutate service registry");
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["code"], "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER");
+        assert_eq!(body["method"], "GET");
+        assert_eq!(body["path"], path);
+    }
+
+    #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_admin_document_delete_enforces_scope_and_commits_rollback() {
         use axum::{
@@ -439,16 +612,25 @@
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_api_admin_delete_{}", uuid::Uuid::new_v4().simple());
-        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        let (mut client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
             .await
             .unwrap();
         tokio::spawn(async move {
             let _ = connection.await;
         });
-        client
+        let transaction = client.transaction().await.unwrap();
+        transaction
+            .query_one(
+                "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))",
+                &[],
+            )
+            .await
+            .unwrap();
+        transaction
             .batch_execute("CREATE EXTENSION IF NOT EXISTS vector;")
             .await
             .unwrap();
+        transaction.commit().await.unwrap();
 
         let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         service.ensure_schema().await.unwrap();

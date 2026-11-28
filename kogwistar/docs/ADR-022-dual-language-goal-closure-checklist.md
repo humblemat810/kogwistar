@@ -1,0 +1,478 @@
+# ADR-022 Dual-Language Goal Closure Checklist
+
+**Updated:** 2026-11-28
+**Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
+**Status summary:** **9 bounded criteria PASS; 0 PARTIAL; 0 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
+
+**Fine execution tracking:** GOAL-06/08/09 status derives from mapped items in [ADR-022 dual-language goal fine checklist](ADR-022-dual-language-goal-fine-checklist.md). Its denominator is independent from ADR-015 and the closed 177/911 evidence inventory. The closure table and summary are current; evidence and history below do not add separate acceptance gates.
+
+**Unmapped parity gap linked to GOAL-08 (outside the fixed 18-tasklet denominator): ontology — IN PROGRESS.** Rust `kogwistar-contracts` now provides package models, canonical Python-compatible digest, composition, payload validation, and edge-role validation; shared Python-generated fixtures and six Rust integration tests pass in commit `92657883`. Full ontology parity is not established: Rust catalog ACL/ranking integration, ontology CLI/schema command behavior, and the remaining Python ontology contract cases are not implemented or tested in Rust. Do not count this slice as DLFC completion or overall-goal completion.
+
+## Closure Criteria
+
+| ID | Criterion | Status | Evidence and exact remaining condition |
+| --- | --- | --- | --- |
+| GOAL-01 | Keep usable Python and Rust implementations, with explicit per-capability selection and no silent cross-language fallback. | PASS (bounded) | `contracts/rust-port-v1.json` keeps Python as current writer and Rust selection explicit; `ADR-022-dual-language-capability-paths.md` defines declared seams and fail-closed selection. Python-only and Rust-only boundary tests are mapped in ADR-015 REL-04. Scope is the tested routes, not every public operation. |
+| GOAL-02 | Preserve safe authority, ACL/scope, transaction ownership, retry, persistence, and trace contracts at declared language seams. | PASS (bounded) | ADR-022 invariants 1-14 plus ADR-015's named capability clauses and REL-04C. Mixed traces test declared seams and transaction ownership; these do not cover every public API operation. |
+| GOAL-03 | Provide at least one top-down Rust-native request path with no Python handoff, from server ingress through workflow execution to durable state. | PASS (bounded) | ADR-015 WFR-04 and REL-04B exercise Rust-native workflow/server paths; REL-05C measures the Rust-native HTTP graph trace with zero FFI calls. Current-checkout live pgvector rerun: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --lib postgres_agentic_answer_workflow_executes_durably_without_python_worker -- --include-ignored --nocapture` (**1 passed**, 23.37s test; operation benchmark 10.47s), including authenticated conversation ingress, persisted run/turn/lane state, and no Python worker. This proves named workloads only, not all server routes or a global speedup. |
+| GOAL-04 | Keep persisted state readable and writable across Python/Rust handoff without weakening rollback or canonical authority. | PASS (bounded) | ADR-015 REL-02C/02D and named SQLite/PostgreSQL/Chroma interoperability tests cover bidirectional reads/writes, reopen, and rollback for their fixtures. Unlisted schemas, historical versions, and backend combinations are not implied. |
+| GOAL-05 | Exercise interchangeable memory, PostgreSQL/pgvector, and Chroma paths without claiming cross-store atomicity. | PASS (bounded) | ADR-015 backend gates and `chroma_rust_interop_worklist.md` show Rust/Python Chroma composition and handoff tests; PostgreSQL and memory have separate named gates. Chroma remains an eventual projection; its Python adapter is still explicitly Python-owned in `rust-port-v1`. This PASS establishes tested interoperability, not Rust ownership of that adapter. |
+| GOAL-06 | Cover every public graph, storage, runtime, conversation, agent, REST, MCP, and CLI operation in the cross-language inventory, with explicit implementation and conformance status. | PASS (bounded) | Mapped DLFC-01 through DLFC-12 are PASS under their fixed documented selectors. No additional operation/backend matrix is a separate acceptance gate. |
+| GOAL-07 | Verify native and mixed paths on the declared interpreter/platform support matrix. | PASS (bounded) | CI #860 at `f5fcc708dbae11134d154dc1d81a5475d25f610b`: required CPython 3.12-3.14 and PyPy 3.11 jobs passed; `rust-python-interop (pypy311, pypy-3.11-v7.3.20, true)` passed all three real-server worker/backend cases (SQLite, SQLite+Chroma, PostgreSQL), while Rust API server was built separately with no Python handoff in its native path. PyO3 SQLite-meta binding remains excluded and unsupported under PyPy; this PASS covers the declared HTTP worker seam, not in-process extension parity. PyPy 3.12 beta remains best-effort and failed independently, outside the declared support matrix. |
+| GOAL-08 | Reconcile behavior across the full declared public surface, preserving Python compatibility and documenting any intentional differences. | PASS (bounded) | Mapped DLFC-13 through DLFC-17 and GOAL-06 are PASS under their fixed documented selectors. No unlisted acceptance set is implied. |
+| GOAL-09 | Keep the seam-free native option and evaluate its performance without promising unmeasured global superiority. | PASS (bounded) | Executable gate: Rust-native/Python throughput >=0.95, each operation p95 <=1.10, equal digest, verified resource caps, zero FFI. Current-source SQLite endpoint Docker run (2026-11-28, `e256249c`): 2 CPU/4 GiB, network off, warm-up + 3 samples, 100/500 records; throughput 10.31x/9.73x, operation p95 ratios 0.086–0.108, matching digests, verifier complete. Authenticated PostgreSQL agent request: 3 CPU/6 GiB clients, 1 CPU/2 GiB pgvector, 2,001-node equal digest, warm-up + 3 samples; throughput 1.454, p95 0.581, zero FFI/workers/errors. SQLite+Chroma graph trace: client 2 CPU/4 GiB, Chroma 1 CPU/2 GiB, 100 records, warm-up + 3 samples; equal digest, 201 events/sample, projections converged, zero Rust FFI; throughput 5.905, event/projection/write p95 ratios 0.0118/0.815/0.301, RSS 0.163. Matched capped PostgreSQL graph trace after Rust SQL round-trip reduction: client 3 CPU/6 GiB, PG 1 CPU/2 GiB, same 100-record trace, warm-up + 3 fresh schemas; equal digest, 201 events/sample, zero FFI; throughput 1.916, event/projection/write p95 ratios 0.481/0.467/0.738, RSS 0.114. All declared performance traces meet existing thresholds; evidence in `docs/benchmarks/mixed_rewrite_benchmark.md`. Claims remain workload-scoped; no global speed claim. |
+
+## Pivoted Test-Case Status
+
+One row per listed test case, including pytest parameter cases; this case-level view does not change the 18-tasklet denominator. Current: **177 PASS / 0 IN PROGRESS / 0 NOT STARTED / 177 listed cases**. Four passing REST workflow-design ACL selectors and three operator-inbox read-filter selectors are recorded under existing DLFC-05/06 scope; no new gate/tasklet added. The repository has no Full-Parity Test Matrix artifact: remaining operation/backend cells are not fully enumerated by this pivot, so its 177 listed cases do not imply goal completion or complete backend applicability coverage.
+
+## Known Parity Gaps Outside Closed Tasklets
+
+The fixed fine checklist remains **18/18 PASS** for its declared acceptance tests. These known gaps are tracked under existing evidence row `DL-16BH`; focused selectors now cover some embedding behavior, but do not close cross-backend OCR indexing or lifecycle parity. They remain part of the broader full-parity objective and are not evidence that a closed DLFC failed. Do not change the closed tasklet denominator or claim OCR parity from bounded projection tests.
+
+| Existing evidence anchor | Unclosed parity slice | Current evidence boundary |
+| --- | --- | --- |
+| DL-16BH | OCR cluster `source_map` semantics | Shared fixture now covers the original text cluster, text/non-text same-index collision (both content entries retain the ID; non-text overwrites the map value, matching Python iteration order), and first filename in input order (other filenames remain unnormalized). Python `tests/server/test_document_api_auth.py::test_ocr_document_payload_matches_shared_source_map_contract` and Rust `tests::ocr_source_map_matches_shared_python_source_map_contract` each passed with all fixture cases; annotation crosswalk passed. Python `Document.get_content_as_ocr_doc_by_span` returns `span.excerpt` and does not read `source_map`, so downstream span resolution is not a `source_map` parity requirement. This closes only the tested source-map derivation cases, not all OCR behavior. |
+| DL-16BH | OCR `doc.upsert` change-event behavior | Best-effort `/ingest` publication is now verified after successful SQLite+Chroma and PostgreSQL projection writes. PostgreSQL selector `tests::postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available` checks successful text/retry/OCR deliveries and no event after embedding failure or SQL-triggered storage failure (**1 passed**); SQLite+Chroma success/ACL-denial test, shared OCR payload fixture, and publisher unit test also pass. Rust `entity.url` remains null (avoids DB-URL disclosure) versus Python `persist_directory`; that field remains a documented representation difference, not exact event-field parity. These notifications remain best-effort, not durable-event equivalence. Selectors: `test_ocr_change_event_payload_matches_shared_python_model_fixture`, `tests::change_event_publisher_posts_python_compatible_event_without_blocking_caller`, `tests::sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable`, `tests::postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available`. |
+| DL-16BH | OCR embedding/indexing across supported backends | Python custom-embedder baseline `tests/primitives/test_custom_embedder_injection.py::test_custom_embedder[fake]` passed. Rust SQLite+Chroma route embeds before SQLite projection persistence; `tests::sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable` asserts vector round-trip (**1 passed**). SQLite projection serialization retains embeddings and reads legacy rows without an embedding as `None`. SQLite's new `upsert_source_document_projection_with_index_job` atomically stores the document and its scoped `document_embedding` job; `tests::documents::source_document_and_vector_job_commit_and_reopen_together` and `tests::documents::failed_document_vector_job_enqueue_rolls_back_source_projection` pass; all SQLite document-store tests: **7 passed**. Rust PostgreSQL live selector `tests::postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available` asserts OCR vector `[0.6, 0.8, 0.0]` after reopen (**1 passed**). Still open: this outbox primitive is not yet wired to the API or a Chroma document projection worker; OCR metadata/vector visibility in Chroma's dedicated `documents` collection, retry/recovery, and retrieval parity remain unproven. |
+| DL-16BH | OCR lifecycle and rollback | Text/document rollback evidence does not establish OCR cluster/source-map cleanup and lifecycle parity across backends. No parity test selector mapped. |
+
+Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL-01 Python-only matrix, GOAL-02 MCP denial, and GOAL-05 fake-backend and pending-embedding tests with `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider`; **15 passed** (12 parameter cases plus 3 tests, 13.59s). Batch B ran the GOAL-02/04 SQLite cases and GOAL-05 Chroma/PostgreSQL cases listed below with the same command flags; **8 passed** (18.12s), including disposable PostgreSQL testcontainers. Batch C built the Rust API server (`cargo build --manifest-path rust/Cargo.toml -p kogwistar-api --bin kogwistar-server`, **passed**, 1m34s), ran both live Rust/Python Chroma interoperability tests (**2 passed**, 68.92s), and verified native workflow routes: five non-PostgreSQL variants passed in the focused pytest run, then both PostgreSQL variants passed against the local pgvector container (**7/7 parameter cases passed**). Live PostgreSQL queue differential passed (**1 passed**); Rust inline graph/ACL/index/lane atomic-write test passed (**1 passed**). PostgreSQL variants used disposable/random schemas and completed teardown. No full-suite or whole-surface parity claim follows from these selected cases.
+
+| Goal | Test case / selector | Status | Evidence or gap |
+| --- | --- | --- | --- |
+| GOAL-06, GOAL-08 | `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_status_uses_capability_without_workflow_acl` | PASS | Python MCP contract: role+workflow namespace admission, service-level `workflow.run.read`, no per-workflow ACL for status. Focused pytest: **1 passed**. REST status retains its configured ACL; distinct transport contract. |
+| GOAL-06, GOAL-08 | `tests::workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores` | PASS | Rust SQLite/PostgreSQL/InMemory MCP status tool admission matches Python role+workflow-namespace policy; wrong namespace and wrong MCP surface reject. Focused Cargo test: **1 passed**. |
+| GOAL-06, GOAL-08 | `tests::sqlite_workflow_run_steps_mcp_matches_shared_contract` | PASS | Authenticated Rust SQLite MCP reads seeded canonical run events and exactly matches `workflow-run-steps-mcp-v1.json`; paired Python oracle `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_steps_matches_shared_contract` passed. This is SQLite event-store evidence, not live Chroma projection evidence. |
+| GOAL-06, GOAL-08 | `tests::only_mcp_workflow_status_request_gets_acl_parity_exception` | PASS | Rust request classifier grants ACL parity exception only to internally marked exact MCP status GET; steps and conversation routes do not qualify. Public JWT marker stripping is separately exercised by authenticated InMemory route regression. Focused Cargo test: **1 passed**. |
+| GOAL-06, GOAL-08 | `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_resume_dispatches_request_and_returns_result` | PASS | Python MCP `workflow.run_resume` forwards all request fields to `ChatRunService.resume_run` and returns result satisfying `workflow-run-resume-result-v1.json`; focused pytest: 1 passed. This verifies wrapper dispatch, not persisted continuation/retry. |
+| GOAL-06, GOAL-08 | `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_resume_denies_missing_write_capability_before_effect` | PASS | Python MCP resume rejects an authenticated `rw` workflow caller lacking `workflow.run.write` before invoking the resume runner; focused pytest: 1 passed. Does not cover Rust authorization or backend parity. |
+| GOAL-06, GOAL-08 | `tests/mcp/test_chat_mcp_workflow_run_access.py::test_mcp_workflow_run_resume_continues_persisted_suspended_workflow` | PASS | Python MCP resumes a real persisted in-memory suspended workflow through `ChatRunService` and `WorkflowRuntime`; same-token retry is rejected and checkpoint count stays unchanged. Focused pytest: 1 passed. Other backends and Rust MCP/runtime parity remain open. |
+| GOAL-06, GOAL-08 | `tests::resume_effect_checks_authority_before_run_lookup` | PASS | Rust resume effect rejects wrong namespace and missing `workflow.run.write` before run lookup for SQLite and PostgreSQL application services; focused Cargo test: 1 passed. Paired with Python MCP deny-before-effect coverage, not full backend/runtime parity. |
+| GOAL-06, GOAL-08 | `tests::mcp_run_event_timeline_tools_build_the_canonical_application_effect_route` | PASS | Rust MCP `workflow.run_resume` maps to the canonical HTTP resume effect and preserves request fields; focused Cargo test: 1 passed. Paired with Python wrapper test, but not same-backend state/result parity. |
+| GOAL-06 | `tests::sqlite_run_status_http_route_matches_shared_contract_for_all_states` | PASS | Paired Python/Rust status selectors exercise `/api/runs/{id}` and `/api/workflow/runs/{id}` across queued, running, succeeded, failed, cancelled, checking fixture fields, IDs, result/error, terminal and timestamps. Both deny valid workflow scope with `project_view` but no `workflow.run.read` (403); Python proves no registry read, Rust SQLite checks the wire error, and Rust PostgreSQL denial test proves auth before unreachable DB. Rust status selector: 4 passed; Python status selector and annotation crosswalk: 2 passed. One scoped HTTP/backend cell, not whole-surface parity. |
+| GOAL-06 | `tests/core/test_search_nodes_as_of.py::test_chroma_vector_query_preserves_backend_tie_order_and_rows[node_index_query-node_index]` | PASS | CPython 3.13 Windows; shared graph-vector fixture; equal-distance node-index rows retain mocked backend order and aligned distances, documents, metadata, embeddings. No public tie-order promise added. |
+| GOAL-06 | `tests/core/test_search_nodes_as_of.py::test_chroma_vector_query_preserves_backend_tie_order_and_rows[node_query-node]` | PASS | CPython 3.13 Windows; equal-distance node rows retain mocked backend order and aligned parallel result fields. |
+| GOAL-06 | `tests/core/test_search_nodes_as_of.py::test_chroma_vector_query_preserves_backend_tie_order_and_rows[edge_query-edge]` | PASS | CPython 3.13 Windows; equal-distance edge rows retain mocked backend order and aligned parallel result fields. |
+| GOAL-06 | `tests/core/test_search_nodes_as_of.py::test_chroma_graph_query_scores_and_rows_match_shared_rust_contract_after_test_sort` | PASS | CPython 3.13 Windows; cosine/L2/IP distances and similarities match shared fixture after test-only sorting of a copied response; adapter output remains backend-ordered. |
+| GOAL-06, GOAL-08 | `tests::graph::postgres_historical_vector_query_resolves_redirects_and_keeps_candidate_scores` | PASS | Live disposable pgvector:pg16, Rust store layer. As-of candidate query includes tombstoned rows; lifecycle resolver returns pre-delete source before deletion and follows redirect after deletion while retaining candidate distance; ordinary vector query remains active-only. Store tests: 61 passed; PostgreSQL store: 11 passed, 37 ignored; focused live test: 1 passed. Python historical/as-of and HTTP/ACL projection parity remain open. |
+| GOAL-06, GOAL-08 | `tests/core/test_rust_postgres_session_facade.py::test_postgres_historical_vector_query_crosses_native_boundary_when_dsn_available` | PASS | Live disposable pgvector:pg16; Python Rust-store facade → PyO3 → Rust PostgreSQL operation. Checks pre-delete tombstone visibility, post-delete redirect with source distance, ACL-record exclusion before top-k, and ordinary-query tombstone exclusion. This is store-facade evidence, not `ReadSubsystem` parity; broader HTTP/ACL and backend matrix remains open. |
+| GOAL-06, GOAL-08 | `tests/pg_sql/test_phase3_e2e_engine_pg.py::test_rust_postgres_historical_read_subsystem_matches_python` | PASS | Windows CPython 3.13; one disposable pgvector:pg16 projection read by Python `ReadSubsystem` and Rust-selected `ReadSubsystem` via PyO3. At 2010, only old node is effective; after 2026 deletion, redirect resolves to target. Closer exact-match nodes from another workspace and graph space are excluded before `n_results=1`; ID reads for either foreign scope return empty. Ordinary active-only query excludes tombstoned source and returns target. Both paths match historical IDs, hydrated summaries, and per-ID candidate distances. Command: `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider --tb=short --show-capture=no tests/pg_sql/test_phase3_e2e_engine_pg.py::test_rust_postgres_historical_read_subsystem_matches_python` (**1 passed**, 10.05s). Does not close remaining query, HTTP, ACL, or backend cells. |
+| GOAL-06, GOAL-08 | `tests::postgres_bridge_accepts_historical_graph_vector_query_contract` | PASS | Rust PyO3 bridge contract test accepts historical timestamp, redirect policy, hop limit and metadata exclusion fields; focused Cargo test: 1 passed. |
+| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_accepts_u64_max_pointer_offsets` | PASS | Python document validator accepts offsets through `u64::MAX` using shared `document-validate-graph-u64-offset-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `tests::document_graph_validation_accepts_u64_max_pointer_offsets` | PASS | Rust document validator accepts same maximum offsets and exact shared response; focused Cargo test: 1 passed after red/green parity fix. |
+| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_coerces_boolean_pointer_offset` | PASS | Python Pydantic validator coerces boolean `start_char=true` to integer 1 and returns shared success response; focused pytest: 1 passed. |
+| GOAL-06 | `tests::document_graph_validation_coerces_boolean_pointer_offset_like_python` | PASS | Rust validator matches Python boolean-to-integer coercion with same shared fixture; focused Cargo test: 1 passed after red/green parity fix. |
+| GOAL-06, GOAL-08 | `store::tests::chroma_http_graph_queries_match_shared_metric_order_and_scores` | PASS | Rust Chroma HTTP fake-server test consumes shared fixture; canonicalizes only returned test data before comparison. Runtime query preserves Chroma order. Bounded adapter evidence, not full query/backend parity. |
+| GOAL-06 | `test_mcp_workflow_run_submit_denies_workflow_acl_before_admission` | PASS | CPython 3.13 Windows; explicit workflow ACL denial returns 403 before service submission or run-registry admission; focused test passed, 2026-11-25. |
+| GOAL-06 | `tests::workflow_run_submit_enforces_configured_workflow_acl` | PASS | Rust SQLite configured AuthStore at public ingress: absent ACL and `ro` ACL return 403 without run creation; `rw` ACL returns 202 and persists run. MCP denial uses same ingress policy. A direct-effect implementation was rejected after the full API suite showed eight internal runtime admissions must remain unaffected; final check lives only at REST/MCP transport ingress. Focused test passed; Python `test_mcp_workflow_run_submit_denies_workflow_acl_before_admission` passed; Rust API library suite **448 passed, 54 ignored**. ACL-disabled MCP contract remains passing. This bounded test does not close the 62-operation authorization matrix. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[knowledge-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[knowledge-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[conversation-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[conversation-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[workflow-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[workflow-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[wisdom-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[wisdom-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[acl-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[acl-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[custom-role-explicit]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01 | `tests/core/test_python_only_graph_path.py::test_python_only_graph_path_does_not_load_rust[custom-role-legacy-default]` | PASS | CPython 3.13.3 Windows; focused batch A passed. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker[in-memory-inline-server]` | PASS | CPython 3.13.3 Windows; native workflow focused run; no Python worker handoff. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker[sqlite-external-worker]` | PASS | CPython 3.13.3 Windows; native workflow focused run; Rust server/storage path passed. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker[sqlite-chroma-external-worker]` | PASS | CPython 3.13.3 Windows; native workflow focused run; Chroma-backed variant passed. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker[pg-external-worker]` | PASS | CPython 3.13.3 Windows; rerun against local pgvector; passed with teardown. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker[sqlite-inline-server]` | PASS | CPython 3.13.3 Windows; native workflow focused run; no Python worker handoff. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker[sqlite-chroma-inline-server]` | PASS | CPython 3.13.3 Windows; native workflow focused run; Chroma-backed variant passed. |
+| GOAL-01, GOAL-03 | `tests/runtime/test_rust_runtime_authority.py::test_rust_native_workflow_runs_through_real_server_without_python_worker[pg-inline-server]` | PASS | CPython 3.13.3 Windows; rerun against local pgvector; passed with teardown. |
+| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_cross_implementation_acquire_race_grants_one_owner_only` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-02 | `tests/core/test_sqlite_context_invariant.py::test_direct_native_python_overlap_fails_before_database_mutation` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-02 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-02 | `tests/mcp/test_chat_mcp_workflow_runtime_design.py::test_mcp_workflow_run_submit_denies_missing_capabilities_before_admission` | PASS | CPython 3.13.3 Windows; focused batch A passed (1 case). |
+| GOAL-03 | `postgres_agentic_answer_workflow_executes_durably_without_python_worker` | PASS | Live pgvector, 1 passed; authenticated ingress through durable run/turn/lane state, no Python worker. |
+| GOAL-03 | `tests::in_memory_provider_events::in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together` | PASS | `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --lib in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together -- --nocapture`; 1 passed. |
+| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-04 | `tests/core/test_rust_store_projection_differential.py::test_sqlite_named_projections_python_and_rust_interoperate` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_python_chroma_projection_is_read_and_reconciled_by_rust_server` | PASS | Live Rust API server + Chroma; Python projection was read/reconciled; batch C, passed. |
+| GOAL-04, GOAL-05 | `tests/server/test_rust_api_chroma_interop_live.py::test_rust_graph_mutation_is_readable_by_python_over_chroma` | PASS | Live Rust API server + Chroma; Rust mutation was visible to Python; batch C, passed. |
+| GOAL-04 | `tests/core/test_rust_store_index_jobs_differential.py::test_postgres_python_rust_queue_differential_live` | PASS | Live PostgreSQL differential; batch C, 1 passed with test-owned container cleanup. |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where[fake]` | PASS | CPython 3.13.3 Windows; focused batch A passed (1 case). |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where[chroma]` | PASS | CPython 3.13.3 Windows; focused batch B passed (1 case). |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_backend_contract_collection_crud_and_where[pg]` | PASS | CPython 3.13.3 Windows; live testcontainer; focused batch B passed (1 case). |
+| GOAL-05 | `tests/core/test_backend_contract.py::test_in_memory_semantic_query_excludes_pending_embedding` | PASS | CPython 3.13.3 Windows; focused batch A passed (1 case). |
+| GOAL-05 | `tests/core/test_async_backend_invariants.py::test_async_pg_backend_invariants` | PASS | CPython 3.13.3 Windows; live PostgreSQL testcontainer; focused batch B passed (1 case). |
+| GOAL-06 | `test_public_http_and_mcp_tasklets_name_executable_tests` | PASS | Manifest selector-mapping check passed; proves selectors exist, not behavior parity. |
+| GOAL-06 | `test_dual_language_surface_inventory_is_current` | PASS | Inventory-to-route/MCP mapping passed. |
+| GOAL-06 | `test_syscall_backend_ledger_matches_surface_inventory` | PASS | 11 syscalls × 4 backends resolved, 44 cells. |
+| GOAL-06 | `test_capability_evidence_links_reject_missing_stale_duplicate_and_route_refs` | PASS | Evidence-link validation passed. |
+| GOAL-06 | `test_adr015_capability_worklist_covers_fixed_incomplete_scope` | PASS | Worklist scope cross-check passed. |
+| GOAL-06 | `test_each_capability_gate_clause_names_an_executable_test` | PASS | Gate-clause selectors verified. |
+| GOAL-06 | `test_rust_python_parity_annotations_resolve_to_shared_executable_contracts` | PASS | Source/test/fixture references resolved. |
+| GOAL-06 | `document_validate_graph_http_route_matches_shared_success_contract` | PASS | Rust Axum route consumes strengthened shared success fixture with node pointers, edge provenance, and `end_char=-1`; focused Cargo test passed 1. |
+| GOAL-06 | `document_graph_validation_missing_nodes_matches_python_error_detail` | PASS | Rust/Python invalid-input detail case passed. |
+| GOAL-06 | `in_memory_native_synchronous_resume_matches_shared_result_contract` | PASS | Rust authenticated MCP-wire resume reaches succeeded from persisted suspended state; same-token retry is reported as a tool error without appending run events. Focused Cargo test: 1 passed. Paired Python persisted MCP test also passes; evidence covers only this operation and in-memory backend. |
+| GOAL-06, GOAL-08 | `sqlite_metadata_mcp_resume_continues_persisted_suspended_token` | PASS | Rust authenticated MCP `workflow.run_resume` continues a durable SQLite suspended run after a worker completes the admitted lane; result matches `workflow-run-resume-result-v1.json`. Same-token retry returns a tool error without increasing durable run-event count. Focused Cargo test: 1 passed. Remaining operation/backend cells stay open. |
+| GOAL-06, GOAL-08 | `postgres_mcp_resume_continues_persisted_suspended_token` | PASS | Rust authenticated MCP `workflow.run_resume` continues a durable PostgreSQL suspended run after a worker completes the admitted lane; result matches `workflow-run-resume-result-v1.json`. Same-token retry returns a tool error without increasing durable run-event count. Focused test passed against disposable pgvector:pg16; shared helper's syscall path also passed live rerun. Other operation/backend cells stay open. |
+| GOAL-06, GOAL-08 | `sqlite_chroma_mcp_resume_continues_persisted_suspended_token` | PASS | Rust authenticated MCP `workflow.run_resume` continues a suspended run through SQLite metadata + live Chroma composition; same-token retry returns a tool error without increasing durable run-event count. Live Rust test and existing Chroma syscall resume regression passed (1 each); paired Python MCP request/result fixture test passed (1). This does not close other MCP effect/backend cells. |
+| GOAL-06 | `in_memory_native_run_admission_is_authenticated_and_atomic` | PASS | Named admission/authority case passed. |
+| GOAL-06 | `resume_records_transition_and_native_lane_atomically` | PASS | Durable resume transition case passed. |
+| GOAL-06 | `test_resume_route_uses_python_defaults_and_checks_namespace` | PASS | Python counterpart passed. |
+| GOAL-06 | `in_memory_workflow_syscalls_use_native_run_handlers` | PASS | Rust approval/syscall case passed. |
+| GOAL-06 | `test_syscall_request_approval_branches` | PASS | Python approval branches and shared invalid fixture passed. |
+| GOAL-06 | `test_syscall_checkpoint_accepts_conversation_namespace_and_numeric_string_step_seq` | PASS | Python checkpoint normalization case passed. |
+| GOAL-06 | `test_syscall_project_view_matches_resource_snapshot_contract` | PASS | Python resource-shape case passed. |
+| GOAL-06 | `in_memory_project_view_syscall_is_reachable_through_authenticated_http` | PASS | Rust authenticated resource-shape case passed. |
+| GOAL-06 | `test_syscall_invoke_tool_list_transcript_returns_messages` | PASS | Python invoke-tool success/error cases passed. |
+| GOAL-06 | `in_memory_invoke_builtin_tools_match_shared_contract_and_authority` | PASS | Rust invoke-tool contract/authority case passed. |
+| GOAL-06 | `test_syscall_send_message_invalid_inputs_match_shared_contract` | PASS | Python invalid-input/no-admission case passed. |
+| GOAL-06 | `in_memory_send_message_admits_turn_and_run_atomically` | PASS | Rust invalid-input and atomic admission case passed. |
+| GOAL-06 | `test_document_validate_graph_matches_shared_success_contract` | PASS | Python HTTP route consumes the same non-empty node-pointer/edge-provenance fixture, including `end_char=-1`; focused pytest passed 1. |
+| GOAL-06 | `test_python_document_graph_validation_http_error_matches_shared_fixture` | PASS | Python HTTP error fixture case passed. |
+| GOAL-06 | `test_python_document_graph_validation_wrong_type_matches_shared_fixture` | PASS | Python HTTP rejects wrong-type `nodes` with the shared Pydantic detail fixture; focused pytest: 1 passed. |
+| GOAL-06 | `document_graph_validation_wrong_nodes_type_matches_shared_contract` | PASS | Rust rejects wrong-type `nodes` with the shared legacy error fixture; focused Cargo test: 1 passed. |
+| GOAL-06 | `test_python_document_graph_validation_ignores_extra_top_level_field` | PASS | Python preserves compatibility by ignoring an unknown top-level field; response matches shared fixture; focused pytest: 1 passed. |
+| GOAL-06 | `document_graph_validation_ignores_extra_top_level_field` | PASS | Rust ignores the same unknown top-level field and returns the same success body; focused Cargo test: 1 passed. |
+| GOAL-06 | `test_server_health_matches_shared_contract` | PASS | Python `GET /health` checks success status and common health fields against `contracts/golden/health-v1.json`; focused pytest passed on CPython 3.12 and 3.14 and Linux Docker PyPy 3.11, 2026-11-25. |
+| GOAL-06 | `health_route_matches_shared_python_contract` | PASS | Rust `GET /health` checks same shared fixture fields and types; focused Cargo test: 1 passed. |
+| GOAL-06 | `test_conversation_list_is_user_scoped_and_has_stable_response_shape` | PASS | Python `GET /api/conversations` verifies owner filtering and exact response/row field sets against `conversation-list-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` | PASS | Rust SQLite+Chroma route test exercises `GET /api/conversations`, matches response/row field sets, then consumes `conversation-list-denied-http-v1.json` and verifies sub-only identity returns 401; focused Cargo test: 1 passed. |
+| GOAL-06 | `test_run_status_route_matches_shared_v1_contract` | PASS | Python `GET /api/runs/{run_id}` checks fixture-required fields, identifiers, all five statuses, assistant-turn ID, result/error payloads, cancel flag, null defaults, lifecycle timestamps, and missing-run 404; same selector verifies `/api/workflow/runs/{run_id}` denies wrong namespace and missing `workflow.run.read` before registry access. Focused pytest: 1 passed. |
+| GOAL-06 | `rust_run_status_terminal_flag_matches_shared_contract` | PASS | Rust projection checks same five statuses, fixture fields, assistant-turn ID, result/error payloads, null defaults, lifecycle timestamps, and terminal mapping; focused Cargo test: 1 passed. |
+| GOAL-06 | `sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_atomic` | PASS | Rust authenticated SQLite+Chroma workflow completes natively, then `GET /api/runs/{run_id}` is checked against the persisted run row for owner, assistant turn, decoded result/error, and started/finished timestamps; fixture-required fields, terminal status, cancel flag, time types, and missing-run 404 also pass. Focused Cargo test: 1 passed. This does not claim same-state Python/Rust HTTP parity. |
+| GOAL-06 | `test_run_detail_uses_python_defaults_and_checks_namespace` | PASS | Python run-detail route checks shared required fields, seeded identifiers/status/result defaults, and denies wrong namespace; focused pytest: 1 passed. |
+| GOAL-06 | `test_run_evidence_uses_python_defaults_and_checks_namespace` | PASS | Python run-evidence route checks authorized evidence retrieval and wrong-namespace denial; focused pytest: 1 passed. |
+| GOAL-06 | `test_run_steps_uses_python_defaults_and_checks_namespace` | PASS | Python workflow-step route checks required fields, result/trace projection, alias route equality, and wrong-namespace denial; focused pytest: 1 passed. |
+| GOAL-06 | `test_run_steps_matches_shared_rust_projection_fixture` | PASS | Python HTTP run-step projection matches every common field in `workflow-step-inspection-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_design_empty_graph_matches_shared_contract` | PASS | Python `GET /api/workflow/design/{id}/graph` exactly matches `workflow-design-empty-graph-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_design_empty_history_matches_shared_contract` | PASS | Python `GET /api/workflow/design/{id}/history` exactly matches `workflow-design-empty-history-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `sqlite_design_history_folds_branch_and_repairs_projection` | PASS | Rust route checks both shared empty-graph and empty-history HTTP fixtures exactly; focused Cargo test: 1 passed. |
+| GOAL-06 | `test_workflow_design_node_upsert_matches_shared_contract` | PASS | Python POST node-upsert consumes the shared fixture and checks fixed, integer, and absent response fields; focused pytest: 1 passed. |
+| GOAL-06 | `sqlite_design_capability_mutates_graph_and_undoes_atomically` | PASS | Rust node/edge upsert, node/edge delete, undo, and redo consume their respective shared fixtures and assert response fields; same test verifies mutation/undo atomicity; focused Cargo test: 1 passed. PostgreSQL counterpart: `postgres_design_capability_mutates_and_undoes_when_dsn_available` and `postgres_workflow_design_graph_matches_shared_mutation_fixture` both passed live against disposable pgvector/pg16; latter matches `workflow-design-graph-http-v1.json` node/edge fields, metadata, endpoints, and relation. |
+| GOAL-06 | `test_workflow_design_edge_upsert_matches_shared_contract` | PASS | Python creates fixture-defined endpoints, then checks edge-upsert fixed, integer, and absent response fields; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_design_node_delete_matches_shared_contract` | PASS | Python creates then deletes the fixture node; response fields match `workflow-design-node-delete-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_design_edge_delete_matches_shared_contract` | PASS | Python creates fixture endpoints/edge, then deletes the edge; response fields match `workflow-design-edge-delete-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_design_redo_matches_shared_contract` | PASS | Python creates a node, undoes, then redoes; response fields match `workflow-design-redo-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_design_undo_matches_shared_contract` | PASS | Python creates a node, then checks undo response against `workflow-design-undo-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-07 | `test_main_ci_matrix_uses_hosted_cpython_and_pypy_runtimes` | PASS | CI interpreter matrix contract passed. |
+| GOAL-07 | `test_rust_ci_requires_all_pypy_mixed_worker_backends_without_skips` | PASS | Required mixed-worker backend selection passed. |
+| GOAL-08 | `test_python_workflow_success_matches_rust_durable_successor_admission` | PASS | Fixed-trace success parity case passed. |
+| GOAL-08 | `test_python_suspend_resume_matches_rust_durable_ordered_history` | PASS | Fixed-trace suspend/resume history case passed. |
+| GOAL-08 | `test_python_workflow_failure_matches_rust_durable_state_and_step_event` | PASS | Failure state/event parity case passed. |
+| GOAL-08 | `test_sqlite_python_rust_bidirectional_run_registry_and_atomic_batch` | PASS | SQLite differential now verifies Rust-updated result JSON is visible to Python and Python-updated result/error, assistant ID, status, and timestamps are visible through Rust; focused extension-backed pytest: 1 passed. This is one durable row contract, not whole runtime-lifecycle parity. |
+| GOAL-08 | `test_postgres_run_registry_bidirectional_isolated_and_atomic` | PASS | Live disposable pgvector:pg16 differential verifies Python-updated status/result/error/assistant ID/timestamps are visible through Rust, and Rust-updated result JSON is visible through Python; focused extension-backed pytest: 1 passed, container torn down. This is one durable row contract, not whole runtime-lifecycle parity. |
+| GOAL-08 | `test_native_transaction_id_cannot_cross_contexts` | PASS | Transaction ownership invariant passed. |
+| GOAL-09 | `test_endpoint_runner_compares_python_mixed_and_rust_http_modes` | PASS | Benchmark runner executes both modes; not a performance threshold result. |
+| GOAL-09 | `test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch` | PASS | Digest-mismatch rejection case passed. |
+| GOAL-09 | `test_endpoint_report_verifier_rejects_ffi_in_pure_mode` | PASS | Both pure modes enforce zero FFI; workload remains a smoke, not representative gate closure. |
+| GOAL-06 | `postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability` | PASS | Live pgvector Rust test rerun 2026-11-26: nonterminal REST/MCP/syscall cancellation persists `run.cancelling`; denied active calls are effect-free; terminal MCP retry without `workflow.run.write` returns unchanged `cancelled` status and appends no event. Focused selector: **1 passed**. |
+| GOAL-06 | `sqlite_syscall_spawn_and_terminate_use_authoritative_run_service` | PASS | Rust SQLite metadata syscall appends one `run.cancelling` event before cancellation; terminal retry appends none. Focused Rust test: 1 passed. |
+| GOAL-06 | `sqlite_chroma_syscall_spawn_and_terminate_use_authoritative_run_service` | PASS | Rust SQLite+Chroma syscall test verifies one `run.cancelling` event and no extra event on terminal retry; live-Chroma focused test passed. |
+| GOAL-06 | `test_run_lifecycle_syscalls_use_python_backend[in_memory]` | PASS | Python in-memory syscall persists `run.cancelling`; terminal retry leaves event history unchanged. Focused case passed. |
+| GOAL-06 | `test_run_lifecycle_syscalls_use_python_backend[chroma]` | PASS | Python SQLite+Chroma syscall persists `run.cancelling`; terminal retry leaves event history unchanged. Focused case passed. |
+| GOAL-06 | `test_conversation_syscalls_use_python_postgres_backend` | PASS | Python PostgreSQL syscall cancellation exposes `run.cancelling`; terminal retry leaves SSE history unchanged. Live testcontainers: 1 passed. |
+| GOAL-06 | `in_memory_workflow_cancel_mcp_reaches_authorized_store_effect` | PASS | Focused rerun passed; authorized cancel emits `run.cancelling`, denied active-run cancel is effect-free, terminal retry succeeds without `workflow.run.write` and adds no event. |
+| GOAL-06 | `test_mcp_workflow_runtime_submit_cancel` | PASS | Python MCP consumes `workflow-run-submit-mcp-v1.json`; forged caller `user_id` is replaced by fixture's authenticated owner in the persisted run. It checks cancellation persistence and duplicate-free terminal retry; focused rerun 2026-11-25: 1 passed. Workflow-access callback is stubbed; this case does not replace authorization coverage. |
+| GOAL-06 | `sqlite_mcp_run_submit_persists_admission` | PASS | Rust SQLite MCP consumes `workflow-run-submit-mcp-v1.json`; forged caller `user_id` is replaced by fixture's authenticated owner in the persisted run. It also verifies denied cancellation is effect-free, authorized cancellation persists its event and matches all stable fields in `workflow-run-cancel-mcp-v1.json`, and terminal retry adds no event. Focused run: 1 passed. This case does not replace authorization coverage. |
+| GOAL-06 | `test_mcp_workflow_dead_letter_replay_dispatches_effect_once` | PASS | Python MCP creates a real scheduler dead-letter from a failed callback; two concurrent replay requests yield exactly one `replayed=true` and one `false`, callback executes once after replay, and dead-letter is removed. Dead-letter scheduler/MCP focused batch: **6 passed** on CPython 3.13 Windows. Scheduler state is process-local; this does not claim durable replay parity with Rust. |
+| GOAL-06, GOAL-10 | `sqlite_run_service_handles_get_events_and_cancel` | PASS | Rust checks workflow-step inspection fields/result, run checkpoints, workflow catalog, exact dead-letter listing response, lane progress, run-event polling, and SSE replay with `after_seq=0`; seeded `run-1` event matches Python oracle (`seq=1`, `run.started`, `{"source":"test"}`, required fields/timestamp type). Two concurrent MCP replays yield exactly one `true` and one `false`; lane remains one pending record, and subsequent retry remains `false`. `workflow.budget_snapshot` MCP now exact-matches shared `workflow-budget-http-v1.json` cost-ledger expectation; Python `test_mcp_workflow_budget_snapshot_matches_shared_contract` checks same values (**1 each passed**). Rust lane is durable; this is behavioral replay evidence, not storage parity with Python's process-local scheduler. |
+| GOAL-06 | `tests::postgres_dead_letter_replay_mcp_is_single_claim_under_concurrency` | PASS | Live pgvector API test: concurrent authenticated MCP calls yield one `replayed=true`, one `false`; durable lane ends pending. Focused test passed with disposable schema, 2026-11-25. |
+| GOAL-06 | `kogwistar-store-memory::tests::lane_status_compare_and_set_allows_only_one_replay_transition` | PASS | In-memory CAS accepts dead-letter→pending once, rejects stale retry, leaves pending; focused Rust test passed, 2026-11-25. |
+| GOAL-06 | `kogwistar-store-sqlite::tests::lane_messages::lane_status_compare_and_set_allows_only_one_replay_transition` | PASS | SQLite CAS accepts dead-letter→pending once, rejects stale retry, leaves pending; focused Rust test passed, 2026-11-25. |
+| GOAL-06 | `kogwistar-store-postgres::tests::runtime::postgres_lane_status_compare_and_set_allows_only_one_replay_transition` | PASS | Live pgvector concurrent CAS yields exactly one winner and durable pending state; disposable schema removed; focused Rust test passed, 2026-11-25. |
+| GOAL-06 | `runtime_step_inspection_matches_shared_python_projection_fixture` | PASS | Rust runtime-inspection projection matches every common field in `workflow-step-inspection-v1.json`; focused Cargo test: 1 passed. |
+| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_rejects_null_nodes` | PASS | Shared fixture verifies null `nodes` is rejected with Python validation detail. |
+| GOAL-06 | `tests::document_validation::document_graph_validation_rejects_null_nodes` | PASS | Same request; Rust status and legacy error fields match fixture. |
+| GOAL-06 | `tests/server/test_chat_server_api_workflow_design.py::test_workflow_design_node_upsert_requires_write_graph_before_effect` | PASS | Shared fixture tests missing capability, wrong namespace, and read-only role; all return 403 before mutation handler call. |
+| GOAL-06 | `tests::workflow_design_node_upsert_http_denial_matches_python_before_effect` | PASS | Same three request/claims cases; Axum/JWT returns 403 and each SQLite event log stays empty. |
+| GOAL-06 | `tests/server/test_chat_server_api_conversations.py::test_conversation_list_http_denials_precede_service_read` | PASS | Shared `conversation-list-denied-http-v1.json`: wrong namespace returns 403; JWT `sub` without `user_id` returns 401; service-read spy remains untouched. |
+| GOAL-06 | `tests::conversation_list_http_denials_precede_storage_read` | PASS | Same shared denial cases; wrong namespace returns 403 and `sub`-only identity returns 401 with unreachable PostgreSQL, proving rejection precedes storage access. |
+| GOAL-06 | `tests::postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available` | PASS | Live disposable PostgreSQL authorized conversation-list/detail/transcript route test passed after aligning its token with Python's required `user_id` claim. |
+| GOAL-06 | `test_workflow_lane_progress_matches_shared_contract` | PASS | Python `GET /api/workflow/lane/progress` checks shared fixture total, item count/key set, expected values, and timestamp type; focused pytest: 1 passed. |
+| GOAL-06 | `test_chat_rest_events_poll_matches_rust_seeded_contract` | PASS | Python seeds the same `run-1`/`run.started` event as Rust; checks sequence, payload, required field set, and timestamp type; focused pytest: 1 passed. |
+| GOAL-06 | `test_chat_rest_sse_matches_rust_seeded_contract` | PASS | Python `GET /api/runs/run-1/events?after_seq=0` matches Rust seeded replay: status/media type, event ID/name, run ID, event type, required data fields, and payload marker; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_dead_letters_matches_shared_contract` | PASS | Python `GET /api/workflow/dead-letters?limit=10` exactly matches `workflow-dead-letters-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_workflow_catalog_ops_matches_shared_contract` | PASS | Python `GET /api/workflow/catalog/ops` response equals `workflow-catalog-ops-http-v1.json`; focused pytest: 1 passed. |
+| GOAL-06 | `test_d3_bundle_route_matches_shared_rust_contract_and_escapes_inline_json` | PASS | Python `GET /viz/d3.bundle` consumes the shared fixture, checks embedded payload/metadata, and rejects unsafe script fragments; focused pytest: 1 passed. |
+| GOAL-06 | `d3_bundle_route_matches_shared_python_contract` | PASS | Rust `GET /viz/d3.bundle` uses the same fixture and checks status, content type, payload escaping, and forbidden fragments; focused Cargo test: 1 passed. |
+| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_transport_contract_subset_runs_in_supported_interpreter_matrix` | PASS | Guards explicit transport selectors in CPython 3.12–3.14 and PyPy 3.11 CI lanes. |
+| GOAL-08 | `tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence` | PASS | Authenticated HTTP event-agent route emits ordered SSE durable/delta events; passed on CPython 3.12 and 3.14 and Linux Docker PyPy 3.11, 2026-11-25; interpreter-matrix subset has no Chroma dependency. |
+| GOAL-08 | `tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture` | PASS | Streamable MCP initialize/session/tool-call over `/mcp`; passed on CPython 3.12 and 3.14 and Linux Docker PyPy 3.11, 2026-11-25; included in interpreter-matrix subset. |
+| GOAL-08 | `tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token` | PASS | Python CLI HTTP client auth/header contract; passed on CPython 3.12 and 3.14 and Linux Docker PyPy 3.11, 2026-11-25; included in interpreter-matrix subset. |
+| GOAL-08 | `tests::python_mcp_sdk_receives_rust_server_initiated_notification` | PASS | Real Python MCP SDK received two ordered Rust `notifications/message` events and matched exact `info`/`warning` severity, logger, and data payloads; CPython 3.13.3 Windows, focused ignored Cargo smoke passed 2026-11-25. |
+| GOAL-06 | `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_preserves_integer_string_pointer_coercion` | PASS | Shared fixture accepts numeric strings for pointer offsets, matching Python/Pydantic coercion; focused pytest file: 7 passed. |
+| GOAL-06 | `tests::document_graph_validation_preserves_integer_string_pointer_coercion` | PASS | Same shared fixture accepted by Rust; numeric `-1` sentinel remains distinguished from string values; focused Cargo filter: 8 passed. |
+| GOAL-06/08/09 | `tests/core/test_rust_port_contract_manifest.py::test_dual_language_goal_case_table_matches_pivot_rows` | PASS | Verifies every pivot case has one four-column row, allowed status, matching summary totals, and its own selector is listed. |
+| GOAL-06 | `tests::in_memory_workflow_lineage_route_matches_shared_contract` | PASS | Rust InMemory REST and authenticated MCP lineage match shared golden; admission denies wrong namespace, direct REST and actual MCP call deny missing `workflow.run.read` (`KOGWISTAR_CAPABILITY_FORBIDDEN`), configured workflow ACL denial returns `KOGWISTAR_WORKFLOW_FORBIDDEN`, graph ACL hides parent, response supports limit/truncation and missing-run 404. Paired Python REST lineage module: 8 passed; MCP lineage allow/deny selectors: 2 passed. |
+| GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_performance_gate_rejects_rust_native_throughput_regression` | PASS | Synthetic report below 0.95 Rust-native/Python throughput ratio fails verifier. |
+| GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_performance_gate_rejects_rust_native_operation_tail_regression` | PASS | Synthetic per-operation p95 ratio above 1.10 fails verifier. |
+| GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_performance_gate_accepts_values_at_declared_limits` | PASS | Exact 0.95 throughput and 1.10 p95 boundaries pass. |
+| GOAL-09 | `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_performance_gate_is_unassessed_without_both_pure_modes` | PASS | A report missing either pure mode is explicitly unassessed, not marked as a performance-gate pass. |
+| GOAL-09 | `scripts/run_mixed_runtime_matrix.ps1 -EndpointOnly -CpuLimit 2 -MemoryLimit 4g -Samples 3 -EndpointItems 100 -ConcurrentItems 32`; `.tmp/mixed-runtime-followup-20261125/concurrent-endpoint-rerun/endpoint/endpoint-report.v1.json` | PASS | CPython 3.15.1t; balanced fixed SQLite trace, 1 writer/4 readers, 32 writes + 128 reads; 2 CPU/4 GiB verified; Python/Rust-native same digest; Rust-native FFI=0. Throughput 30.43/507.47 ops/s (16.68x); read/write p95 ratios 0.422/0.153; thresholds passed, zero verifier errors. Three samples only; Rust throughput CV 14.50%, evidence preliminary and workload-scoped. |
+| GOAL-06 | `tests/server/test_workflow_designer_ui.py::test_workflow_design_history_denies_without_acl_before_read` | PASS | Python route denies missing per-workflow `ro` ACL before service read and allows `ro` ACL; paired Rust authenticated route test passed. |
+| GOAL-06 | `tests/server/test_workflow_designer_ui.py::test_workflow_design_remaining_routes_enforce_acl_before_effect` | PASS | Python graph GET denies missing ACL and allows `ro`; edge upsert/delete, node delete, undo, redo deny missing/`ro` ACL before service effects. Focused pytest: 1 passed. |
+| GOAL-06 | `tests::workflow_design_history_enforces_configured_workflow_acl` | PASS | Rust authenticated SQLite REST routes match Python: history and graph deny missing ACL and allow `ro`; node upsert denies missing/`ro`, allows `rw`; edge upsert/delete, node delete, undo, redo deny missing/`ro` and leave events/projections unchanged. Focused Cargo test: 1 passed. TDD reproduced pre-fix 200 for missing history ACL. |
+| GOAL-06 | `tests/server/test_workflow_designer_ui.py::test_workflow_design_node_upsert_requires_rw_acl_before_dispatch` | PASS | Python node-upsert route denies missing/`ro` workflow ACL before dispatch and allows `rw`; paired with Rust authenticated route test. |
+| GOAL-06 | `tests/mcp/test_chat_mcp_workflow_runtime_design.py::test_chat_run_service_operator_inbox_respects_security_scope` | PASS | Python omits dangling/inaccessible rows before limiting; shared fixture confirms `limit=0` gives empty and `limit=-1` follows Python slice semantics. Focused pytest: 1 passed. |
+| GOAL-06 | `tests::operator_inbox_omits_missing_acl_visible_graph_nodes` | PASS | Rust excludes orphaned lane projections with no ACL-visible graph node and does not expose projected payload. Focused Cargo test: 1 passed. |
+| GOAL-06 | `tests::operator_inbox_filters_graph_visibility_and_security_scope_before_limit` | PASS | Rust filters visibility/scope before limit; shared fixture covers zero/negative limits. TDD reproduced `limit=0` mismatch before fix; focused Cargo test: 1 passed. |
+| GOAL-09 | Resource-matched Rust-native vs Python persistent trace (PostgreSQL/pgvector) | PASS | Matched capped graph trace consumes shared v1 trace; warm-up + 3 fresh-schema samples, 201 events/sample, matching digests, projections converged, Rust FFI=0. After reducing Rust PostgreSQL statement round trips, verifier passes: throughput ratio 1.916; event/projection/write p95 ratios 0.481/0.467/0.738; RSS 0.114. Earlier 0.811 run was Rust-native too; no Python/Rust per-record FFI was involved. Evidence: `docs/benchmarks/mixed_rewrite_benchmark.md`. |
+| GOAL-09 | Resource-matched Rust-native vs Python graph/vector trace (SQLite + Chroma) | PASS | Shared v1 trace; client 2 CPU/4 GiB, Chroma 1 CPU/2 GiB; warm-up + 3 fresh samples per mode; 201 canonical events/sample, converged projections, identical digest, Rust FFI=0. Verifier PASS: throughput ratio 5.905; event/projection/write p95 ratios 0.0118/0.815/0.301; RSS 0.163. Evidence: `docs/benchmarks/mixed_rewrite_benchmark.md`, 2026-11-28 capped SQLite + Chroma trace. |
+| GOAL-09 | Resource-matched Rust-native vs Python authenticated workflow/graph request trace | PASS | Fixed-resource Linux Docker comparison at source `05ab4eeb54181402d505146b064e19f3273cd2f1`: authenticated PostgreSQL conversation-answer route; Python/Rust clients each 3 CPU/6 GiB, disposable pgvector 1 CPU/2 GiB; 2,001-node fixture; one warm-up + three fresh-schema samples; same digest `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`; 100ms polling. Verifier `pass`; throughput ratio 1.454, p95 ratio 0.581, Rust FFI=0, Python workers=0, errors=0. Focused Rust test passed all four runs; Python profile passed 4 cases; report verifier **12 passed**. Evidence: `docs/benchmarks/mixed_rewrite_benchmark.md`, section `2026-11-28 fixed-resource authenticated PostgreSQL agent request`. Scoped route/fixture result only; two backend performance traces remain open. |
+
+## Full-Parity Test Matrix
+
+This matrix defines the required test classes for GOAL-06/08; it adds no new
+goal or checklist denominator. Instantiate cases from every operation in
+`contracts/dual-language-surface-inventory-v1.json`. Each operation's Python
+and Rust selectors must be executable and recorded in the existing operation
+tasklet rows. A selector's existence is only mapping evidence, not proof that
+the assertion is sufficient or currently passing.
+
+Mapping audit (2026-11-28): the inventory contains 84 HTTP operations; the
+route-tasklet map has 84 entries (83 `FW-03-03A-HTTP-*`, plus `SRV-01`). The
+worklist has 88 passing HTTP tasklet rows: those 83 mapped rows plus five
+supplemental authorization/backend rows. The 62 MCP operations have 124
+passing `FW-03-04A/B-MCP-*` rows. The executable mapping check and pivot-table
+consistency check both pass (**2 passed**). These counts prove selector
+presence and current table consistency only. They do not prove that each
+operation's supported backend compositions have matching response/read
+behavior tests; that operation × backend evidence remains the open GOAL-06/08
+matrix requirement. Do not interpret tasklet-row totals as parity coverage.
+
+### Remaining Authorization/ACL Cases For GOAL-06/08
+
+The DLFC-05 bounded ACL/authority cases are passing and are closed. Broader
+operation/backend parity remains in GOAL-06/08, whose existing matrix requires
+per-operation evidence. These fixed case families clarify the previously vague
+ACL/backend gap without increasing either checklist denominator. Instantiate
+backend parameters only from the existing support matrix. For unsupported
+operation/backend pairs, assert explicit fail-closed behavior and no side
+effect. Do not add cases after execution starts unless a concrete regression
+or approved contract change requires it.
+
+Current status: **5/5 PASS; 0 IN PROGRESS**. `PASS` requires every applicable
+backend/case in the row; focused selectors alone do not close a row.
+
+| Case ID | Status | Python test selector | Rust test selector | Required cases and oracle |
+| --- | --- | --- | --- | --- |
+| AUTH-PAR-01 | PASS | `test_workflow_design_history_denies_without_acl_before_read`; `test_workflow_design_node_upsert_requires_rw_acl_before_dispatch`; `test_workflow_design_remaining_routes_enforce_acl_before_effect`; `test_workflow_design_mutations_match_shared_event_contract`; `test_workflow_design_node_delete_matches_shared_contract`; `test_workflow_design_undo_matches_shared_contract`; `test_workflow_design_redo_matches_shared_contract` | `workflow_design_history_enforces_configured_workflow_acl`; `postgres_workflow_design_acl_matrix_matches_python`; `sqlite_design_capability_mutates_graph_and_undoes_atomically`; `postgres_design_capability_mutates_and_undoes_when_dsn_available` | Supported Rust REST stores (SQLite and PostgreSQL): history/graph reads, node/edge upsert/delete, undo, redo. Missing ACL and `ro` deny mutations before effects; `ro` permits reads; `rw` permits writes. Python ACL/shared-contract oracles and Rust backend tests pass; unsupported InMemory workflow-design REST is not claimed. Evidence below. |
+| AUTH-PAR-02 | PASS | `test_conversation_read_acl_scope_matrix` | `conversation_read_acl_scope_matrix_matches_python`; `sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript`; `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`; `postgres_conversation_transcript_filters_hidden_rows_before_limit`; `sqlite_application_route_inventory_has_no_unclassified_cutover_drift` | InMemory, SQLite+Chroma, and PostgreSQL each cover list/detail/transcript, identity/namespace, owner and ACL visibility, workspace/graph-space scope, response projections, and ACL-before-limit. SQLite metadata-only explicitly returns NOT_IMPLEMENTED for conversation routes. Focused backend, applicability, and Python oracle selectors passed 2026-11-27. |
+| AUTH-PAR-03 | PASS | `test_runtime_rest_submit_and_sse`; `test_runtime_rest_cancel`; `test_run_status_route_matches_shared_v1_contract`; `test_run_detail_uses_python_defaults_and_checks_namespace`; `test_run_steps_uses_python_defaults_and_checks_namespace`; `test_run_evidence_uses_python_defaults_and_checks_namespace`; `test_resume_route_uses_python_defaults_and_checks_namespace`; `test_lineage_checks_parent_and_every_child_acl`; `test_lineage_denies_unauthorized_parent_or_child` | `workflow_run_rest_authority_matrix_matches_python`; `workflow_run_submit_checks_both_capabilities_before_admission`; `workflow_run_submit_enforces_configured_workflow_acl`; `sqlite_run_status_http_route_matches_shared_contract_for_all_states`; `sqlite_workflow_run_status_and_steps_enforce_per_workflow_read_acl`; `in_memory_run_steps_route_matches_shared_python_projection`; `in_memory_run_evidence_route_matches_shared_contract`; `in_memory_workflow_lineage_route_matches_shared_contract`; `workflow_run_status_denies_wrong_scope_before_storage_access`; `workflow_run_steps_denies_wrong_scope_before_storage_access`; `run_evidence_checks_authority_before_run_lookup`; `workflow_lineage_checks_authority_before_run_lookup`; `resume_contract_checks_authority_before_run_lookup`; `resume_effect_checks_authority_before_run_lookup`; `sqlite_worker_suspend_resume_is_durable_and_scheduler_owned`; `postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability`; `postgres_run_evidence_route_returns_only_authorized_run_snapshot`; `postgres_workflow_lineage_route_checks_each_workflow_acl`; `test_rust_postgres_server_submit_claim_read_cancel_true_socket`; `test_rust_postgres_synchronous_resume_matches_shared_contract` | Every supported backend; submit, status, steps, evidence, lineage, resume, cancel. Preserve each Python route's distinct role/namespace, capability, owner, and per-workflow ACL rules; denied calls have no mutation or identifier leak; retry/effect state matches Python. The new Rust test checks role, namespace, and capability denial through authenticated HTTP for InMemory, SQLite metadata, and PostgreSQL services. Existing selectors cover route-specific success, ACL, and durable effects; MCP/syscall tests do not count as REST evidence. All listed Python and Rust selectors passed, including live PostgreSQL evidence, lineage, cancel, submit/claim/read/cancel, and synchronous-resume tests. This bounded REST row PASS does not close MCP authority or unrelated GOAL-06/08 operation/backend cells. |
+| AUTH-PAR-04 | PASS | `test_mcp_workflow_tool_audit_denies_before_reads`; `test_mcp_workflow_dead_letter_replay_dispatches_effect_once`; `test_mcp_workflow_dead_letter_replay_denies_without_dispatch`; `test_mcp_workflow_run_resume_denies_missing_write_capability_before_effect`; `test_mcp_workflow_run_submit_uses_authenticated_user_over_argument`; `test_mcp_workflow_run_submit_denies_workflow_acl_before_admission`; `test_mcp_conversation_create_denies_unauthorized_effects`; `test_mcp_conversation_ask_denies_unauthorized_effects`; `test_mcp_conversation_cancel_run_denies_unauthorized_effects`; `test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace` | `workflow_run_events_mcp_admission_matches_python_policy_for_all_stores`; `workflow_dead_letter_replay_mcp_admission_matches_python_policy_for_all_stores`; `conversation_transcript_mcp_admission_matches_python_policy_for_all_stores`; `conversation_cancel_mcp_admission_matches_python_policy_for_all_stores`; `mcp_workflow_design_tools_deny_before_application_dispatch`; `mcp_conversation_run_operations_use_conversation_scope_end_to_end`; `postgres_mcp_resume_continues_persisted_suspended_token`; `postgres_dead_letter_replay_mcp_is_single_claim_under_concurrency`; `sqlite_chroma_mcp_cancel_commits_one_durable_event`; `sqlite_chroma_mcp_resume_continues_persisted_suspended_token` | Python/Rust MCP authority, principal binding, role/namespace/capability/ACL checks, deny-before-effect, and retry behavior. InMemory/SQLite/PG admission cells use shared Python-policy oracles; live PostgreSQL and SQLite+Chroma durable/retry cases are explicitly run below. REST remains a separate policy surface. |
+| AUTH-PAR-05 | PASS | `test_python_acl_visibility_matches_shared_golden_contract`; `test_python_node_item_usage_matches_shared_golden_contract`; `test_python_edge_usage_matches_shared_golden_contract`; `test_python_acl_aware_graph_batch_v2_matches_rust_fixture`; `test_mcp_neighbors_preserve_acl_visibility_and_hide_topology`; `test_mcp_neighbors_hide_private_endpoint_of_visible_edge`; `test_mcp_neighbors_keep_same_id_node_and_edge_acl_isolated`; `test_propose_vector_returns_only_acl_visible_pairs`; `test_acl_vector_query_matches_shared_python_rust_ranking_fixture`; `test_vector_query_requires_exact_source_span_acl_reference`; `test_document_upsert_tree_requires_rw_even_with_write_graph_capability` | `in_memory_backend_routes_authenticated_graph_write_and_mcp_read`; `in_memory_document_tree_upsert_matches_graph_extraction_contract`; `sqlite_chroma_graph_topology_reads_are_scoped_and_acl_filtered`; `sqlite_chroma_vector_query_enforces_source_span_acl`; `sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable`; `sqlite_chroma_graph_mutation_commits_canonical_events_and_eventual_jobs`; `graph_vector_query_route_authorizes_and_validates_before_storage`; `postgres_document_tree_upsert_requires_rw_role_before_storage`; `postgres_graph_neighbors_omit_cross_scope_endpoint`; `postgres_graph_neighbors_enforce_project_and_source_evidence_acl`; `postgres_graph_snapshot_omits_conflicting_workspace_node`; `postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available`; `postgres_graph_mutation_batch_uses_configured_graph_type_store`; `postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available`; `sqlite_graph_routes_fail_closed_with_explicit_authority_status`; `sqlite_application_route_inventory_has_no_unclassified_cutover_drift`; `test_rust_graph_mutation_is_readable_by_python_over_chroma` | Supported graph routes/backends: InMemory, SQLite+Chroma, PostgreSQL/pgvector. Covers ACL visibility, node/edge identity isolation, tenant/workspace/source scope, role/capability checks, graph mutation and document writes; SQLite metadata-only graph routes are explicitly `NOT_IMPLEMENTED`, with no fallback. Shared ACL/graph fixtures and Python/Rust persisted projection provide parity oracles. Evidence below. |
+
+All five authorization rows now reference executable selectors. AUTH-PAR-01
+is `PASS`: Python ACL oracles (**3 passed**); Rust SQLite REST ACL matrix
+`workflow_design_history_enforces_configured_workflow_acl` (**1 passed**, including
+the `rw` node-delete path and denied-before-event checks); PostgreSQL REST ACL
+matrix `postgres_workflow_design_acl_matrix_matches_python` (**1 passed**, disposable
+pgvector:pg17; missing/`ro` ACL denied for all six mutation routes with no
+workflow events, `ro` reads allowed, `rw` writes accepted); existing SQLite and
+PostgreSQL workflow-design mutation/history tests each passed (**1 passed**).
+Python shared-event, node-delete, undo, and redo contracts also passed (**4
+passed**). No production behavior change was needed: existing REST ACL gate and
+both store implementations already satisfy this matrix. InMemory workflow-design
+REST is not implemented and is not included as a supported cell. The temporary
+database was removed after testing.
+
+AUTH-PAR-02's
+Python selector covers hidden-before-limit filtering. Rust InMemory selector
+`conversation_read_acl_scope_matrix_matches_python` passes list/detail/
+transcript, required identity, namespace denial, owner-filtered listing,
+private-turn ACL filtering, workspace and graph-space mismatch, and shared
+list response fields. It also seeds 9,993 ACL-hidden turns; the pre-fix
+10,000-record graph snapshot cap returned 500, while conversation reads now
+use the full in-memory snapshot before ACL projection, matching Python's
+uncapped query behavior. The expanded Rust selector passed (**1 passed**), and
+Python matrix plus parity crosswalk passed (**2 passed**). Rust SQLite+Chroma selector
+`sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript` passes
+authenticated list/detail/transcript scope checks and verifies that 10,001
+ACL-hidden records preceding visible conversation rows do not exhaust the
+result cap (**1 passed**, 2026-11-27). Conversation routes page the Chroma
+projection before ACL projection; unrelated snapshot routes retain their
+existing 10,000-record bound. Live Rust PostgreSQL
+selector `postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available`
+passed (**1 passed**, disposable pgvector; 2026-11-27), covering scoped
+list/detail/transcript, private-turn filtering, foreign workspace/graph-space,
+and foreign-owner 404; now also asserts missing list identity returns 401 and
+wrong-namespace detail returns 403. New focused PostgreSQL selector
+`postgres_conversation_transcript_filters_hidden_rows_before_limit` seeds
+10,001 ACL-hidden turns before one visible turn via bulk SQL and verifies the
+visible turn survives transcript projection (**1 passed**, disposable
+pgvector:pg17; 2026-11-27). No production change was needed: the route already
+reads all graph projection pages before ACL filtering. Reverification on
+2026-11-27: Rust InMemory matrix (**1 passed**), SQLite+Chroma matrix
+(**1 passed**), PostgreSQL scoped list/detail/transcript (**1 passed**),
+PostgreSQL hidden-before-visible (**1 passed**), and Python matrix oracle
+(**1 passed**). `sqlite_application_route_inventory_has_no_unclassified_cutover_drift`
+passed and confirms conversation REST routes fail closed on SQLite metadata-only.
+Together these cover every declared backend in this row;
+AUTH-PAR-02 is `PASS`. This does not reopen DLFC-05 or imply the other four
+AUTH-PAR rows are complete.
+
+AUTH-PAR-03 is `PASS` for its listed REST selector set. Rust selector
+`workflow_run_rest_authority_matrix_matches_python` (**1 passed**) exercises
+role, namespace, and capability denials through authenticated HTTP for
+InMemory, SQLite metadata, and PostgreSQL services. Red testing found two real
+REST gaps: a `conversation`-only namespace was admitted with 202, and a `ro`
+principal with write capabilities was admitted with 202. Rust now rejects
+these before ACL lookup/admission with Python-equivalent 403 namespace code
+and role detail; MCP policy is unchanged. Extending the existing configured
+workflow ACL selector also found resume with a missing or read-only workflow
+ACL returned run-not-found 404 instead of Python's pre-lookup 403. Rust now
+checks resume's workflow write ACL after role/namespace and before run lookup.
+That selector denies submit/resume for missing and `ro` ACL across InMemory,
+SQLite metadata, and PostgreSQL services (**1 passed**); PostgreSQL denial
+occurs before run-store access. The focused Rust workflow-run suite passed
+(**15 passed, 2 ignored**), Python route oracles passed (**6 passed**, plus
+`test_runtime_rest_cancel` **1 passed**), Rust
+API build succeeded, and the live Rust PostgreSQL HTTP smoke passed (**1
+passed**). The existing
+`test_rust_postgres_server_submit_claim_read_cancel_true_socket` selector also
+passed against disposable pgvector (**1 passed**), covering live submit,
+claim/result, status, cancel, and resume paths. These results close only
+these preflight defects;
+the PostgreSQL-specific existing selectors
+`postgres_run_evidence_route_returns_only_authorized_run_snapshot` and
+`postgres_workflow_lineage_route_checks_each_workflow_acl` were run against a
+temporary `pgvector/pgvector:pg16` instance (**1 passed each**), as was
+`postgres_workflow_run_cancel_contract_enforces_scope_and_write_capability`
+(**1 passed**). The existing
+`test_rust_postgres_synchronous_resume_matches_shared_contract` integration
+selector also passed (**1 passed**). Python lineage oracles
+`test_lineage_checks_parent_and_every_child_acl` and
+`test_lineage_denies_unauthorized_parent_or_child` passed (**2 passed**);
+Rust `workflow_lineage_checks_authority_before_run_lookup` and
+`in_memory_workflow_lineage_route_matches_shared_contract` passed (**2
+passed**). The broader run returned the PostgreSQL lineage selector as ignored
+without a DSN; its explicit disposable-PostgreSQL run above passed.
+All selectors listed in the AUTH-PAR-03 row passed. This closes only that
+bounded REST row; unrelated GOAL-06/08 operation/backend cells remain open.
+The authorization status is **5/5 PASS; 0 IN PROGRESS**;
+AUTH-PAR-04 is `PASS`: Python MCP authority batch across workflow authority,
+workflow run access, and conversation tools (**58 passed**). Rust's focused
+`mcp_admission_matches_python` matrix passed (**26 passed**); the Rust MCP
+behavior batch passed (**97 passed, 6 ignored** before live-only tests were
+enabled). Then all four applicable ignored backend tests passed against
+disposable local services: PostgreSQL `postgres_mcp_resume_continues_persisted_suspended_token`
+and `postgres_dead_letter_replay_mcp_is_single_claim_under_concurrency`
+(**1 passed each**), plus SQLite+Chroma
+`sqlite_chroma_mcp_cancel_commits_one_durable_event` and
+`sqlite_chroma_mcp_resume_continues_persisted_suspended_token` (**2 passed**).
+Python counterpart tests for the same MCP authorities passed in the 58-test
+batch. No production code change was needed; the existing Rust transport test
+fixture was corrected to include `rw`, allowing its request to reach the
+intended unsupported-route response rather than fail earlier at authorization.
+AUTH-PAR-05 is `PASS`: Python ACL golden, graph-mutation contract, MCP graph-read,
+and document API batches passed (**49 + 9 passed**). Rust focused cases passed
+for authenticated InMemory graph route and document upsert, SQLite+Chroma
+topology/vector ACL, document upsert and durable graph mutation, vector-query
+deny-before-storage, PG document-write role denial, and explicit SQLite-only
+unsupported routing. Live pgvector graph scope/query/snapshot/mutation batch
+passed (**5 passed**); authenticated PostgreSQL internal graph mutation and
+document-upsert flow passed (**1 passed**). Local Chroma Rust-write / Python-read
+interoperability passed (**1 passed**). No graph or ACL production code changed.
+SQLite metadata-only graph routes remain explicitly unsupported; route inventory
+test verifies no unclassified cutover drift, and direct route test proves
+`NOT_IMPLEMENTED` without fallback. Authorization matrix is now **5/5 PASS**.
+Fine checklist remains **14/18 PASS (77.8%); 4 IN PROGRESS**; this closes only
+AUTH-PAR-05 and does not close broader GOAL-06/08 operation/backend cells.
+
+| Case family | Required oracle for each applicable operation |
+| --- | --- |
+| Contract success | Same versioned fixture/request through Python and Rust; compare normalized status, response fields, defaults, IDs, and error-free result. Compare order only where Python's contract declares it; ignore only declared nondeterministic fields. |
+| Input validation | Missing, malformed, wrong-type, unknown, and extra fields; both paths reject consistently and produce no durable side effect. Include boundary values and empty collections where accepted. |
+| Authorization | Unauthenticated, wrong role, missing capability, wrong namespace/workspace/graph-space, and ACL-hidden target; deny before protected reads or writes and assert state unchanged/no information leak. Apply only where the operation has an authority boundary. |
+| Read semantics | Same seeded state; compare filtering, pagination/limits, hydration, tombstone/redirect behavior, provenance, and not-found semantics. Preserve backend order where Python makes no ordering promise; test-only sorting may compare unordered result sets. Prove ACL filtering occurs before result limits. |
+| Write semantics | Same request; compare canonical graph/run state and emitted event/trace fields. Verify atomic rollback on injected failure, duplicate/retry behavior, idempotency, and no partial side effects. Apply only to mutators. |
+| Persistence lifecycle | For durable operations, close/reopen each supported backend and compare read-after-write, replay/recovery, sequence/version, and Python-written ↔ Rust-read plus Rust-written ↔ Python-read fixtures. |
+| Backend applicability | Exercise every declared operation/backend pair. For unsupported pairs, assert explicit fail-closed behavior and no silent fallback; do not count dispatch presence as behavioral parity. Distinguish SQLite metadata + eventual Chroma projection from PostgreSQL and in-memory authority semantics. |
+| Runtime/worker | Compare identical fixed-ID traces across Python and Rust: routing, state deltas, step/event order, retry/cancel/suspend/resume, terminal frontier, trace parentage, and restart/replay. Check seam crossing counts and transaction ownership. |
+| Transport | For HTTP, MCP, and CLI surfaces, compare wire status/envelope, schemas, auth propagation, streaming/notification order where applicable, and malformed protocol behavior. Do not infer one transport from another. |
+| Native isolation | For Rust-native claims, run ingress-to-persistence while Python worker/adaptor entry points are instrumented to fail; prove zero Python handoff. Separately prove Python-only mode does not import/call Rust. |
+| Regression and CI selection | Run exact selectors in supported CPython 3.12–3.14 / PyPy 3.11 lanes as applicable, with live backend gates marked explicit. A locally passing selector not selected by CI is not a closed CI gate. |
+
+## Test-First Entry Cases For Open Goals
+
+These are the first small executable cases to run or reuse before production
+changes for each open coarse goal. They are not whole-goal passing evidence;
+do not change a goal status until the wider acceptance matrix passes. Reuse
+existing fixtures and helpers; add no new framework or checklist rows. When a
+later slice selects a new operation/backend cell, add its focused failing test
+before changing production code.
+
+| Goal | First cases | Minimum assertion |
+| --- | --- | --- |
+| GOAL-06: public operation parity | Reuse Python `tests/server/test_chat_server_api_documents.py::test_document_validate_graph_matches_shared_success_contract` and `tests/core/test_rest_error_contract.py::test_python_document_graph_validation_http_error_matches_shared_fixture`; Rust `tests::document_validation::document_validate_graph_http_route_matches_shared_success_contract` and `::document_graph_validation_missing_nodes_matches_python_error_detail`. | Shared success/error fixtures; compare wire status and stable body fields. For each newly selected mutation/authority cell, first add same-request Python/Rust test plus no-effect assertion on denial/failure. These starter cases do not cover all inventory operations. |
+| GOAL-08: behavioral compatibility | Reuse `tests/core/test_rust_store_index_jobs_differential.py::test_sqlite_python_to_rust_and_rust_to_python_queue_contract`; `tests/runtime/test_runtime_parity_bridge_contract.py::test_python_workflow_success_matches_rust_durable_successor_admission` and `::test_python_suspend_resume_matches_rust_durable_ordered_history`. | Compare bidirectional persisted state and normalized ordered runtime history for fixed IDs; preserve transaction owner and assert no undeclared language handoff. Extend only when selecting another backend/behavior cell. |
+| GOAL-09: seam-free performance | Reuse `tests/core/test_mixed_endpoint_container_benchmark.py::test_endpoint_runner_compares_python_mixed_and_rust_http_modes`, `::test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch`, `::test_endpoint_performance_gate_rejects_rust_native_throughput_regression`, `::test_endpoint_performance_gate_rejects_rust_native_operation_tail_regression`, `::test_endpoint_performance_gate_accepts_values_at_declared_limits`, `::test_endpoint_performance_gate_is_unassessed_without_both_pure_modes`, `::test_concurrent_endpoint_report_verifier_checks_digest_and_performance`, and `::test_concurrent_endpoint_report_verifier_rejects_mismatched_state`. | Same trace, resource verification, equal final digest, zero FFI in pure paths, and executable 0.95 throughput / 1.10 per-operation p95 thresholds. Sequential and balanced concurrent SQLite reports pass. PostgreSQL/pgvector, Chroma, authenticated ingress, and broader workload cases remain NOT STARTED above. |
+
+TDD order per goal: land these few focused test cases first, run them, then
+change only code needed to pass. Build/live-backend integration comes after
+unit cases; never infer full goal closure from these starter cases alone.
+
+Selected verification 2026-11-24: Python goal-map selectors **27 passed**
+across Python-only isolation, SQLite ownership/interop, memory backend,
+inventory/support-matrix checks, runtime parity, and benchmark verification.
+Rust-native server selector: **5 passed, 2 skipped** (both PostgreSQL cases
+skipped because no DSN was configured). Rust API unit selectors: **2 passed**
+for shared HTTP validation and native in-memory persistence. Live Chroma and
+PostgreSQL interop selectors are implemented and mapped above, but were not
+rerun in this historical batch. Current status is defined by the closure
+table and mapped tasklets, not this older verification snapshot.
+
+Completion rule: GOAL-06/08 close when all mapped DLFC tasklets in the fine
+checklist are PASS with their documented executable test evidence. The fixed
+tasklet set is authoritative; no additional operation/backend matrix or
+unlisted tests are implied. Claims beyond this evidence remain out of scope.
+
+## Reading the Existing Counts
+
+- ADR-015 **68/68 tasklets, 22/22 clauses, 8/8 Rust-targeted capability readiness** means its declared capability-gate suite passed. It does not close GOAL-06 through GOAL-09.
+- ADR-022 **177/177 coarse rows and 911/911 fine rows** are mapped implementation/evidence inventories, not proof that every public operation or runtime combination is represented.
+- `rust_cutover_ready=true` is an explicit selection control for the named capability profile. It is not proof of complete public-surface inventory or universal parity.
+- `chroma-adapter` being intentionally Python-owned is distinct from Rust's tested Chroma GraphStore support. Keep this distinction visible; do not infer either Rust adapter ownership or lack of Chroma interoperability from one flag.
+- Do not add rows to the established ADR-015 or ADR-022 denominators to make this audit look more complete. Update a row only when its stated evidence/remaining condition changes; add a new criterion only for a separately approved requirement.
+
+## Next Closure Order
+
+1. Reconcile GOAL-06 against `contracts/dual-language-surface-inventory-v1.json`, the Rust pending-route/syscall declarations, and actual Python/Rust handlers. For each of 84 HTTP, 62 MCP, and 11 syscall contracts, distinguish catalog/dispatch presence from backend behavior and authority evidence; close or explicitly exclude each operation/backend pair without changing completed gates. Current bounded evidence: SQLite+Chroma `receive_message` passes the live supported-path fixture cell; SQLite metadata `project_view` now has paired Python/Rust required-shape and namespace-denial tests, but does not compare dynamic resource values or their source semantics. Neither closes broader syscall or public-surface gates. See the fine checklist for selectors and remaining cells.
+2. Use the operation inventory to select a bounded GOAL-06/08 behavior cell. Add or strengthen an executable parity oracle, run both implementations on the same fixture, and change production code only for a reproduced contract gap.
+3. Extend performance evidence only for representative high-value request families/backends; keep current benchmark claims scoped to their measured traces.
+
+## Latest Bounded Slice Evidence
+
+DLFC-05: configured per-workflow ACL now gates Rust workflow-design REST graph,
+history and mutation routes before application effects, matching Python's
+`require_workflow_access` behavior. The shared `ApplicationService` seam
+delegates ACL lookup to existing backend `AuthStore`; no new ACL representation
+or authorization policy was added. Python route tests and the Rust authenticated
+SQLite route test cover history/graph read policy plus node/edge upsert/delete,
+undo and redo deny-before-effect; focused Python and Rust selectors each passed.
+This closes the predeclared DLFC-05 ACL/authority cases; DLFC-05 is PASS.
+Broader operation/backend parity remains tracked under GOAL-06/08, which stay
+OPEN and do not reopen or block DLFC-05.
+
+DLFC-06: strengthened the existing operator-inbox scope oracle. Python and Rust
+omit orphan/inaccessible rows before limiting; shared fixture
+`workflow-operator-inbox-limit-v1.json` verifies `limit=0` returns none and
+`limit=-1` matches Python slicing. TDD first reproduced Rust's zero-limit leak,
+then focused Python/Rust tests passed (**1 Python, 2 Rust**); parity-annotation
+crosswalk also passed. This closes only the operator-inbox read filter/limit
+cell; DLFC-06 and GOAL-06/08 remain open.
+
+In-memory workflow cancellation is no longer deferred: Rust REST dispatch, role/scope and active-run capability checks, shared cancel response fields, terminal-repeat idempotency, and atomic recorded-transition/lane cleanup pass `in_memory_run_cancel_matches_shared_contract_and_authority` and `cancel_commits_runtime_transition_and_lane_cleanup_atomically`. Python MCP and in-memory-store comparison tests also pass. This closes only the named memory cancellation cell; GOAL-06 and GOAL-08 remain OPEN pending the full operation/backend matrix.
+
+MCP transport is also exercised end to end: missing `workflow.run.write` returns an MCP tool error without changing run state; an authorized call reaches the Rust in-memory store and cancels the run (`in_memory_workflow_cancel_mcp_reaches_authorized_store_effect`; full API suite: 418 passed, 41 ignored).
+
+Rust InMemory now also supports the existing Python `workflow.run_steps` MCP
+operation. Focused tests cover role/namespace admission, capability denial before
+run lookup, owner isolation, configured workflow ACL denial/grant, REST projection,
+and the actual MCP call. Evidence:
+`tests::workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores`
+and `tests::in_memory_workflow_steps_route_enforces_capability_before_run_lookup`
+(**1 passed each**). This closes only this InMemory operation cell; GOAL-06/08
+remain OPEN and the coarse summary remains 6 bounded PASS, 1 PARTIAL, 2 OPEN.
+
+The in-memory backend now dispatches all 11 catalogued syscall operations. This slice routes `spawn_process`, `terminate_process`, and `resume` through existing run handlers, and adds `checkpoint`, `project_view`, and `request_approval` using existing runtime-inspection, resource-snapshot, and approval helpers. Rust tests cover delegated spawn authorization, denied termination/checkpoint/project-view/approval without unauthorized effects, resume result envelope, checkpoint lookup, project-view scope, approval denial, authenticated Axum HTTP success/denial, and authenticated MCP-wire resume from persisted suspension with same-token retry rejection (`in_memory_workflow_syscalls_use_native_run_handlers`, `in_memory_resume_syscall_preserves_resume_envelope_and_result`, `in_memory_project_view_syscall_is_reachable_through_authenticated_http`, `in_memory_native_synchronous_resume_matches_shared_result_contract`). Five Python adjacent-contract tests passed for spawn, approval denial, resume, checkpoint access, and resource-snapshot authorization; the persisted Python MCP resume test also rejects same-token retry without checkpoint growth. The latest `request_approval` slice compares exact Python/Rust 400 status and body for missing action and missing grant/revoke capability using `contracts/golden/syscall-request-approval-invalid-v1.json`; both focused tests pass. Generated inventory confirms 11/11 dispatch presence and zero unavailable entries for this backend; this is not proof of every syscall/backend parity cell. GOAL-06/08 remain OPEN; overall checklist summary remains 6 bounded PASS, 1 PARTIAL, 2 OPEN.
+

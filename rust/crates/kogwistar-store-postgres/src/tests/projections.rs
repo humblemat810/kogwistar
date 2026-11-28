@@ -82,8 +82,16 @@ async fn rust_bootstrap_adds_scope_arbiter_without_changing_python_id_primary_ke
     let store = PostgresStore::from_dsn(&dsn, &schema)?;
     let tables = Tables::new(&schema)?;
     let nodes = qualified(&tables.quoted_schema, "gke_nodes")?;
-    let client = store.client().await?;
-    client
+    let mut client = store.client().await?;
+    let transaction = client.transaction().await.map_err(backend)?;
+    transaction
+        .query_one(
+            "SELECT pg_advisory_xact_lock(hashtext('kogwistar.pgvector.extension'))",
+            &[],
+        )
+        .await
+        .map_err(backend)?;
+    transaction
         .batch_execute(&format!(
             "CREATE EXTENSION IF NOT EXISTS vector; \
              CREATE SCHEMA IF NOT EXISTS {}; \
@@ -92,7 +100,7 @@ async fn rust_bootstrap_adds_scope_arbiter_without_changing_python_id_primary_ke
         ))
         .await
         .map_err(backend)?;
-    drop(client);
+    transaction.commit().await.map_err(backend)?;
 
     // Match Python's ordinary graph-table bootstrap: id remains the primary key.
     store.ensure_schema().await?;

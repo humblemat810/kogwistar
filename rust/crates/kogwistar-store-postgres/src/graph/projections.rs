@@ -31,50 +31,31 @@ where
         }
     }
     let table = graph_table(tables, &write.table)?;
-    if let Some(row) = client
-        .query_opt(
-            &format!(
-                "SELECT metadata::TEXT FROM {table} WHERE id = $1 AND {} FOR UPDATE",
-                graph_scope_identity_predicate(2)
-            ),
-            &[
-                &write.record.id,
-                &write.scope.namespace,
-                &write.scope.workspace_id.as_deref().unwrap_or(""),
-                &write.scope.graph_space.as_deref().unwrap_or(""),
-            ],
-        )
-        .await
-        .map_err(backend)?
-    {
-        let current_json: String = row.try_get(0).map_err(backend)?;
-        let current: Map<String, Value> = serde_json::from_str(&current_json)?;
-        if !graph_scope_matches_or_legacy_default(&write.scope, &current)? {
-            return Err(PostgresStoreError::Backend(
-                "graph record id belongs to a different scope".to_owned(),
-            ));
-        }
-    }
     let metadata_json = serde_json::to_string(&metadata)?;
-    let embedding_sql = write
-        .record
-        .embedding
-        .as_deref()
-        .map(|vector| format!("{}::vector", sql_text_literal(&vector_literal(vector))))
-        .unwrap_or_else(|| "NULL".to_owned());
+    let embedding = write.record.embedding.as_deref().map(vector_literal);
+    // Bind JSON/vector text instead of interpolating SQL; TEXT casts let
+    // tokio-postgres infer supported bind types before PostgreSQL casts them.
     client
         .execute(
             &format!(
-                "INSERT INTO {table}(id, document, metadata, embedding) VALUES ($1, $2, {}::JSONB, {embedding_sql}) \
+                "INSERT INTO {table}(id, document, metadata, embedding) VALUES ($1, $2, $3::TEXT::JSONB, $4::TEXT::vector) \
                  ON CONFLICT {GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET} DO UPDATE SET document = EXCLUDED.document, metadata = EXCLUDED.metadata, \
-                 embedding = EXCLUDED.embedding, updated_at = NOW()",
-                sql_text_literal(&metadata_json),
+                 embedding = EXCLUDED.embedding, updated_at = NOW()"
             ),
-            &[&write.record.id, &write.record.document],
+            &[&write.record.id, &write.record.document, &metadata_json, &embedding],
         )
         .await
         .map_err(|error| {
-            PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}"))
+            if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) {
+                // Python graph tables retain a global id primary key. The
+                // scoped arbiter handles same-scope updates; a primary-key
+                // conflict therefore means the id belongs to another scope.
+                PostgresStoreError::Backend(
+                    "graph record id belongs to a different scope".to_owned(),
+                )
+            } else {
+                PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}"))
+            }
         })?;
     if write.table == "gke_edges" {
         if metadata.get("_kogwistar_stage2_ready") == Some(&Value::Bool(true)) {

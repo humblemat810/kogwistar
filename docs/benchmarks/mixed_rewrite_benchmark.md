@@ -2290,6 +2290,42 @@ in 711.12 s; per-case wall 218.55 / 245.48 / 238.65 s. Rust run: **3 passed**
 in its existing fixed-resource profile. Python JUnit with captured sample
 records: `.tmp/fw19-replay-capped-container/python-tcp-junit.xml`.
 
+The benchmark hooks now emit a common machine-readable TCP sample contract:
+sample ID, execution mode, backend profile, seeded fixture size, TCP request
+latency, polling interval, and canonical result digest. Python retains its separate in-process
+latency field; the comparator uses only `tcp_request_ms`. Both profiles now use
+one warm-up plus three measured samples and 100 ms polling. Rust emits a sample
+only after its durability, digest, and native-path assertions complete. The
+unit-tested verifier is `scripts/agent_request_benchmark_report.py`; it requires
+the expected backend profile and rejects cross-runtime backend mismatch, unequal
+IDs/digests/poll intervals/fixture sizes, missing resource or isolation
+evidence, and fails thresholds below 0.95x throughput or above 1.10x p95. Its
+12 contract/artifact tests pass, but the resource-matched live run has not yet
+been repeated with this updated harness, so prior timings remain historical
+evidence only.
+
+On 2026-11-26, the updated sample hooks were smoke-tested against a disposable
+local pgvector:pg16 instance with 10 seeded distractors (11 total fixture
+nodes). Python and Rust each completed one authenticated TCP request; both
+reported digest `b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`,
+100 ms polling, and matching `sample-1` metadata. Rust also completed its
+durability/no-Python-worker assertions. This validates the paired output
+contract only: one sample, small fixture, uncapped Windows client, so no
+latency comparison or performance-gate claim follows.
+
+For the next fixed-resource rerun, preserve each process log with `-s` /
+`--nocapture`; run Python's parametrized profile once, then run the Rust ignored
+test four times with `KOGWISTAR_AGENT_BENCH_SAMPLE_ID=warmup,sample-1,...` set
+per invocation. Set `KOGWISTAR_AGENT_BENCH_FIXTURE_SIZE=2000` for both. Supply a
+resource-evidence JSON captured from Docker inspect and container cgroup values
+to the verifier; its three profiles are `python_client`, `rust_client`, and
+`postgres`, each with `cpus` and `memory_bytes`, plus `verified: true` and a
+source description. The client profiles must match. The verifier writes a
+machine-readable report; `pass` requires matched samples, resource evidence,
+the shared digest, and both declared performance thresholds. A nonzero exit
+means either evidence is incomplete or a measured threshold failed; inspect the
+report's `status` and `errors` fields to distinguish them.
+
 #### PyPy 3.11 persistent-trace runtime parity
 
 Ran the current checkout's Python-authority SQLite trace under PyPy 3.11.17
@@ -2504,3 +2540,271 @@ reported medians, per-operation percentiles, resources, and seam counters:
 unit tests passed (**3 passed**), including cross-mode digest-mismatch rejection.
 Raw machine report and manifest are retained locally under the ignored
 `.tmp/mixed-runtime-matrix-20261118-rel05a/` directory.
+
+### 2026-11-25 resource-matched endpoint scale follow-up
+
+Rebuilt the current source revision `ed3d0c1e5fc1b0f45b291d710c5f3e5764c24d5a`
+in the existing Docker harness. CPython 3.15.1t container limits were verified
+at 2 CPU / 4 GiB; network disabled. Each fresh fixture used one warm-up and
+three samples per mode. The deterministic sequential trace contains one
+`write_record`, one `read_event`, and one `read_projection` per record.
+
+| Fixture | Mode | Median throughput | Median elapsed | Startup | Throughput CV | FFI |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: |
+| 100 records / 300 ops | Python HTTP | 53.62 ops/s | 5.595 s | 76.8 ms | 1.40% | 0 |
+| 100 records / 300 ops | Rust-authority HTTP (diagnostic hybrid) | 55.23 ops/s | 5.432 s | 74.3 ms | 1.72% | 1,000 |
+| 100 records / 300 ops | Rust-native HTTP | 535.61 ops/s | 0.560 s | 23.3 ms | 2.10% | 0 |
+| 500 records / 1,500 ops | Python HTTP | 52.67 ops/s | 28.480 s | 81.8 ms | 1.12% | 0 |
+| 500 records / 1,500 ops | Rust-authority HTTP (diagnostic hybrid) | 54.24 ops/s | 27.654 s | 77.9 ms | 1.63% | 5,000 |
+| 500 records / 1,500 ops | Rust-native HTTP | 516.58 ops/s | 2.904 s | 23.3 ms | 0.49% | 0 |
+
+All modes produced the same canonical state digest within each fixture, and
+the report verifier passed with zero failed samples and zero validation
+errors. Digests: 100 records `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`;
+500 records `627d7adf7569b5678e60229141a94ec77e859464c3940ee565c21b38a558e9c8`.
+Mean sample-level p95 event-read / projection-read / write latency (ms):
+Python vs Rust-native was 15.27 / 15.45 / 31.75 vs 1.76 / 1.81 / 2.69 at
+100 records, and 16.09 / 15.75 / 33.14 vs 1.80 / 1.83 / 2.91 at 500.
+Rust-native peak RSS was 7.31 MiB and 8.55 MiB, respectively. The existing
+performance thresholds are now executable in the report verifier:
+Rust-native/Python throughput must be at least 0.95, and each operation's p95
+latency ratio must be at most 1.10. Both fixtures passed; throughput ratios
+were 9.99 and 9.81, while per-operation p95 ratios ranged from 0.085 to 0.117.
+Unit tests cover both regression failures, exact threshold acceptance, and
+that the gate is unassessed unless both pure modes are present.
+
+These results strengthen evidence for this sequential SQLite endpoint trace
+only. The hybrid column is diagnostic and has no performance guarantee.
+Concurrent workload, other backends, and broader operations remain unverified;
+DLFC-18 stays open. Raw JSON and trace artifacts
+are retained locally (ignored) under
+`.tmp/mixed-runtime-followup-20261125/endpoint/`.
+
+#### Current-checkout capped SQLite endpoint recheck
+
+Re-ran the same endpoint matrix on source `de30f8665134ba091adfd21412d353b4758de1fd`
+after the earlier report, using CPython 3.15.1t with verified 2 CPU / 4 GiB
+cgroup limits, network disabled, one warm-up, and three fresh samples per mode.
+The sequential 100-record trace produced 50.97 ops/s Python HTTP and 537.63
+ops/s Rust-native HTTP (10.55x). Event-read / projection-read / write p95 ratios
+were 0.117 / 0.112 / 0.112. The balanced concurrent trace used 32 writes and
+128 reads with one writer and four readers: Python HTTP 29.69 ops/s, Rust-native
+HTTP 662.80 ops/s (22.32x); read/write p95 ratios were 0.263 / 0.154.
+
+Both traces matched the canonical digests from their earlier fixtures:
+sequential `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7`,
+concurrent `1f20df0383b2a7605cd7394303d5b492de13f5abec6a6c360e9343f2afc61494`.
+The report verifies zero FFI for both pure paths, equal state, the resource caps,
+and zero validation errors. Raw report and traces are retained locally (ignored)
+under `.tmp/mixed-runtime-goal09-current-20261125/endpoint/`. This recheck
+confirms the SQLite MCP-storage performance cell only; PostgreSQL/pgvector,
+SQLite+Chroma, and authenticated workflow/graph performance remain open.
+
+#### Current-source capped SQLite endpoint rerun
+
+Rebuilt and reran after code changes since the preceding measurement, using
+source `033b8dcbe6f3a65d9eab4722f05d35e9eda4fe2d`, CPython 3.15.1t, network
+disabled, verified 2 CPU / 4 GiB, one warm-up and three fresh samples. Sequential
+100/500-record traces measured Python 57.21/55.43 ops/s and Rust-native
+549.17/537.87 ops/s (9.60x/9.70x). Per-operation p95 ratios were 0.089–0.121.
+Balanced concurrent traces used 32 writes and 128 reads, one writer and four
+readers: Python 30.59/30.62 ops/s, Rust-native 682.23/652.84 ops/s (21.32x
+for both). Read/write p95 ratios were 0.098–0.333. All same-size sequential
+digests matched; concurrent digests matched across sizes. Both pure paths had
+zero FFI; limits verified; report status `complete`, zero validation errors.
+Raw report and source manifest are retained under
+`.tmp/mixed-runtime-goal09-current-20261125-rerun/`. This refreshes SQLite
+evidence only; PostgreSQL/pgvector, SQLite+Chroma, and authenticated
+workflow/graph performance gates remain open.
+
+#### 2026-11-28 current-source capped SQLite endpoint rerun
+
+Rebuilt commit `e256249c29dd487f0bb10d1fbafe962fc09eefa2` through the existing
+Docker harness. CPython 3.15.1t cgroup verified at 2 CPU / 4 GiB; network
+disabled. Each 100- and 500-record fixture used one warm-up and three measured
+samples for Python HTTP, diagnostic Rust-authority HTTP, and Rust-native HTTP.
+All Python/Rust-native traces matched canonical state digests; the verifier
+reported `complete`, zero failed samples, and zero validation errors.
+
+| Fixture | Python ops/s | Rust-native ops/s | Throughput ratio | Event p95 ratio | Projection p95 ratio | Write p95 ratio | Digest |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 100 records | 54.19 | 558.53 | 10.31x | 0.102 | 0.100 | 0.086 | `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7` |
+| 500 records | 52.88 | 514.60 | 9.73x | 0.108 | 0.106 | 0.096 | `627d7adf7569b5678e60229141a94ec77e859464c3940ee565c21b38a558e9c8` |
+
+Both traces pass the declared SQLite endpoint thresholds. Raw report:
+`.tmp/goal09-dlfc18-e256249c-sqlite/endpoint/endpoint-report.v1.json`;
+manifest records the source revision and verified limits. This refreshes the
+SQLite endpoint cell only; authenticated-agent fixed-resource comparison and
+PostgreSQL/SQLite+Chroma traces remain unverified.
+
+#### 2026-11-28 fixed-resource authenticated PostgreSQL agent request
+
+Re-ran the existing authenticated conversation-answer request profile at source
+`05ab4eeb54181402d505146b064e19f3273cd2f1`, using matched Linux Docker clients
+(CPython 3.13 and Rust, each 3 CPU / 6 GiB) against disposable pgvector
+(1 CPU / 2 GiB). Each mode used one warm-up plus three fresh-schema measured
+samples, a 2,001-node fixture, 100 ms polling, and identical digest
+`b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`.
+Docker inspection and database readiness probes verified limits and backend.
+
+| Mode | Median request | p95 request | Throughput |
+| --- | ---: | ---: | ---: |
+| Python | 22,055.939 ms | 26,198.545 ms | 0.045339 req/s |
+| Rust-native | 15,168.055 ms | 15,209.321 ms | 0.065928 req/s |
+
+Rust/Python throughput ratio was 1.454; p95 ratio was 0.581. The verifier
+reported `pass`, zero FFI calls on Rust-native route, zero Python workers, and
+no errors. Raw ignored logs and report are under
+`.tmp/dlfc18-{python,rust}-agent.log`,
+`.tmp/dlfc18-agent-postgres-report.json`, and
+`.tmp/dlfc18-resource-evidence.json`.
+
+The first Rust attempt exposed an existing 120-second mock-provider accept
+timeout, shorter than fixture seeding under these caps. The existing test
+harness now waits for provider acceptance; enclosing run-status polling remains
+the bound. The focused Rust test then passed warm-up plus all three samples.
+This closes authenticated-agent performance trace only. General PostgreSQL/
+pgvector graph traces and SQLite+Chroma eventual-projection traces remain
+unverified; no whole-stack performance claim follows.
+
+#### 2026-11-28 PostgreSQL metadata-facade diagnostic (hybrid; non-gating)
+
+Ran the existing `scripts/postgres_authority_benchmark.py` inside the capped
+CPython client against the same disposable PostgreSQL service: 1,000 items,
+one warm-up and three measured samples per mode, six existing storage
+workloads. Client cap was 3 CPU / 6 GiB; PostgreSQL cap was 1 CPU / 2 GiB.
+Every paired Python/Rust-facade workload produced equal per-sample digests.
+
+| Workload | Rust/Python throughput | Rust/Python p95 elapsed |
+| --- | ---: | ---: |
+| Individual event append | 0.692x | 1.441x |
+| Grouped event append | 0.720x | 1.376x |
+| Atomic conversation record | 0.955x | 1.044x |
+| Grouped conversation record | 0.893x | 1.115x |
+| Batch event replay | 0.757x | 1.285x |
+| Projection listing | 1.038x | 0.897x |
+
+This is a Python-hosted Rust PostgreSQL facade comparison, not a Rust-native
+server request; it is diagnostic only and does not close or fail the
+seam-free DLFC-18 gate. It does show that Rust-facade performance varies by
+operation, so no broad speed claim is justified. Raw JSON is retained locally
+at `.tmp/dlfc18-pg-authority-report.json` (ignored).
+
+#### 2026-11-28 Python backend trace baselines (diagnostic; non-gating)
+
+Ran `scripts/mixed_backend_benchmark.py` against the same fixed 100-item,
+read-after-write trace for `postgres_pgvector` and
+`chroma_sqlite_metadata`. Each backend had one warm-up and two fresh measured
+samples, 10 vector queries, and 384-dimensional precomputed normalized vectors;
+no embedding inference ran. Both reports produced trace SHA-256
+`179b8ea2fd925487dce6ea9088b879045a1ed2b97ae8d8a83efad2f65672b2d9` and
+state digest `554b983fb431eb7c728085f368a89ca08c8549909fb97592526218e4ad4b4a4c`.
+
+| Python backend | Median trace | p95 trace | Throughput | Startup | CPU time | Vectors persisted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| PostgreSQL/pgvector | 10,374.5 ms | 10,407.6 ms | 28.92 ops/s | 636.8 ms | 8,289.1 ms | 100 |
+| SQLite metadata + Chroma PersistentClient | 11,262.7 ms | 11,286.7 ms | 26.64 ops/s | 170.0 ms | 10,437.5 ms | 100 |
+
+This is a Python-only backend baseline, not a Rust comparison. The Chroma
+profile uses Python `PersistentClient` in the sample directory; it does not
+measure the running Chroma HTTP container or Rust's eventual-projection worker.
+Thus it cannot close either missing DLFC-18 comparison. Reports and fresh
+sample data are ignored under `.tmp/dlfc18-python-{pg,chroma}-baseline/`; run
+IDs are `d70af036c7d5` and `195a226f3bca`.
+
+#### 2026-11-28 capped PostgreSQL native graph trace (matched effects; gate passed)
+
+Compared the shared versioned 100-record read-after-write trace through
+`PostgresGraphTraceAdapter` and the Rust `native_graph_trace_benchmark`
+example. Both clients ran in separate Linux containers capped at 3 CPU / 6 GiB;
+the disposable pgvector/pg16 service was capped at 1 CPU / 2 GiB. Docker
+inspection confirmed all limits. Each mode used one warm-up and three fresh
+schemas; each sample dropped its schema. Python and Rust both commit root seed
+separately and each node+edge write pair atomically; both upsert event and graph
+projection, and clear prior edge-endpoint rows. Trace digest was
+`e9322aa484cbd33dcd21b78cacb7750de38faa558ba56cff900a087be53bf404`; all eight
+sample outcomes had 201 canonical events, projection convergence, and matching
+state digest `22c6adf07ebd3593bce35353054bc82d575d6f6a4f3c6b1d77babf70a68cc44b`.
+Rust reported zero FFI calls.
+
+| Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python | 24.79 ops/s | 13.00 ms | 26.39 ms | 67.74 ms | 168,058,880 B |
+| Rust-native | 35.47 ops/s | 6.19 ms | 12.82 ms | 70.81 ms | 19,705,856 B |
+| Rust/Python ratio | 1.431 | 0.476 | 0.486 | 1.045 | 0.117 |
+
+The report verifier passed the existing thresholds: throughput must be at
+least 0.95; each operation p95 and peak RSS ratios must be at most 1.10. All
+three fresh-schema samples matched the trace digest, produced 201 canonical
+events and converged projections; Rust reported zero FFI calls. The Rust
+upsert no longer performs a redundant scoped pre-read: Python-compatible
+global `id` primary-key conflict still rejects cross-scope ID reuse, while
+the scoped conflict arbiter handles same-scope updates. The existing live
+PostgreSQL scope test passed (**1 passed**) and the Rust benchmark contract
+tests passed (**3 passed**). This is a bounded sequential microtrace, not
+full request-path or concurrent evidence. SQLite+Chroma performance remains
+unverified, so DLFC-18 and GOAL-09 remain open; thresholds were not lowered.
+The generated trace is ignored at `.tmp/dlfc18-pg-trace-100.json`.
+
+#### 2026-11-28 capped SQLite + Chroma native graph trace (one backend cell passed)
+
+Compared the same shared 100-record read-after-write trace through Python
+`EngineSQLite + ChromaBackend` and the Rust-native example. The benchmark client
+ran in Linux Docker at 2 CPU / 4 GiB; the Chroma 1.5.9 service ran at 1 CPU /
+2 GiB. Docker uses cgroup v1 here; the runner verifies actual quota and memory
+limits for both cgroup v1 and v2. Each mode had one warm-up and three fresh
+samples with unique SQLite files, Chroma collections, and namespaces. The
+trace digest was
+`e9322aa484cbd33dcd21b78cacb7750de38faa558ba56cff900a087be53bf404`.
+All eight sample outcomes had 201 canonical events, converged Chroma
+projections, and identical state digest
+`22c6adf07ebd3593bce35353054bc82d575d6f6a4f3c6b1d77babf70a68cc44b`;
+Rust-native reported zero FFI calls.
+
+| Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python | 4.66 ops/s | 351.0 ms | 14.51 ms | 342.0 ms | 135,512,064 B |
+| Rust-native | 27.53 ops/s | 4.16 ms | 11.83 ms | 98.75 ms | 22,065,152 B |
+| Rust/Python ratio | 5.905 | 0.0118 | 0.815 | 0.301 | 0.163 |
+
+The existing verifier passed: minimum throughput ratio 0.95; maximum per-op
+p95 and peak-RSS ratios 1.10. Raw report and trace are retained locally at
+`.tmp/dlfc18-chroma-paired-run-20261128/` (ignored). This closes the
+SQLite+Chroma performance trace cell only. GOAL-09/DLFC-18 remain open because
+the current matched PostgreSQL graph-trace run still fails its performance
+thresholds (throughput ratio 0.811; event-read/write p95 ratios 1.778/1.672).
+
+#### 2026-11-28 capped PostgreSQL graph trace after SQL round-trip reduction
+
+Reran the same 100-record trace and resource profile after reducing PostgreSQL
+write overhead in Rust. The client containers were capped at 3 CPU / 6 GiB;
+the disposable pgvector service remained capped at 1 CPU / 2 GiB. Each mode
+used one warm-up and three fresh schemas. The trace digest remained
+`e9322aa484cbd33dcd21b78cacb7750de38faa558ba56cff900a087be53bf404`; all
+eight measured outcomes had 201 canonical events and the same state digest
+`22c6adf07ebd3593bce35353054bc82d575d6f6a4f3c6b1d77babf70a68cc44b`.
+Rust-native reported zero FFI calls.
+
+| Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Python | 22.52 ops/s | 15.88 ms | 31.39 ms | 83.32 ms | 169,021,440 B |
+| Rust-native | 43.14 ops/s | 7.64 ms | 14.67 ms | 61.52 ms | 19,349,504 B |
+| Rust/Python ratio | 1.916 | 0.481 | 0.467 | 0.738 | 0.114 |
+
+The existing verifier passed unchanged: throughput ratio >= 0.95, every
+operation p95 ratio <= 1.10, and peak RSS ratio <= 1.10. Three live Rust
+PostgreSQL regression selectors passed, and the store-postgres unit suite
+passed (11 passed; 37 DSN-gated tests ignored in the unit invocation). The
+Rust event append now combines idempotency lookup, sequence allocation, and
+insert in one SQL statement after its per-event transaction advisory lock.
+Graph projection metadata and vector values are now bound parameters rather
+than interpolated SQL literals.
+
+This is a passing matched rerun, not a controlled per-change attribution
+experiment: it establishes that the current Rust path clears the gate under
+the capped profile, but does not quantify how much each SQL change contributed.
+The earlier 0.811 result was not caused by Python-to-Rust-per-record FFI; that
+run already used the Rust-native executable with zero FFI. No threshold
+relaxation is warranted by this evidence. Raw report and trace are retained
+locally at `.tmp/dlfc18-pg-optimized/` (ignored); runner was a temporary
+one-shot local harness, not a checked-in command.

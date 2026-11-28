@@ -71,6 +71,120 @@ def _capability_link_errors(
     return errors
 
 
+def test_python_ci_selection_does_not_match_same_named_test_in_other_file() -> None:
+    assert not _python_test_is_selected(
+        "tests/server/unmarked.py",
+        "test_contract",
+        {"tests/server/marked.py::test_contract"},
+        {"tests/server/marked.py": {"ci"}},
+        ci_runs_fast_tests=True,
+        ci_runs_full_tests=False,
+    )
+
+
+def test_python_ci_selection_accepts_exact_selector_and_file_gate() -> None:
+    assert _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_contract",
+        {"tests/server/contract.py::test_contract"},
+        {},
+        ci_runs_fast_tests=False,
+        ci_runs_full_tests=False,
+    )
+    assert _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_contract",
+        {"tests/server/contract.py"},
+        {},
+        ci_runs_fast_tests=False,
+        ci_runs_full_tests=False,
+    )
+
+
+def test_python_test_marker_on_one_function_does_not_select_sibling() -> None:
+    markers = _python_test_markers(
+        "import pytest\n"
+        "@pytest.mark.ci\n"
+        "def test_selected(): pass\n"
+        "def test_unselected(): pass\n",
+        "tests/server/contract.py",
+    )
+    assert _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_selected",
+        set(),
+        markers,
+        ci_runs_fast_tests=True,
+        ci_runs_full_tests=False,
+    )
+    assert not _python_test_is_selected(
+        "tests/server/contract.py",
+        "test_unselected",
+        set(),
+        markers,
+        ci_runs_fast_tests=True,
+        ci_runs_full_tests=False,
+    )
+
+
+def _python_test_is_selected(
+    path: str,
+    name: str,
+    gate_selectors: set[str],
+    markers_by_path: dict[str, set[str]],
+    *,
+    ci_runs_fast_tests: bool,
+    ci_runs_full_tests: bool,
+) -> bool:
+    if path in gate_selectors or f"{path}::{name}" in gate_selectors:
+        return True
+    markers = markers_by_path.get(path, set()) | markers_by_path.get(
+        f"{path}::{name}", set()
+    )
+    return ("ci" in markers and ci_runs_fast_tests) or (
+        "ci_full" in markers and ci_runs_full_tests
+    )
+
+
+def _pytest_ci_markers(node: ast.AST) -> set[str]:
+    return {
+        item.attr
+        for item in ast.walk(node)
+        if isinstance(item, ast.Attribute)
+        and item.attr in {"ci", "ci_full"}
+        and isinstance(item.value, ast.Attribute)
+        and item.value.attr == "mark"
+        and isinstance(item.value.value, ast.Name)
+        and item.value.value.id == "pytest"
+    }
+
+
+def _python_test_markers(source: str, path: str) -> dict[str, set[str]]:
+    tree = ast.parse(source.lstrip("\ufeff"))
+    result: dict[str, set[str]] = {path: set()}
+    for statement in tree.body:
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            key = f"{path}::{statement.name}"
+            result[key] = _pytest_ci_markers(
+                ast.Tuple(elts=statement.decorator_list, ctx=ast.Load())
+            )
+            continue
+        targets: list[ast.expr] = []
+        value: ast.expr | None = None
+        if isinstance(statement, ast.Assign):
+            targets = statement.targets
+            value = statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            targets = [statement.target]
+            value = statement.value
+        if value is not None and any(
+            isinstance(target, ast.Name) and target.id == "pytestmark"
+            for target in targets
+        ):
+            result[path].update(_pytest_ci_markers(value))
+    return result
+
+
 def _rust_selector_link_errors(
     capability_ownership: list[dict],
     selectors: dict[str, dict],
@@ -350,6 +464,31 @@ def test_dual_language_coarse_status_matches_all_mapped_fine_tasks() -> None:
     )
 
 
+def test_auth_parity_matrix_has_explicit_consistent_statuses() -> None:
+    path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    content = path.read_text(encoding="utf-8")
+    rows = _markdown_table_rows(path, "| AUTH-PAR-")
+    expected_ids = {f"AUTH-PAR-{index:02}" for index in range(1, 6)}
+    assert {row[0] for row in rows} == expected_ids
+    assert all(
+        row[1] in {"PASS", "IN PROGRESS", "NOT STARTED", "FAIL", "BLOCKED"}
+        for row in rows
+    )
+    assert all(row[2] and row[3] for row in rows), (
+        "each matrix row must keep both selectors"
+    )
+
+    summary = re.search(
+        r"Current status: \*\*(\d+)/5 PASS; (\d+) IN PROGRESS\*\*", content
+    )
+    assert summary is not None, "AUTH-PAR matrix status summary is required"
+    counts = {
+        status: sum(row[1] == status for row in rows)
+        for status in ("PASS", "IN PROGRESS")
+    }
+    assert tuple(map(int, summary.groups())) == (counts["PASS"], counts["IN PROGRESS"])
+
+
 def test_native_operation_backend_evidence_matrix_is_complete() -> None:
     inventory = json.loads(
         (
@@ -468,8 +607,35 @@ def test_rust_ci_keeps_the_native_api_dependency_closure_python_free() -> None:
     assert "(kogwistar-python|pyo3(-[^ ]+)?|pythonize|cpython|rust-cpython(-[^ ]+)?) v" in workflow
 
 
+def test_python_transport_contract_subset_runs_in_supported_interpreter_matrix() -> None:
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    ci_job = workflow.split("\n  ci:", maxsplit=1)[1].split("\n  lint:", maxsplit=1)[0]
+
+    for version in (
+        'python-version: "3.12"',
+        'python-version: "3.13"',
+        'python-version: "3.14"',
+        "python-version: pypy-3.11-",
+    ):
+        assert version in ci_job
+
+    transport_step = ci_job.split(
+        "- name: Verify Python protocol transport subset", maxsplit=1
+    )[1]
+    for selector in (
+        "tests/server/test_chat_server_api_documents.py::test_server_health_matches_shared_contract",
+        "tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence",
+        "tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture",
+        "tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token",
+    ):
+        assert selector in transport_step
+
+
 def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    rust_test_step = workflow.split("- name: Test Rust workspace", maxsplit=1)[1].split(
+        "- name: Deny Clippy warnings", maxsplit=1
+    )[0]
 
     assert "image: chromadb/chroma:1.5.9" in workflow
     assert "KOGWISTAR_TEST_CHROMA_URL: http://localhost:8000" in workflow
@@ -491,7 +657,11 @@ def test_rust_ci_provides_live_backends_for_native_interoperability() -> None:
     assert 'open("../pyproject.toml", "rb")' in workflow
     assert 'project["dependencies"]' in workflow
     assert 'project["optional-dependencies"]["pgvector"]' in workflow
+    assert 'project["optional-dependencies"]["server"]' in workflow
     assert '"-m", "pip", "install", *dependencies' in workflow
+    assert "KOGWISTAR_PYTHON: python" in rust_test_step
+    assert "--skip" not in rust_test_step
+    assert "cargo test --workspace --all-targets --locked -- --include-ignored" in rust_test_step
     assert "if tests != 3 or skipped:" in workflow
 
 
@@ -632,16 +802,14 @@ def test_server_cutover_ledger_count_matches_rust_frozen_route_inventory() -> No
     assert "zero currently frozen HTTP operations" in status
 
 
-def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() -> None:
+def test_closed_server_cutover_inventory_matches_rust_frozen_inventory() -> None:
     manifest = _manifest()
     deferrals = manifest["server_operation_deferrals"]
-    assert deferrals["contract_version"] == 1
-    assert deferrals["status"] == "versioned-intentionally-deferred"
-    assert deferrals["owner"] == "python-rollback-deployment"
-    assert "blocks capability-readiness claims, not handler execution" in deferrals[
-        "execution_policy"
-    ]
-    assert "does not disable an implemented Rust handler" in deferrals["rule"]
+    assert deferrals["contract_version"] == 2
+    assert deferrals["status"] == "closed-no-active-deferrals"
+    assert deferrals["owner"] == "kogwistar-rust-server"
+    assert "no route or syscall is deferred" in deferrals["rule"].lower()
+    assert "explicit rust selection" in deferrals["execution_policy"].lower()
 
     build_script = RUST_API_BUILD_SCRIPT_PATH.read_text(encoding="utf-8")
     manifest_routes = {
@@ -661,15 +829,28 @@ def test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory() ->
     assert "PENDING_SYSCALL_CUTOVER_OPS" in build_script
     assert "duplicate deferred route" in build_script
     assert "duplicate deferred syscall operation" in build_script
+    assert "closed cutover inventory must contain no pending operations" in build_script
     gate_path = ROOT / "scripts" / "rust_port_release_gate.py"
     gate_source = gate_path.read_text(encoding="utf-8")
-    assert f"SERVER_DEFERRAL_ROUTE_COUNT_V1 = {len(manifest_routes)}" in gate_source
-    assert f"SERVER_DEFERRAL_SYSCALL_COUNT_V1 = {len(manifest_syscalls)}" in gate_source
-    for group in [*deferrals["route_groups"], deferrals["syscall_group"]]:
-        assert group["owner"] == "python"
-        assert group["status"] == "intentionally-deferred"
-        assert group["required_authority"]
-        assert group["exit_evidence"]
+    assert manifest_routes == set()
+    assert manifest_syscalls == set()
+    assert "SERVER_DEFERRAL_ROUTE_COUNT_V2 = 0" in gate_source
+    assert "SERVER_DEFERRAL_SYSCALL_COUNT_V2 = 0" in gate_source
+    assert deferrals["syscall_group"]["status"] == "verified"
+    assert deferrals["syscall_group"]["required_authority"] == []
+    assert deferrals["syscall_group"]["exit_evidence"]
+    verified = deferrals["syscall_group"]["verified_operations"]
+    assert {item["name"] for item in verified} == {
+        "send_message",
+        "receive_message",
+        "mount_memory",
+        "invoke_tool",
+    }
+    rust_test_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "tests").rglob("*.rs")
+    )
+    assert all(item["test_selector"] in rust_test_sources for item in verified)
 
 
 def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> None:
@@ -728,6 +909,7 @@ def test_dual_language_crosswalk_matches_frozen_ownership_and_rust_gaps() -> Non
     gaps = crosswalk["rust_server_gaps"]
     assert {tuple(route) for route in gaps["pending_routes"]} == expected_routes
     assert set(gaps["pending_syscalls"]) == expected_syscalls
+    assert deferrals["syscall_group"]["required_authority"] == []
 
 
 def test_capability_evidence_links_reject_missing_stale_duplicate_and_route_refs(
@@ -1003,11 +1185,17 @@ def test_dual_language_surface_inventory_is_current() -> None:
         "receive_message",
     ]
     assert backend_syscalls["in-memory"]["dispatches"] == [
+        "checkpoint",
         "create_conversation",
         "invoke_tool",
         "mount_memory",
+        "project_view",
         "receive_message",
+        "request_approval",
+        "resume",
         "send_message",
+        "spawn_process",
+        "terminate_process",
     ]
 
     result = subprocess.run(
@@ -1029,6 +1217,205 @@ def test_dual_language_surface_inventory_is_current() -> None:
     assert mcp_contract_check.returncode == 0, (
         mcp_contract_check.stderr or mcp_contract_check.stdout
     )
+
+
+def test_syscall_backend_ledger_matches_surface_inventory() -> None:
+    inventory = json.loads(
+        (ROOT / "contracts" / "dual-language-surface-inventory-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    worklist = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    ).read_text(encoding="utf-8")
+    lines = worklist.splitlines()
+    header = "| Syscall | PostgreSQL | SQLite metadata | SQLite + Chroma | In-memory |"
+    header_index = lines.index(header)
+    backends = [
+        "postgresql",
+        "sqlite-metadata",
+        "sqlite-chroma",
+        "in-memory",
+    ]
+    rows: dict[str, list[str]] = {}
+    for line in lines[header_index + 2 :]:
+        if not line.startswith("| `"):
+            break
+        cells = [cell.strip() for cell in line.strip("|").split("|")]
+        operation = cells[0].strip("`")
+        assert operation not in rows, f"duplicate syscall ledger row: {operation}"
+        assert len(cells) == len(backends) + 1, line
+        rows[operation] = cells[1:]
+
+    operations = inventory["syscall_catalogs"]["python"]["operations"]
+    assert set(rows) == set(operations)
+    assert len(rows) == len(operations) == 11
+    assert sum(map(len, rows.values())) == 44
+    for backend_name in backends:
+        backend = inventory["rust_backend_syscalls"][backend_name]
+        dispatched = set(backend["dispatches"])
+        unavailable = set(backend["unavailable"])
+        assert dispatched.isdisjoint(unavailable)
+        assert dispatched | unavailable == set(operations)
+        column = backends.index(backend_name)
+        for operation, statuses in rows.items():
+            expected = (
+                "PASS: supported (live)"
+                if operation in dispatched
+                else "PASS: fail closed"
+            )
+            assert statuses[column] == expected, f"{backend_name}/{operation}"
+
+
+def test_public_http_and_mcp_tasklets_name_executable_tests() -> None:
+    inventory = json.loads(
+        (ROOT / "contracts" / "dual-language-surface-inventory-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    route_map = json.loads(
+        (ROOT / "contracts" / "http-route-tasklet-map-v1.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    implementation_tasklets = (
+        ROOT / "kogwistar" / "docs" / "ADR-015-implementation-tasklets.md"
+    ).read_text(encoding="utf-8")
+    tasklet_rows = {
+        cells[0].strip(): line
+        for line in (worklist + "\n" + implementation_tasklets).splitlines()
+        if line.startswith(("| FW-", "| SRV-"))
+        for cells in [line.strip().strip("|").split("|")]
+    }
+    expected_tasklets = {item["tasklet_id"] for item in route_map["operations"]}
+    for operation in inventory["mcp_operations"]:
+        suffix = operation["name"].upper().replace(".", "-").replace("_", "-")
+        expected_tasklets.update(
+            {f"FW-03-04A-MCP-{suffix}", f"FW-03-04B-MCP-{suffix}"}
+        )
+
+    python_test_names: set[str] = set()
+    for path in (ROOT / "tests").rglob("*.py"):
+        python_test_names.update(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+    rust_test_names: set[str] = set()
+    for path in (ROOT / "rust" / "crates").rglob("*.rs"):
+        if "tests" not in path.parts:
+            continue
+        rust_test_names.update(
+            re.findall(
+                r"(?m)^\s*(?:async\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+                path.read_text(encoding="utf-8"),
+            )
+        )
+
+    missing_rows = sorted(expected_tasklets - tasklet_rows.keys())
+    missing_python_tests = []
+    missing_rust_tests = []
+    for operation in route_map["operations"]:
+        tasklet_id = operation["tasklet_id"]
+        tokens = set(
+            re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", tasklet_rows.get(tasklet_id, ""))
+        )
+        if not tokens.intersection(python_test_names):
+            missing_python_tests.append(tasklet_id)
+        if not tokens.intersection(rust_test_names):
+            missing_rust_tests.append(tasklet_id)
+
+    missing_mcp_python_tests = []
+    missing_mcp_rust_tests = []
+    for operation in inventory["mcp_operations"]:
+        suffix = operation["name"].upper().replace(".", "-").replace("_", "-")
+        tasklet_ids = (
+            f"FW-03-04A-MCP-{suffix}",
+            f"FW-03-04B-MCP-{suffix}",
+        )
+        tokens = set(
+            re.findall(
+                r"\b[A-Za-z_][A-Za-z0-9_]*\b",
+                " ".join(tasklet_rows.get(tasklet_id, "") for tasklet_id in tasklet_ids),
+            )
+        )
+        if not tokens.intersection(python_test_names):
+            missing_mcp_python_tests.append(operation["name"])
+        if not tokens.intersection(rust_test_names):
+            missing_mcp_rust_tests.append(operation["name"])
+
+    assert not missing_rows, f"public operation tasklets missing: {missing_rows}"
+    assert not missing_python_tests, (
+        "HTTP tasklets lack executable Python test selectors: "
+        f"{missing_python_tests}"
+    )
+    assert not missing_rust_tests, (
+        "HTTP tasklets lack executable Rust test selectors: "
+        f"{missing_rust_tests}"
+    )
+    assert not missing_mcp_python_tests, (
+        "MCP operations lack executable Python test selectors: "
+        f"{missing_mcp_python_tests}"
+    )
+    assert not missing_mcp_rust_tests, (
+        "MCP operations lack executable Rust test selectors: "
+        f"{missing_mcp_rust_tests}"
+    )
+
+
+def test_conversation_list_parity_tasklet_references_rust_route_assertions() -> None:
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    tasklet_id = "FW-03-03A-HTTP-GET-e0dc6609"
+    row = next(
+        line for line in worklist.splitlines() if line.startswith(f"| {tasklet_id} |")
+    )
+    rust_test_names = (
+        "sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript",
+        "postgres_conversation_routes_project_authorized_summary_and_"
+        "transcript_when_dsn_available",
+    )
+    sqlite_source = (ROOT / "rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs").read_text(
+        encoding="utf-8"
+    )
+    postgres_source = (
+        ROOT / "rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "test_conversation_list_is_user_scoped_and_has_stable_response_shape" in row
+    assert all(test_name in row for test_name in rust_test_names)
+    assert 'read_request("/api/conversations"' in sqlite_source
+    assert 'path_and_query: "/api/conversations".to_owned()' in postgres_source
+    assert '"conversations": [{' in postgres_source
+    assert (
+        "rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#"
+        "postgres_conversation_routes_project_authorized_summary_and_"
+        "transcript_when_dsn_available"
+    ) in postgres_source
+
+
+def test_add_index_entries_parity_tasklet_points_to_http_assertions() -> None:
+    worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
+    tasklet_id = "FW-03-03A-HTTP-POST-7437a87e"
+    row = next(
+        line for line in worklist.splitlines() if line.startswith(f"| {tasklet_id} |")
+    )
+    rust_source = (
+        ROOT / "rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "test_add_index_entries_requires_write_role_and_keeps_payload" in row
+    assert "in_memory_search_index_hybrid_is_scoped_and_acl_filtered" in row
+    assert '"/api/add_index_entries"' in rust_source
+    assert '"search_index.upsert"' in rust_source
+    assert 'json!({"ok":true})' in rust_source
+    assert '"an HTTP retry must not duplicate search-index events"' in rust_source
+    assert "exactly two `search_index.upsert` events" in row
+    assert (
+        "python=kogwistar/server_mcp_with_admin.py#add_index_entries; "
+        "fixture=contracts/golden/search-index-entry-v1.json"
+    ) in rust_source
 
 
 def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
@@ -1107,8 +1494,6 @@ def test_dual_language_support_matrix_is_complete_and_conservative() -> None:
                     assert ownership[capability["id"]][
                         "current_authoritative_writer"
                     ] == "python"
-                else:
-                    assert ownership[capability["id"]]["rust_cutover_ready"] is True
 
 
 def test_mixed_opt_in_evidence_rejects_unstarted_or_unproven_gates() -> None:
@@ -1244,6 +1629,140 @@ def test_dual_language_checklist_counts_match_current_rows_and_baseline() -> Non
     assert all(current[item_id] == "PASS" for item_id, status in baseline_rows.items() if status == "PASS")
 
 
+def test_dual_language_goal_case_table_matches_pivot_rows() -> None:
+    checklist = (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    ).read_text(encoding="utf-8")
+    pivot_section = checklist.partition("## Pivoted Test-Case Status")[2]
+    section = pivot_section.partition("\n## ")[0]
+    rows = [line for line in section.splitlines() if line.startswith("| GOAL-")]
+    parsed = [[part.strip() for part in row.strip("|").split("|")] for row in rows]
+
+    assert all(len(row) == 4 for row in parsed)
+    assert all(row[2] in {"PASS", "IN PROGRESS", "NOT STARTED"} for row in parsed)
+    assert any(
+        "test_dual_language_goal_case_table_matches_pivot_rows" in row[1]
+        for row in parsed
+    )
+    counts = {
+        status: sum(row[2] == status for row in parsed)
+        for status in ("PASS", "IN PROGRESS", "NOT STARTED")
+    }
+    summary = re.search(
+        r"Current: \*\*(\d+) PASS / (\d+) IN PROGRESS / "
+        r"(\d+) NOT STARTED / (\d+) listed cases\*\*",
+        section,
+    )
+    assert summary is not None
+    assert tuple(map(int, summary.groups())) == (
+        counts["PASS"],
+        counts["IN PROGRESS"],
+        counts["NOT STARTED"],
+        len(parsed),
+    )
+
+
+def test_dual_language_goal_fine_summary_matches_tasklet_rows() -> None:
+    path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    checklist = path.read_text(encoding="utf-8")
+    rows = [line for line in checklist.splitlines() if line.startswith("| DLFC-")]
+    statuses = [line.strip("|").split("|")[2].strip() for line in rows]
+    counts = {
+        status: statuses.count(status)
+        for status in ("PASS", "IN PROGRESS", "NOT STARTED", "FAIL", "BLOCKED")
+    }
+    summary = re.search(
+        r"\*\*Progress:\*\* \*\*(\d+)/(\d+) tasklets PASS \([^)]+\); "
+        r"(\d+) IN PROGRESS; (\d+) NOT STARTED; (\d+) FAIL; (\d+) BLOCKED\.?\*\*",
+        checklist,
+    )
+
+    assert summary is not None
+    assert len(rows) == 18
+    assert tuple(map(int, summary.groups())) == (
+        counts["PASS"],
+        len(rows),
+        counts["IN PROGRESS"],
+        counts["NOT STARTED"],
+        counts["FAIL"],
+        counts["BLOCKED"],
+    )
+
+
+def test_dlfc10_uses_fixed_selectors_not_an_unenumerated_matrix() -> None:
+    path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    rows = _markdown_table_rows(path, "| DLFC-")
+    dlfc10 = next(row for row in rows if row[0] == "DLFC-10")
+
+    assert dlfc10[2] == "PASS"
+    assert "fixed documented selectors passed" in dlfc10[3]
+    assert "no separate operation/backend matrix gate" in dlfc10[3]
+    assert re.search(r"matrix.{0,80}(?:open|remain)", dlfc10[3], re.IGNORECASE) is None
+
+    closure_path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    closure_text = closure_path.read_text(encoding="utf-8")
+    criteria = closure_text.split("## Closure Criteria", maxsplit=1)[1].split("\n## ", maxsplit=1)[0]
+    fine_status = {row[0]: row[2] for row in rows}
+    closure_rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in criteria.splitlines()
+        if line.startswith("| GOAL-")
+    ]
+    closure = {row[0]: row[2].split()[0] for row in closure_rows}
+    goal06_pass = all(fine_status[f"DLFC-{number:02d}"] == "PASS" for number in range(1, 13))
+    goal08_pass = goal06_pass and all(
+        fine_status[f"DLFC-{number:02d}"] == "PASS" for number in range(13, 18)
+    )
+    assert closure["GOAL-06"] == ("PASS" if goal06_pass else "OPEN")
+    assert closure["GOAL-08"] == ("PASS" if goal08_pass else "OPEN")
+
+
+def test_passed_fine_gates_name_existing_executable_tests() -> None:
+    checklist = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    checklist_text = checklist.read_text(encoding="utf-8")
+    rows = _markdown_table_rows(checklist, "| DLFC-")
+    python_tests = {
+        name
+        for path in (ROOT / "tests").rglob("*.py")
+        for name in re.findall(
+            r"(?m)^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+    rust_tests = {
+        name
+        for path in (ROOT / "rust" / "crates").rglob("*.rs")
+        for name in re.findall(
+            r"(?m)^\s*#\[(?:tokio::)?test\b[^\]]*\]\s*"
+            r"(?:(?:#\[[^\]]+\])\s*)*(?:async\s+)?fn\s+"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            path.read_text(encoding="utf-8"),
+        )
+    }
+
+    missing_selectors = []
+    for row in rows:
+        gate_id, _goal, status, evidence = row[:4]
+        if status != "PASS":
+            continue
+        evidence_scope = evidence
+        if "detailed selector evidence remains in the dated entries below" in evidence.lower():
+            section = re.search(
+                rf"(?ms)^### {re.escape(gate_id)} Evidence Update.*?(?=^### |\Z)",
+                checklist_text,
+            )
+            if section is not None:
+                evidence_scope += section.group()
+        python_refs = set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence_scope)) & python_tests
+        rust_refs = set(re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)\b", evidence_scope)) & rust_tests
+        if not python_refs and not rust_refs:
+            missing_selectors.append(gate_id)
+    assert not missing_selectors, (
+        "PASS fine gates must name an existing executable test selector: "
+        f"{missing_selectors}"
+    )
+
+
 def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() -> None:
     checklist = (
         ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-capability-checklist.md"
@@ -1251,6 +1770,9 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
     worklist = DUAL_LANGUAGE_WORKLIST_PATH.read_text(encoding="utf-8")
     manifest = json.loads(
         (ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8")
+    )
+    adr015 = (ROOT / "docs" / "ADR-015-rust-port-capability-cutover.md").read_text(
+        encoding="utf-8"
     )
     rust_targets = [
         item
@@ -1276,10 +1798,34 @@ def test_dual_language_progress_snapshot_distinguishes_inventory_from_cutover() 
         "server-rest-sse-mcp-cli",
     }
     assert not_ready == []
-    assert "does not claim universal behavioral parity" in checklist
-    assert "**8/8 Rust-targeted capabilities ready**" in checklist
+    support_matrix = json.loads(SUPPORT_MATRIX_PATH.read_text(encoding="utf-8"))
+    server_support = next(
+        item for item in support_matrix["capabilities"]
+        if item["id"] == "server-rest-sse-mcp-cli"
+    )
+    assert server_support["rust"]["status"] == "enabled"
+    assert "Full dual-language objective remains **NOT COMPLETE**" in checklist
+    assert "All eight Rust-targeted manifest flags are now true" in checklist
+    assert "server cutover readiness independently" in checklist
     assert "not unfinished implementation or overall migration progress" in worklist
-    assert "**Overall Rust cutover:** **8/8 Rust-targeted capabilities ready**" in worklist
+    assert "**Declared Rust capability flags:** **8/8 Rust-targeted `rust_cutover_ready` flags are true**" in worklist
+    assert "no syscall operations remain deferred" in worklist
+
+    adr015_flags = {
+        capability: value == "true"
+        for capability, value in re.findall(
+            r"(?m)^\| ([a-z0-9-]+) \| (true|false) \|", adr015
+        )
+    }
+    assert adr015_flags == {
+        item["capability"]: item["rust_cutover_ready"]
+        for item in manifest["capability_ownership"]
+    }
+    assert "no route/syscall is pending" in adr015
+    assert "does not claim universal Python/Rust parity" in adr015
+    assert "**Overall status:** **NOT COMPLETE**" in (
+        ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_adr015_capability_worklist_covers_fixed_incomplete_scope() -> None:
@@ -1499,6 +2045,13 @@ def test_each_capability_gate_clause_names_an_executable_test() -> None:
         )
         for path in (ROOT / "tests").rglob("*.py")
     }
+    python_markers_by_path = {
+        selector: markers
+        for path in (ROOT / "tests").rglob("*.py")
+        for selector, markers in _python_test_markers(
+            path.read_text(encoding="utf-8"), path.relative_to(ROOT).as_posix()
+        ).items()
+    }
     python_gate_paths = (
         "scripts/durable_store_capability_gate.py",
         "scripts/runtime_authority_gate.py",
@@ -1572,26 +2125,36 @@ def test_each_capability_gate_clause_names_an_executable_test() -> None:
         assert mentioned_python_tests or mentioned_rust_tests & declared_rust_tests, (
             f"{capability}/{clause} {status}: evidence lacks a declared test selector"
         )
-        def selected_by_gate_or_ci(path: str, name: str, names: set[str]) -> bool:
-            if name not in names:
-                return False
-            if path in python_gate_selectors or f"{path}::{name}" in python_gate_selectors:
-                return True
-            source = (ROOT / path).read_text(encoding="utf-8")
-            module_scope = source.partition("\ndef ")[0]
-            markers = set(
-                re.findall(r"pytest\.mark\.(ci_full|ci)\b", module_scope)
+        selected_explicit_python_refs = all(
+            _python_test_is_selected(
+                path,
+                name,
+                python_gate_selectors,
+                python_markers_by_path,
+                ci_runs_fast_tests=ci_runs_fast_tests,
+                ci_runs_full_tests=ci_runs_full_tests,
             )
-            return ("ci" in markers and ci_runs_fast_tests) or (
-                "ci_full" in markers and ci_runs_full_tests
-            )
-
-        selected_python_tests = all(
+            for path, name in python_refs
+        )
+        explicit_python_names = {name for _, name in python_refs}
+        unqualified_python_tests = mentioned_python_tests - explicit_python_names
+        selected_unqualified_python_tests = all(
             any(
-                selected_by_gate_or_ci(path, name, names)
+                _python_test_is_selected(
+                    path,
+                    name,
+                    python_gate_selectors,
+                    python_markers_by_path,
+                    ci_runs_fast_tests=ci_runs_fast_tests,
+                    ci_runs_full_tests=ci_runs_full_tests,
+                )
                 for path, names in python_tests_by_path.items()
+                if name in names
             )
-            for name in mentioned_python_tests
+            for name in unqualified_python_tests
+        )
+        selected_python_tests = (
+            selected_explicit_python_refs and selected_unqualified_python_tests
         )
         selected_rust_tests = (
             bool(rust_refs)
@@ -1748,7 +2311,7 @@ def test_graph_pgvector_capability_is_enabled_after_graph_conformance_passes() -
     } <= set(conformance["conformance_profiles"][capability_id])
 
 
-def test_chroma_adapter_is_python_owned_but_interop_verified() -> None:
+def test_python_chroma_facade_and_rust_chroma_service_are_distinct() -> None:
     capability_id = "chroma-adapter"
     ownership = next(
         item
@@ -1785,6 +2348,67 @@ def test_chroma_adapter_is_python_owned_but_interop_verified() -> None:
         "python-chroma-contract",
         "single-writer-and-isolated-shadow-read",
     }
+    rust_service = next(
+        item
+        for item in _manifest()["capability_ownership"]
+        if item["capability"] == "server-rest-sse-mcp-cli"
+    )
+    assert rust_service["rust_cutover_ready"] is True
+    assert rust_service["target_authoritative_writer"] == "rust"
+    rust_sqlite_service = (
+        ROOT / "rust" / "crates" / "kogwistar-api" / "src" / "sections" / "sqlite_service.rs"
+    ).read_text(encoding="utf-8")
+    assert "ChromaGraphStore::connect_entity_collections" in rust_sqlite_service
+    rust_runtime_config = (
+        ROOT
+        / "rust"
+        / "crates"
+        / "kogwistar-api"
+        / "src"
+        / "sections"
+        / "contracts_and_runtime.rs"
+    ).read_text(encoding="utf-8")
+    assert "KOGWISTAR_CHROMA_ENDPOINT" in rust_runtime_config
+    chroma_tests = (
+        ROOT / "tests" / "server" / "test_rust_api_chroma_interop_live.py"
+    ).read_text(encoding="utf-8")
+    assert "def test_rust_graph_mutation_is_readable_by_python_over_chroma" in chroma_tests
+    assert "def test_python_chroma_projection_is_read_and_reconciled_by_rust_server" in chroma_tests
+    assert "def test_python_stage1_is_promoted_by_rust_native_worker" in chroma_tests
+    assert "def test_rust_metadata_stage1_is_promoted_by_python_worker" in chroma_tests
+
+
+def test_sqlite_meta_mixed_coverage_matches_ci_runtime_matrix() -> None:
+    conformance = json.loads(DUAL_LANGUAGE_MANIFEST_PATH.read_text(encoding="utf-8"))
+    coverage = next(
+        item for item in conformance["capabilities"] if item["id"] == "sqlite-meta"
+    )["mixed_coverage"]
+    workflow = CI_WORKFLOW_PATH.read_text(encoding="utf-8")
+    invariant_tests = (ROOT / "tests" / "core" / "test_sqlite_context_invariant.py").read_text(
+        encoding="utf-8"
+    )
+    handoff_tests = (
+        ROOT / "tests" / "core" / "test_rust_meta_sqlite_authority.py"
+    ).read_text(encoding="utf-8")
+    pypy_requirements = (
+        ROOT / "requirements-pypy-3.11-experimental.txt"
+    ).read_text(encoding="utf-8")
+
+    assert "Windows CPython/Rust cross-process ownership" in coverage
+    assert "POSIX CPython matrix (Ubuntu 3.12-3.14, macOS 3.13) passed CI #859" in coverage
+    assert "PyPy 3.11 Rust-server/Python-worker HTTP interoperability passed CI #860" in coverage
+    assert "Direct in-process PyO3 SQLite-meta binding remains unsupported" in coverage
+    assert "sqlite-architectural-invariants:" in workflow
+    assert "os: ubuntu-latest" in workflow
+    assert "python-version: \"3.12\"" in workflow
+    assert "python-version: \"3.13\"" in workflow
+    assert "python-version: \"3.14\"" in workflow
+    assert "os: macos-latest" in workflow
+    assert "tests/core/test_sqlite_context_invariant.py -q" in workflow
+    assert "tests/core/test_rust_meta_sqlite_authority.py" in workflow
+    assert "test_cross_process_store_open_race_on_new_database_has_one_owner" in invariant_tests
+    assert "test_manifest_advertised_sqlite_meta_run_round_trip_and_python_rollback" in handoff_tests
+    assert "native extension" in pypy_requirements
 
 
 def test_workflow_runtime_selector_keeps_python_default_with_rust_enabled() -> None:
@@ -1825,7 +2449,7 @@ def test_workflow_runtime_selector_keeps_python_default_with_rust_enabled() -> N
     } <= set(conformance["conformance_profiles"][capability_id])
 
 
-def test_rest_capability_keeps_deferred_route_explicit_after_cutover_acceptance() -> None:
+def test_rest_capability_is_cutover_ready_without_deferred_routes() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     ownership = next(
         item
@@ -1852,7 +2476,7 @@ def test_rest_capability_keeps_deferred_route_explicit_after_cutover_acceptance(
     assert support["python"]["status"] == "opt-in"
     assert support["rust"]["status"] == "enabled"
     assert support["mixed"]["status"] == "enabled"
-    assert server_gaps["status"] == "intentionally-deferred"
+    assert server_gaps["status"] == "closed"
     assert ["DELETE", "/admin/doc/{doc_id}"] not in server_gaps["pending_routes"]
 
 
@@ -1873,7 +2497,7 @@ def test_sse_support_is_enabled_after_ordering_and_resume_parity() -> None:
     assert "sse-ordering-and-resume" in conformance["conformance_profiles"][capability_id]
 
 
-def test_mcp_support_keeps_pending_syscalls_explicit_after_cutover_acceptance() -> None:
+def test_mcp_support_has_no_pending_syscalls_after_cutover_acceptance() -> None:
     capability_id = "server-rest-sse-mcp-cli"
     manifest = _manifest()
     selector = next(
@@ -1900,8 +2524,9 @@ def test_mcp_support_keeps_pending_syscalls_explicit_after_cutover_acceptance() 
         "openapi-and-mcp-contract-parity",
         "authentication-acl-namespace-and-capability-parity",
     } <= set(conformance["conformance_profiles"][capability_id])
-    assert deferred_syscalls == {"send_message", "receive_message", "mount_memory", "invoke_tool"}
-    assert set(conformance["rust_server_gaps"]["pending_syscalls"]) == deferred_syscalls
+    assert deferred_syscalls == set()
+    assert conformance["rust_server_gaps"]["status"] == "closed"
+    assert set(conformance["rust_server_gaps"]["pending_syscalls"]) == set()
 
 
 def test_python_cli_remains_http_client_for_rust_selected_server(
@@ -1967,6 +2592,1037 @@ def test_python_cli_http_client_sends_optional_bearer_token(
     assert seen["authorization"] == "Bearer secret-test-token"
 
 
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            [
+                "conversation.create",
+                "--user-id",
+                "alice",
+                "--conversation-id",
+                "c-2",
+                "--start-node-id",
+                "n-start",
+            ],
+            {
+                "method": "POST",
+                "url": "http://rust-server/api/conversations",
+                "json_body": {
+                    "user_id": "alice",
+                    "conversation_id": "c-2",
+                    "start_node_id": "n-start",
+                },
+            },
+        ),
+        (
+            [
+                "conversation.ask",
+                "--conversation-id",
+                "c-3",
+                "--text",
+                "hello",
+            ],
+            {
+                "method": "POST",
+                "url": "http://rust-server/api/conversations/c-3/turns:answer",
+                "json_body": {
+                    "text": "hello",
+                    "user_id": None,
+                    "workflow_id": "agentic_answering.v2",
+                },
+            },
+        ),
+        (
+            ["conversation.run_status", "--run-id", "r-4"],
+            {"method": "GET", "url": "http://rust-server/api/runs/r-4"},
+        ),
+        (
+            ["conversation.cancel_run", "--run-id", "r-5"],
+            {"method": "POST", "url": "http://rust-server/api/runs/r-5/cancel"},
+        ),
+    ],
+)
+def test_python_cli_conversation_operations_match_rust_http_contract(
+    command: list[str], expected: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert main(["api", "conversation", *command, "--base-url", "http://rust-server"]) == 0
+    assert observed == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            ["workflow.run_status", "--run-id", "r-6"],
+            {"method": "GET", "url": "http://rust-server/api/workflow/runs/r-6"},
+        ),
+        (
+            ["workflow.run_cancel", "--run-id", "r-7"],
+            {
+                "method": "POST",
+                "url": "http://rust-server/api/workflow/runs/r-7/cancel",
+            },
+        ),
+        (
+            [
+                "workflow.run_events",
+                "--run-id",
+                "r-8",
+                "--after-seq",
+                "4",
+                "--limit",
+                "9",
+            ],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/runs/r-8/events",
+                "params": {"after_seq": 4},
+            },
+        ),
+    ],
+)
+def test_python_cli_workflow_run_operations_match_rust_http_contract(
+    command: list[str], expected: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"ok": True}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert main(["api", "workflow", *command, "--base-url", "http://rust-server"]) == 0
+    assert observed == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_body"),
+    [
+        (
+            ["--workflow-id", "agent.v1", "--conversation-id", "c-9"],
+            {
+                "workflow_id": "agent.v1",
+                "conversation_id": "c-9",
+                "turn_node_id": None,
+                "user_id": None,
+                "initial_state": {},
+                "priority_class": "foreground",
+                "token_budget": None,
+                "time_budget_ms": None,
+            },
+        ),
+        (
+            [
+                "--workflow-id",
+                "agent.v1",
+                "--conversation-id",
+                "c-10",
+                "--turn-node-id",
+                "n-10",
+                "--user-id",
+                "alice",
+                "--initial-state",
+                '{"answer":7,"nested":[true]}',
+                "--priority-class",
+                "background",
+                "--token-budget",
+                "128",
+                "--time-budget-ms",
+                "5000",
+            ],
+            {
+                "workflow_id": "agent.v1",
+                "conversation_id": "c-10",
+                "turn_node_id": "n-10",
+                "user_id": "alice",
+                "initial_state": {"answer": 7, "nested": [True]},
+                "priority_class": "background",
+                "token_budget": 128,
+                "time_budget_ms": 5000,
+            },
+        ),
+    ],
+)
+def test_python_cli_workflow_run_submit_matches_rust_http_contract(
+    command: list[str],
+    expected_body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-test", "status": "queued"}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_submit",
+                *command,
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/runs",
+        "json_body": expected_body,
+    }
+
+
+def test_python_cli_workflow_checkpoint_get_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-11", "step_seq": 6, "state": {"answer": 42}}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_checkpoint_get",
+                "--run-id",
+                "r-11",
+                "--step-seq",
+                "6",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/runs/r-11/checkpoints/6",
+    }
+
+
+def test_python_cli_workflow_resume_contract_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-12", "resumable": True}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_resume_contract",
+                "--run-id",
+                "r-12",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/runs/r-12/resume-contract",
+    }
+
+
+def test_python_cli_workflow_replay_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-13", "target_step_seq": 8, "state": {}}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_replay",
+                "--run-id",
+                "r-13",
+                "--target-step-seq",
+                "8",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/runs/r-13/replay",
+        "params": {"target_step_seq": 8},
+    }
+
+
+def test_python_cli_workflow_resume_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"run_id": "r-14", "status": "queued"}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.run_resume",
+                "--run-id",
+                "r-14",
+                "--suspended-node-id",
+                "node-3",
+                "--suspended-token-id",
+                "token-4",
+                "--workflow-id",
+                "wf-5",
+                "--conversation-id",
+                "c-6",
+                "--turn-node-id",
+                "turn-7",
+                "--client-result",
+                '{"approved":true,"count":2}',
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/runs/r-14/resume",
+        "json_body": {
+            "suspended_node_id": "node-3",
+            "suspended_token_id": "token-4",
+            "client_result": {"approved": True, "count": 2},
+            "workflow_id": "wf-5",
+            "conversation_id": "c-6",
+            "turn_node_id": "turn-7",
+            "user_id": None,
+        },
+    }
+
+
+@pytest.mark.parametrize("limit", [100, 23])
+def test_python_cli_workflow_process_table_matches_rust_http_contract(
+    limit: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+
+    def record_request(**kwargs: object) -> dict[str, object]:
+        observed.update(kwargs)
+        return {"items": [{"run_id": "r-15"}]}
+
+    monkeypatch.setattr("kogwistar.cli._request_json", record_request)
+    command = [
+        "api",
+        "workflow",
+        "workflow.process_table",
+        "--status",
+        "completed",
+        "--workflow-id",
+        "wf-15",
+        "--conversation-id",
+        "c-15",
+    ]
+    if limit != 100:
+        command.extend(["--limit", str(limit)])
+
+    assert main([*command, "--base-url", "http://rust-server"]) == 0
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/operator/dashboard",
+        "params": {"limit": limit},
+    }
+
+
+def test_python_cli_workflow_operator_dashboard_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {"items": []},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.operator_dashboard",
+                "--limit",
+                "17",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/operator/dashboard",
+        "params": {"limit": 17},
+    }
+
+
+def test_python_cli_workflow_visibility_snapshot_matches_rust_http_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {"visible": True},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.visibility_snapshot",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": "http://rust-server/api/workflow/visibility",
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            ["workflow.scheduler_timeline", "--run-id", "r-16", "--limit", "31"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/scheduler/timeline",
+                "params": {"run_id": "r-16", "limit": 31},
+            },
+        ),
+        (
+            ["workflow.budget_snapshot"],
+            {"method": "GET", "url": "http://rust-server/api/workflow/budget"},
+        ),
+        (
+            ["workflow.budget_history"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/budget/history",
+                "params": {"limit": 200},
+            },
+        ),
+        (
+            ["workflow.tool_audit", "--conversation-id", "c-16", "--limit", "41"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/tools/audit",
+                "params": {"conversation_id": "c-16", "limit": 41},
+            },
+        ),
+    ],
+)
+def test_python_cli_workflow_diagnostics_reads_match_rust_http_contract(
+    command: list[str],
+    expected: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert main(["api", "workflow", *command, "--base-url", "http://rust-server"]) == 0
+    assert observed == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (
+            ["workflow.service_list"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/services",
+                "params": {"limit": 200},
+            },
+        ),
+        (
+            ["workflow.service_get", "--service-id", "svc-17"],
+            {"method": "GET", "url": "http://rust-server/api/workflow/services/svc-17"},
+        ),
+        (
+            ["workflow.service_events", "--service-id", "svc-18", "--limit", "29"],
+            {
+                "method": "GET",
+                "url": "http://rust-server/api/workflow/services/svc-18/events",
+                "params": {"limit": 29},
+            },
+        ),
+    ],
+)
+def test_python_cli_workflow_service_reads_match_rust_http_contract(
+    command: list[str],
+    expected: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert main(["api", "workflow", *command, "--base-url", "http://rust-server"]) == 0
+    assert observed == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "endpoint"),
+    [
+        ("workflow.service_enable", "enable"),
+        ("workflow.service_disable", "disable"),
+    ],
+)
+def test_python_cli_workflow_service_toggle_matches_rust_http_contract(
+    command: str,
+    endpoint: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                command,
+                "--service-id",
+                "svc-19",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server/api/workflow/services/svc-19/{endpoint}",
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "path", "body"),
+    [
+        (
+            "workflow.service_heartbeat",
+            ["--service-id", "svc-21", "--instance-id", "worker-2", "--payload", '{"load":0.4}'],
+            "/api/workflow/services/svc-21/heartbeat",
+            {"instance_id": "worker-2", "payload": {"load": 0.4}},
+        ),
+        (
+            "workflow.service_trigger",
+            ["--service-id", "svc-22", "--trigger-type", "manual", "--payload", '{"source":"cli"}'],
+            "/api/workflow/services/svc-22/trigger",
+            {"trigger_type": "manual", "payload": {"source": "cli"}},
+        ),
+    ],
+)
+def test_python_cli_workflow_service_actions_match_rust_http_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {"accepted": True},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server{path}",
+        "json_body": body,
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "path", "params"),
+    [
+        (
+            "workflow.services_repair",
+            ["--limit", "37"],
+            "/api/workflow/services/repair",
+            {"limit": 37},
+        ),
+        (
+            "workflow.message_orphans_repair",
+            ["--inbox-id", "inbox-23", "--limit", "18"],
+            "/api/workflow/messages/repair-orphans",
+            {"inbox_id": "inbox-23", "limit": 18},
+        ),
+    ],
+)
+def test_python_cli_workflow_repairs_match_rust_http_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    params: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server{path}",
+        "params": params,
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "path", "params"),
+    [
+        (
+            "workflow.dead_letters",
+            ["--limit", "33"],
+            "/api/workflow/dead-letters",
+            {"limit": 33},
+        ),
+        (
+            "workflow.capabilities_snapshot",
+            ["--subject", "alice"],
+            "/api/workflow/capabilities",
+            {"subject": "alice"},
+        ),
+    ],
+)
+def test_python_cli_workflow_queue_reads_match_rust_http_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    params: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "GET",
+        "url": f"http://rust-server{path}",
+        "params": params,
+    }
+
+
+def test_python_cli_workflow_blocked_runs_is_declared_but_not_dispatched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    requests: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: requests.append(kwargs) or {},
+    )
+    with pytest.raises(SystemExit) as error:
+        main(["api", "workflow", "workflow.blocked_runs", "--base-url", "http://rust-server"])
+
+    assert error.value.code == 2
+    assert requests == []
+
+
+def test_python_cli_workflow_service_declare_matches_rust_payload_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert main(
+        [
+            "api",
+            "workflow",
+            "workflow.service_declare",
+            "--service-id",
+            "svc-31",
+            "--service-kind",
+            "maintenance",
+            "--target-kind",
+            "workflow",
+            "--target-ref",
+            "wf-31",
+            "--target-config",
+            '{"batch":4}',
+            "--no-enabled",
+            "--autostart",
+            "--restart-policy",
+            '{"max_retries":2}',
+            "--heartbeat-ttl-ms",
+            "45000",
+            "--trigger-specs",
+            '[{"kind":"manual"}]',
+            "--base-url",
+            "http://rust-server",
+        ]
+    ) == 0
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/services",
+        "json_body": {
+            "service_id": "svc-31",
+            "service_kind": "maintenance",
+            "target_kind": "workflow",
+            "target_ref": "wf-31",
+            "target_config": {"batch": 4},
+            "enabled": False,
+            "autostart": True,
+            "restart_policy": {"max_retries": 2},
+            "heartbeat_ttl_ms": 45000,
+            "trigger_specs": [{"kind": "manual"}],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "path", "body"),
+    [
+        (
+            "workflow.capability_approve",
+            [
+                "--action",
+                "workflow.run.submit",
+                "--capabilities",
+                '["workflow.run.submit","read_graph"]',
+                "--subject",
+                "alice",
+            ],
+            "/api/workflow/capabilities/approve",
+            {
+                "action": "workflow.run.submit",
+                "capabilities": ["workflow.run.submit", "read_graph"],
+                "subject": "alice",
+            },
+        ),
+        (
+            "workflow.capability_revoke",
+            ["--capability", "read_graph"],
+            "/api/workflow/capabilities/revoke",
+            {"capability": "read_graph", "subject": None},
+        ),
+    ],
+)
+def test_python_cli_workflow_capability_mutations_match_rust_contract(
+    command: str,
+    args: list[str],
+    path: str,
+    body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": f"http://rust-server{path}",
+        "json_body": body,
+    }
+
+
+def test_python_cli_workflow_dead_letter_replay_matches_rust_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(
+            [
+                "api",
+                "workflow",
+                "workflow.dead_letter_replay",
+                "--run-id",
+                "run-32",
+                "--base-url",
+                "http://rust-server",
+            ]
+        )
+        == 0
+    )
+    assert observed == {
+        "method": "POST",
+        "url": "http://rust-server/api/workflow/dead-letters/run-32/replay",
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "method", "path", "body"),
+    [
+        (
+            "workflow.design_history",
+            ["--workflow-id", "wf-41"],
+            "GET",
+            "/api/workflow/design/wf-41/history",
+            None,
+        ),
+        (
+            "workflow.design_undo",
+            ["--workflow-id", "wf-42", "--designer-id", "designer-a"],
+            "POST",
+            "/api/workflow/design/wf-42/undo",
+            {"designer_id": "designer-a"},
+        ),
+        (
+            "workflow.design_redo",
+            ["--workflow-id", "wf-43", "--designer-id", "designer-b"],
+            "POST",
+            "/api/workflow/design/wf-43/redo",
+            {"designer_id": "designer-b"},
+        ),
+    ],
+)
+def test_python_cli_workflow_design_history_actions_match_rust_contract(
+    command: str,
+    args: list[str],
+    method: str,
+    path: str,
+    body: dict[str, object] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    expected: dict[str, object] = {"method": method, "url": f"http://rust-server{path}"}
+    if body is not None:
+        expected["json_body"] = body
+    assert observed == expected
+
+
+@pytest.mark.parametrize(
+    ("command", "args", "method", "path", "body"),
+    [
+        (
+            "workflow.design_node_upsert",
+            [
+                "--workflow-id",
+                "wf-44",
+                "--designer-id",
+                "designer-c",
+                "--label",
+                "review",
+                "--node-id",
+                "node-7",
+                "--op",
+                "validate",
+                "--start",
+                "--terminal",
+                "--no-fanout",
+                "--metadata",
+                '{"color":"blue"}',
+            ],
+            "POST",
+            "/api/workflow/design/wf-44/nodes",
+            {
+                "designer_id": "designer-c",
+                "node_id": "node-7",
+                "label": "review",
+                "op": "validate",
+                "start": True,
+                "terminal": True,
+                "fanout": False,
+                "metadata": {"color": "blue"},
+            },
+        ),
+        (
+            "workflow.design_edge_upsert",
+            [
+                "--workflow-id",
+                "wf-45",
+                "--designer-id",
+                "designer-d",
+                "--src",
+                "node-a",
+                "--dst",
+                "node-b",
+                "--edge-id",
+                "edge-9",
+                "--relation",
+                "wf_branch",
+                "--predicate",
+                "approved",
+                "--priority",
+                "17",
+                "--is-default",
+                "--multiplicity",
+                "many",
+                "--metadata",
+                '{"reason":"test"}',
+            ],
+            "POST",
+            "/api/workflow/design/wf-45/edges",
+            {
+                "designer_id": "designer-d",
+                "edge_id": "edge-9",
+                "src": "node-a",
+                "dst": "node-b",
+                "relation": "wf_branch",
+                "predicate": "approved",
+                "priority": 17,
+                "is_default": True,
+                "multiplicity": "many",
+                "metadata": {"reason": "test"},
+            },
+        ),
+        (
+            "workflow.design_node_delete",
+            ["--workflow-id", "wf-46", "--designer-id", "designer-e", "--node-id", "node-8"],
+            "DELETE",
+            "/api/workflow/design/wf-46/nodes/node-8",
+            {"designer_id": "designer-e"},
+        ),
+        (
+            "workflow.design_edge_delete",
+            ["--workflow-id", "wf-47", "--designer-id", "designer-f", "--edge-id", "edge-10"],
+            "DELETE",
+            "/api/workflow/design/wf-47/edges/edge-10",
+            {"designer_id": "designer-f"},
+        ),
+    ],
+)
+def test_python_cli_workflow_design_mutations_match_rust_contract(
+    command: str,
+    args: list[str],
+    method: str,
+    path: str,
+    body: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from kogwistar.cli import main
+
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(
+        "kogwistar.cli._request_json",
+        lambda **kwargs: observed.update(kwargs) or {},
+    )
+    assert (
+        main(["api", "workflow", command, *args, "--base-url", "http://rust-server"])
+        == 0
+    )
+    assert observed == {
+        "method": method,
+        "url": f"http://rust-server{path}",
+        "json_body": body,
+    }
+
+
 def test_python_cli_invalid_api_arguments_exit_with_usage_error(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1977,6 +3633,49 @@ def test_python_cli_invalid_api_arguments_exit_with_usage_error(
 
     assert exit_info.value.code == 2
     assert "--conversation-id" in capsys.readouterr().err
+
+
+def test_python_cli_missing_api_option_value_is_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from kogwistar.cli import main
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "api",
+                "conversation",
+                "conversation.get_transcript",
+                "--conversation-id",
+                "--base-url",
+                "http://127.0.0.1:1",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "argument --conversation-id: expected one argument" in capsys.readouterr().err
+
+
+def test_python_cli_unknown_api_option_is_usage_error(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from kogwistar.cli import main
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(
+            [
+                "api",
+                "conversation",
+                "conversation.get_transcript",
+                "--conversation-id",
+                "conversation-1",
+                "--mystery",
+                "value",
+            ]
+        )
+
+    assert exit_info.value.code == 2
+    assert "unrecognized arguments: --mystery value" in capsys.readouterr().err
 
 
 def test_cli_parity_remains_a_server_release_gate() -> None:

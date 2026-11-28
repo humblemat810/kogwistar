@@ -59,6 +59,161 @@ def test_chroma_vector_distance_semantics_match_shared_rust_contract():
 
 
 @pytest.mark.parametrize(
+    ("query_method", "collection_key"),
+    [
+        ("node_index_query", "node_index"),
+        ("node_query", "node"),
+        ("edge_query", "edge"),
+    ],
+)
+def test_chroma_vector_query_preserves_backend_tie_order_and_rows(
+    query_method, collection_key
+):
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-vector-metric-semantics-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    class QueryCollection:
+        def __init__(self, result):
+            self.result = result
+
+        def query(self, **_kwargs):
+            return self.result
+
+    for case in fixture["tie_cases"]:
+        records = case["vectors"]
+        ids = [record["id"] for record in records]
+        response = {
+            "ids": [ids],
+            "distances": [[case["expected_distance"]] * len(ids)],
+            "documents": [[f"doc:{entity_id}" for entity_id in ids]],
+            "metadatas": [[{"record_id": entity_id} for entity_id in ids]],
+            "embeddings": [[record["embedding"] for record in records]],
+        }
+        collections = {
+            "node_index": object(),
+            "node": object(),
+            "edge": object(),
+            "edge_endpoints": object(),
+            "document": object(),
+            "domain": object(),
+            "node_docs": object(),
+            "node_refs": object(),
+            "edge_refs": object(),
+        }
+        collections[collection_key] = QueryCollection(response)
+        backend = ChromaBackend(
+            **{
+                f"{key}_collection": collection
+                for key, collection in collections.items()
+            },
+            distance_metric=case["metric"],
+        )
+
+        result = getattr(backend, query_method)(
+            query_embeddings=[fixture["query_embedding"]],
+            n_results=len(ids),
+            include=["distances", "documents", "metadatas", "embeddings"],
+        )
+        # Chroma result order is backend-owned; verify adapter preserves it.
+        assert result["ids"][0] == ids
+        assert result["documents"][0] == [f"doc:{entity_id}" for entity_id in ids]
+        assert [item["record_id"] for item in result["metadatas"][0]] == ids
+        assert result["embeddings"][0] == [record["embedding"] for record in records]
+
+
+def test_chroma_graph_query_scores_and_rows_match_shared_rust_contract_after_test_sort():
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/graph-vector-metric-semantics-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    class QueryCollection:
+        def __init__(self, result):
+            self.result = result
+
+        def query(self, **_kwargs):
+            return self.result
+
+    for case in fixture["cases"]:
+        vectors = {record["id"]: record["embedding"] for record in fixture["vectors"]}
+        rows = list(zip(case["expected_ids"], case["expected_distances"], strict=True))
+        rows.reverse()
+        response = {
+            "ids": [[entity_id for entity_id, _ in rows]],
+            "distances": [[distance for _, distance in rows]],
+            "documents": [[f"doc:{entity_id}" for entity_id, _ in rows]],
+            "metadatas": [[{"record_id": entity_id} for entity_id, _ in rows]],
+            "embeddings": [[vectors[entity_id] for entity_id, _ in rows]],
+        }
+        collections = {
+            name: object()
+            for name in (
+                "node_index",
+                "node",
+                "edge",
+                "edge_endpoints",
+                "document",
+                "domain",
+                "node_docs",
+                "node_refs",
+                "edge_refs",
+            )
+        }
+        collections["node"] = QueryCollection(response)
+        backend = ChromaBackend(
+            **{
+                f"{name}_collection": collection
+                for name, collection in collections.items()
+            },
+            distance_metric=case["metric"],
+        )
+
+        result = backend.node_query(
+            query_embeddings=[fixture["query_embedding"]],
+            n_results=len(rows),
+            include=["distances", "documents", "metadatas", "embeddings"],
+        )
+
+        # Canonicalize a test-only copy for cross-language fixture comparison.
+        result = dict(result)
+        indexes = sorted(
+            range(len(result["ids"][0])),
+            key=lambda index: (result["distances"][0][index], result["ids"][0][index]),
+        )
+        for field in ("ids", "distances", "documents", "metadatas", "embeddings"):
+            result[field] = [
+                [result[field][0][index] for index in indexes],
+                *result[field][1:],
+            ]
+
+        assert result["ids"][0] == case["expected_ids"]
+        assert result["distances"][0] == pytest.approx(case["expected_distances"])
+        assert result["documents"][0] == [
+            f"doc:{entity_id}" for entity_id in case["expected_ids"]
+        ]
+        assert [row["record_id"] for row in result["metadatas"][0]] == case[
+            "expected_ids"
+        ]
+        assert result["embeddings"][0] == [
+            vectors[item] for item in case["expected_ids"]
+        ]
+        assert [
+            similarity_from_distance(
+                distance,
+                metric=case["metric"],
+                distance_kind=case["python_distance_kind"],
+            )
+            for distance in result["distances"][0]
+        ] == pytest.approx(case["expected_similarities"])
+
+
+@pytest.mark.parametrize(
     ("metric", "expected_distance_kind"),
     [("cosine", "distance"), ("ip", "distance"), ("l2", "squared_l2")],
 )
@@ -96,12 +251,18 @@ def test_chroma_backend_default_metric_preserves_cosine_distance_compatibility()
     assert similarity_from_distance(0.25, metric="cosine", distance_kind="distance") == 0.75
 
 
-@pytest.mark.ci
+@pytest.mark.parametrize(
+    "backend_kind",
+    [
+        pytest.param("fake", marks=pytest.mark.ci),
+        pytest.param("chroma", marks=pytest.mark.ci_full),
+    ],
+)
 def test_search_nodes_as_of_scored_exposes_normalized_similarity_and_threshold(
-    tmp_path,
+    backend_kind, tmp_path
 ):
     eng, _ = _make_engine_pair(
-        backend_kind="fake",
+        backend_kind=backend_kind,
         tmp_path=tmp_path,
         sa_engine=None,
         pg_schema=None,
@@ -132,7 +293,7 @@ def test_search_nodes_as_of_scored_exposes_normalized_similarity_and_threshold(
         assert [hit.node.id for hit in hits] == ["N_SCORED"]
         assert hits[0].metric == "cosine"
         assert hits[0].distance_kind == "distance"
-        assert hits[0].raw_distance == pytest.approx(0.0)
+        assert hits[0].raw_distance == pytest.approx(0.0, abs=1e-7)
         assert hits[0].similarity == pytest.approx(1.0)
 
         assert eng.search_nodes_as_of_scored(

@@ -243,6 +243,10 @@ def test_rust_python_parity_annotations_resolve_to_shared_executable_contracts()
             )
             field_names = set(fields)
             assert ANNOTATION_REQUIRED_FIELDS <= field_names, rust_file
+            assert ANNOTATION_TEST_FIELDS <= field_names, (
+                f"{rust_file}: parity annotations must name executable tests "
+                "for both Python and Rust"
+            )
             assert field_names <= (
                 ANNOTATION_REQUIRED_FIELDS
                 | ANNOTATION_TEST_FIELDS

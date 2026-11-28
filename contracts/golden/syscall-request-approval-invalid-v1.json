@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "name": "missing-action",
+      "request": {"version":"v1","op":"request_approval","args":{}},
+      "http_status": 400,
+      "response": {"detail":"action is required"}
+    },
+    {
+      "name": "grant-missing-capability",
+      "request": {"version":"v1","op":"request_approval","args":{"action":"grant"}},
+      "http_status": 400,
+      "response": {"detail":"capability is required for grant"}
+    },
+    {
+      "name": "revoke-missing-capability",
+      "request": {"version":"v1","op":"request_approval","args":{"action":"revoke"}},
+      "http_status": 400,
+      "response": {"detail":"capability is required for revoke"}
+    }
+  ]
+}

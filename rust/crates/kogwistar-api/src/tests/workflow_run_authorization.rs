@@ -34,6 +34,55 @@
     }
 
     #[test]
+    fn workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-run-status-mcp-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_run_status_mcp_admission",
+        )
+        .unwrap();
+        let in_memory = InMemoryGraphApplicationService::default();
+        let services: [(&str, &dyn ApplicationService); 3] = [
+            ("sqlite", &sqlite),
+            ("postgres", &postgres),
+            ("in_memory", &in_memory),
+        ];
+
+        for (backend, service) in services {
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_status",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":[]})
+            ), "{backend} should admit status at MCP role/namespace boundary");
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_status",
+                &json!({"role":"rw", "ns":["workflow"], "capabilities":["workflow.run.read"]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_status",
+                &json!({"role":"ro", "ns":["conversation"]})
+            ), "{backend} must reject non-workflow namespace");
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                "workflow.run_status",
+                &json!({"role":"ro", "ns":["workflow"]})
+            ), "{backend} must reject wrong MCP surface");
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn workflow_run_events_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -80,6 +129,60 @@
             assert!(service.supports_mcp_tool_for_principal(
                 "workflow",
                 "workflow.run_events",
+                &json!({"role":"ro", "ns":["workflow"]})
+            ));
+        }
+
+        drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-run-steps-mcp-{nonce}.sqlite3"));
+        let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "workflow_run_steps_mcp_admission",
+        )
+        .unwrap();
+        let in_memory = InMemoryGraphApplicationService::default();
+        let services: [(&str, &dyn ApplicationService); 3] = [
+            ("sqlite", &sqlite),
+            ("postgres", &postgres),
+            ("in_memory", &in_memory),
+        ];
+
+        for (backend, service) in services {
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_steps",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.read"]})
+            ), "{backend} should admit authorized workflow steps read");
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_steps",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":[]})
+            ));
+            assert!(!service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_steps",
+                &json!({"role":"ro", "ns":["conversation"], "capabilities":["workflow.run.read"]})
+            ), "{backend} must reject non-workflow namespace");
+            assert!(!service.supports_mcp_tool_for_principal(
+                "root",
+                "workflow.run_steps",
+                &json!({"role":"ro", "ns":["workflow"], "capabilities":["workflow.run.read"]})
+            ));
+            assert!(service.supports_mcp_tool_for_principal(
+                "workflow",
+                "workflow.run_steps",
                 &json!({"role":"ro", "ns":["workflow"]})
             ));
         }
@@ -152,12 +255,13 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-dead-letter-mcp-{nonce}.sqlite3"));
         let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let memory = InMemoryGraphApplicationService::default();
         let postgres = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "dead_letter_mcp_admission",
         )
         .unwrap();
-        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let services: [&dyn ApplicationService; 3] = [&memory, &sqlite, &postgres];
 
         for service in services {
             let tool = "workflow.dead_letter_replay";
@@ -196,12 +300,13 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-dead-letter-effect-{nonce}.sqlite3"));
         let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let memory = InMemoryGraphApplicationService::default();
         let postgres = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "dead_letter_effect_auth",
         )
         .unwrap();
-        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let services: [&dyn ApplicationService; 3] = [&memory, &sqlite, &postgres];
 
         for service in services {
             for principal in [
@@ -313,6 +418,193 @@
         assert_eq!(request.body, contract["rust_request"]["body"].as_str().unwrap().as_bytes());
     }
 
+    #[tokio::test]
+    async fn in_memory_dead_letter_replay_mcp_requeues_once_under_concurrency() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use kogwistar_store::{LaneMessageReadStore, LaneMessageWriteStore};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-dead-letter-replay-mcp-v1.json"
+        ))
+        .unwrap();
+        let tool = contract["tool"].as_str().unwrap();
+        let required_capability = contract["caller_capabilities"][0].as_str().unwrap();
+        let service = InMemoryGraphApplicationService::default();
+        let run_id = "memory-dead-letter-run";
+        service
+            .store
+            .project_lane_message(kogwistar_store::NewProjectedLaneMessage {
+                message_id: "memory-dead-letter-message".to_owned(),
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: "memory-dead-letter-conversation".to_owned(),
+                recipient_id: "rust-native-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "dead-letter".to_owned(),
+                created_at: 1,
+                available_at: 1,
+                run_id: Some(run_id.to_owned()),
+                step_id: Some("step-1".to_owned()),
+                correlation_id: Some(run_id.to_owned()),
+                payload_json: Some("{}".to_owned()),
+                error_json: Some("{\"message\":\"worker failed\"}".to_owned()),
+            })
+            .await
+            .unwrap();
+
+        let secret = "memory-dead-letter-test-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "user_id":"operator", "role":"rw",
+                "ns":["workflow"], "capabilities":[required_capability],
+                "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let request = || {
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0", "id":"memory-replay", "method":"tools/call",
+                        "params":{"name":tool, "arguments":{"run_id":run_id}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap()
+        };
+        let (first, second) = tokio::join!(
+            app.clone().oneshot(request()),
+            app.clone().oneshot(request())
+        );
+        let parse_result = |response: axum::response::Response| async move {
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = to_bytes(response.into_body(), 8192).await.unwrap();
+            let data = String::from_utf8(body.to_vec()).unwrap();
+            let message = data
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("MCP response event");
+            serde_json::from_str::<Value>(message).unwrap()["result"]["structuredContent"].clone()
+        };
+        let (first_result, second_result) =
+            tokio::join!(parse_result(first.unwrap()), parse_result(second.unwrap()));
+        let replays = [
+            first_result["replayed"].as_bool().unwrap(),
+            second_result["replayed"].as_bool().unwrap(),
+        ];
+        assert_eq!(replays.iter().filter(|replayed| **replayed).count(), 1);
+        assert_eq!(first_result["run_id"], run_id);
+        assert_eq!(second_result["run_id"], run_id);
+        let lane = service
+            .store
+            .projected_lane_message("memory-dead-letter-message")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(lane.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn mcp_denied_dead_letter_replay_never_executes_application_effect() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        use tower::ServiceExt;
+
+        struct DeniedReplay(Arc<AtomicUsize>);
+
+        impl ApplicationService for DeniedReplay {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                surface == "workflow" && name == "workflow.dead_letter_replay"
+            }
+
+            fn supports_mcp_tool_for_principal(
+                &self,
+                _surface: &str,
+                _name: &str,
+                _principal: &Value,
+            ) -> bool {
+                false
+            }
+
+            fn execute(
+                &self,
+                _request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                let calls = Arc::clone(&self.0);
+                Box::pin(async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    ApiEffectResponse {
+                        status: StatusCode::OK.as_u16(),
+                        content_type: "application/json".to_owned(),
+                        body: br#"{"replayed":true}"#.to_vec(),
+                    }
+                })
+            }
+        }
+
+        let execute_calls = Arc::new(AtomicUsize::new(0));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            Arc::new(DeniedReplay(Arc::clone(&execute_calls))),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"replay-denied","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"private"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["error"]["code"], -32602);
+        assert!(value.get("result").is_none());
+        assert_eq!(execute_calls.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
@@ -323,12 +615,13 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-dead-letters-mcp-{nonce}.sqlite3"));
         let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let memory = InMemoryGraphApplicationService::default();
         let postgres = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "dead_letters_mcp_admission",
         )
         .unwrap();
-        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let services: [&dyn ApplicationService; 3] = [&memory, &sqlite, &postgres];
 
         for service in services {
             let tool = "workflow.dead_letters";
@@ -366,12 +659,13 @@
             .as_nanos();
         let path = std::env::temp_dir().join(format!("kogwistar-dead-letters-effect-{nonce}.sqlite3"));
         let sqlite = SqliteRunApplicationService::open(&path).unwrap();
+        let memory = InMemoryGraphApplicationService::default();
         let postgres = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
             "dead_letters_effect_auth",
         )
         .unwrap();
-        let services: [&dyn ApplicationService; 2] = [&sqlite, &postgres];
+        let services: [&dyn ApplicationService; 3] = [&memory, &sqlite, &postgres];
 
         for service in services {
             for principal in [
@@ -481,6 +775,329 @@
             contract["rust_request"]["path_and_query"]
         );
         assert_eq!(request.body, contract["rust_request"]["body"].as_str().unwrap().as_bytes());
+    }
+
+    #[tokio::test]
+    async fn in_memory_dead_letters_mcp_lists_only_dead_letter_rows() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use kogwistar_store::LaneMessageWriteStore;
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-dead-letters-mcp-v1.json"
+        ))
+        .unwrap();
+        let service = InMemoryGraphApplicationService::default();
+        for (message_id, status, run_id) in [
+            ("visible-dead-letter", "dead-letter", "run-dead"),
+            ("not-dead-letter", "pending", "run-pending"),
+        ] {
+            service
+                .store
+                .project_lane_message(kogwistar_store::NewProjectedLaneMessage {
+                    message_id: message_id.to_owned(),
+                    namespace: "workflow".to_owned(),
+                    purpose: "system".to_owned(),
+                    inbox_id: "workflow-runtime".to_owned(),
+                    conversation_id: format!("conversation-{run_id}"),
+                    recipient_id: "rust-native-worker".to_owned(),
+                    sender_id: "rust-scheduler".to_owned(),
+                    msg_type: "workflow.step.execute".to_owned(),
+                    status: status.to_owned(),
+                    created_at: 1,
+                    available_at: 1,
+                    run_id: Some(run_id.to_owned()),
+                    step_id: Some("step-1".to_owned()),
+                    correlation_id: Some(run_id.to_owned()),
+                    payload_json: Some("{}".to_owned()),
+                    error_json: None,
+                })
+                .await
+                .unwrap();
+        }
+
+        let secret = "memory-dead-letters-test-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "user_id":"operator", "role":"ro",
+                "ns":["workflow"], "capabilities":contract["caller_capabilities"],
+                "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service),
+        );
+        let request = Request::builder()
+            .method("POST")
+            .uri("/mcp/workflow")
+            .header("content-type", "application/json")
+            .header("accept", "application/json, text/event-stream")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(
+                json!({
+                    "jsonrpc":"2.0", "id":"memory-dead-letters", "method":"tools/call",
+                    "params":{"name":contract["tool"], "arguments":contract["arguments"]}
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let data = String::from_utf8(body.to_vec()).unwrap();
+        let message = data
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("MCP response event");
+        let result: Value = serde_json::from_str(message).unwrap();
+        let content = &result["result"]["structuredContent"];
+        assert_eq!(content["limit"], contract["arguments"]["limit"]);
+        assert_eq!(content["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(content["runs"][0]["run_id"], "run-dead");
+        assert_eq!(content["runs"][0]["status"], "dead-letter");
+        assert_eq!(content["runs"][0]["event_type"], "worker.dead-letter");
+    }
+
+    #[tokio::test]
+    async fn in_memory_dead_letters_http_matches_shared_python_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-dead-letters-http-v1.json"
+        ))
+        .unwrap();
+        let service = InMemoryGraphApplicationService::default();
+        let path = format!(
+            "/api/workflow/dead-letters?limit={}",
+            contract["query_limit"].as_i64().unwrap()
+        );
+        assert!(service.supports_http_operation("GET", &path));
+        let secret = "memory-dead-letters-http-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "role":"ro", "ns":["workflow"],
+                "storage_ns":"workflow", "capabilities":["project_view"],
+                "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri(&path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body, contract["response_body"]);
+    }
+
+    #[tokio::test]
+    async fn in_memory_dead_letter_replay_http_matches_missing_run_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-dead-letter-replay-missing-http-v1.json"
+        ))
+        .unwrap();
+        let service = InMemoryGraphApplicationService::default();
+        let path = format!(
+            "/api/workflow/dead-letters/{}/replay",
+            contract["run_id"].as_str().unwrap()
+        );
+        assert!(service.supports_http_operation("POST", &path));
+        let secret = "memory-dead-letter-replay-http-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "role":"rw", "ns":["workflow"],
+                "capabilities":["service.manage"], "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service),
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(path)
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
+        let body = to_bytes(response.into_body(), 8192).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body, contract["response_body"]);
+    }
+
+    #[tokio::test]
+    async fn in_memory_dead_letter_replay_http_commits_once_and_retry_is_noop() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use kogwistar_store::{LaneMessageReadStore, LaneMessageWriteStore};
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let service = InMemoryGraphApplicationService::default();
+        let message_id = "memory-http-dead-letter";
+        let run_id = "memory-http-replay-run";
+        service
+            .store
+            .project_lane_message(kogwistar_store::NewProjectedLaneMessage {
+                message_id: message_id.to_owned(),
+                namespace: "workflow".to_owned(),
+                purpose: "system".to_owned(),
+                inbox_id: "workflow-runtime".to_owned(),
+                conversation_id: "memory-http-replay-conversation".to_owned(),
+                recipient_id: "rust-native-worker".to_owned(),
+                sender_id: "rust-scheduler".to_owned(),
+                msg_type: "workflow.step.execute".to_owned(),
+                status: "dead-letter".to_owned(),
+                created_at: 1,
+                available_at: 1,
+                run_id: Some(run_id.to_owned()),
+                step_id: Some("step-1".to_owned()),
+                correlation_id: Some(run_id.to_owned()),
+                payload_json: Some("{}".to_owned()),
+                error_json: Some("{\"message\":\"failed\"}".to_owned()),
+            })
+            .await
+            .unwrap();
+
+        let secret = "memory-dead-letter-replay-http-success-secret";
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"operator", "role":"rw", "ns":["workflow"],
+                "capabilities":["service.manage"], "iss":"local", "exp":4102444800_u64
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    issuer: Some("local".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let path = format!("/api/workflow/dead-letters/{run_id}/replay");
+        let send = || {
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(&path)
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+        };
+        let first = send().await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = to_bytes(first.into_body(), 8192).await.unwrap();
+        let first: Value = serde_json::from_slice(&first).unwrap();
+        assert_eq!(first["run_id"], run_id);
+        assert_eq!(first["replayed"], true);
+        assert_eq!(first["dead_letter"]["message_id"], message_id);
+        assert_eq!(first["dead_letter"]["status"], "dead-letter");
+        assert_eq!(
+            service
+                .store
+                .projected_lane_message(message_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+
+        let retry = send().await.unwrap();
+        assert_eq!(retry.status(), StatusCode::OK);
+        let retry = to_bytes(retry.into_body(), 8192).await.unwrap();
+        let retry: Value = serde_json::from_slice(&retry).unwrap();
+        assert_eq!(retry, json!({"run_id":run_id, "replayed":false}));
     }
 
     #[test]
@@ -877,6 +1494,53 @@
             }
         }
         drop(sqlite);
+        let _ = std::fs::remove_file(path);
+    }
+
+    // PYTHON_PARITY_V1: REST workflow-design history matches Python role defaults, explicit empty-capability denial, and namespace rejection; rust=rust/crates/kogwistar-api/src/sections/sqlite_service.rs#workflow_design_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.workflow_design_history+kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-rest-authority-v1.json,contracts/golden/workflow-design-empty-history-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_history_rest_matches_python_role_namespace_policy; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_design_empty_history_matches_shared_contract
+    #[tokio::test]
+    async fn workflow_design_history_rest_matches_python_role_namespace_policy() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("kogwistar-design-rest-read-{nonce}.sqlite3"));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let authority: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-design-rest-authority-v1.json"
+        ))
+        .unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-design-empty-history-http-v1.json"
+        ))
+        .unwrap();
+        for case in authority["cases"].as_array().unwrap() {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "GET".to_owned(),
+                    path_and_query: authority["path"].as_str().unwrap().to_owned(),
+                    body: Vec::new(),
+                    principal: case["principal"].clone(),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                case["expected_status"].as_u64().unwrap() as u16,
+                "case {}",
+                case["name"]
+            );
+            if response.status == contract["success_status"].as_u64().unwrap() as u16 {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&response.body).unwrap(),
+                    contract["response_body"]
+                );
+            }
+        }
+
+        drop(service);
         let _ = std::fs::remove_file(path);
     }
 

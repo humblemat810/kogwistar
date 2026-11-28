@@ -47,7 +47,7 @@ from kogwistar.runtime.rust_runtime_authority import (
 from kogwistar.implementation_selection import capture_implementation_selection
 from tests._helpers.engine_factories import FakeEmbeddingFunction
 from tests._helpers.server_fixtures import build_engine_triplet
-from tests.server.test_chat_server_api import _configure_server, _token_header
+from tests.server.chat_server_api_support import _configure_server, _token_header
 
 import kogwistar.server_mcp_with_admin as chat_server
 
@@ -5076,7 +5076,7 @@ def test_rust_native_workflow_runs_through_real_server_without_python_worker(
     rust_headers = _configure_rust_runtime_test_auth(
         env,
         auth_db_path=tmp_path / "native-http-auth.sqlite3",
-        workflow_ids=(workflow_contract["workflow_id"],),
+        workflow_ids=(workflow_contract["workflow_id"], "python-worker-compatibility"),
     )
     if backend == "pg":
         assert pg_dsn is not None and pg_schema is not None

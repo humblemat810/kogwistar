@@ -1,5 +1,78 @@
     #[tokio::test]
-    async fn workflow_design_node_upsert_authorization_matches_python_policy_for_all_stores() {
+    async fn workflow_design_node_upsert_http_denial_matches_python_before_effect() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use tower::ServiceExt;
+
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-design-node-upsert-denied-http-v1.json"
+        ))
+        .unwrap();
+        let path = std::env::temp_dir().join(format!(
+            "kogwistar-design-node-denied-{}.sqlite3",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&path).unwrap();
+        let secret = "design-node-denial-test-secret";
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec!["reader".to_owned()],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        for case in fixture["denial_cases"].as_array().unwrap() {
+            let token = encode(
+                &Header::new(Algorithm::HS256),
+                &case["claims"],
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap();
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(case["path"].as_str().unwrap())
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::from(serde_json::to_vec(&case["request"]).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(
+                response.status().as_u16(),
+                case["status"].as_u64().unwrap() as u16,
+                "case {}",
+                case["case"]
+            );
+            let namespace = format!(
+                "wf_design:{}",
+                case["workflow_id"].as_str().unwrap()
+            );
+            assert!(
+                service.store.replay_raw_events(&namespace, 0, 100).unwrap().is_empty(),
+                "case {} wrote an event",
+                case["case"]
+            );
+        }
+
+        drop(service);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn workflow_design_node_upsert_authorization_matches_python_policy_for_persistent_stores() {
         use std::time::{SystemTime, UNIX_EPOCH};
 
         let nonce = SystemTime::now()

@@ -1,3 +1,147 @@
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_service_events.rs#postgres_service_list_matches_shared_http_contract_when_dsn_available; python=kogwistar/server/runtime_api.py#create_runtime_router.list_services; fixture=contracts/golden/workflow-services-list-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_service_events.rs#postgres_service_list_matches_shared_http_contract_when_dsn_available; python_test=tests/server/test_service_daemon_model.py#test_service_list_route_matches_shared_contract
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_service_list_matches_shared_http_contract_when_dsn_available() {
+        use axum::{body::{Body, to_bytes}, http::Request};
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use kogwistar_store::NamedProjectionWrite;
+        use std::sync::Arc;
+        use tower::ServiceExt;
+
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_api_service_list_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+
+        for (service_id, enabled, health_status, seq) in
+            [("svc-b", true, "healthy", 1), ("svc-a", false, "stopped", 2)]
+        {
+            service
+                .store
+                .replace_named_projection(
+                    "service_registry",
+                    service_id,
+                    NamedProjectionWrite {
+                        payload: Map::from_iter([
+                            ("service_id".to_owned(), json!(service_id)),
+                            ("enabled".to_owned(), json!(enabled)),
+                            ("health_status".to_owned(), json!(health_status)),
+                        ]),
+                        last_authoritative_seq: seq,
+                        last_materialized_seq: seq,
+                        projection_schema_version: 1,
+                        materialization_status: "ready".to_owned(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-services-list-http-v1.json"
+        ))
+        .unwrap();
+        let response = service
+            .execute_async(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!(
+                    "/api/workflow/services?limit={}",
+                    contract["limit"].as_u64().unwrap()
+                ),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "service-list-reader",
+                    "role": "ro",
+                    "ns": "workflow",
+                    "capabilities": ["service.inspect", "project_view"],
+                }),
+            })
+            .await;
+
+        assert_eq!(
+            response.status,
+            contract["http_status"].as_u64().unwrap() as u16
+        );
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        for field in contract["required_body_fields"].as_array().unwrap() {
+            assert!(body.get(field.as_str().unwrap()).is_some());
+        }
+        assert_eq!(
+            body["services"].as_array().unwrap().len(),
+            contract["limit"].as_u64().unwrap() as usize
+        );
+        for (field, expected) in contract["expected_first_service"].as_object().unwrap() {
+            assert_eq!(&body["services"][0][field], expected);
+        }
+
+        let secret = "postgres-service-list-http-contract-secret";
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "service-list-reader",
+                "user_id": "service-list-reader",
+                "role": "ro",
+                "ns": ["workflow"],
+                "capabilities": ["service.inspect", "project_view"],
+                "exp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    + 60,
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let http_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/api/workflow/services?limit={}",
+                        contract["limit"].as_u64().unwrap()
+                    ))
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            http_response.status().as_u16(),
+            contract["http_status"].as_u64().unwrap() as u16
+        );
+        let http_body = serde_json::from_slice::<Value>(
+            &to_bytes(http_response.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        for field in contract["required_body_fields"].as_array().unwrap() {
+            assert!(http_body.get(field.as_str().unwrap()).is_some());
+        }
+        assert_eq!(
+            http_body["services"].as_array().unwrap().len(),
+            contract["limit"].as_u64().unwrap() as usize
+        );
+        for (field, expected) in contract["expected_first_service"].as_object().unwrap() {
+            assert_eq!(&http_body["services"][0][field], expected);
+        }
+    }
+
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_service_events_fold_authoritative_history_when_dsn_available() {

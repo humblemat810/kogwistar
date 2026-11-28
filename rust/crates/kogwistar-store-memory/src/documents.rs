@@ -143,7 +143,7 @@ fn metadata_matches_scope(metadata: &serde_json::Map<String, Value>, scope: &Gra
     })
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/documents.rs#apply_document_rollback; python=kogwistar/engine_core/subsystems/rollback.py#RollbackSubsystem.rollback_document; fixture=contracts/golden/python-graph-model-payloads-v1.json
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/documents.rs#apply_document_rollback; python=kogwistar/engine_core/subsystems/rollback.py#RollbackSubsystem.rollback_document; fixture=contracts/golden/python-graph-model-payloads-v1.json; rust_test=rust/crates/kogwistar-store-memory/src/documents.rs#rollback_rewrites_surviving_node_and_edge_and_deletes_source_projection; python_test=tests/primitives/test_document_rollback.py#test_rollback_span_filter_accepts_shared_graph_payload_mentions
 fn apply_document_rollback(
     state: &mut super::State,
     request: &DocumentRollbackRequest,
@@ -743,13 +743,24 @@ mod tests {
 
     #[test]
     fn rollback_rewrites_surviving_node_and_edge_and_deletes_source_projection() {
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/python-graph-model-payloads-v1.json"
+        )))
+        .expect("shared Python graph model fixture");
         let store = InMemoryStore::new();
         let graph_scope = GraphScope {
             namespace: "rollback-memory".to_owned(),
             workspace_id: Some("tenant-a".to_owned()),
             graph_space: Some("knowledge".to_owned()),
         };
-        let mut node = parity_fixture("node");
+        let mut node = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "node")
+            .unwrap()["payload"]
+            .clone();
         node["mentions"][0]["spans"][0]["doc_id"] = Value::String("doc-remove".to_owned());
         let mut kept_node_span = node["mentions"][0]["spans"][0].clone();
         kept_node_span["doc_id"] = Value::String("doc-keep".to_owned());
@@ -757,7 +768,13 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .push(kept_node_span);
-        let mut edge = parity_fixture("edge");
+        let mut edge = fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["kind"] == "edge")
+            .unwrap()["payload"]
+            .clone();
         edge["id"] = Value::String("edge-old".to_owned());
         edge["source_ids"] = serde_json::json!(["node-old"]);
         edge["mentions"][0]["spans"][0]["doc_id"] = Value::String("doc-remove".to_owned());

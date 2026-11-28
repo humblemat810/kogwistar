@@ -22,10 +22,32 @@ def test_phase5_gate_is_persisted_and_keeps_production_upgrade_separate() -> Non
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert "test_chat_rest_submit_and_sse" in source
-    assert "test_chat_rest_sse_reconnects_cleanly_after_terminal_run" in source
+    assert (
+        "tests/server/test_chat_server_api_run_inspection.py::"
+        "test_chat_rest_sse_reconnects_cleanly_after_terminal_run"
+    ) in source
+    assert (
+        "tests/server/test_chat_server_api_runtime_workflow.py::"
+        "test_workflow_run_lane_message_lifecycle_streams_through_registry_sse"
+    ) in source
+    assert (
+        "tests/server/test_agent_event_api.py::"
+        "test_terminal_sse_stream_stops_when_service_only_returns_stale_events"
+    ) in source
+    for module in (
+        "test_chat_mcp_conversation_tools.py",
+        "test_chat_mcp_graph_reads.py",
+        "test_chat_mcp_graph_tools.py",
+        "test_chat_mcp_operator_tools.py",
+        "test_chat_mcp_workflow_authority.py",
+        "test_chat_mcp_workflow_run_access.py",
+        "test_chat_mcp_workflow_runtime_design.py",
+        "test_chat_mcp_workflow_services.py",
+    ):
+        assert f'"tests/mcp/{module}"' in source
     assert "test_mcp_tool_registry_contract.py" in source
     assert "test_committed_openapi_golden_has_no_drift" in source
-    assert "test_versioned_server_and_syscall_deferrals_match_rust_frozen_inventory" in source
+    assert "test_closed_server_cutover_inventory_matches_rust_frozen_inventory" in source
     assert "not-proven-local" in source
     assert "live_async_sse_required" in source
     assert 'counts["skipped"] == 0' in source

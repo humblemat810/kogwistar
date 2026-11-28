@@ -353,6 +353,9 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         where: object,
         n_results: int,
         include: list[str],
+        as_of_ts: str | None = None,
+        follow_redirects: bool = True,
+        max_redirect_hops: int = 16,
     ) -> dict[str, JsonValue] | None:
         from ..rust_postgres_session import RustEnginePostgresMetaStore
 
@@ -383,7 +386,19 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
             "metric": str(cast(ProjectionBackendLike, self._e.backend).distance),
             "limit": int(n_results),
         }
-        if len(query_embeddings) == 1:
+        if as_of_ts is not None:
+            matches_by_embedding = [
+                meta.graph_projection_vector_query(
+                    **common_query,
+                    embedding=list(embedding),
+                    as_of_ts=as_of_ts,
+                    follow_redirects=follow_redirects,
+                    max_redirect_hops=max_redirect_hops,
+                    metadata_not_equals=metadata_not_equals,
+                )
+                for embedding in query_embeddings
+            ]
+        elif len(query_embeddings) == 1:
             query = {**common_query, "embedding": list(query_embeddings[0])}
             if metadata_not_equals:
                 matches_by_embedding = [
@@ -1255,9 +1270,8 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
         )
         if historical_candidates:
             query_kwargs["include_tombstoned"] = True
-        if self._rust_postgres_projection_selected() and (
-            kwargs or historical_candidates
-        ):
+        rust_selected = self._rust_postgres_projection_selected()
+        if rust_selected and kwargs:
             raise RuntimeError(
                 "Rust-selected PostgreSQL historical query does not support this "
                 "request shape; refusing Python backend fallback"
@@ -1269,8 +1283,11 @@ class ReadSubsystem(NamespaceProxy["GraphKnowledgeEngine"]):
                 where=where,
                 n_results=n_results,
                 include=include,
+                as_of_ts=as_of.isoformat(),
+                follow_redirects=follow_redirects,
+                max_redirect_hops=max_redirect_hops,
             )
-            if not kwargs and not historical_candidates
+            if rust_selected
             else None
         )
         if native is not None:

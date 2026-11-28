@@ -83,6 +83,7 @@ fn admin_document_delete_id(path_and_query: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
+// PYTHON_PARITY_NOTE_V1: Match Python's document rollback response and durable tombstone semantics; rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#admin_document_delete_effect; python=kogwistar/server_mcp_with_admin.py#admin_delete_doc; fixture=contracts/golden/document-delete-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/server_readiness.rs#admin_document_delete_commits_rollback_and_index_intent; python_test=tests/server/test_chat_server_api_admin.py#test_admin_delete_doc_uses_engine_rollback_lifecycle
 async fn admin_document_delete_effect<S: DocumentStore>(
     request: &ApiEffectRequest,
     store: &S,
@@ -232,7 +233,7 @@ fn document_tree_upsert_graph_request(
         ));
     };
     let doc_id = payload.get("doc_id").and_then(Value::as_str);
-    if !doc_id.is_some_and(|value| !value.trim().is_empty()) {
+    if doc_id.is_none_or(|value| value.trim().is_empty()) {
         return Err(effect_error(
             StatusCode::UNPROCESSABLE_ENTITY,
             "KOGWISTAR_INVALID_REQUEST",
@@ -313,11 +314,217 @@ fn document_projection_input(
     Ok(input)
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#document_projection_write; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_document_projection.rs#postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#document_projection_write; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_document_projection.rs#postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
+fn python_repr_string(value: &str) -> String {
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push(quote);
+    for character in value.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            value if value == quote => {
+                output.push('\\');
+                output.push(value);
+            }
+            value if value.is_control() && (value as u32) <= 0xff => {
+                output.push_str(&format!("\\x{:02x}", value as u32));
+            }
+            value if value.is_control() && (value as u32) <= 0xffff => {
+                output.push_str(&format!("\\u{:04x}", value as u32));
+            }
+            value if value.is_control() => {
+                output.push_str(&format!("\\U{:08x}", value as u32));
+            }
+            value => output.push(value),
+        }
+    }
+    output.push(quote);
+    output
+}
+
+fn python_repr(value: &Value) -> String {
+    match value {
+        Value::Null => "None".to_owned(),
+        Value::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => python_repr_string(value),
+        Value::Array(values) => format!(
+            "[{}]",
+            values.iter().map(python_repr).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Object(values) => format!(
+            "{{{}}}",
+            values
+                .iter()
+                .map(|(key, value)| format!("{}: {}", python_repr_string(key), python_repr(value)) )
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn python_string_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Null => "None".to_owned(),
+        Value::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
+        _ => python_repr(value),
+    }
+}
+
+#[cfg(test)]
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#normalize_ocr_document_with_source_map; python=kogwistar/engine_core/models.py#Document.from_ocr; fixture=contracts/golden/document-ocr-source-map-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/document_validation.rs#ocr_source_map_matches_shared_python_source_map_contract; python_test=tests/server/test_document_api_auth.py#test_ocr_document_payload_matches_shared_source_map_contract
+fn normalize_ocr_document_with_source_map(
+    content: &str,
+) -> Result<(String, serde_json::Map<String, Value>), String> {
+    normalize_ocr_document_inner(content, true).map(|(document, source_map)| {
+        (
+            python_repr(&document),
+            source_map.expect("source map requested for OCR parity projection"),
+        )
+    })
+}
+
+fn normalize_ocr_document_inner(
+    content: &str,
+    include_source_map: bool,
+) -> Result<(Value, Option<serde_json::Map<String, Value>>), String> {
+    let mut document: Value = serde_json::from_str(content).map_err(|error| error.to_string())?;
+    let mut source_map = include_source_map.then(serde_json::Map::new);
+    let pages = document
+        .as_object_mut()
+        .and_then(|object| {
+            let filename = object.keys().next()?.clone();
+            object.get_mut(&filename)?.as_array_mut()
+        })
+        .ok_or_else(|| "OCR content must be a non-empty object whose first value is a page list".to_owned())?;
+
+    for page in pages {
+        let Some(page) = page.as_object_mut() else {
+            return Err("OCR page must be an object".to_owned());
+        };
+        let (Some(page_number), Some(clusters)) =
+            (page.get("pdf_page_num").cloned(), page.get_mut("OCR_text_clusters"))
+        else {
+            continue;
+        };
+        let page_number = python_string_value(&page_number);
+        let clusters = clusters
+            .as_array_mut()
+            .ok_or_else(|| "OCR_text_clusters must be a list".to_owned())?;
+        for (index, cluster) in clusters.iter_mut().enumerate() {
+            let cluster = cluster
+                .as_object_mut()
+                .ok_or_else(|| "OCR text cluster must be an object".to_owned())?;
+            cluster.insert(
+                "id".to_owned(),
+                Value::String(format!("p{page_number}_c{index}")),
+            );
+            if let Some(source_map) = &mut source_map {
+                source_map.insert(
+                    format!("p{page_number}_c{index}"),
+                    Value::Object(cluster.clone()),
+                );
+            }
+        }
+        let non_text_objects = page
+            .get_mut("non_text_objects")
+            .ok_or_else(|| "OCR page is missing non_text_objects".to_owned())?
+            .as_array_mut()
+            .ok_or_else(|| "non_text_objects must be a list".to_owned())?;
+        for (index, object) in non_text_objects.iter_mut().enumerate() {
+            let object = object
+                .as_object_mut()
+                .ok_or_else(|| "OCR non-text object must be an object".to_owned())?;
+            object.insert(
+                "id".to_owned(),
+                Value::String(format!("p{page_number}_c{index}")),
+            );
+            if let Some(source_map) = &mut source_map {
+                source_map.insert(
+                    format!("p{page_number}_c{index}"),
+                    Value::Object(object.clone()),
+                );
+            }
+        }
+    }
+
+    Ok((document, source_map))
+}
+
+#[cfg(test)]
+fn document_upsert_change_payload(input: &DocumentUpsertV1) -> Result<Value, String> {
+    Ok(prepare_document_upsert_payload(input)?.change_payload)
+}
+
+struct PreparedDocumentUpsertPayload {
+    document_type: &'static str,
+    stored_content: String,
+    change_payload: Value,
+}
+
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#prepare_document_upsert_payload; python=kogwistar/engine_core/subsystems/write.py#_entity_payload; fixture=contracts/golden/document-ocr-change-event-payload-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/document_change_events.rs#ocr_change_event_payload_matches_shared_python_model_fixture; python_test=tests/server/test_document_change_event_payload.py#test_ocr_change_event_payload_matches_shared_python_model_fixture
+fn prepare_document_upsert_payload(
+    input: &DocumentUpsertV1,
+) -> Result<PreparedDocumentUpsertPayload, String> {
+    let (document_type, content, stored_content, source_map) = match input.doc_type.as_str() {
+        "text" => (
+            "text",
+            Value::String(input.content.clone()),
+            input.content.clone(),
+            Value::Null,
+        ),
+        "ocr" => {
+            let (document, source_map) = normalize_ocr_document_inner(&input.content, true)?;
+            (
+                "ocr_document",
+                document.clone(),
+                python_repr(&document),
+                Value::Object(source_map.expect("source map requested for OCR payload")),
+            )
+        }
+        _ => return Err("document type must be text or OCR".to_owned()),
+    };
+    let mut metadata = input.metadata.clone();
+    metadata.insert(
+        "insertion_method".to_owned(),
+        Value::String(input.insertion_method.clone()),
+    );
+    let change_payload = json!({
+        "id": input.doc_id,
+        "content": content,
+        "type": document_type,
+        "metadata": metadata,
+        "domain_id": null,
+        "processed": false,
+        "embeddings": null,
+        "source_map": source_map
+    });
+    Ok(PreparedDocumentUpsertPayload {
+        document_type,
+        stored_content,
+        change_payload,
+    })
+}
+
+#[derive(Debug)]
+struct PreparedDocumentProjection {
+    write: DocumentProjectionUpsert,
+    doc_id: String,
+    change_payload: Value,
+}
+
 fn document_projection_write(
     request: &ApiEffectRequest,
     capabilities: &SharedCapabilityState,
-) -> Result<DocumentProjectionUpsert, ApiEffectResponse> {
+) -> Result<PreparedDocumentProjection, ApiEffectResponse> {
     if !capability_allowed(request, capabilities, "write_graph", &["write_graph"]) {
         return Err(effect_error(
             StatusCode::FORBIDDEN,
@@ -326,36 +533,43 @@ fn document_projection_write(
         ));
     }
     let input = document_projection_input(request)?;
-    if input.doc_type != "text" {
-        return Err(effect_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "KOGWISTAR_DOCUMENT_PROJECTION_UNSUPPORTED",
-            "Rust document upsert currently supports normalized text content only",
-        ));
-    }
+    let prepared = prepare_document_upsert_payload(&input).map_err(|error| {
+        effect_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
+            error,
+        )
+    })?;
     let scope = security_scope_value(&request.principal);
     let mut metadata = input.metadata;
-    metadata.insert("doc_type".to_owned(), Value::String(input.doc_type));
+    metadata.insert(
+        "doc_type".to_owned(),
+        Value::String(prepared.document_type.to_owned()),
+    );
     metadata.insert(
         "insertion_method".to_owned(),
         Value::String(input.insertion_method),
     );
-    Ok(DocumentProjectionUpsert {
-        scope: GraphScope {
-            namespace: scope["storage_namespace"]
-                .as_str()
-                .unwrap_or("docs")
-                .to_owned(),
-            workspace_id: scope["workspace"].as_str().map(str::to_owned),
-            graph_space: scope["graph_space"].as_str().map(str::to_owned),
+    Ok(PreparedDocumentProjection {
+        write: DocumentProjectionUpsert {
+            scope: GraphScope {
+                namespace: scope["storage_namespace"]
+                    .as_str()
+                    .unwrap_or("docs")
+                    .to_owned(),
+                workspace_id: scope["workspace"].as_str().map(str::to_owned),
+                graph_space: scope["graph_space"].as_str().map(str::to_owned),
+            },
+            record: GraphRecord {
+                id: input.doc_id.clone(),
+                document: Some(prepared.stored_content),
+                metadata,
+                embedding: None,
+            },
+            embedding_dim: 0,
         },
-        record: GraphRecord {
-            id: input.doc_id,
-            document: Some(input.content),
-            metadata,
-            embedding: None,
-        },
-        embedding_dim: 0,
+        doc_id: input.doc_id,
+        change_payload: prepared.change_payload,
     })
 }
 
@@ -403,13 +617,6 @@ fn graph_upsert_request(
             error.to_string(),
         )
     })?;
-    if input.doc_type != "text" {
-        return Err(effect_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "KOGWISTAR_GRAPH_UPSERT_UNSUPPORTED",
-            "Rust graph upsert currently supports normalized text documents only",
-        ));
-    }
     Ok(input)
 }
 
@@ -417,7 +624,7 @@ fn graph_upsert_should_write_document(
     inline_content: Option<&str>,
     stored_content: Option<&str>,
 ) -> bool {
-    inline_content.is_some() || !stored_content.is_some_and(|content| !content.is_empty())
+    inline_content.is_some() || stored_content.is_none_or(str::is_empty)
 }
 
 fn graph_upsert_endpoint_snapshot_matches(
@@ -931,18 +1138,11 @@ impl SqliteRunApplicationService {
                 "Graph upsert requires SQLite canonical events and a configured Chroma projection",
             );
         }
-        if principal_role(&request.principal) != "rw"
-            || !capability_allowed_for_principal(
-                &request.principal,
-                &self.capabilities,
-                "write_graph",
-                &["write_graph"],
-            )
-        {
+        if principal_role(&request.principal) != "rw" {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Graph upsert requires rw and write_graph capability",
+                "Graph upsert requires rw role",
             );
         }
         let Some(owner_id) = authenticated_run_owner_id(&request.principal) else {
@@ -1254,7 +1454,7 @@ impl SqliteRunApplicationService {
         }
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#sqlite_public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_wisdom_retrieval.rs#sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract; python_test=tests/server/test_chat_server_api.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#sqlite_public_document_tree_upsert_effect; python=kogwistar/server_mcp_with_admin.py#document_upsert_tree; fixture=contracts/golden/graph-extraction-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_wisdom_retrieval.rs#sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract; python_test=tests/server/test_chat_server_api_documents.py#test_document_upsert_tree_accepts_nonempty_shared_graph_extraction
     async fn sqlite_public_document_tree_upsert_effect(
         &self,
         request: &ApiEffectRequest,
@@ -1264,6 +1464,29 @@ impl SqliteRunApplicationService {
                 Ok(parsed) => parsed,
                 Err(response) => return response,
             };
+        if inserted_nodes == 0 && inserted_edges == 0 {
+            let payload: Value = serde_json::from_slice(&request.body)
+                .expect("validated document tree body");
+            let doc_id = payload["doc_id"]
+                .as_str()
+                .expect("validated document tree doc_id")
+                .to_owned();
+            return json_effect(
+                StatusCode::OK,
+                json!({
+                    "status": "ok",
+                    "inserted_nodes": 0,
+                    "inserted_edges": 0,
+                    "engine_result": {
+                        "document_id": doc_id,
+                        "node_ids": [],
+                        "edge_ids": [],
+                        "nodes_added": 0,
+                        "edges_added": 0
+                    }
+                }),
+            );
+        }
         let response = self.sqlite_public_graph_upsert_effect(&graph_request).await;
         if !(200..300).contains(&response.status) {
             return response;
@@ -1719,21 +1942,88 @@ mod graph_upsert_tests {
     }
 }
 
+fn request_approval_mutates_capabilities(input: &SyscallInput) -> bool {
+    matches!(
+        input
+            .args
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "grant" | "revoke"
+    )
+}
+
+fn request_approval_syscall_effect(
+    request: &ApiEffectRequest,
+    shared: &SharedCapabilityState,
+    input: &SyscallInput,
+) -> ApiEffectResponse {
+    let action = input
+        .args
+        .get("action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if matches!(action.as_str(), "grant" | "revoke")
+        && input
+            .args
+            .get("capability")
+            .and_then(Value::as_str)
+            .is_none_or(|capability| capability.trim().is_empty())
+    {
+        if !syscall_allowed(request, shared, &input.op, true, &[]) {
+            return syscall_forbidden(&input.op);
+        }
+        return json_effect(
+            StatusCode::BAD_REQUEST,
+            json!({"detail": format!("capability is required for {action}")}),
+        );
+    }
+    let required = if request_approval_mutates_capabilities(input) {
+        &["approve_action"][..]
+    } else {
+        &[][..]
+    };
+    if !syscall_allowed(request, shared, &input.op, true, required) {
+        return syscall_forbidden(&input.op);
+    }
+    if request_approval_mutates_capabilities(input)
+        && !capability_allowed(
+            request,
+            shared,
+            "project_view",
+            &["project_view", "read_security_scope"],
+        )
+    {
+        return effect_error(
+            StatusCode::FORBIDDEN,
+            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            "Inspecting capabilities requires project_view and read_security_scope capabilities",
+        );
+    }
+    request_approval_syscall(request, shared, input)
+}
+
 fn request_approval_syscall(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
     input: &SyscallInput,
 ) -> ApiEffectResponse {
-    let action = input.args["action"]
-        .as_str()
+    let action = input
+        .args
+        .get("action")
+        .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
     if action.is_empty() {
-        return effect_error(
+        return json_effect(
             StatusCode::BAD_REQUEST,
-            "KOGWISTAR_INVALID_REQUEST",
-            "action is required",
+            json!({"detail":"action is required"}),
         );
     }
     if action == "deny" {
@@ -1744,35 +2034,34 @@ fn request_approval_syscall(
                 "op": input.op,
                 "status": "blocked",
                 "result": {},
-                "error": {"reason": input.args["reason"].as_str().unwrap_or("request denied")},
+                "error": {"reason": input.args.get("reason").and_then(Value::as_str).unwrap_or("request denied")},
             }),
         );
     }
     if !matches!(action.as_str(), "grant" | "revoke") {
-        return json_effect(
-            StatusCode::OK,
-            json!({
-                "version": input.version,
-                "op": input.op,
-                "status": "ok",
-                "result": {"status":"requested", "reason": input.args["reason"].as_str().unwrap_or("approval pending")},
-            }),
+        return syscall_success(
+            &input.version,
+            &input.op,
+            json!({"status":"requested", "reason": input.args.get("reason").and_then(Value::as_str).unwrap_or("approval pending")}),
         );
     }
-    let capability = input.args["capability"]
-        .as_str()
+    let capability = input
+        .args
+        .get("capability")
+        .and_then(Value::as_str)
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
     if capability.is_empty() {
-        return effect_error(
+        return json_effect(
             StatusCode::BAD_REQUEST,
-            "KOGWISTAR_INVALID_REQUEST",
-            format!("capability is required for {action}"),
+            json!({"detail":format!("capability is required for {action}")}),
         );
     }
-    let subject = input.args["subject"]
-        .as_str()
+    let subject = input
+        .args
+        .get("subject")
+        .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_ascii_lowercase)
@@ -1781,8 +2070,10 @@ fn request_approval_syscall(
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let payload = if action == "grant" {
-        let approval_action = input.args["approval_action"]
-            .as_str()
+        let approval_action = input
+            .args
+            .get("approval_action")
+            .and_then(Value::as_str)
             .unwrap_or("request_approval")
             .to_ascii_lowercase();
         state
@@ -1792,7 +2083,7 @@ fn request_approval_syscall(
             .insert(capability.clone());
         json!({
             "status":"approved",
-            "approval": {"subject":subject,"action":approval_action,"capabilities":[capability]},
+            "approval": capability_snapshot(&request.principal, &state),
         })
     } else {
         state
@@ -1802,13 +2093,10 @@ fn request_approval_syscall(
             .insert(capability.clone());
         json!({
             "status":"revoked",
-            "revocation": {"subject":subject,"capability":capability},
+            "revocation": capability_snapshot(&request.principal, &state),
         })
     };
-    json_effect(
-        StatusCode::OK,
-        json!({"version":input.version,"op":input.op,"status":"ok","result":payload}),
-    )
+    syscall_success(&input.version, &input.op, payload)
 }
 
 fn syscall_read_effect(
@@ -1856,7 +2144,7 @@ fn syscall_read_effect(
     }
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#designer_capabilities_effect; python=kogwistar/server_mcp_with_admin.py#designer_capabilities; fixture=contracts/golden/workflow-designer-capabilities-schema-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api.py#test_designer_capabilities_endpoint
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#designer_capabilities_effect; python=kogwistar/server_mcp_with_admin.py#designer_capabilities; fixture=contracts/golden/workflow-designer-capabilities-schema-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api_admin.py#test_designer_capabilities_endpoint
 fn designer_capabilities_effect(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
@@ -1995,6 +2283,7 @@ fn operational_path(path_and_query: &str) -> Option<&str> {
     .then_some(path)
 }
 
+// PYTHON_PARITY_NOTE_V1: Preserve Python list-slice limit semantics, including zero/negative limits, after graph ACL filtering; rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operator_inbox_effect; python=kogwistar/server/chat_service.py#ChatRunService.list_operator_inbox; fixture=contracts/golden/workflow-operator-inbox-limit-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/mcp_run_observability.rs#operator_inbox_filters_graph_visibility_and_security_scope_before_limit; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_chat_run_service_operator_inbox_respects_security_scope
 fn operator_inbox_effect(
     request: &ApiEffectRequest,
     lanes: &[ProjectedLaneMessage],
@@ -2011,7 +2300,7 @@ fn operator_inbox_effect(
     };
     let inbox_id = query_value("inbox_id");
     let status = query_value("status");
-    let limit = query_integer(&request.path_and_query, "limit", 200).clamp(1, 10_000) as usize;
+    let limit = query_integer(&request.path_and_query, "limit", 200).clamp(-10_000, 10_000);
     let scope = security_scope_value(&request.principal);
     let actual_scope = scope["security_scope"]
         .as_str()
@@ -2069,10 +2358,13 @@ fn operator_inbox_effect(
             "execution_namespace": scope["execution_namespace"],
             "security_scope": scope["security_scope"],
         }));
-        if messages.len() >= limit {
-            break;
-        }
     }
+    let end = if limit < 0 {
+        messages.len().saturating_sub(limit.unsigned_abs() as usize)
+    } else {
+        messages.len().min(limit as usize)
+    };
+    messages.truncate(end);
     json_effect(StatusCode::OK, json!({"messages": messages}))
 }
 
@@ -2285,6 +2577,12 @@ fn resource_value(
             )
         })
         .count();
+    let usage_count = usage.len();
+    let usage_by_kind = if usage_count == 0 {
+        json!({})
+    } else {
+        json!({"usage": usage_count})
+    };
     json!({
         "scheduler": {
             "max_active": active.max(1),
@@ -2305,10 +2603,10 @@ fn resource_value(
         "services": {"total_services": 0, "by_health": {}},
         "storage_usage_bytes": storage_usage_bytes,
         "cost_ledger": {
-            "workspace_id": "workflow",
+            "workspace_id": "chat-service",
             "event_count": usage.len(),
             "total_amount": total_amount,
-            "by_kind": {"usage": usage.len()},
+            "by_kind": usage_by_kind,
         },
         "budget_model": {"token_kind": "token", "time_kind": "ms", "storage_kind": "bytes"},
         "policy_infra": {"cpu_millicores": Value::Null, "memory_mb": Value::Null},
@@ -2607,8 +2905,9 @@ fn operational_effect(
                 },
             ]),
         ),
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_monitoring.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api.py#test_runtime_resource_snapshot_reports_pressure
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.resource_snapshot; fixture=contracts/golden/workflow-resources-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_monitoring.rs#sqlite_resources_route_matches_python_contract_and_requires_scope_capabilities; python_test=tests/server/test_chat_server_api_runtime_workflow.py#test_runtime_resource_snapshot_reports_pressure
         "/api/workflow/resources" => json_effect(StatusCode::OK, resources),
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot; fixture=contracts/golden/workflow-budget-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_capability_kernel_contract.py#test_workflow_budget_route_matches_contract_and_requires_security_scope
         "/api/workflow/budget" => json_effect(
             StatusCode::OK,
             json!({
@@ -2646,7 +2945,7 @@ fn operational_effect(
                 "limit": limit,
             }),
         ),
-        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_lane_message_progress; python_service=kogwistar/server/chat_service.py#ChatRunService.lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api.py#test_workflow_lane_progress_matches_shared_contract
+        // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#operational_effect; python=kogwistar/server/runtime_api.py#create_runtime_router.get_lane_message_progress; python_service=kogwistar/server/chat_service.py#ChatRunService.lane_message_progress; fixture=contracts/golden/workflow-lane-progress-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_lane_progress_matches_shared_contract
         "/api/workflow/lane/progress" => {
             let run_id = query_string(&request.path_and_query, "run_id");
             let conversation_id = query_string(&request.path_and_query, "conversation_id");
@@ -2797,9 +3096,17 @@ fn runtime_run_route(path_and_query: &str) -> Option<(String, Vec<String>)> {
     None
 }
 
+// PYTHON_PARITY_NOTE_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#runtime_run_namespace; python=kogwistar/server/chat_api.py#create_chat_router.get_run_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api_run_inspection.py#test_run_steps_matches_shared_rust_projection_fixture
 fn runtime_run_namespace(path_and_query: &str) -> Option<&'static str> {
     let path = path_and_query.split('?').next().unwrap_or(path_and_query);
-    if path.starts_with("/api/workflow/runs/") {
+    if path.starts_with("/api/workflow/runs/")
+        || runtime_run_route(path).is_some_and(|(_, tail)| {
+            matches!(
+                tail.first().map(String::as_str),
+                Some("steps" | "checkpoints" | "evidence" | "replay" | "resume-contract" | "resume")
+            )
+        })
+    {
         Some("workflow")
     } else if path.starts_with("/api/runs/") {
         Some("conversation")

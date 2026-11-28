@@ -27,6 +27,21 @@ impl SqliteUnitOfWork<'_> {
     ) -> SqliteStoreResult<()> {
         update_projected_lane_message_status(self.transaction, message_id, status, error_json)
     }
+    pub fn compare_and_set_projected_lane_message_status(
+        &self,
+        message_id: &str,
+        expected_status: &str,
+        status: &str,
+        error_json: Option<String>,
+    ) -> SqliteStoreResult<bool> {
+        compare_and_set_projected_lane_message_status(
+            self.transaction,
+            message_id,
+            expected_status,
+            status,
+            error_json,
+        )
+    }
     pub fn update_projected_lane_message_links(
         &mut self,
         message_id: &str,

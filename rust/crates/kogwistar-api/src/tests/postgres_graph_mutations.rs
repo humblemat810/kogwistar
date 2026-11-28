@@ -1,4 +1,39 @@
     #[tokio::test]
+    async fn postgres_document_tree_upsert_requires_rw_role_before_storage() {
+        let service = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "document_tree_role_authorization",
+        )
+        .unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/document-upsert-tree-success-v1.json"
+        )))
+        .unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/document.upsert_tree".to_owned(),
+                body: serde_json::to_vec(&fixture["request"]).unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": ["docs"],
+                    "storage_ns": "docs",
+                    "capabilities": ["write_graph"]
+                }),
+            })
+            .await;
+
+        assert_eq!(response.status, StatusCode::FORBIDDEN.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_CAPABILITY_FORBIDDEN"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_internal_graph_mutation_route_persists_atomically_when_dsn_available() {
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
@@ -230,6 +265,20 @@
         let make_token = |capabilities: &[&str], storage_ns: &str| {
             make_token_for("alice", capabilities, storage_ns)
         };
+        let read_only_graph_token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "alice",
+                "role": "ro",
+                "roles": ["reader"],
+                "ns": "workflow",
+                "storage_ns": "alpha",
+                "capabilities": ["write_graph"],
+                "exp": 4102444800_u64
+            }),
+            &EncodingKey::from_secret(key.as_bytes()),
+        )
+        .unwrap();
         let make_docs_token_for = |subject: &str, capabilities: &[&str]| {
             encode(
                 &Header::new(Algorithm::HS256),
@@ -263,7 +312,7 @@
                 Arc::new(service.clone()),
             )
         };
-        let graph_upsert_token_for = |subject: &str| {
+        let graph_upsert_token_for = |subject: &str, capabilities: &[&str]| {
             encode(
                 &Header::new(Algorithm::HS256),
                 &json!({
@@ -274,14 +323,14 @@
                 "storage_ns": "alpha",
                 "workspace": "workspace-a",
                 "graph_space": "facts",
-                "capabilities": ["write_graph"],
+                "capabilities": capabilities,
                 "exp": 4102444800_u64
             }),
                 &EncodingKey::from_secret(key.as_bytes()),
             )
             .unwrap()
         };
-        let graph_upsert_token = graph_upsert_token_for("alice");
+        let graph_upsert_token = graph_upsert_token_for("alice", &["write_graph"]);
         let mut extraction: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/graph-extraction-v1.json"
@@ -327,7 +376,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", make_token(&[], "alpha")),
+                        format!("Bearer {read_only_graph_token}"),
                     )
                     .body(Body::from(serde_json::to_vec(&extraction).unwrap()))
                     .unwrap(),
@@ -635,7 +684,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", graph_upsert_token_for("bob")),
+                        format!("Bearer {}", graph_upsert_token_for("bob", &["write_graph"])),
                     )
                     .body(Body::from(
                         serde_json::to_vec(&external_endpoint_extraction).unwrap(),
@@ -662,7 +711,7 @@
                     .header("content-type", "application/json")
                     .header(
                         "authorization",
-                        format!("Bearer {}", graph_upsert_token_for("bob")),
+                        format!("Bearer {}", graph_upsert_token_for("bob", &["write_graph"])),
                     )
                     .body(Body::from(
                         serde_json::to_vec(&external_edge_endpoint_extraction).unwrap(),
@@ -1766,7 +1815,10 @@
                     .method("POST")
                     .uri("/api/document.upsert_tree")
                     .header("content-type", "application/json")
-                    .header("authorization", format!("Bearer {graph_upsert_token}"))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", graph_upsert_token_for("alice", &[])),
+                    )
                     .body(Body::from(serde_json::to_vec(&tree_payload).unwrap()))
                     .unwrap(),
             )

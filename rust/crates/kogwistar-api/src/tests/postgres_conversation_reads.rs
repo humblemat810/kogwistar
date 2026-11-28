@@ -133,6 +133,7 @@
                 body: Vec::new(),
                 principal: json!({
                     "sub": "alice",
+                    "user_id": "alice",
                     "role": "ro",
                     "ns": "workflow",
                     "storage_ns": "conversation",
@@ -192,6 +193,37 @@
         assert_eq!(syscall_payload["op"], "mount_memory");
         assert_eq!(syscall_payload["status"], "ok");
         assert_eq!(syscall_payload["result"], expected);
+
+        let missing_snapshot_response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/mount_memory".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "mount_memory",
+                    "args": {
+                        "conversation_id": expected["conversation_id"],
+                        "run_id": "missing-run",
+                        "stage": "final"
+                    }
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            missing_snapshot_response.status,
+            StatusCode::NOT_FOUND.as_u16()
+        );
+        assert!(!String::from_utf8_lossy(&missing_snapshot_response.body)
+            .contains("snapshot-1"));
 
         let private_syscall_response = service
             .execute(ApiEffectRequest {
@@ -299,6 +331,132 @@
                 "snapshot": expected
             })
         );
+        let approval_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-request-approval-success-v1.json"
+        ))
+        .unwrap();
+        for case in approval_contract["cases"].as_array().unwrap() {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                    body: serde_json::to_vec(&case["request"]).unwrap(),
+                    principal: json!({
+                        "sub": "alice",
+                        "role": "rw",
+                        "ns": "workflow",
+                        "storage_ns": "conversation",
+                        "capabilities": [
+                            "approve_action",
+                            "project_view",
+                            "read_security_scope"
+                        ]
+                    }),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                case["http_status"].as_u64().unwrap() as u16
+            );
+            let payload: Value = serde_json::from_slice(&response.body).unwrap();
+            assert_eq!(payload["version"], case["request"]["version"]);
+            assert_eq!(payload["op"], case["request"]["op"]);
+            assert_eq!(payload["status"], "ok");
+            assert!(payload.get("error").is_some_and(Value::is_null));
+            let result = &payload["result"];
+            assert_eq!(result["status"], case["result_status"]);
+            assert!(result[case["snapshot_field"].as_str().unwrap()]
+                [case["entries_field"].as_str().unwrap()]
+                .as_array()
+                .unwrap()
+                .contains(&case["expected_entry"]));
+        }
+        let denied_approval = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "request_approval",
+                    "args": {"action": "deny", "reason": "postgres deny branch"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "workflow",
+                    "storage_ns": "conversation",
+                    "capabilities": ["approve_action", "project_view", "read_security_scope"]
+                }),
+            })
+            .await;
+        assert_eq!(denied_approval.status, StatusCode::OK.as_u16());
+        let denied_payload: Value = serde_json::from_slice(&denied_approval.body).unwrap();
+        assert_eq!(denied_payload["status"], "blocked");
+        assert_eq!(denied_payload["error"]["reason"], "postgres deny branch");
+
+        let invalid_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-request-approval-invalid-v1.json"
+        ))
+        .unwrap();
+        for case in invalid_contract["cases"].as_array().unwrap() {
+            let response = service
+                .execute(ApiEffectRequest {
+                    contract_version: 1,
+                    method: "POST".to_owned(),
+                    path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                    body: serde_json::to_vec(&case["request"]).unwrap(),
+                    principal: json!({
+                        "sub": "alice",
+                        "role": "rw",
+                        "ns": "workflow",
+                        "storage_ns": "conversation",
+                        "capabilities": ["approve_action", "project_view", "read_security_scope"]
+                    }),
+                })
+                .await;
+            assert_eq!(
+                response.status,
+                case["http_status"].as_u64().unwrap() as u16,
+                "{}",
+                case["name"]
+            );
+            assert_eq!(
+                serde_json::from_slice::<Value>(&response.body).unwrap(),
+                case["response"],
+                "{}",
+                case["name"]
+            );
+        }
+        let unrecognized_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-request-approval-unrecognized-v1.json"
+        ))
+        .unwrap();
+        let unrecognized = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/request_approval".to_owned(),
+                body: serde_json::to_vec(&unrecognized_fixture["request"]).unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "rw",
+                    "ns": "workflow",
+                    "storage_ns": "conversation",
+                    "capabilities": ["approve_action", "project_view", "read_security_scope"]
+                }),
+            })
+            .await;
+        assert_eq!(
+            unrecognized.status,
+            unrecognized_fixture["http_status"].as_u64().unwrap() as u16
+        );
+        assert_eq!(
+            serde_json::from_slice::<Value>(&unrecognized.body).unwrap(),
+            unrecognized_fixture["response"]
+        );
         let denied_model_tool = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -330,17 +488,36 @@
             serde_json::from_slice::<Value>(&denied_model_tool.body).unwrap()["code"],
             "KOGWISTAR_CAPABILITY_FORBIDDEN"
         );
+        let invoke_error_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/syscall-invoke-tool-errors-v1.json"
+        ))
+        .unwrap();
+        let unknown_tool_case = invoke_error_fixture["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["name"] == "unknown-tool")
+            .unwrap();
+        let graph_ids_before_unknown_tool = service
+            .conversation_store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 1_000,
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<BTreeSet<_>>();
         let unsupported_tool = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
                 method: "POST".to_owned(),
                 path_and_query: "/api/syscall/v1/invoke_tool".to_owned(),
-                body: serde_json::to_vec(&json!({
-                    "version": "v1",
-                    "op": "invoke_tool",
-                    "args": {"tool_name": "not_registered"}
-                }))
-                .unwrap(),
+                body: serde_json::to_vec(&unknown_tool_case["request"]).unwrap(),
                 principal: json!({
                     "sub": "alice",
                     "role": "rw",
@@ -352,12 +529,31 @@
             .await;
         assert_eq!(
             unsupported_tool.status,
-            StatusCode::NOT_FOUND.as_u16(),
+            unknown_tool_case["http_status"].as_u64().unwrap() as u16,
             "unknown built-in tools must fail explicitly, not silently fall back"
         );
         assert_eq!(
-            serde_json::from_slice::<Value>(&unsupported_tool.body).unwrap()["code"],
-            "KOGWISTAR_TOOL_NOT_FOUND"
+            serde_json::from_slice::<Value>(&unsupported_tool.body).unwrap(),
+            unknown_tool_case["response"]
+        );
+        let graph_ids_after_unknown_tool = service
+            .conversation_store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: MetadataFilter::default(),
+                limit: 1_000,
+            })
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|record| record.id)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            graph_ids_after_unknown_tool,
+            graph_ids_before_unknown_tool,
+            "unknown tool must not change the graph projection"
         );
         let invoke_audit_response = service
             .execute(ApiEffectRequest {
@@ -466,6 +662,9 @@
             .unwrap();
     }
 
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.get_conversation; fixture=contracts/golden/conversation-detail-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api_conversations.py#test_conversation_detail_uses_python_defaults_and_checks_namespace
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_conversations_for_user; fixture=contracts/golden/conversation-list-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api_conversations.py#test_conversation_list_is_user_scoped_and_has_stable_response_shape
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_transcript; fixture=contracts/golden/conversation-transcript-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available; python_test=tests/server/test_chat_server_api_conversations.py#test_conversation_transcript_uses_python_defaults_and_checks_namespace
     #[tokio::test]
     #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
     async fn postgres_conversation_routes_project_authorized_summary_and_transcript_when_dsn_available()
@@ -514,6 +713,12 @@
                 "conversation_start",
                 json!({"user_id": "bob", "status": "active"}),
             ),
+            (
+                "start-empty",
+                "conversation-empty",
+                "conversation_start",
+                json!({"user_id": "alice", "status": "active"}),
+            ),
         ] {
             let mut metadata = Map::new();
             metadata.insert("entity_type".to_owned(), json!(entity_type));
@@ -544,7 +749,7 @@
                 ("acl_mode", json!("private")),
                 (
                     "owner_id",
-                    json!(if conversation_id == "conversation-1" {
+                    json!(if conversation_id == "conversation-1" || conversation_id == "conversation-empty" {
                         "alice"
                     } else {
                         "bob"
@@ -756,6 +961,32 @@
             ])
         );
 
+        let detail_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-detail-http-v1.json"
+        ))
+        .unwrap();
+        let empty_detail = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: detail_contract["method"].as_str().unwrap().to_owned(),
+                path_and_query: detail_contract["path"].as_str().unwrap().to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "user_id": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(empty_detail.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&empty_detail.body).unwrap(),
+            detail_contract["response"]
+        );
+
         let list_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -764,6 +995,7 @@
                 body: Vec::new(),
                 principal: json!({
                     "sub": "alice",
+                    "user_id": "alice",
                     "role": "ro",
                     "ns": "conversation",
                     "storage_ns": "conversation",
@@ -773,6 +1005,35 @@
             .await;
         assert_eq!(list_response.status, StatusCode::OK.as_u16());
         let list: Value = serde_json::from_slice(&list_response.body).unwrap();
+        let list_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-list-http-v1.json"
+        ))
+        .unwrap();
+        let expected_fields = |key: &str| {
+            list_contract[key]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|field| field.as_str().unwrap().to_owned())
+                .collect::<BTreeSet<_>>()
+        };
+        assert_eq!(
+            list.as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected_fields("response_fields")
+        );
+        assert_eq!(
+            list["conversations"][0]
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<BTreeSet<_>>(),
+            expected_fields("conversation_fields")
+        );
         assert_eq!(
             list,
             json!({
@@ -781,9 +1042,42 @@
                     "start_node_id": "start-1",
                     "status": "active",
                     "turn_count": 2
+                }, {
+                    "id": "conversation-empty",
+                    "start_node_id": "start-empty",
+                    "status": "active",
+                    "turn_count": 0
                 }]
             })
         );
+
+        let missing_identity = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice", "role":"ro", "ns":"conversation",
+                    "storage_ns":"conversation", "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(missing_identity.status, StatusCode::UNAUTHORIZED.as_u16());
+
+        let wrong_namespace = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conversation-1".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice", "user_id":"alice", "role":"ro", "ns":"docs",
+                    "storage_ns":"conversation", "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(wrong_namespace.status, StatusCode::FORBIDDEN.as_u16());
 
         let transcript_response = service
             .execute(ApiEffectRequest {
@@ -828,6 +1122,199 @@
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["conversation_id".to_owned(), "turns".to_owned()])
         );
+
+        let transcript_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-transcript-http-v1.json"
+        ))
+        .unwrap();
+        let empty_transcript = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: transcript_contract["method"].as_str().unwrap().to_owned(),
+                path_and_query: transcript_contract["path"].as_str().unwrap().to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(empty_transcript.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&empty_transcript.body).unwrap(),
+            transcript_contract["response"]
+        );
+
+        // Keep the legacy unscoped assertions above isolated from the scoped fixture.
+        for (id, entity_type, workspace_id, graph_space, extra, acl_mode, acl_owner) in [
+            (
+                "scope-start",
+                "conversation_start",
+                "workspace-a",
+                "conversation",
+                json!({"user_id":"alice","status":"active"}),
+                "public",
+                None,
+            ),
+            (
+                "scope-visible-turn",
+                "conversation_turn",
+                "workspace-a",
+                "conversation",
+                json!({"turn_index":1,"role":"assistant","summary":"scoped visible"}),
+                "public",
+                None,
+            ),
+            (
+                "scope-hidden-turn",
+                "conversation_turn",
+                "workspace-a",
+                "conversation",
+                json!({"turn_index":2,"role":"assistant","summary":"scoped private"}),
+                "private",
+                Some("bob"),
+            ),
+            (
+                "scope-foreign-workspace-turn",
+                "conversation_turn",
+                "workspace-b",
+                "conversation",
+                json!({"turn_index":3,"role":"assistant","summary":"foreign workspace"}),
+                "public",
+                None,
+            ),
+            (
+                "scope-foreign-graph-turn",
+                "conversation_turn",
+                "workspace-a",
+                "knowledge",
+                json!({"turn_index":4,"role":"assistant","summary":"foreign graph space"}),
+                "public",
+                None,
+            ),
+        ] {
+            let scoped_scope = GraphScope {
+                namespace: "conversation".to_owned(),
+                workspace_id: Some(workspace_id.to_owned()),
+                graph_space: Some(graph_space.to_owned()),
+            };
+            let mut metadata = Map::from_iter([
+                ("entity_type".to_owned(), json!(entity_type)),
+                ("conversation_id".to_owned(), json!("scope-matrix-conversation")),
+            ]);
+            metadata.extend(extra.as_object().unwrap().clone());
+            service
+                .conversation_store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scoped_scope.clone(),
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: id.to_owned(),
+                        document: None,
+                        metadata,
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+            let mut acl = Map::from_iter([
+                ("entity_type".to_owned(), json!("acl_record")),
+                ("acl_truth_graph".to_owned(), json!("conversation")),
+                ("acl_target_entity_id".to_owned(), json!(id)),
+                ("acl_target_grain".to_owned(), json!("node")),
+                ("acl_version".to_owned(), json!(1)),
+                ("acl_mode".to_owned(), json!(acl_mode)),
+            ]);
+            if let Some(owner) = acl_owner {
+                acl.insert("owner_id".to_owned(), json!(owner));
+            }
+            service
+                .conversation_store
+                .upsert_graph_projection(kogwistar_store_postgres::GraphProjectionUpsert {
+                    scope: scoped_scope,
+                    table: "gke_nodes".to_owned(),
+                    record: GraphRecord {
+                        id: format!("acl-{id}"),
+                        document: None,
+                        metadata: acl,
+                        embedding: None,
+                    },
+                    embedding_dim: 3,
+                })
+                .await
+                .unwrap();
+        }
+
+        let scoped_principal = json!({
+            "sub":"alice", "user_id":"alice", "role":"ro", "ns":"conversation",
+            "storage_ns":"conversation", "workspace_id":"workspace-a",
+            "graph_space":"conversation", "capabilities":["read_graph"]
+        });
+        let scoped_list = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: scoped_principal.clone(),
+            })
+            .await;
+        assert_eq!(scoped_list.status, StatusCode::OK.as_u16());
+        let scoped_list: Value = serde_json::from_slice(&scoped_list.body).unwrap();
+        assert_eq!(scoped_list["conversations"].as_array().unwrap().len(), 1);
+        assert_eq!(scoped_list["conversations"][0]["id"], "scope-matrix-conversation");
+        assert_eq!(scoped_list["conversations"][0]["turn_count"], 1);
+
+        let scoped_detail = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/scope-matrix-conversation".to_owned(),
+                body: Vec::new(),
+                principal: scoped_principal.clone(),
+            })
+            .await;
+        assert_eq!(scoped_detail.status, StatusCode::OK.as_u16());
+        let scoped_detail: Value = serde_json::from_slice(&scoped_detail.body).unwrap();
+        assert_eq!(scoped_detail["start_node_id"], "scope-start");
+        assert_eq!(scoped_detail["tail_node_id"], "scope-visible-turn");
+        assert_eq!(scoped_detail["turn_count"], 1);
+
+        let scoped_transcript = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/scope-matrix-conversation/turns".to_owned(),
+                body: Vec::new(),
+                principal: scoped_principal.clone(),
+            })
+            .await;
+        assert_eq!(scoped_transcript.status, StatusCode::OK.as_u16());
+        let scoped_transcript: Value = serde_json::from_slice(&scoped_transcript.body).unwrap();
+        assert_eq!(scoped_transcript["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(scoped_transcript["turns"][0]["node_id"], "scope-visible-turn");
+        let scoped_body = scoped_transcript.to_string();
+        assert!(!scoped_body.contains("scoped private"));
+        assert!(!scoped_body.contains("foreign workspace"));
+        assert!(!scoped_body.contains("foreign graph space"));
+
+        let foreign_owner = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/conversation-other".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice", "user_id":"alice", "role":"ro", "ns":"conversation",
+                    "storage_ns":"conversation", "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(foreign_owner.status, StatusCode::NOT_FOUND.as_u16());
 
         let audit_response = service
             .execute(ApiEffectRequest {
@@ -953,6 +1440,53 @@
         assert_eq!(receive_payload["status"], "ok");
         assert_eq!(receive_payload["result"], expected_receive);
 
+        let missing_conversation = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"receive_message",
+                    "args":{"conversation_id":"missing"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"alice",
+                    "role":"ro",
+                    "ns":"conversation",
+                    "storage_ns":"conversation",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(missing_conversation.status, StatusCode::NOT_FOUND.as_u16());
+        let empty_conversation = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": "conversation-empty"}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub": "alice",
+                    "role": "ro",
+                    "ns": "conversation",
+                    "storage_ns": "conversation",
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(empty_conversation.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&empty_conversation.body).unwrap()["result"]["messages"],
+            json!([])
+        );
+
         let invoke_transcript_response = service
             .execute(ApiEffectRequest {
                 contract_version: 1,
@@ -1074,9 +1608,9 @@
                 .unwrap();
         assert_eq!(http_audit, audit);
 
-        for (bearer, expected_status, expect_empty) in [
-            (&foreign_owner_token, StatusCode::OK, true),
-            (&wrong_namespace_token, StatusCode::FORBIDDEN, false),
+        for (bearer, expected_status) in [
+            (&foreign_owner_token, StatusCode::NOT_FOUND),
+            (&wrong_namespace_token, StatusCode::FORBIDDEN),
         ] {
             let denied = app
                 .clone()
@@ -1103,11 +1637,6 @@
             let body = String::from_utf8_lossy(&body);
             assert!(!body.contains("first"), "denied response leaked user turn: {body}");
             assert!(!body.contains("second"), "denied response leaked assistant turn: {body}");
-            if expect_empty {
-                let payload: Value = serde_json::from_str(&body).unwrap();
-                assert_eq!(payload["status"], "ok");
-                assert_eq!(payload["result"]["messages"], json!([]));
-            }
         }
 
         let mcp_audit = app
@@ -1215,7 +1744,12 @@
                 }),
             })
             .await;
-        assert_eq!(scoped_receive.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            scoped_receive.status,
+            StatusCode::OK.as_u16(),
+            "scoped receive response: {}",
+            String::from_utf8_lossy(&scoped_receive.body)
+        );
         let scoped_receive: Value = serde_json::from_slice(&scoped_receive.body).unwrap();
         assert_eq!(scoped_receive["result"]["messages"].as_array().unwrap().len(), 2);
         assert_eq!(scoped_receive["result"]["messages"][0]["node_id"], "scoped-turn-1");
@@ -1236,4 +1770,83 @@
             ))
             .await
             .unwrap();
+    }
+
+    // PYTHON_PARITY_V1: Conversation transcript ACL filtering must precede the bounded result window on PostgreSQL, matching Python's uncapped projection-before-limit behavior. rust=rust/crates/kogwistar-api/src/sections/postgres_native_conversation.rs; python=kogwistar/server/chat_service_conversation_queries.py#_ConversationQueryService.list_transcript; fixture=contracts/golden/conversation-transcript-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_conversation_reads.rs#postgres_conversation_transcript_filters_hidden_rows_before_limit; python_test=tests/server/test_conversation_graph_scope.py#test_conversation_read_acl_scope_matrix
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_conversation_transcript_filters_hidden_rows_before_limit() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_conversation_acl_limit_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_graph_type_schemas().await.unwrap();
+        service
+            .conversation_store
+            .create_graph_schema(3, kogwistar_store_postgres::GraphTableNames::default())
+            .await
+            .unwrap();
+
+        let table = format!("\"{schema}_conversation\".gke_nodes");
+        let (client, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+            .await
+            .expect("connect to isolated PostgreSQL test database");
+        tokio::spawn(async move {
+            let _ = connection.await;
+        });
+        client
+            .batch_execute(&format!(
+                "INSERT INTO {table}(id, document, metadata, embedding) VALUES \
+                 ('matrix-start', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"conversation_start\",\"conversation_id\":\"matrix-conversation\",\"user_id\":\"alice\",\"status\":\"active\"}}'::jsonb, NULL), \
+                 ('matrix-acl-start', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"acl_record\",\"acl_truth_graph\":\"conversation\",\"acl_target_entity_id\":\"matrix-start\",\"acl_target_grain\":\"node\",\"acl_version\":1,\"acl_mode\":\"public\"}}'::jsonb, NULL); \
+                 INSERT INTO {table}(id, document, metadata, embedding) \
+                 SELECT 'matrix-hidden-' || n, NULL, jsonb_build_object(\
+                     'namespace','conversation','entity_type','conversation_turn',\
+                     'conversation_id','matrix-conversation','turn_index',n,\
+                     'role','assistant','summary','hidden'), NULL \
+                 FROM generate_series(1, 10001) AS n; \
+                 INSERT INTO {table}(id, document, metadata, embedding) \
+                 SELECT 'matrix-acl-hidden-' || n, NULL, jsonb_build_object(\
+                     'namespace','conversation','entity_type','acl_record',\
+                     'acl_truth_graph','conversation','acl_target_entity_id','matrix-hidden-' || n,\
+                     'acl_target_grain','node','acl_version',1,'acl_mode','private','owner_id','bob'), NULL \
+                 FROM generate_series(1, 10001) AS n; \
+                 INSERT INTO {table}(id, document, metadata, embedding) VALUES \
+                 ('matrix-visible', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"conversation_turn\",\"conversation_id\":\"matrix-conversation\",\"turn_index\":10002,\"role\":\"assistant\",\"summary\":\"visible-after-hidden\"}}'::jsonb, NULL), \
+                 ('matrix-acl-visible', NULL, '{{\"namespace\":\"conversation\",\"entity_type\":\"acl_record\",\"acl_truth_graph\":\"conversation\",\"acl_target_entity_id\":\"matrix-visible\",\"acl_target_grain\":\"node\",\"acl_version\":1,\"acl_mode\":\"public\"}}'::jsonb, NULL);"
+            ))
+            .await
+            .expect("seed hidden-before-visible conversation rows");
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations/matrix-conversation/turns".to_owned(),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"alice",
+                    "user_id":"alice",
+                    "role":"ro",
+                    "ns":"conversation",
+                    "storage_ns":"conversation",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let payload: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(payload["conversation_id"], "matrix-conversation");
+        assert_eq!(payload["turns"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["turns"][0]["node_id"], "matrix-visible");
+        assert_eq!(payload["turns"][0]["content"], "visible-after-hidden");
+        client
+            .batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS \"{schema}_conversation\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_workflow\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}_wisdom\" CASCADE; \
+                 DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+            ))
+            .await
+            .expect("drop isolated PostgreSQL test schemas");
     }

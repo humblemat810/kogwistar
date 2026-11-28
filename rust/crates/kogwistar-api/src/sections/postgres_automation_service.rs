@@ -1079,12 +1079,20 @@ impl PostgresRunApplicationService {
         } else {
             &[required]
         };
-        if !capability_allowed(
-            request,
-            &self.capabilities,
-            required,
-            required_capabilities,
-        ) {
+        let rest_undo_redo = matches!(&route, DesignRoute::Undo | DesignRoute::Redo)
+            && request
+                .principal
+                .get("_kogwistar_rest_design_acl_checked")
+                .and_then(Value::as_bool)
+                == Some(true);
+        if !rest_undo_redo
+            && !capability_allowed(
+                request,
+                &self.capabilities,
+                required,
+                required_capabilities,
+            )
+        {
             return effect_error(
                 StatusCode::FORBIDDEN,
                 "KOGWISTAR_CAPABILITY_FORBIDDEN",
@@ -1185,7 +1193,7 @@ impl PostgresRunApplicationService {
                             "drop_to_seq":history["versions"].as_array().and_then(|items|items.last()).and_then(|item|item["seq"].as_i64()).unwrap_or(0)}).to_string(),
                     }).await?; }
                     let version = history["allocated_max_version"].as_i64().unwrap_or(0)+1;
-                    let entity = design_entity_event(&action, &entity_id, &before, &graph);
+                    let entity = design_entity_event(&action, &entity_id, &designer, &before, &graph);
                     let data_event = uow.append_raw_entity_event(&namespace, PostgresNewRawEntityEvent {
                         event_id:entity.event_id,entity_kind:entity.entity_kind,entity_id:entity.entity_id,op:entity.op,payload_json:entity.payload.to_string(),
                     }).await?;
@@ -1206,7 +1214,7 @@ impl PostgresRunApplicationService {
                         payload:serde_json::from_str(&event.payload_json).unwrap_or(Value::Null),}).collect::<Vec<_>>();
                     let folded=workflow_design_history_value(&workflow_id_owned,folded_events,"ready").map_err(kogwistar_store_postgres::PostgresStoreError::TransactionAborted)?;
                     uow.replace_named_projection("workflow_design",&workflow_id_owned,workflow_design_projection_write(&folded)).await?;
-                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_automation_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_configuration.rs#postgres_design_capability_mutates_and_undoes_when_dsn_available; python_test=tests/server/test_chat_server_api.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
+                    // PYTHON_REFERENCE_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_automation_service.rs#workflow_design_effect; python=kogwistar/server/chat_service_workflow_design.py#workflow_design_upsert_edge+workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_configuration.rs#postgres_design_capability_mutates_and_undoes_when_dsn_available; python_test=tests/server/test_chat_server_api_workflow_design.py#test_workflow_design_edge_upsert_matches_shared_contract; note=deleted is emitted only for delete responses, matching Python's mutation envelope.
                     let mut response = json!({"workflow_id":workflow_id_owned,"namespace":namespace,
                         if deleted {if action=="node_delete"{"node_id"}else{"edge_id"}}else if action=="node_upsert"{"node_id"}else{"edge_id"}:entity_id,
                         "designer_id":designer,"version":folded["current_version"],"seq":data_event.event.seq,"can_undo":folded["can_undo"],"can_redo":folded["can_redo"]});
@@ -1568,10 +1576,15 @@ impl PostgresRunApplicationService {
         };
         match self
             .store
-            .update_projected_lane_message_status(&lane.message_id, "pending", None)
+            .compare_and_set_projected_lane_message_status(
+                &lane.message_id,
+                "dead-letter",
+                "pending",
+                None,
+            )
             .await
         {
-            Ok(()) => json_effect(
+            Ok(true) => json_effect(
                 StatusCode::OK,
                 json!({
                     "run_id": run_id,
@@ -1579,6 +1592,7 @@ impl PostgresRunApplicationService {
                     "dead_letter": lane_progress_value(&lane),
                 }),
             ),
+            Ok(false) => json_effect(StatusCode::OK, json!({"run_id": run_id, "replayed": false})),
             Err(error) => effect_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "KOGWISTAR_STORE_ERROR",

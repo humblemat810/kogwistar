@@ -1,3 +1,351 @@
+#[test]
+fn in_memory_root_graph_tool_auth_matches_python_capability_policy() {
+    let service = InMemoryGraphApplicationService::default();
+    let graph_read_tools = [
+        "kg_find_edges",
+        "kg_k_hop",
+        "kg_load_persisted",
+        "kg_neighbors",
+        "kg_propose_bruteforce",
+        "kg_shortest_path",
+        "kg_viz_cytoscape_json",
+        "kg_viz_d3_json",
+        "propose_vector",
+    ];
+
+    for name in graph_read_tools {
+        assert!(service.supports_mcp_tool("root", name), "{name}");
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":["docs"], "capabilities":[]}),
+            ),
+            "explicitly empty capabilities must deny {name}"
+        );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":["other"], "capabilities":["read_graph"]}),
+            ),
+            "wrong namespace must deny {name}"
+        );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"admin", "ns":["docs"], "capabilities":[]}),
+            ),
+            "unknown role with explicit empty capabilities must deny {name}"
+        );
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            name,
+            &json!({"role":"ro", "ns":["docs"], "capabilities":["read_graph"]}),
+        ), "authorized principal must retain {name}");
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            name,
+            &json!({"role":"ro", "ns":["docs"], "capabilities":[], "caps":["read_graph"]}),
+        ), "empty capabilities must fall back to legacy caps for {name}");
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":["docs"], "capabilities":"read_graph,write_graph"}),
+            ),
+            "comma-delimited capability string must not grant {name}"
+        );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":"other,docs", "capabilities":["read_graph"]}),
+            ),
+            "comma-delimited namespace string must not grant {name}"
+        );
+        assert!(
+            !service.supports_mcp_tool_for_principal(
+                "root",
+                name,
+                &json!({"role":"ro", "ns":" docs ", "capabilities":["read_graph"]}),
+            ),
+            "whitespace-padded namespace must not grant {name}"
+        );
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            name,
+            &json!({"role":"ro", "ns":["docs"]}),
+        ), "legacy role-derived capability behavior changed for {name}");
+        assert!(service.supports_mcp_tool_for_principal(
+            "root",
+            name,
+            &json!({"role":"admin", "ns":["docs"], "capabilities":["read_graph"]}),
+        ), "unknown roles must retain Python's read-only fallback for {name}");
+    }
+}
+
+#[tokio::test]
+async fn in_memory_root_graph_mcp_hides_and_rejects_tools_without_read_capability() {
+    use axum::body::{Body, to_bytes};
+    use axum::http::Request;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use tower::ServiceExt;
+
+    let secret = "root-graph-acl-mcp-test-secret";
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let token = |capabilities: &[&str]| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"reader",
+                "role":"ro",
+                "ns":["docs"],
+                "capabilities":capabilities,
+                "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: vec![],
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(InMemoryGraphApplicationService::default()),
+    );
+
+    let denied_token = token(&[]);
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":"list-denied","method":"tools/list"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let list: Value = serde_json::from_slice(
+        &to_bytes(list.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(!list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "kg_shortest_path"));
+
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-denied",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let denied: Value = serde_json::from_slice(
+        &to_bytes(denied.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(denied["error"]["code"], -32602);
+
+    let mismatched_namespace_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader",
+            "role":"ro",
+            "ns":"other,docs",
+            "capabilities":["read_graph"],
+            "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let mismatched_namespace_call = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {mismatched_namespace_token}"),
+                )
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-mismatched-namespace",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let mismatched_namespace_call: Value = serde_json::from_slice(
+        &to_bytes(mismatched_namespace_call.into_body(), 65_536)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mismatched_namespace_call["error"]["code"], -32602);
+
+    let allowed_token = token(&["read_graph"]);
+    let allowed_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {allowed_token}"))
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":"list-allowed","method":"tools/list"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let allowed_list: Value = serde_json::from_slice(
+        &to_bytes(allowed_list.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(allowed_list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "kg_shortest_path"));
+
+    let legacy_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"reader",
+            "role":"ro",
+            "ns":["docs"],
+            "capabilities":[],
+            "caps":["read_graph"],
+            "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let legacy_list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {legacy_token}"))
+                .body(Body::from(
+                    json!({"jsonrpc":"2.0","id":"list-legacy-capability","method":"tools/list"})
+                        .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let legacy_list: Value = serde_json::from_slice(
+        &to_bytes(legacy_list.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(legacy_list["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|tool| tool["name"] == "kg_shortest_path"));
+
+    let legacy_call = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {legacy_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-legacy-capability",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let legacy_call: Value = serde_json::from_slice(
+        &to_bytes(legacy_call.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(legacy_call.get("error").is_none(), "{legacy_call}");
+
+    let allowed = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {allowed_token}"))
+                .body(Body::from(
+                    json!({
+                        "jsonrpc":"2.0",
+                        "id":"call-allowed",
+                        "method":"tools/call",
+                        "params":{"name":"kg_shortest_path","arguments":{"src_id":"a","dst_id":"b"}}
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let allowed: Value = serde_json::from_slice(
+        &to_bytes(allowed.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert!(allowed.get("error").is_none(), "{allowed}");
+}
+
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text; fixture=contracts/golden/semantic-seed-expand-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp; python_test=tests/primitives/test_graph_query.py#test_semantic_seed_then_expand_text
 #[tokio::test]
 async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_mcp() {
@@ -601,6 +949,7 @@ async fn in_memory_semantic_seed_expand_is_available_through_authenticated_http_
     );
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python=kogwistar/server_mcp_with_admin.py#add_index_entries; fixture=contracts/golden/search-index-entry-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python_test=tests/server/test_search_index_api_auth.py#test_add_index_entries_requires_write_role_and_keeps_payload
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python=kogwistar/server_mcp_with_admin.py#search_index_hybrid; fixture=contracts/golden/search-index-hybrid-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/in_memory_semantic_retrieval.rs#in_memory_search_index_hybrid_is_scoped_and_acl_filtered; python_test=tests/core/test_search_index_contract.py#test_hybrid_search_fusion_matches_shared_rust_golden_fixture
 #[tokio::test]
 async fn in_memory_search_index_hybrid_is_scoped_and_acl_filtered() {

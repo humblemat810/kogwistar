@@ -14,7 +14,7 @@ from contextlib import AbstractContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, ParamSpec, TypeVar, cast, get_type_hints, overload
 
-from mcp import types
+import mcp.types as types
 from mcp.server.lowlevel import Server
 from pydantic import BaseModel, ConfigDict, TypeAdapter, create_model
 from starlette.applications import Starlette

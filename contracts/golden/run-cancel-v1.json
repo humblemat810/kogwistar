@@ -5,6 +5,8 @@
   "accepted_status": 202,
   "accepted_run_statuses": ["cancelling", "cancelled"],
   "terminal_statuses": ["succeeded", "failed", "cancelled"],
+  "nonterminal_cancel_event": "run.cancelling",
+  "terminal_retry_appends_event": false,
   "required_fields": [
     "run_id",
     "conversation_id",

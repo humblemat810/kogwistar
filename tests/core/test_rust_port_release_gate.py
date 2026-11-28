@@ -618,6 +618,28 @@ def test_capability_readiness_is_derived_from_test_evidence_not_manifest_flags()
     assert blocked[0]["status"] == "blocked"
 
 
+def test_closed_server_syscalls_allow_server_cutover_readiness() -> None:
+    gate = _gate()
+    results, errors = gate.evaluate_capability_clause_tests(
+        phase3=_phase3_capability_evidence(),
+        phase4=_phase4_runtime_evidence(),
+        phase5=_phase5_evidence(),
+        current_source_sha256=gate.candidate_source_fingerprint(ROOT)[0],
+    )
+    assert errors == []
+
+    reports = gate.derive_capability_test_readiness(
+        clause_results=results,
+        phase_statuses={"phase3": "passed", "phase4": "passed", "phase5": "passed"},
+        library_uat_passed=True,
+        deferred_capabilities=set(),
+    )
+    by_capability = {item["capability"]: item for item in reports}
+    assert by_capability["graph-pgvector"]["cutover_readiness"] == "ready"
+    assert by_capability["workflow-runtime"]["cutover_readiness"] == "ready"
+    assert by_capability["server-rest-sse-mcp-cli"]["cutover_readiness"] == "ready"
+
+
 def test_cutover_ledger_must_match_executable_readiness() -> None:
     gate = _gate()
     ready = [
@@ -893,7 +915,7 @@ def test_rust_named_test_may_be_repeated_across_current_reports() -> None:
     assert errors == []
 
 
-def test_current_release_gate_reports_real_blockers() -> None:
+def test_current_release_gate_accepts_closed_server_inventory_with_passing_evidence() -> None:
     manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
     performance = json.loads(
         (ROOT / "contracts" / "benchmarks" / "rust-runtime-serving-current-windows.json").read_text(
@@ -910,29 +932,38 @@ def test_current_release_gate_reports_real_blockers() -> None:
         phase5_server_evidence=_phase5_evidence(),
     )
 
-    assert result["status"] == "blocked"
-    details = {row["detail"] for row in result["blockers"]}
-    assert "generic persistent public-store performance gate remains failed" not in details
+    assert result["status"] == "passed"
+    assert result["blockers"] == []
+    assert result["server_operation_deferrals"] == {
+        "validation_status": "passed",
+        "cutover_status": "clear",
+        "pending_routes": [],
+        "pending_syscalls": [],
+    }
     readiness = {item["capability"]: item for item in result["capability_test_readiness"]}
-    assert readiness["postgres-sequence-event-log"]["status"] == "passed"
-    assert readiness["projections-snapshots-run-registry"]["status"] == "passed"
-    assert readiness["queues-leases-lanes"]["status"] == "passed"
-    assert readiness["graph-pgvector"]["status"] == "passed"
-    assert readiness["workflow-runtime"]["status"] == "passed"
+    for capability in (
+        "postgres-sequence-event-log",
+        "projections-snapshots-run-registry",
+        "queues-leases-lanes",
+        "graph-pgvector",
+        "workflow-runtime",
+        "server-rest-sse-mcp-cli",
+    ):
+        assert readiness[capability]["status"] == "passed"
     assert readiness["server-rest-sse-mcp-cli"]["status"] == "passed"
     assert readiness["postgres-sequence-event-log"]["cutover_readiness"] == "ready"
-    assert readiness["graph-pgvector"]["cutover_readiness"] == "blocked"
-    assert readiness["workflow-runtime"]["cutover_readiness"] == "blocked"
-    assert readiness["server-rest-sse-mcp-cli"]["cutover_readiness"] == "blocked"
+    assert readiness["graph-pgvector"]["cutover_readiness"] == "ready"
+    assert readiness["workflow-runtime"]["cutover_readiness"] == "ready"
+    assert readiness["server-rest-sse-mcp-cli"]["cutover_readiness"] == "ready"
     assert not any(row["gate"] == "capability-test-gate" for row in result["blockers"])
-    assert any(
+    assert not any(
         row["gate"] == "capability-cutover-readiness" for row in result["blockers"]
     )
     assert not any(row["gate"] == "authority" for row in result["blockers"])
     assert result["library_uat"]["status"] == "passed"
 
 
-def test_gate_does_not_treat_manifest_flags_as_test_evidence() -> None:
+def test_gate_requires_current_evidence_even_when_deferral_inventory_is_closed() -> None:
     manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
     manifest["current_persistent_evidence"]["gate_status"] = "passed"
 
@@ -942,24 +973,33 @@ def test_gate_does_not_treat_manifest_flags_as_test_evidence() -> None:
         runtime_performance=_runtime_performance(),
         phase3_capability_evidence=_phase3_capability_evidence(),
         phase4_runtime_evidence=_phase4_runtime_evidence(),
-        phase5_server_evidence=_phase5_evidence(),
+        phase5_server_evidence={},
     )
 
     assert result["status"] == "blocked"
-    assert result["server_operation_deferrals"] == {"status": "passed"}
+    assert result["server_operation_deferrals"] == {
+        "validation_status": "passed",
+        "cutover_status": "clear",
+        "pending_routes": [],
+        "pending_syscalls": [],
+    }
     assert result["phase3_capability_evidence"] == {"status": "passed"}
     assert result["phase4_runtime_evidence"] == {"status": "passed"}
-    assert result["phase5_server_evidence"] == {"status": "passed"}
+    assert result["phase5_server_evidence"] == {"status": "blocked"}
     assert result["library_uat"]["status"] == "passed"
     readiness = {item["capability"]: item for item in result["capability_test_readiness"]}
-    assert readiness["postgres-sequence-event-log"]["status"] == "passed"
-    assert readiness["projections-snapshots-run-registry"]["status"] == "passed"
-    assert readiness["queues-leases-lanes"]["status"] == "passed"
-    assert readiness["graph-pgvector"]["status"] == "passed"
-    assert readiness["workflow-runtime"]["status"] == "passed"
-    assert readiness["server-rest-sse-mcp-cli"]["status"] == "passed"
-    assert readiness["graph-pgvector"]["cutover_readiness"] == "blocked"
-    assert readiness["workflow-runtime"]["cutover_readiness"] == "blocked"
+    for capability in (
+        "postgres-sequence-event-log",
+        "projections-snapshots-run-registry",
+        "queues-leases-lanes",
+        "graph-pgvector",
+        "workflow-runtime",
+        "server-rest-sse-mcp-cli",
+    ):
+        assert readiness[capability]["status"] == "blocked"
+        assert readiness[capability]["passed_clauses"] == 0
+    assert readiness["graph-pgvector"]["cutover_readiness"] == "ready"
+    assert readiness["workflow-runtime"]["cutover_readiness"] == "ready"
     assert readiness["server-rest-sse-mcp-cli"]["cutover_readiness"] == "blocked"
 
 
@@ -1052,15 +1092,15 @@ def test_dual_language_support_rejects_missing_and_duplicate_capabilities() -> N
     assert "dual-language capability deterministic-contracts does not retain Python" in errors
 
 
-def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
+def test_gate_rejects_reintroduced_server_syscall_deferral() -> None:
     manifest = json.loads((ROOT / "contracts" / "rust-port-v1.json").read_text(encoding="utf-8"))
     for item in manifest["capability_ownership"]:
         if item["capability"] in _gate().REQUIRED_RUST_OWNERS:
             item["rust_cutover_ready"] = True
     manifest["current_persistent_evidence"]["gate_status"] = "passed"
-    manifest["server_operation_deferrals"]["syscall_group"]["operations"].append(
-        manifest["server_operation_deferrals"]["syscall_group"]["operations"][0]
-    )
+    manifest["server_operation_deferrals"]["syscall_group"]["operations"] = [
+        "invoke_tool"
+    ]
 
     result = _gate().evaluate_release_gate(
         manifest=manifest,
@@ -1072,9 +1112,10 @@ def test_gate_rejects_missing_or_duplicate_versioned_server_deferrals() -> None:
     )
 
     assert result["status"] == "blocked"
-    assert result["server_operation_deferrals"] == {"status": "blocked"}
+    assert result["server_operation_deferrals"]["validation_status"] == "blocked"
+    assert result["server_operation_deferrals"]["cutover_status"] == "blocked"
     details = {row["detail"] for row in result["blockers"]}
-    assert "syscall_group.operations must not contain duplicates" in details
+    assert "syscall_group.operations must be empty after cutover closure" in details
 
 
 def test_gate_rejects_historical_compatibility_report_after_source_changes() -> None:

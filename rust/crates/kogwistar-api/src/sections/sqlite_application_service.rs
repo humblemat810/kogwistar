@@ -303,6 +303,40 @@ impl ApplicationService for SqliteRunApplicationService {
         })
     }
 
+    fn workflow_run_submit_allowed(
+        &self,
+        workflow_id: String,
+        user_id: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            let Some(auth_store) = self.owner_auth_store.as_ref() else {
+                return Ok(true);
+            };
+            let Some(user_id) = user_id else {
+                return Ok(false);
+            };
+            auth_store
+                .workflow_access_allowed(&workflow_id, &user_id, "rw")
+                .await
+        })
+    }
+
+    fn workflow_access_allowed(
+        &self,
+        workflow_id: String,
+        user_id: String,
+        required_role: String,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async move {
+            let Some(auth_store) = self.owner_auth_store.as_ref() else {
+                return Ok(true);
+            };
+            auth_store
+                .workflow_access_allowed(&workflow_id, &user_id, &required_role)
+                .await
+        })
+    }
+
     fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
         if surface == "root" && name == "document_id_from_file_name" {
             return DocumentStore::supports_document_projection_lookup(&self.store);
@@ -339,8 +373,8 @@ impl ApplicationService for SqliteRunApplicationService {
                     || self.embedding_provider.is_some());
         }
         name != "workflow.tool_audit"
-            && name != "workflow.run_evidence"
-            && name != "workflow.run_lineage"
+            && (name != "workflow.run_lineage" || self.chroma_graph.is_some())
+            && (name != "workflow.run_evidence" || self.chroma_graph.is_some())
             && (name != "conversation.create" || self.chroma_graph.is_some())
             && (name != "conversation.ask"
                 || (self.chroma_graph.is_some()
@@ -372,7 +406,16 @@ impl ApplicationService for SqliteRunApplicationService {
         name: &str,
         principal: &Value,
     ) -> bool {
-        // PYTHON_PARITY_NOTE_V1: service declaration MCP admission requires rw/workflow; the effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare+kogwistar/server/chat_service.py#ChatRunService.declare_service; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_declare_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_declare_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: status tool admission checks role + workflow namespace; get_run enforces workflow.run.read. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_status+kogwistar/server/chat_service.py#ChatRunService.get_run; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_status_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_status_uses_capability_without_workflow_acl
+        if name == "workflow.run_status" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_NOTE_V1: service declaration MCP admission requires rw/workflow; the effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_declare+kogwistar/server/chat_service.py#ChatRunService.declare_service; fixture=contracts/golden/workflow-service-declare-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_declare_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_declare_denies_unauthorized_effects
         if name == "workflow.service_declare" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -381,7 +424,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: service lifecycle MCP admission requires rw/workflow; effects independently check service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_enable+workflow_service_disable+kogwistar/server/chat_service.py#ChatRunService.enable_service+disable_service; fixtures=contracts/golden/workflow-service-enable-mcp-v1.json+workflow-service-disable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_lifecycle_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_lifecycle_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: service lifecycle MCP admission requires rw/workflow; effects independently check service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_enable+workflow_service_disable+kogwistar/server/chat_service.py#ChatRunService.enable_service+disable_service; fixtures=contracts/golden/workflow-service-enable-mcp-v1.json+workflow-service-disable-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_lifecycle_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_lifecycle_denies_unauthorized_effects
         if matches!(name, "workflow.service_enable" | "workflow.service_disable") {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -390,7 +433,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: heartbeat MCP admission requires rw/workflow; its effect requires both service.heartbeat and service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat+kogwistar/server/chat_service.py#ChatRunService.record_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_heartbeat_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_heartbeat_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: heartbeat MCP admission requires rw/workflow; its effect requires both service.heartbeat and service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_heartbeat+kogwistar/server/chat_service.py#ChatRunService.record_service_heartbeat; fixture=contracts/golden/workflow-service-heartbeat-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_heartbeat_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_heartbeat_denies_unauthorized_effects
         if name == "workflow.service_heartbeat" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -399,7 +442,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: trigger MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_trigger+kogwistar/server/chat_service.py#ChatRunService.trigger_service; fixture=contracts/golden/workflow-service-trigger-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_trigger_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_trigger_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: trigger MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_trigger+kogwistar/server/chat_service.py#ChatRunService.trigger_service; fixture=contracts/golden/workflow-service-trigger-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_trigger_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_service_trigger_denies_unauthorized_effects
         if name == "workflow.service_trigger" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -408,7 +451,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projection; fixture=contracts/golden/workflow-service-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_repair_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projection; fixture=contracts/golden/workflow-service-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_repair_denies_unauthorized_effects
         if name == "workflow.service_repair" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -417,7 +460,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "workflow" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: bulk repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_services_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projections; fixture=contracts/golden/workflow-services-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_services_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_services_repair_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: bulk repair MCP admission requires rw/workflow; its effect independently checks service.manage. rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_services_repair+kogwistar/server/chat_service.py#ChatRunService.repair_service_projections; fixture=contracts/golden/workflow-services-repair-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_services_repair_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_services_repair_denies_unauthorized_effects
         if name == "workflow.services_repair" {
             return surface == "workflow"
                 && principal_role(principal) == "rw"
@@ -442,7 +485,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: transcript reads require ro/rw, conversation scope, and read_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_transcript_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace
+        // PYTHON_PARITY_NOTE_V1: transcript reads require ro/rw, conversation scope, and read_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_transcript_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_conversation_tools.py#test_mcp_conversation_get_transcript_denies_missing_capability_and_namespace
         if name == "conversation.get_transcript" {
             if surface != "conversation"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -459,7 +502,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: conversation status admission requires ro/rw and conversation namespace; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_run_status; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_run_status_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: conversation status admission requires ro/rw and conversation namespace; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_run_status; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_run_status_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_conversation_tools.py#test_mcp_conversation_run_status_denies_unauthorized_effects
         if name == "conversation.run_status" {
             return surface == "conversation"
                 && matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -468,7 +511,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "conversation" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: cancel admission requires rw/conversation; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_cancel_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
+        // PYTHON_PARITY_NOTE_V1: cancel admission requires rw/conversation; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_conversation_mcp.conversation_cancel_run; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#conversation_cancel_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_conversation_tools.py#test_mcp_conversation_cancel_run_denies_unauthorized_effects
         // Capability remains status-aware in the downstream cancel service.
         if name == "conversation.cancel_run" {
             return surface == "conversation"
@@ -478,7 +521,7 @@ impl ApplicationService for SqliteRunApplicationService {
                     .any(|namespace| namespace == "conversation" || namespace == "*")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: explicit read_graph + docs scope gate for these root graph tools; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_root_graph_mcp_honors_explicit_capability_claims
+        // PYTHON_PARITY_NOTE_V1: explicit read_graph + docs scope gate for these root graph tools; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=kogwistar/tests/mcp/test_chat_mcp_graph_tools.py#test_root_graph_mcp_honors_explicit_capability_claims
         if matches!(
             name,
             "kg_load_persisted"
@@ -503,7 +546,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: require read_graph for explicit capability claims; legacy role defaults remain intact; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/document_id_tools.rs#document_id_lookup_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
+        // PYTHON_PARITY_NOTE_V1: require read_graph for explicit capability claims; legacy role defaults remain intact; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/mcp_tools.py#TOOL_CAPABILITIES; rust_test=rust/crates/kogwistar-api/src/tests/document_id_tools.rs#document_id_lookup_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_document_id_from_file_name_denies_scope_and_capability_before_lookup
         if name == "document_id_from_file_name" {
             if surface != "root"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -520,7 +563,16 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("read_graph")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read before event-store access; rust=kogwistar/rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events+kogwistar/server/chat_service.py#ChatRunService.list_run_events; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_run_events_denies_missing_read_capability_before_read
+        // PYTHON_PARITY_NOTE_V1: run-event reads require ro/rw, workflow scope, and workflow.run.read before event-store access; rust=kogwistar/rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_events+kogwistar/server/chat_service.py#ChatRunService.list_run_events; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_events_mcp_admission_matches_python_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_events_denies_missing_read_capability_before_read
+        // PYTHON_PARITY_NOTE_V1: MCP admission uses ro/rw + workflow namespace; Python's list_steps service still checks workflow.run.read, followed by configured per-workflow ACL; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_steps+kogwistar/server/chat_service.py#ChatRunService.list_steps; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_run_steps_mcp_admission_matches_python_role_namespace_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_run_access.py#test_mcp_workflow_run_steps_preserves_role_namespace_policy_without_capability+test_chat_service_steps_still_require_read_capability_after_mcp_admission
+        if name == "workflow.run_steps" {
+            return surface == "workflow"
+                && matches!(principal_role(principal).as_str(), "ro" | "rw")
+                && principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+                && self.supports_mcp_tool(surface, name);
+        }
         if name == "workflow.run_events" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -537,7 +589,26 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("workflow.run.read")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: dashboard preflights nested read capabilities before MCP dispatch; rust=kogwistar/rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard+kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_operator_dashboard_mcp_admission_matches_python_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
+        // PYTHON_PARITY_NOTE_V1: run-evidence MCP admission requires workflow.run.read + project_view; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_run_evidence; python_test=tests/server/test_chat_server_api_run_inspection.py#test_run_evidence_uses_python_defaults_and_checks_namespace; fixture=contracts/golden/run-evidence-v1.json.
+        if name == "workflow.run_evidence" {
+            if surface != "workflow"
+                || !matches!(principal_role(principal).as_str(), "ro" | "rw")
+                || !principal_strings(principal, "ns")
+                    .iter()
+                    .any(|namespace| namespace == "workflow" || namespace == "*")
+            {
+                return false;
+            }
+            let state = self
+                .capabilities
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let capabilities = effective_capabilities(principal, &state);
+            return capabilities.contains("workflow.run.read")
+                && capabilities.contains("project_view")
+                && self.supports_mcp_tool(surface, name);
+        }
+        // PYTHON_PARITY_NOTE_V1: dashboard preflights nested read capabilities before MCP dispatch; rust=kogwistar/rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard+kogwistar/server/chat_service.py#ChatRunService.operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; rust_test=kogwistar/rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_operator_dashboard_mcp_admission_matches_python_policy_for_all_stores; python_test=kogwistar/tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
         if name == "workflow.operator_dashboard" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -573,7 +644,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: orphan repair requires rw/workflow plus project_view before dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; python_service=kogwistar/server/chat_service.py#ChatRunService.repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_message_orphans_repair_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_denies_before_dispatch
+        // PYTHON_PARITY_NOTE_V1: orphan repair requires rw/workflow plus project_view before dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; python_service=kogwistar/server/chat_service.py#ChatRunService.repair_orphaned_claimed_messages; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_message_orphans_repair_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_message_orphans_repair_denies_before_dispatch
         if name == "workflow.message_orphans_repair" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -590,7 +661,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: node upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_node; fixture=contracts/golden/workflow-design-node-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_node_upsert_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_node_upsert_denies_before_dispatch
+        // PYTHON_PARITY_NOTE_V1: node upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_node; fixture=contracts/golden/workflow-design-node-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_node_upsert_authorization_matches_python_policy_for_persistent_stores; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_design_node_upsert_denies_before_dispatch
         if name == "workflow.design_node_upsert" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -610,7 +681,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: undo/redo require rw/workflow plus workflow.design.write and approve_action; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_redo_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_denies_before_dispatch
+        // PYTHON_PARITY_NOTE_V1: undo/redo require rw/workflow plus workflow.design.write and approve_action; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_redo_authorization_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_design_redo_denies_before_dispatch
         if matches!(name, "workflow.design_undo" | "workflow.design_redo") {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -630,7 +701,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: node deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_node; fixture=contracts/golden/workflow-design-node-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_node_delete_denies_before_dispatch
+        // PYTHON_PARITY_NOTE_V1: node deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_node_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_node; fixture=contracts/golden/workflow-design-node-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_design_node_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_design_node_delete_denies_before_dispatch
         if name == "workflow.design_node_delete" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -650,7 +721,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: edge deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_edge_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_edge_delete_denies_before_dispatch
+        // PYTHON_PARITY_NOTE_V1: edge deletion requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_delete; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_delete_edge; fixture=contracts/golden/workflow-design-edge-delete-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_edge_delete_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_design_edge_delete_denies_before_dispatch
         if name == "workflow.design_edge_delete" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -670,7 +741,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: edge upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_edge; fixture=contracts/golden/workflow-design-edge-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_edge_upsert_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_edge_upsert_denies_before_dispatch
+        // PYTHON_PARITY_NOTE_V1: edge upsert requires rw/workflow plus workflow.design.write and write_graph; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_edge_upsert; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_upsert_edge; fixture=contracts/golden/workflow-design-edge-upsert-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_edge_upsert_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_design_edge_upsert_denies_before_dispatch
         if name == "workflow.design_edge_upsert" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -690,7 +761,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: design history reads require ro/rw, workflow namespace, and workflow.design.inspect; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_history; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-history-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_history_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_history_denies_before_read
+        // PYTHON_PARITY_NOTE_V1: design history reads require ro/rw, workflow namespace, and workflow.design.inspect; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_history; python_service=kogwistar/server/chat_service.py#ChatRunService.workflow_design_history; fixture=contracts/golden/workflow-design-history-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_design_history_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_design_history_denies_before_read
         if name == "workflow.design_history" {
             if surface != "workflow"
                 || !matches!(principal.get("role").and_then(Value::as_str), Some("ro" | "rw"))
@@ -707,7 +778,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("workflow.design.inspect")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: dead-letter snapshots require ro/rw, workflow namespace, and project_view; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letters; python_service=kogwistar/server/chat_service.py#ChatRunService.dead_letter_snapshot; fixture=contracts/golden/workflow-dead-letters-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letters_denies_before_read
+        // PYTHON_PARITY_NOTE_V1: dead-letter snapshots require ro/rw, workflow namespace, and project_view; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letters; python_service=kogwistar/server/chat_service.py#ChatRunService.dead_letter_snapshot; fixture=contracts/golden/workflow-dead-letters-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_dead_letters_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_dead_letters_denies_before_read
         if name == "workflow.dead_letters" {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -724,7 +795,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: dead-letter replay requires rw/workflow plus service.manage; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay; python_service=kogwistar/server/chat_service.py#ChatRunService.replay_dead_letter; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_dead_letter_replay_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_dead_letter_replay_denies_without_dispatch
+        // PYTHON_PARITY_NOTE_V1: dead-letter replay requires rw/workflow plus service.manage; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay; python_service=kogwistar/server/chat_service.py#ChatRunService.replay_dead_letter; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_dead_letter_replay_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_dead_letter_replay_denies_without_dispatch
         if name == "workflow.dead_letter_replay" {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -741,7 +812,7 @@ impl ApplicationService for SqliteRunApplicationService {
             return effective_capabilities(principal, &state).contains("service.manage")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: approval/revocation require rw/workflow plus approve_action, project_view, and read_security_scope before dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capability_revoke; python_service=kogwistar/server/chat_service.py#ChatRunService.capability_revoke; fixture=contracts/golden/workflow-capability-revoke-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#workflow_capability_approve_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capability_revoke_denies_without_mutation
+        // PYTHON_PARITY_NOTE_V1: approval/revocation require rw/workflow plus approve_action, project_view, and read_security_scope before dispatch; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capability_revoke; python_service=kogwistar/server/chat_service.py#ChatRunService.capability_revoke; fixture=contracts/golden/workflow-capability-revoke-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_tool_authorization.rs#workflow_capability_approve_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_capability_revoke_denies_without_mutation
         if matches!(name, "workflow.capability_approve" | "workflow.capability_revoke") {
             if surface != "workflow"
                 || principal_role(principal) != "rw"
@@ -761,7 +832,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 .all(|required| capabilities.contains(*required))
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: both read snapshots require project_view + read_security_scope; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capabilities_snapshot; python_service=kogwistar/server/chat_service.py#capability_snapshot; fixture=contracts/golden/workflow-capabilities-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_capabilities_snapshot_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_capabilities_snapshot_denies_missing_capability_before_snapshot
+        // PYTHON_PARITY_NOTE_V1: both read snapshots require project_view + read_security_scope; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_capabilities_snapshot; python_service=kogwistar/server/chat_service.py#capability_snapshot; fixture=contracts/golden/workflow-capabilities-snapshot-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_authorization.rs#workflow_capabilities_snapshot_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_capabilities_snapshot_denies_before_snapshot
         if matches!(name, "workflow.visibility_snapshot" | "workflow.capabilities_snapshot") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -780,7 +851,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 && capabilities.contains("project_view")
                 && self.supports_mcp_tool(surface, name);
         }
-        // PYTHON_PARITY_NOTE_V1: service read MCP operations require ro/rw, workflow namespace, and both service.inspect and project_view; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list+workflow_service_events+kogwistar/server/chat_service.py#ChatRunService.get_service+list_services+list_service_events; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores+workflow_service_events_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_service_reads_deny_before_lookup+test_mcp_workflow_service_events_deny_before_read
+        // PYTHON_PARITY_NOTE_V1: service read MCP operations require ro/rw, workflow namespace, and both service.inspect and project_view; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#supports_mcp_tool_for_principal; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_service_get+workflow_service_list+workflow_service_events+kogwistar/server/chat_service.py#ChatRunService.get_service+list_services+list_service_events; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_service_read_mcp_admission_matches_python_policy_for_all_stores+workflow_service_events_mcp_admission_matches_python_policy_for_all_stores; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_service_reads_deny_before_lookup+test_mcp_workflow_service_events_deny_before_read
         if matches!(name, "workflow.service_get" | "workflow.service_list" | "workflow.service_events") {
             if surface != "workflow"
                 || !matches!(principal_role(principal).as_str(), "ro" | "rw")
@@ -894,6 +965,9 @@ impl ApplicationService for SqliteRunApplicationService {
             && conversation_detail_id(path).is_some();
         let is_composed_conversation_list =
             self.chroma_graph.is_some() && method == "GET" && is_conversation_list_route(path);
+        let is_composed_conversation_snapshot = self.chroma_graph.is_some()
+            && method == "GET"
+            && latest_snapshot_conversation_id(path).is_some();
         let is_composed_conversation_create = self.chroma_graph.is_some()
             && method == "POST"
             && path.split('?').next() == Some("/api/conversations");
@@ -911,6 +985,7 @@ impl ApplicationService for SqliteRunApplicationService {
             || is_composed_conversation_transcript
             || is_composed_conversation_detail
             || is_composed_conversation_list
+            || is_composed_conversation_snapshot
             || is_composed_conversation_create
             || is_composed_conversation_answer
             || is_composed_search_index
@@ -930,6 +1005,7 @@ impl ApplicationService for SqliteRunApplicationService {
                 || is_composed_conversation_transcript
                 || is_composed_conversation_detail
                 || is_composed_conversation_list
+                || is_composed_conversation_snapshot
                 || is_composed_conversation_create
                 || is_composed_conversation_answer
                 || is_composed_search_index
@@ -941,6 +1017,12 @@ impl ApplicationService for SqliteRunApplicationService {
         request: ApiEffectRequest,
     ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
         Box::pin(async move {
+            if request.method == "POST"
+                && request.path_and_query.split('?').next()
+                    == Some("/api/syscall/v1/resume")
+            {
+                return self.syscall_resume_effect(&request).await;
+            }
             if request.method == "DELETE"
                 && let Some(document_id) = admin_document_delete_id(&request.path_and_query)
             {
@@ -1127,6 +1209,9 @@ impl ApplicationService for SqliteRunApplicationService {
                     .await;
             }
             if request.method == "GET" && self.chroma_graph.is_some() {
+                if latest_snapshot_conversation_id(&request.path_and_query).is_some() {
+                    return self.sqlite_chroma_latest_snapshot_effect(&request).await;
+                }
                 if conversation_detail_id(&request.path_and_query).is_some() {
                     return self
                         .sqlite_chroma_conversation_detail_effect(&request)
@@ -1501,7 +1586,7 @@ impl ApplicationService for SqliteRunApplicationService {
             if request.method == "GET"
                 && request.path_and_query.split('?').next() == Some("/api/workflow/operator/inbox")
             {
-                // PYTHON_PARITY_NOTE_V1: authorize before checking optional graph projection availability; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#execute_sync; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_inbox+kogwistar/server/chat_service.py#ChatRunService.list_operator_inbox; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_operator_inbox_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_inbox_denies_before_reads
+                // PYTHON_PARITY_NOTE_V1: authorize before checking optional graph projection availability; rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#execute_sync; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_inbox+kogwistar/server/chat_service.py#ChatRunService.list_operator_inbox; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_operator_inbox_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_operator_inbox_denies_before_reads
                 if let Some(error) =
                     operator_inbox_authorization_error(&request, &self.capabilities)
                 {
@@ -1538,22 +1623,22 @@ impl ApplicationService for SqliteRunApplicationService {
                 };
                 return operator_inbox_effect(&request, &lanes, graph.nodes());
             }
+            // Python parity: runtime_api.get_workflow_run and
+            // runtime_api.get_workflow_run_steps both enforce workflow read ACL.
             if request.method == "GET"
                 && request
                     .path_and_query
                     .split('?')
                     .next()
-                    .is_some_and(|path| {
-                        path.starts_with("/api/workflow/runs/") && path.ends_with("/steps")
-                    })
+                    .is_some_and(|path| path.starts_with("/api/workflow/runs/"))
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && (tail.is_empty()
+                    || (tail.len() == 1 && matches!(tail[0].as_str(), "steps" | "lineage")))
                 && let (Some(auth_store), Some(user_id)) = (
                     self.owner_auth_store.as_ref(),
                     authenticated_run_owner_id(&request.principal),
                 )
             {
-                let Some((run_id, _)) = runtime_run_route(&request.path_and_query) else {
-                    return self.execute_sync(request);
-                };
                 if !principal_strings(&request.principal, "ns")
                     .iter()
                     .any(|namespace| namespace == "*" || namespace == "workflow")
@@ -1576,7 +1661,9 @@ impl ApplicationService for SqliteRunApplicationService {
                         "Reading workflow runs requires workflow.run.read capability",
                     );
                 }
-                if let Ok(Some(run)) = self.get_run(&run_id) {
+                if !is_mcp_workflow_status_read(&request)
+                    && let Ok(Some(run)) = self.get_run(&run_id)
+                {
                     match auth_store
                         .workflow_access_allowed(&run.workflow_id, user_id, "ro")
                         .await
@@ -1598,6 +1685,222 @@ impl ApplicationService for SqliteRunApplicationService {
                         }
                     }
                 }
+            }
+            // PYTHON_PARITY_NOTE_V1: run evidence combines the SQLite run registry
+            // with the authorized conversation graph projection; Python counterpart
+            // is chat_api.get_run_evidence and Postgres uses the same snapshot contract.
+            if request.method == "GET"
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["evidence"]
+            {
+                if !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+                {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                        "Run evidence reads require workflow namespace",
+                    );
+                }
+                for (action, message) in [
+                    (
+                        "workflow.run.read",
+                        "Reading run evidence requires workflow.run.read capability",
+                    ),
+                    (
+                        "project_view",
+                        "Reading run evidence snapshots requires project_view capability",
+                    ),
+                ] {
+                    if !capability_allowed(&request, &self.capabilities, action, &[action]) {
+                        return effect_error(
+                            StatusCode::FORBIDDEN,
+                            "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                            message,
+                        );
+                    }
+                }
+                if self.chroma_graph.is_none() {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                        "SQLite run evidence requires a configured conversation graph projection",
+                    );
+                }
+                let run = match self.get_run(&run_id) {
+                    Ok(Some(run)) => run,
+                    Ok(None) => {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Unknown run_id: {run_id}"),
+                        );
+                    }
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error,
+                        );
+                    }
+                };
+                let graph = match self.chroma_graph_snapshot(&request, "conversation").await {
+                    Ok(graph) => graph,
+                    Err(response) => return response,
+                };
+                let snapshot = match kogwistar_store::context_snapshot_from_visible_records(
+                    graph.nodes(),
+                    &run.conversation_id,
+                    Some(&run_id),
+                    None,
+                ) {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND",
+                            error.to_string(),
+                        );
+                    }
+                };
+                return json_effect(StatusCode::OK, public_run_evidence_value(&run_id, snapshot));
+            }
+            // SQLite registry anchors existence; Chroma supplies ACL-filtered conversation records.
+            // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/sqlite_application_service.rs#execute; python=kogwistar/server/chat_service.py#ChatRunService.workflow_run_lineage; fixture=contracts/golden/workflow-run-lineage-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python_test=tests/server/test_workflow_lineage_api.py#test_lineage_checks_parent_and_every_child_acl
+            if request.method == "GET"
+                && let Some((run_id, tail)) = runtime_run_route(&request.path_and_query)
+                && tail.iter().map(String::as_str).collect::<Vec<_>>() == ["lineage"]
+            {
+                if !principal_strings(&request.principal, "ns")
+                    .iter()
+                    .any(|namespace| matches!(namespace.as_str(), "*" | "workflow"))
+                {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_NAMESPACE_FORBIDDEN",
+                        "Workflow lineage reads require workflow namespace",
+                    );
+                }
+                if !capability_allowed(
+                    &request,
+                    &self.capabilities,
+                    "workflow.run.read",
+                    &["workflow.run.read"],
+                ) {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_CAPABILITY_FORBIDDEN",
+                        "Reading workflow run lineage requires workflow.run.read capability",
+                    );
+                }
+                if self.chroma_graph.is_none() {
+                    return effect_error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "KOGWISTAR_GRAPH_AUTHORITY_UNSUPPORTED",
+                        "SQLite runtime metadata does not provide authoritative workflow graph lineage",
+                    );
+                }
+                let _run = match self.get_run(&run_id) {
+                    Ok(Some(run)) => run,
+                    Ok(None) => {
+                        return effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Workflow run not found: {run_id}"),
+                        );
+                    }
+                    Err(error) => {
+                        return effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error,
+                        );
+                    }
+                };
+                let graph = match self.chroma_graph_snapshot(&request, "conversation").await {
+                    Ok(graph) => graph,
+                    Err(response) => return response,
+                };
+                let authenticated_user = authenticated_run_owner_id(&request.principal);
+                let mut lineage = Vec::new();
+                let mut current = run_id.clone();
+                let mut seen = BTreeSet::new();
+                while !current.is_empty() && seen.insert(current.clone()) {
+                    let node_id = format!("wf_run|{current}");
+                    let record = graph.nodes().iter().find(|record| record.id == node_id);
+                    let Some(record) = record.filter(|record| {
+                        !matches!(
+                            record
+                                .metadata
+                                .get("lifecycle_status")
+                                .and_then(Value::as_str),
+                            Some("tombstoned" | "deleted")
+                        )
+                    }) else {
+                        if lineage.is_empty() {
+                            return effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Workflow run not found: {run_id}"),
+                            );
+                        }
+                        break;
+                    };
+                    let workflow_id = record
+                        .metadata
+                        .get("workflow_id")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    if let Some(user_id) = authenticated_user
+                        && !workflow_id.is_empty()
+                        && let Some(auth_store) = self.owner_auth_store.as_ref()
+                    {
+                        match auth_store
+                            .workflow_access_allowed(workflow_id, user_id, "ro")
+                            .await
+                        {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                return effect_error(
+                                    StatusCode::FORBIDDEN,
+                                    "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                                    "User does not have read access to every workflow in this lineage",
+                                );
+                            }
+                            Err(error) => {
+                                return effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_AUTH_STORE_ERROR",
+                                    error,
+                                );
+                            }
+                        }
+                    }
+                    let parent = record.metadata.get("parent_run_id").cloned().unwrap_or(Value::Null);
+                    lineage.push(json!({
+                        "run_id": current,
+                        "workflow_id": workflow_id,
+                        "parent_run_id": parent,
+                        "status": record.metadata.get("status").and_then(Value::as_str).unwrap_or_default(),
+                        "wf_invoked": record.metadata.get("wf_invoked").cloned().unwrap_or(Value::Null),
+                    }));
+                    current = parent.as_str().unwrap_or_default().to_owned();
+                }
+                if query_parameter_present(&request.path_and_query, "limit") {
+                    let limit = query_integer(&request.path_and_query, "limit", 200)
+                        .clamp(1, 1000) as usize;
+                    let truncated = lineage.len() > limit;
+                    lineage.truncate(limit);
+                    return json_effect(
+                        StatusCode::OK,
+                        json!({"run_id":run_id,"lineage":lineage,"truncated":truncated}),
+                    );
+                }
+                return json_effect(
+                    StatusCode::OK,
+                    json!({"run_id":run_id,"lineage":lineage}),
+                );
             }
             self.execute_sync(request)
         })

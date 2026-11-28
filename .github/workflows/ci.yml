@@ -249,6 +249,17 @@ jobs:
           -m "ci and not ci_full and not slow and not manual and not llm_real and not requires_ollama and not requires_rust and not requires_langgraph and not requires_pgvector"
           -q --durations=25 --durations-min=0 -p no:cacheprovider
 
+      - name: Verify Python protocol transport subset
+        env:
+          KOGWISTAR_IMPL_MODE: python
+          ANONYMIZED_TELEMETRY: "FALSE"
+        run: >-
+          python -m pytest -q -p no:cacheprovider
+          tests/server/test_chat_server_api_documents.py::test_server_health_matches_shared_contract
+          tests/server/test_agent_event_api.py::test_event_agent_routes_authenticate_reuse_namespace_and_stream_client_sequence
+          tests/server/test_mcp_error_contract.py::test_python_streamable_mcp_invalid_tool_call_matches_shared_fixture
+          tests/core/test_rust_port_contract_manifest.py::test_python_cli_http_client_sends_optional_bearer_token
+
   lint:
     if: github.event_name != 'schedule' && (github.event_name != 'workflow_dispatch' || inputs.full == false)
     runs-on: ubuntu-latest
@@ -380,19 +391,19 @@ jobs:
 
           with open("../pyproject.toml", "rb") as project_file:
               project = tomllib.load(project_file)["project"]
-          dependencies = project["dependencies"] + project["optional-dependencies"]["pgvector"]
+          dependencies = (
+              project["dependencies"]
+              + project["optional-dependencies"]["pgvector"]
+              + project["optional-dependencies"]["server"]
+          )
           subprocess.run([sys.executable, "-m", "pip", "install", *dependencies], check=True)
           PY
 
       - name: Test Rust workspace
         env:
           KOGWISTAR_TEST_CHROMA_ENDPOINT: http://127.0.0.1:8000
-        run: >-
-          cargo test --workspace --all-targets --locked --
-          --include-ignored
-          --skip runtime_serving_lookup_scale_probe
-          --skip postgres_queue_projects_to_chroma_without_cross_store_transaction
-          --skip python_mcp_sdk_receives_rust_server_initiated_notification
+          KOGWISTAR_PYTHON: python
+        run: cargo test --workspace --all-targets --locked -- --include-ignored
 
       - name: Deny Clippy warnings
         run: cargo clippy --workspace --all-targets --locked -- -D warnings

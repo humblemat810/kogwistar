@@ -61,6 +61,19 @@ pub(crate) fn update_projected_lane_message_status(
     conn.execute("UPDATE projected_lane_messages SET status=?1,error_json=COALESCE(?2,error_json),claimed_by=CASE WHEN ?1 IN ('completed','failed','cancelled') THEN NULL ELSE claimed_by END,lease_until=CASE WHEN ?1 IN ('completed','failed','cancelled') THEN NULL ELSE lease_until END WHERE message_id=?3",params![status,error,id])?;
     Ok(())
 }
+pub(crate) fn compare_and_set_projected_lane_message_status(
+    conn: &Connection,
+    id: &str,
+    expected_status: &str,
+    status: &str,
+    error: Option<String>,
+) -> SqliteStoreResult<bool> {
+    let changed = conn.execute(
+        "UPDATE projected_lane_messages SET status=?1,error_json=COALESCE(?2,error_json),claimed_by=CASE WHEN ?1 IN ('completed','failed','cancelled') THEN NULL ELSE claimed_by END,lease_until=CASE WHEN ?1 IN ('completed','failed','cancelled') THEN NULL ELSE lease_until END WHERE message_id=?3 AND status=?4",
+        params![status, error, id, expected_status],
+    )?;
+    Ok(changed == 1)
+}
 pub(crate) fn update_projected_lane_message_links(
     conn: &Connection,
     id: &str,

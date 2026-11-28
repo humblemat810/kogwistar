@@ -197,6 +197,501 @@
                     .unwrap()
             }};
         }
+        let graph_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-graph-http-v1.json"
+        )))
+        .unwrap();
+        let graph_workflow_id = graph_contract["workflow_id"].as_str().unwrap();
+        for node in graph_contract["node_requests"].as_array().unwrap() {
+            let mut body = node.clone();
+            body["designer_id"] = json!("alice");
+            let response = public_call!(
+                "POST",
+                format!("/api/workflow/design/{graph_workflow_id}/nodes"),
+                body
+            );
+            assert_eq!(response.status().as_u16(), graph_contract["success_status"]);
+        }
+        let mut edge_body = graph_contract["edge_request"].clone();
+        edge_body["designer_id"] = json!("alice");
+        let edge_response = public_call!(
+            "POST",
+            format!("/api/workflow/design/{graph_workflow_id}/edges"),
+            edge_body
+        );
+        assert_eq!(edge_response.status().as_u16(), graph_contract["success_status"]);
+        let graph_response = public_call!(
+            "GET",
+            format!("/api/workflow/design/{graph_workflow_id}/graph?refresh=true"),
+            json!({})
+        );
+        assert_eq!(graph_response.status(), StatusCode::OK);
+        let graph: Value = serde_json::from_slice(
+            &to_bytes(graph_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        let expected = &graph_contract["expected"];
+        for field in [
+            "current_version",
+            "active_tip_version",
+            "can_undo",
+            "can_redo",
+        ] {
+            assert_eq!(graph[field], expected[field], "field {field}");
+        }
+        let actual_nodes = graph["nodes"].as_array().unwrap();
+        let expected_nodes = expected["nodes"].as_array().unwrap();
+        assert_eq!(actual_nodes.len(), expected_nodes.len());
+        for item in expected_nodes {
+            let actual = actual_nodes
+                .iter()
+                .find(|node| node["id"] == item["id"])
+                .expect("expected graph node is present");
+            assert_eq!(actual["label"], item["label"]);
+            for field in [
+                "entity_type",
+                "workflow_id",
+                "wf_op",
+                "wf_start",
+                "wf_terminal",
+                "wf_fanout",
+            ] {
+                assert_eq!(actual["metadata"][field], item[field], "node field {field}");
+            }
+        }
+        let actual_edges = graph["edges"].as_array().unwrap();
+        let expected_edges = expected["edges"].as_array().unwrap();
+        assert_eq!(actual_edges.len(), expected_edges.len());
+        for item in expected_edges {
+            let actual = actual_edges
+                .iter()
+                .find(|edge| edge["id"] == item["id"])
+                .expect("expected graph edge is present");
+            for field in ["source_ids", "target_ids", "relation"] {
+                assert_eq!(actual[field], item[field], "edge field {field}");
+            }
+            for field in [
+                "entity_type",
+                "workflow_id",
+                "wf_predicate",
+                "wf_priority",
+                "wf_is_default",
+                "wf_multiplicity",
+            ] {
+                assert_eq!(actual["metadata"][field], item[field], "edge field {field}");
+            }
+        }
+        let delete_edge_response = public_call!(
+            "DELETE",
+            format!(
+                "/api/workflow/design/{graph_workflow_id}/edges/{}",
+                graph_contract["delete_edge_request"]["edge_id"]
+                    .as_str()
+                    .unwrap()
+            ),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(
+            delete_edge_response.status().as_u16(),
+            graph_contract["success_status"]
+        );
+        let graph_after_edge_delete = public_call!(
+            "GET",
+            format!("/api/workflow/design/{graph_workflow_id}/graph?refresh=true"),
+            json!({})
+        );
+        assert_eq!(graph_after_edge_delete.status(), StatusCode::OK);
+        let graph_after_edge_delete: Value = serde_json::from_slice(
+            &to_bytes(graph_after_edge_delete.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let expected_after_edge_delete = &graph_contract["expected_after_edge_delete"];
+        for field in [
+            "current_version",
+            "active_tip_version",
+            "can_undo",
+            "can_redo",
+        ] {
+            assert_eq!(
+                graph_after_edge_delete[field], expected_after_edge_delete[field],
+                "post-edge-delete field {field}"
+            );
+        }
+        let actual_node_ids = graph_after_edge_delete["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node| node["id"].as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let expected_node_ids = expected_after_edge_delete["node_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|node_id| node_id.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_node_ids, expected_node_ids);
+        assert_eq!(
+            graph_after_edge_delete["edges"],
+            expected_after_edge_delete["edges"]
+        );
+        let mut restored_edge = graph_contract["edge_request"].clone();
+        restored_edge["designer_id"] = json!("alice");
+        let restored_edge_response = public_call!(
+            "POST",
+            format!("/api/workflow/design/{graph_workflow_id}/edges"),
+            restored_edge
+        );
+        assert_eq!(
+            restored_edge_response.status().as_u16(),
+            graph_contract["success_status"]
+        );
+        let delete_response = public_call!(
+            "DELETE",
+            format!(
+                "/api/workflow/design/{graph_workflow_id}/nodes/{}",
+                graph_contract["delete_request"]["node_id"].as_str().unwrap()
+            ),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(
+            delete_response.status().as_u16(),
+            graph_contract["success_status"]
+        );
+        let graph_after_delete = public_call!(
+            "GET",
+            format!("/api/workflow/design/{graph_workflow_id}/graph?refresh=true"),
+            json!({})
+        );
+        assert_eq!(graph_after_delete.status(), StatusCode::OK);
+        let graph_after_delete: Value = serde_json::from_slice(
+            &to_bytes(graph_after_delete.into_body(), 65_536)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let expected_after_delete = &graph_contract["expected_after_delete"];
+        for field in [
+            "current_version",
+            "active_tip_version",
+            "can_undo",
+            "can_redo",
+        ] {
+            assert_eq!(
+                graph_after_delete[field], expected_after_delete[field],
+                "post-delete field {field}"
+            );
+        }
+        let deleted_nodes = graph_after_delete["nodes"].as_array().unwrap();
+        let expected_deleted_nodes = expected_after_delete["nodes"].as_array().unwrap();
+        assert_eq!(deleted_nodes.len(), expected_deleted_nodes.len());
+        for expected_node in expected_deleted_nodes {
+            let actual = deleted_nodes
+                .iter()
+                .find(|node| node["id"] == expected_node["id"])
+                .expect("expected post-delete node remains");
+            assert_eq!(actual["label"], expected_node["label"]);
+            for field in [
+                "entity_type",
+                "workflow_id",
+                "wf_op",
+                "wf_start",
+                "wf_terminal",
+                "wf_fanout",
+            ] {
+                assert_eq!(
+                    actual["metadata"][field], expected_node[field],
+                    "post-delete node field {field}"
+                );
+            }
+        }
+        assert_eq!(
+            graph_after_delete["edges"],
+            expected_after_delete["edges"]
+        );
+        let trigger_connection = rusqlite::Connection::open(&path).unwrap();
+        for (node_id, label) in [("start", "Start"), ("end", "End")] {
+            let response = public_call!(
+                "POST",
+                "/api/workflow/design/wf-failure-delete/nodes",
+                json!({"designer_id":"alice","node_id":node_id,"label":label})
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let seed_edge = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-delete/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-1",
+                "src":"start",
+                "dst":"end"
+            })
+        );
+        assert_eq!(seed_edge.status(), StatusCode::OK);
+        let delete_graph_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_graph_before: Value = serde_json::from_slice(
+            &to_bytes(delete_graph_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let delete_history_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/history",
+            json!({})
+        );
+        let delete_history_before: Value = serde_json::from_slice(
+            &to_bytes(delete_history_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        for (node_id, label) in [("start", "Start"), ("end", "End")] {
+            let response = public_call!(
+                "POST",
+                "/api/workflow/design/wf-failure-edge-delete/nodes",
+                json!({"designer_id":"alice","node_id":node_id,"label":label})
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let delete_edge_seed = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-edge-delete/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-1",
+                "src":"start",
+                "dst":"end"
+            })
+        );
+        assert_eq!(delete_edge_seed.status(), StatusCode::OK);
+        let delete_edge_graph_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_edge_graph_before: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_graph_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let delete_edge_history_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/history",
+            json!({})
+        );
+        let delete_edge_history_before: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_history_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        trigger_connection
+            .execute_batch(
+                "CREATE TRIGGER reject_design_control_event
+                 BEFORE INSERT ON entity_events
+                 WHEN NEW.namespace IN (
+                   'wf_design:wf-failure-atomic',
+                   'wf_design:wf-failure-delete',
+                   'wf_design:wf-failure-edge-delete'
+                 )
+                   AND NEW.entity_kind = 'design_control'
+                 BEGIN SELECT RAISE(ABORT, 'injected design-control failure'); END;",
+            )
+            .unwrap();
+        let failed_mutation = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-atomic/nodes",
+            json!({
+                "designer_id":"alice",
+                "node_id":"node-1",
+                "label":"Must roll back",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert!(!failed_mutation.status().is_success());
+        assert!(store
+            .replay_raw_events("wf_design:wf-failure-atomic", 0, usize::MAX)
+            .unwrap()
+            .is_empty());
+        let rolled_back_graph = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-atomic/graph",
+            json!({})
+        );
+        assert_eq!(rolled_back_graph.status(), StatusCode::OK);
+        let rolled_back_graph: Value = serde_json::from_slice(
+            &to_bytes(rolled_back_graph.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(rolled_back_graph["nodes"].as_array().unwrap().is_empty());
+        let failed_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-failure-delete/nodes/start",
+            json!({"designer_id":"alice"})
+        );
+        assert!(!failed_delete.status().is_success());
+        let delete_graph_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_graph_after: Value = serde_json::from_slice(
+            &to_bytes(delete_graph_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_graph_after["nodes"],
+            delete_graph_before["nodes"]
+        );
+        assert_eq!(
+            delete_graph_after["edges"],
+            delete_graph_before["edges"]
+        );
+        let delete_history_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-delete/history",
+            json!({})
+        );
+        let delete_history_after: Value = serde_json::from_slice(
+            &to_bytes(delete_history_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_history_after["current_version"],
+            delete_history_before["current_version"]
+        );
+        assert_eq!(
+            delete_history_after["current_seq"],
+            delete_history_before["current_seq"]
+        );
+        let failed_edge_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-failure-edge-delete/edges/edge-1",
+            json!({"designer_id":"alice"})
+        );
+        assert!(!failed_edge_delete.status().is_success());
+        let delete_edge_graph_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/graph?refresh=true",
+            json!({})
+        );
+        let delete_edge_graph_after: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_graph_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_edge_graph_after["nodes"],
+            delete_edge_graph_before["nodes"]
+        );
+        assert_eq!(
+            delete_edge_graph_after["edges"],
+            delete_edge_graph_before["edges"]
+        );
+        let delete_edge_history_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge-delete/history",
+            json!({})
+        );
+        let delete_edge_history_after: Value = serde_json::from_slice(
+            &to_bytes(delete_edge_history_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            delete_edge_history_after["current_version"],
+            delete_edge_history_before["current_version"]
+        );
+        assert_eq!(
+            delete_edge_history_after["current_seq"],
+            delete_edge_history_before["current_seq"]
+        );
+        for (node_id, label) in [("start", "Start"), ("end", "End")] {
+            let response = public_call!(
+                "POST",
+                "/api/workflow/design/wf-failure-edge/nodes",
+                json!({
+                    "designer_id":"alice",
+                    "node_id":node_id,
+                    "label":label
+                })
+            );
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let edge_graph_before = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge/graph",
+            json!({})
+        );
+        let edge_graph_before: Value = serde_json::from_slice(
+            &to_bytes(edge_graph_before.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        trigger_connection
+            .execute_batch(
+                "CREATE TRIGGER reject_design_edge_control_event
+                 BEFORE INSERT ON entity_events
+                 WHEN NEW.namespace = 'wf_design:wf-failure-edge'
+                   AND NEW.entity_kind = 'design_control'
+                 BEGIN SELECT RAISE(ABORT, 'injected edge design-control failure'); END;",
+            )
+            .unwrap();
+        let failed_edge = public_call!(
+            "POST",
+            "/api/workflow/design/wf-failure-edge/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-1",
+                "src":"start",
+                "dst":"end"
+            })
+        );
+        assert!(!failed_edge.status().is_success());
+        let edge_graph_after = public_call!(
+            "GET",
+            "/api/workflow/design/wf-failure-edge/graph",
+            json!({})
+        );
+        let edge_graph_after: Value = serde_json::from_slice(
+            &to_bytes(edge_graph_after.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(edge_graph_after["nodes"], edge_graph_before["nodes"]);
+        assert_eq!(edge_graph_after["edges"], edge_graph_before["edges"]);
+        assert_eq!(
+            edge_graph_after["current_version"],
+            edge_graph_before["current_version"]
+        );
+        assert_eq!(edge_graph_after["current_seq"], edge_graph_before["current_seq"]);
+        trigger_connection
+            .execute_batch(
+                "DROP TRIGGER reject_design_control_event;
+                 DROP TRIGGER reject_design_edge_control_event;",
+            )
+            .unwrap();
+        drop(trigger_connection);
         let empty_graph_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-empty-graph-http-v1.json"
@@ -291,6 +786,60 @@
             let field = field.as_str().unwrap();
             assert!(node_upsert.get(field).is_none(), "field {field}");
         }
+        let repeated_node_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-node-contract/nodes",
+            json!({
+                "designer_id":"alice",
+                "node_id":"node-contract",
+                "label":"Start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(repeated_node_upsert.status(), StatusCode::OK);
+        let repeated_node_upsert: Value = serde_json::from_slice(
+            &to_bytes(repeated_node_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(node_upsert["version"], 1);
+        assert_eq!(repeated_node_upsert["version"], 2);
+        let updated_node_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-node-contract/nodes",
+            json!({
+                "designer_id":"alice",
+                "node_id":"node-contract",
+                "label":"Updated start",
+                "op":"start",
+                "start":true
+            })
+        );
+        assert_eq!(updated_node_upsert.status(), StatusCode::OK);
+        let updated_node_upsert: Value = serde_json::from_slice(
+            &to_bytes(updated_node_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_node_upsert["version"], 3);
+        let updated_graph = public_call!(
+            "GET",
+            "/api/workflow/design/wf-node-contract/graph",
+            json!({})
+        );
+        assert_eq!(updated_graph.status(), StatusCode::OK);
+        let updated_graph: Value = serde_json::from_slice(
+            &to_bytes(updated_graph.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_graph["nodes"].as_array().unwrap().len(), 1);
+        assert_eq!(updated_graph["nodes"][0]["id"], "node-contract");
+        assert_eq!(updated_graph["nodes"][0]["label"], "Updated start");
         let node_delete_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-node-delete-http-v1.json"
@@ -325,6 +874,21 @@
                 .unwrap(),
         )
         .unwrap();
+        let node_delete_events = store
+            .replay_raw_events("wf_design:wf-node-delete-contract", 0, usize::MAX)
+            .unwrap();
+        let node_tombstone = node_delete_events
+            .iter()
+            .find(|event| {
+                event.entity_kind == "node"
+                    && event.entity_id == "node-delete-contract"
+                    && event.op == "TOMBSTONE"
+            })
+            .expect("node delete persists a canonical tombstone");
+        assert_eq!(
+            serde_json::from_str::<Value>(&node_tombstone.payload_json).unwrap(),
+            node_delete_contract["expected_tombstone_payload"]
+        );
         for (field, expected) in node_delete_contract["fixed_response_fields"]
             .as_object()
             .unwrap()
@@ -345,6 +909,25 @@
             let field = field.as_str().unwrap();
             assert!(node_delete.get(field).is_none(), "field {field}");
         }
+        let repeated_node_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-node-delete-contract/nodes/node-delete-contract",
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_node_delete.status(), StatusCode::NOT_FOUND);
+        let history_after_repeated_delete = public_call!(
+            "GET",
+            "/api/workflow/design/wf-node-delete-contract/history",
+            json!({})
+        );
+        assert_eq!(history_after_repeated_delete.status(), StatusCode::OK);
+        let history_after_repeated_delete: Value = serde_json::from_slice(
+            &to_bytes(history_after_repeated_delete.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(history_after_repeated_delete["current_version"], node_delete["version"]);
         let redo_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-redo-http-v1.json"
@@ -402,6 +985,21 @@
             let field = field.as_str().unwrap();
             assert!(redo.get(field).is_none(), "field {field}");
         }
+        let repeated_redo = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{redo_workflow}/redo"),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_redo.status(), StatusCode::OK);
+        let repeated_redo: Value = serde_json::from_slice(
+            &to_bytes(repeated_redo.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(repeated_redo["status"], "noop");
+        assert_eq!(repeated_redo["current_version"], redo["current_version"]);
+        assert_eq!(repeated_redo["current_seq"], redo["current_seq"]);
         let undo_contract: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-undo-http-v1.json"
@@ -453,6 +1051,21 @@
             let field = field.as_str().unwrap();
             assert!(undo.get(field).is_none(), "field {field}");
         }
+        let repeated_undo = public_call!(
+            "POST",
+            &format!("/api/workflow/design/{undo_workflow}/undo"),
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_undo.status(), StatusCode::OK);
+        let repeated_undo: Value = serde_json::from_slice(
+            &to_bytes(repeated_undo.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(repeated_undo["status"], "noop");
+        assert_eq!(repeated_undo["current_version"], undo["current_version"]);
+        assert_eq!(repeated_undo["current_seq"], undo["current_seq"]);
         let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect"]});
         let call = |method: &str, path: &str, body: Value| {
             service.execute_sync(ApiEffectRequest {
@@ -532,6 +1145,63 @@
             let field = field.as_str().unwrap();
             assert!(edge_upsert.get(field).is_none(), "field {field}");
         }
+        let repeated_edge_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-edge-contract/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-contract",
+                "src":"start",
+                "dst":"end",
+                "is_default":true
+            })
+        );
+        assert_eq!(repeated_edge_upsert.status(), StatusCode::OK);
+        let repeated_edge_upsert: Value = serde_json::from_slice(
+            &to_bytes(repeated_edge_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            repeated_edge_upsert["version"],
+            edge_upsert_contract["version"].as_i64().unwrap() + 1
+        );
+        let updated_edge_upsert = public_call!(
+            "POST",
+            "/api/workflow/design/wf-edge-contract/edges",
+            json!({
+                "designer_id":"alice",
+                "edge_id":"edge-contract",
+                "src":"start",
+                "dst":"end",
+                "relation":"wf_custom",
+                "is_default":true
+            })
+        );
+        assert_eq!(updated_edge_upsert.status(), StatusCode::OK);
+        let updated_edge_upsert: Value = serde_json::from_slice(
+            &to_bytes(updated_edge_upsert.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_edge_upsert["version"], 5);
+        let updated_edge_graph = public_call!(
+            "GET",
+            "/api/workflow/design/wf-edge-contract/graph",
+            json!({})
+        );
+        assert_eq!(updated_edge_graph.status(), StatusCode::OK);
+        let updated_edge_graph: Value = serde_json::from_slice(
+            &to_bytes(updated_edge_graph.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(updated_edge_graph["edges"].as_array().unwrap().len(), 1);
+        assert_eq!(updated_edge_graph["edges"][0]["id"], "edge-contract");
+        assert_eq!(updated_edge_graph["edges"][0]["relation"], "wf_custom");
         for body in [
             json!({"designer_id":"alice","node_id":"start","label":"Start","op":"increment-counter","start":true,"metadata":{"wf_executor_target":"rust-native"}}),
             json!({"designer_id":"alice","node_id":"end","label":"End","op":"emit-result","terminal":true,"metadata":{"wf_executor_target":"rust-native"}}),
@@ -658,20 +1328,24 @@
         let events = store
             .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
             .unwrap();
-        assert_eq!(
-            events
-                .iter()
-                .map(|event| (event.entity_kind.as_str(), event.op.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                ("node", "ADD"),
-                ("design_control", "MUTATION_COMMITTED"),
-                ("node", "ADD"),
-                ("design_control", "MUTATION_COMMITTED"),
-                ("edge", "ADD"),
-                ("design_control", "MUTATION_COMMITTED"),
-            ]
-        );
+        let event_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-mutation-events-v1.json"
+        )))
+        .unwrap();
+        let expected_events = event_contract["expected_events"].as_array().unwrap();
+        assert_eq!(events.len(), expected_events.len());
+        for (event, expected) in events.iter().zip(expected_events) {
+            assert_eq!(event.entity_kind, expected["entity_kind"]);
+            assert_eq!(event.entity_id, expected["entity_id"]);
+            assert_eq!(event.op, expected["op"]);
+            if let Some(expected_payload) = expected["payload"].as_object() {
+                let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+                for (key, value) in expected_payload {
+                    assert_eq!(&payload[key], value, "event payload field {key}");
+                }
+            }
+        }
         let delta = store
             .get_workflow_design_delta("wf-write", 3, 1)
             .unwrap()
@@ -741,6 +1415,48 @@
             let field = field.as_str().unwrap();
             assert!(deleted.get(field).is_none(), "field {field}");
         }
+        let events = store
+            .replay_raw_events("wf_design:wf-write", 0, usize::MAX)
+            .unwrap();
+        let expected_suffix = event_contract["expected_edge_delete_events"]
+            .as_array()
+            .unwrap();
+        assert!(events.len() >= expected_suffix.len());
+        let suffix_start = events.len() - expected_suffix.len();
+        let delete_target_seq = events[suffix_start].seq;
+        for (event, expected) in events[suffix_start..].iter().zip(expected_suffix) {
+            assert_eq!(event.entity_kind, expected["entity_kind"]);
+            assert_eq!(event.entity_id, expected["entity_id"]);
+            assert_eq!(event.op, expected["op"]);
+            if let Some(expected_payload) = expected["payload"].as_object() {
+                let payload: Value = serde_json::from_str(&event.payload_json).unwrap();
+                for (key, value) in expected_payload {
+                    assert_eq!(&payload[key], value, "event payload field {key}");
+                }
+                if expected["payload"]["action"] == "edge_delete" {
+                    assert_eq!(payload["target_seq"], delete_target_seq);
+                }
+            }
+        }
+        let repeated_edge_delete = public_call!(
+            "DELETE",
+            "/api/workflow/design/wf-write/edges/edge",
+            json!({"designer_id":"alice"})
+        );
+        assert_eq!(repeated_edge_delete.status(), StatusCode::NOT_FOUND);
+        let history_after_repeated_edge_delete = public_call!(
+            "GET",
+            "/api/workflow/design/wf-write/history",
+            json!({})
+        );
+        assert_eq!(history_after_repeated_edge_delete.status(), StatusCode::OK);
+        let history_after_repeated_edge_delete: Value = serde_json::from_slice(
+            &to_bytes(history_after_repeated_edge_delete.into_body(), 32_768)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(history_after_repeated_edge_delete["current_version"], deleted["version"]);
         let node_upsert_mcp: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-node-upsert-mcp-v1.json"
@@ -820,7 +1536,7 @@
             let field = field.as_str().unwrap();
             assert!(body["result"].get(field).is_none(), "field {field}");
         }
-        // PYTHON_PARITY_NOTE_V1: MCP redo response matches Python's workflow MCP projection; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_design_redo_matches_shared_contract
+        // PYTHON_PARITY_NOTE_V1: MCP redo response matches Python's workflow MCP projection; rust=rust/crates/kogwistar-api/src/sections/http_transport.rs#mcp_effect_request; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_design_redo; fixture=contracts/golden/workflow-design-redo-mcp-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_design_history.rs#sqlite_design_capability_mutates_graph_and_undoes_atomically; python_test=tests/mcp/test_chat_mcp_workflow_runtime_design.py#test_mcp_workflow_design_redo_matches_shared_contract
         let redo_mcp: Value = serde_json::from_str(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../../contracts/golden/workflow-design-redo-mcp-v1.json"

@@ -12,23 +12,34 @@
 ## Dual-Language Work
 
 - Follow `kogwistar/docs/ADR-022-dual-language-capability-paths.md` and its
-  checklist. Select an existing open checklist item before proposing new scope.
-- Keep Python and Rust implementations supported. Selecting one implementation
-  for a capability does not deprecate the other.
-- Freeze implementation selection at a declared capability/execution boundary.
-  Do not silently fall back between languages.
-- One implementation owns all effects in an atomic unit of work. Never split a
-  transaction across Python and Rust connections; use a declared, versioned
-  handoff before or after that transaction instead.
-- Keep checklist IDs and denominator stable. Close a `PASS` item only with
-  concrete code-path and test evidence; distinguish skipped tests from passes.
-- Before claiming native end-to-end support, verify ingress through durable
-  result, including authorization, persistence, retries, traces, and the
-  applicable backend/interpreter matrix. A narrow benchmark is not whole-stack
-  proof.
-- Run focused Rust tests and the corresponding Python contract/parity tests for
-  each change. Preserve unrelated worktree changes and use the existing Cargo
-  target directory unless isolation is necessary.
+  existing checklists. Select an existing open item; keep IDs and denominators
+  fixed. New scope requires an approved, separately linked requirement.
+- For each selected item, **before implementation**, enumerate and freeze its
+  complete acceptance set by exact test selector, backend/contract cell, and
+  baseline status. For a multi-item batch, freeze every item's complete set
+  first. Add the whole planned test batch before implementation begins.
+- Then follow this order: implement against that frozen set; run focused unit
+  tests and fix implementation failures; run the smallest relevant integration
+  batch and fix failures. Never add, replace, or broaden tests mid-batch merely
+  to delay closure. Later tests are allowed only for a reproduced regression or
+  approved contract change; record the reason without changing the original
+  goalpost.
+- **Mandatory closure:** when every frozen applicable test passes, mark the
+  existing item `PASS` in that same slice and update its already-mapped coarse
+  status. Do not wait for extra polish. Skipped/unrun tests are not passes; an
+  incomplete frozen acceptance set cannot close the item.
+- At every implementation turn, state the selected item(s), frozen test count,
+  passed/failed/unrun counts, compatibility evidence, blockers, and coarse/fine
+  completion percentages. Never call planned tests implemented or infer full
+  parity from a narrow passing slice.
+- Keep Python and Rust independently usable; switch only at declared safe seams,
+  with no silent cross-language fallback. Preserve auth, scope, provenance,
+  durability, wire behavior, and single-owner atomic transactions. Rust should
+  project Python behavior where applicable, with source/test annotations.
+- Preserve unrelated worktree changes and reuse the existing Cargo target
+  unless isolation is necessary. Before claiming native end-to-end support,
+  verify ingress through durable result across the applicable auth, retry,
+  trace, backend, and interpreter paths.
 
 ## SQLite Authority
 

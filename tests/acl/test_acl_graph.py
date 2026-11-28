@@ -1591,6 +1591,55 @@ def test_engine_acl_can_target_specific_span_item_for_node_and_edge():
     ) == ("edge-1",)
 
 
+@pytest.mark.parametrize(
+    "node_id,expected_visible",
+    [
+        ("node-item-legacy-newer-deny", False),
+        ("node-item-v2-newer-allow", True),
+    ],
+)
+def test_engine_acl_legacy_usage_record_competes_by_version(
+    node_id: str, expected_visible: bool
+) -> None:
+    fixture = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts/golden/graph-acl-item-usage-v1.json")
+        .read_text(encoding="utf-8")
+    )
+    case = next(case for case in fixture["cases"] if case["node_id"] == node_id)
+    engine = GraphKnowledgeEngine(
+        persist_directory=None,
+        backend_factory=build_fake_backend,
+        kg_graph_type="knowledge",
+    )
+    for record in case["acl_records"]:
+        engine.record_acl(
+            grain=record["grain"],
+            truth_graph=fixture["truth_graph"],
+            entity_id=node_id,
+            target_item_id=record.get("target_item_id"),
+            version=record.get("version", 1),
+            mode=record["mode"],
+            owner_id=record.get("owner_id"),
+        )
+
+    versioned_items = [
+        record
+        for record in case["acl_records"]
+        if record.get("target_item_id", "").startswith("__kogwistar_acl_usage_v2__:")
+    ]
+    assert {record["grain"] for record in versioned_items} == {"grounding", "span"}
+    for record in versioned_items:
+        assert engine.decide_acl(
+            grain=record["grain"],
+            truth_graph=fixture["truth_graph"],
+            entity_id=node_id,
+            target_item_id=record["target_item_id"],
+            principal_id=fixture["principal"]["id"],
+            principal_groups=fixture["principal"]["groups"],
+            security_scope=fixture["principal"]["security_scope"],
+        ).visible is expected_visible
+
+
 def test_engine_acl_can_scope_same_span_item_across_multiple_nodes():
     engine = GraphKnowledgeEngine(
         persist_directory=None,

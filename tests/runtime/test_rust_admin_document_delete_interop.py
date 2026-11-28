@@ -26,6 +26,13 @@ def test_rust_admin_delete_is_readable_by_python_sqlite_store(
     if not RUST_SERVER.exists():
         pytest.skip("build kogwistar-server before live native-server test")
 
+    contract = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/document-delete-http-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+
     database_path = tmp_path / "shared-graph.sqlite"
     metadata = EngineSQLite(tmp_path, database_path.name)
     metadata.ensure_initialized()
@@ -132,11 +139,19 @@ def test_rust_admin_delete_is_readable_by_python_sqlite_store(
         else:
             pytest.fail("Rust server did not become ready")
 
-        response = httpx.delete(
-            f"{base_url}/admin/doc/{doc_id}", headers=headers, timeout=10
+        response = httpx.request(
+            contract["method"],
+            f"{base_url}{contract['path'].replace('{doc_id}', doc_id)}",
+            headers=headers,
+            timeout=10,
         )
-        assert response.status_code == 200, response.text
-        assert response.json()["deleted"] == {"nodes": 1, "edges": 0}
+        assert response.status_code == contract["success_status"], response.text
+        payload = response.json()
+        assert set(payload) == set(contract["response_fields"])
+        assert payload["ok"] is True
+        assert payload["doc_id"] == doc_id
+        assert set(payload["deleted"]) == set(contract["deleted_fields"])
+        assert payload["deleted"] == {"nodes": 1, "edges": 0}
     finally:
         process.terminate()
         try:

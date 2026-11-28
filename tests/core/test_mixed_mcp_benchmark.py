@@ -790,6 +790,8 @@ def test_cli_passes_requested_concurrent_fixture_size(
         concurrent_items: int,
         modes,
         include_concurrent: bool,
+        concurrent_modes,
+        concurrent_mixes,
     ) -> dict[str, object]:
         observed.update(
             items=items,
@@ -797,6 +799,8 @@ def test_cli_passes_requested_concurrent_fixture_size(
             concurrent_items=concurrent_items,
             modes=list(modes),
             include_concurrent=include_concurrent,
+            concurrent_modes=list(concurrent_modes),
+            concurrent_mixes=list(concurrent_mixes),
         )
         output.mkdir(parents=True, exist_ok=True)
         return observed.copy()
@@ -824,6 +828,8 @@ def test_cli_passes_requested_concurrent_fixture_size(
         "concurrent_items": 7,
         "modes": list(mixed_mcp_benchmark.DEFAULT_MODES),
         "include_concurrent": not skip_concurrent,
+        "concurrent_modes": list(mixed_mcp_benchmark.CONCURRENT_PROFILE_MODES),
+        "concurrent_mixes": list(mixed_mcp_benchmark.CONCURRENT_PROFILE_MIXES),
     }
     assert json.loads((tmp_path / "report.v3.json").read_text()) == observed
 
@@ -866,6 +872,21 @@ def test_benchmark_accepts_a_resource_matched_mode_subset(tmp_path, monkeypatch)
     assert set(report["modes"]) == {"http", "rust_authority_http", "rust_native"}
 
 
+def test_concurrent_profile_selector_rejects_unknown_mode_before_creating_output(
+    tmp_path,
+) -> None:
+    output = tmp_path / "invalid-concurrent-selection"
+    with pytest.raises(ValueError, match="unsupported concurrent MCP mode"):
+        mixed_mcp_benchmark._run_concurrent_mcp_profiles(
+            output,
+            items=2,
+            samples=2,
+            modes=("rust_native_http", "typo"),
+            mixes=("balanced",),
+        )
+    assert not output.exists()
+
+
 def test_benchmark_rejects_unknown_mode_before_creating_output(tmp_path) -> None:
     with pytest.raises(ValueError, match="unsupported MCP benchmark mode"):
         mixed_mcp_benchmark.run_benchmark(
@@ -887,6 +908,24 @@ def test_progress_json_checkpoint_replaces_atomically(tmp_path) -> None:
     assert not report_path.with_suffix(".json.tmp").exists()
     assert json.loads(concurrent_path.read_text()) == {"completed_mix": "balanced"}
     assert not concurrent_path.with_suffix(".json.tmp").exists()
+
+
+@pytest.mark.parametrize("backend", ("chroma_sqlite_metadata", "postgres_pgvector"))
+def test_concurrent_benchmark_rejects_rust_only_mode_for_python_vector_backends(
+    tmp_path, backend: str
+) -> None:
+    output = tmp_path / backend
+
+    with pytest.raises(ValueError, match="Rust mode is unavailable"):
+        mixed_concurrent_benchmark.run_benchmark(
+            output,
+            items=2,
+            samples=2,
+            modes=("rust",),
+            backends=(backend,),
+        )
+
+    assert not output.exists()
 
 
 @pytest.mark.parametrize(

@@ -222,6 +222,12 @@ enum PostgresStoreOperation {
         #[serde(default)]
         metric: SnapshotDistanceMetric,
         embedding_dim: usize,
+        #[serde(default)]
+        as_of_ts: Option<String>,
+        #[serde(default)]
+        follow_redirects: bool,
+        #[serde(default = "default_list_limit")]
+        max_redirect_hops: usize,
     },
     GraphProjectionVectorQueryBatch {
         namespace: String,

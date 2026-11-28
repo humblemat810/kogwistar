@@ -26,6 +26,22 @@ impl SqliteStore {
             uow.update_projected_lane_message_status(message_id, status, error_json)
         })
     }
+    pub fn compare_and_set_projected_lane_message_status(
+        &self,
+        message_id: &str,
+        expected_status: &str,
+        status: &str,
+        error_json: Option<String>,
+    ) -> SqliteStoreResult<bool> {
+        self.immediate_transaction(|uow| {
+            uow.compare_and_set_projected_lane_message_status(
+                message_id,
+                expected_status,
+                status,
+                error_json,
+            )
+        })
+    }
     pub fn update_projected_lane_message_links(
         &self,
         message_id: &str,

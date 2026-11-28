@@ -69,6 +69,8 @@ from kogwistar.server.auth_middleware import (
     get_app_jwt_settings,
     get_current_subject,
     get_current_user_id,
+    get_current_workspace_id,
+    get_current_graph_space,
     get_jwt_alg,
     get_jwt_aud,
     get_jwt_iss,
@@ -315,6 +317,8 @@ app.include_router(
         conversation_namespace=NameSpace.CONVERSATION.value,
         workflow_namespaces={NameSpace.CONVERSATION.value, NameSpace.WORKFLOW.value},
         get_user_id=get_current_user_id,
+        get_workspace_id=get_current_workspace_id,
+        get_graph_space=get_current_graph_space,
     )
 )
 app.include_router(
@@ -806,6 +810,16 @@ async def document_validate_graph(payload: DocumentGraphProposal) -> object:
             Node.model_validate(n)
         except ValidationError as e:
             node_errors[str(nid)] = e.json()
+        except (KeyError, TypeError):
+            node_errors[str(nid)] = json.dumps(
+                [
+                    {
+                        "type": "invalid_pointer",
+                        "loc": ["metadata", "pointers"],
+                        "msg": "Pointer metadata is missing a required field",
+                    }
+                ]
+            )
 
     # try to coerce edges
     for e in payload.edges:

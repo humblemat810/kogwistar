@@ -489,21 +489,37 @@ class ChatRunService:
             start_node_id=start_node_id,
         )
 
-    def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+    def get_conversation(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> dict[str, Any]:
         self._require_capability(
             "read_conversation",
             ["read_graph"],
             approval_message="Reading conversation requires read_graph capability",
         )
-        return self._conversation_queries.get_conversation(conversation_id)
+        return self._conversation_queries.get_conversation(
+            conversation_id, workspace_id=workspace_id, graph_space=graph_space
+        )
 
-    def list_transcript(self, conversation_id: str) -> list[dict[str, Any]]:
+    def list_transcript(
+        self,
+        conversation_id: str,
+        *,
+        workspace_id: str | None = None,
+        graph_space: str | None = None,
+    ) -> list[dict[str, Any]]:
         self._require_capability(
             "read_conversation",
             ["read_graph"],
             approval_message="Reading transcript requires read_graph capability",
         )
-        return self._conversation_queries.list_transcript(conversation_id)
+        return self._conversation_queries.list_transcript(
+            conversation_id, workspace_id=workspace_id, graph_space=graph_space
+        )
 
     def latest_snapshot(
         self,
@@ -1281,11 +1297,10 @@ class ChatRunService:
             ["service.manage"],
             approval_message="Replaying dead letters requires service.manage capability",
         )
-        dead = [row for row in self.scheduler.dead_letter() if str(row.get("run_id") or "") == str(run_id)]
-        if not dead:
+        dead = self.scheduler.replay_dead_letter(str(run_id))
+        if dead is None:
             return {"run_id": run_id, "replayed": False}
-        self.scheduler.resume(run_id)
-        return {"run_id": run_id, "replayed": True, "dead_letter": dead[0]}
+        return {"run_id": run_id, "replayed": True, "dead_letter": dead}
 
     def message_queue_snapshot(self, *, inbox_id: str | None = None) -> dict[str, Any]:
         self._require_capability(

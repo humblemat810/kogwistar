@@ -1,9 +1,59 @@
 {
   "schema_version": 1,
   "request": {
-    "doc_id": "doc-validation-empty",
-    "nodes": [],
-    "edges": []
+    "doc_id": "doc-validation-provenance",
+    "insertion_method": "pytest",
+    "nodes": [
+      {
+        "id": "node-1",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Valid node",
+        "metadata": {
+          "pointers": [
+            {
+              "source_cluster_id": "cluster-1",
+              "start_char": 0,
+              "end_char": 4,
+              "verbatim_text": "Node"
+            },
+            {
+              "source_cluster_id": "cluster-open-ended",
+              "start_char": 4,
+              "end_char": -1,
+              "verbatim_text": "tail"
+            }
+          ]
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "edge-1",
+        "label": "Edge",
+        "type": "relationship",
+        "summary": "Valid edge",
+        "relation": "links",
+        "source_ids": ["node-1"],
+        "target_ids": ["node-1"],
+        "source_edge_ids": [],
+        "target_edge_ids": [],
+        "mentions": [
+          {
+            "spans": [
+              {
+                "collection_page_url": "doc://doc-validation-provenance",
+                "document_page_url": "doc://doc-validation-provenance#cluster-1",
+                "doc_id": "doc-validation-provenance",
+                "insertion_method": "pytest",
+                "start_char": 0,
+                "end_char": 4
+              }
+            ]
+          }
+        ]
+      }
+    ]
   },
   "status": 200,
   "response": {

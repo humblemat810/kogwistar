@@ -9,7 +9,7 @@
     "run_id": "run/42?x",
     "steps": [
       {
-        "node_id": "step-node-1",
+        "node_id": "wf_step|run/42?x|0",
         "step_seq": 0,
         "workflow_id": "workflow-1",
         "workflow_node_id": "entry",

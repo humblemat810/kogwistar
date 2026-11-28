@@ -1,0 +1,25 @@
+{
+  "descriptors": [
+    {
+      "aliases": [],
+      "descriptor_id": "name",
+      "extensions": {},
+      "kind": "ontology_property",
+      "max_count": 1,
+      "min_count": 0,
+      "name": "Name",
+      "summary": "",
+      "value_kind": "string"
+    }
+  ],
+  "manifest": {
+    "content_sha256": "fcdfb2a28130fe7955875f1eb82d14a3a32b241d62ba96cbb7e2ec73915514de",
+    "extensions": {},
+    "imports": [],
+    "ontology_id": "base",
+    "schema_version": 1,
+    "summary": "",
+    "title": "Base",
+    "version": "1.0.0"
+  }
+}

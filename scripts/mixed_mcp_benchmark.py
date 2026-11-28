@@ -28,12 +28,20 @@ from typing import Any, TypeVar, cast
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 _NATIVE_BINARY_READY = False
+MCP_BENCHMARK_STORAGE_BACKEND = "sqlite_event_projection"
 DEFAULT_MODES = ("in_process", "rust_authority", "http", "rust_native")
 AVAILABLE_MODES = (
     *DEFAULT_MODES,
     "rust_authority_batch_write",
     "rust_authority_http",
 )
+CONCURRENT_PROFILE_MODES = (
+    "python_in_process",
+    "python_http",
+    "rust_in_process",
+    "rust_http",
+)
+CONCURRENT_PROFILE_MIXES = ("balanced", "read_heavy")
 SYNC_MODES = frozenset(
     {"in_process", "rust_authority", "rust_authority_batch_write"}
 )
@@ -2571,8 +2579,17 @@ async def _run_native_concurrent_one(
 
 
 def _run_concurrent_mcp_profiles(
-    output: Path, *, items: int, samples: int
+    output: Path,
+    *,
+    items: int,
+    samples: int,
+    modes: tuple[str, ...] = CONCURRENT_PROFILE_MODES,
+    mixes: tuple[str, ...] = CONCURRENT_PROFILE_MIXES,
 ) -> dict[str, Any]:
+    if not modes or any(mode not in CONCURRENT_PROFILE_MODES for mode in modes):
+        raise ValueError(f"unsupported concurrent MCP mode selection: {modes!r}")
+    if not mixes or any(mix not in CONCURRENT_PROFILE_MIXES for mix in mixes):
+        raise ValueError(f"unsupported concurrent MCP mix selection: {mixes!r}")
     output.mkdir(parents=True, exist_ok=True)
     run_id = uuid.uuid4().hex[:12]
     run_root = output / run_id
@@ -2591,13 +2608,15 @@ def _run_concurrent_mcp_profiles(
     }
     _write_json_atomic(progress_path, progress)
     _ensure_native_benchmark_binary()
-    for mix in ("balanced", "read_heavy"):
+    for mix in mixes:
         trace_path = run_root / f"concurrent_{mix}.trace.v3.json"
         phases = write_concurrent_trace(trace_path, items, mix=mix)
         mode_reports: dict[str, Any] = {}
         for authority in ("python", "rust"):
             for transport in ("in_process", "http"):
                 mode = f"{authority}_{transport}"
+                if mode not in modes:
+                    continue
                 warmup_path = run_root / f"concurrent_{mix}-{mode}-warmup.sqlite3"
                 progress["active"] = {
                     "mix": mix,
@@ -2785,6 +2804,7 @@ def _run_concurrent_mcp_profiles(
     return {
         "schema": "kogwistar-mixed-mcp-concurrent-report/v3",
         "run_id": run_id,
+        "storage_backend": MCP_BENCHMARK_STORAGE_BACKEND,
         "items": items,
         "samples_per_mode": samples,
         "warmup_samples_per_mode": 1,
@@ -2801,6 +2821,8 @@ def run_benchmark(
     concurrent_items: int = 8,
     modes: tuple[str, ...] = DEFAULT_MODES,
     include_concurrent: bool = True,
+    concurrent_modes: tuple[str, ...] = CONCURRENT_PROFILE_MODES,
+    concurrent_mixes: tuple[str, ...] = CONCURRENT_PROFILE_MIXES,
 ) -> dict[str, Any]:
     supported_modes = set(AVAILABLE_MODES)
     if not modes or any(mode not in supported_modes for mode in modes):
@@ -2942,11 +2964,16 @@ def run_benchmark(
         progress["active"] = {"phase": "concurrent_profiles", "items": concurrent_items}
         _write_json_atomic(progress_path, progress)
         concurrent_report = _run_concurrent_mcp_profiles(
-            run_root / "concurrent", items=concurrent_items, samples=samples
+            run_root / "concurrent",
+            items=concurrent_items,
+            samples=samples,
+            modes=concurrent_modes,
+            mixes=concurrent_mixes,
         )
     report = {
         "schema": "kogwistar-mixed-mcp-report/v3",
         "run_id": run_id,
+        "storage_backend": MCP_BENCHMARK_STORAGE_BACKEND,
         "trace_path": str(trace_path),
         "trace_sha256": trace_sha256,
         "items": items,
@@ -2972,6 +2999,17 @@ def main() -> int:
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--concurrent-items", type=int, default=8)
     parser.add_argument(
+        "--concurrent-mode",
+        action="append",
+        choices=CONCURRENT_PROFILE_MODES,
+        help="concurrent Python-host mode; Rust-native HTTP mode always runs",
+    )
+    parser.add_argument(
+        "--concurrent-mix",
+        action="append",
+        choices=CONCURRENT_PROFILE_MIXES,
+    )
+    parser.add_argument(
         "--mode",
         action="append",
         choices=AVAILABLE_MODES,
@@ -2992,6 +3030,16 @@ def main() -> int:
         concurrent_items=args.concurrent_items,
         modes=tuple(args.mode) if args.mode else DEFAULT_MODES,
         include_concurrent=not args.skip_concurrent,
+        concurrent_modes=(
+            tuple(args.concurrent_mode)
+            if args.concurrent_mode
+            else CONCURRENT_PROFILE_MODES
+        ),
+        concurrent_mixes=(
+            tuple(args.concurrent_mix)
+            if args.concurrent_mix
+            else CONCURRENT_PROFILE_MIXES
+        ),
     )
     payload = json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
     _write_json_atomic(args.output / "report.v3.json", report)

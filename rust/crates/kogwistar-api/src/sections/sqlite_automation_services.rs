@@ -2,6 +2,45 @@
 // Python counterparts: ServiceSupervisor in server/service_daemon.py and
 // runtime_api service operations.
 impl SqliteRunApplicationService {
+    async fn syscall_resume_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
+        let input = match syscall_input(request, "resume") {
+            Ok(input) => input,
+            Err(response) => return response,
+        };
+        let response = if !syscall_allowed(
+            request,
+            &self.capabilities,
+            "resume",
+            true,
+            &["workflow.run.write"],
+        ) {
+            syscall_forbidden("resume")
+        } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
+            let nested = ApiEffectRequest {
+                contract_version: request.contract_version,
+                method: "POST".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/resume?wait_for_completion=true"),
+                body: resume_syscall_args(&input.args),
+                principal: request.principal.clone(),
+            };
+            let resumed = ApplicationService::execute(self, nested).await;
+            syscall_result(&input.version, "resume", resumed)
+        } else {
+            effect_error(
+                StatusCode::BAD_REQUEST,
+                "KOGWISTAR_INVALID_REQUEST",
+                "run_id is required",
+            )
+        };
+        syscall_audit(
+            &self.capabilities,
+            &input.version,
+            "resume",
+            syscall_audit_status(&response),
+        );
+        response
+    }
+
     fn syscall_effect(&self, request: &ApiEffectRequest, op: &str) -> ApiEffectResponse {
         let input = match syscall_input(request, op) {
             Ok(input) => input,
@@ -52,25 +91,60 @@ impl SqliteRunApplicationService {
                     &["workflow.run.write"],
                 ) {
                     syscall_forbidden(op)
-                } else if let Some(run_id) = input.args["run_id"].as_str() {
-                    match self.store.request_server_run_cancel(run_id) {
-                        Ok(()) => match self.store.get_server_run(run_id) {
-                            Ok(Some(run)) => syscall_result(
+                } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
+                    match self.store.get_server_run(run_id) {
+                        Ok(Some(run))
+                            if matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled") =>
+                        {
+                            syscall_result(
                                 &input.version,
                                 op,
                                 json_effect(StatusCode::ACCEPTED, server_run_value(run)),
-                            ),
-                            Ok(None) => effect_error(
-                                StatusCode::NOT_FOUND,
-                                "KOGWISTAR_RUN_NOT_FOUND",
-                                format!("Unknown run_id: {run_id}"),
-                            ),
+                            )
+                        }
+                        Ok(Some(_)) => match self.store.append_server_run_event(
+                            run_id,
+                            "run.cancelling",
+                            json!({"run_id": run_id, "status": "cancelling"}).to_string(),
+                        ) {
+                            Ok(_) => match self.store.request_server_run_cancel(run_id) {
+                                Ok(()) => match self.store.get_server_run(run_id) {
+                                    Ok(Some(run)) => syscall_result(
+                                        &input.version,
+                                        op,
+                                        json_effect(
+                                            StatusCode::ACCEPTED,
+                                            server_run_value(run),
+                                        ),
+                                    ),
+                                    Ok(None) => effect_error(
+                                        StatusCode::NOT_FOUND,
+                                        "KOGWISTAR_RUN_NOT_FOUND",
+                                        format!("Unknown run_id: {run_id}"),
+                                    ),
+                                    Err(error) => effect_error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "KOGWISTAR_STORE_ERROR",
+                                        error.to_string(),
+                                    ),
+                                },
+                                Err(error) => effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_STORE_ERROR",
+                                    error.to_string(),
+                                ),
+                            },
                             Err(error) => effect_error(
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 "KOGWISTAR_STORE_ERROR",
                                 error.to_string(),
                             ),
                         },
+                        Ok(None) => effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Unknown run_id: {run_id}"),
+                        ),
                         Err(error) => effect_error(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "KOGWISTAR_STORE_ERROR",
@@ -79,7 +153,7 @@ impl SqliteRunApplicationService {
                     }
                 } else {
                     effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     )
@@ -96,7 +170,7 @@ impl SqliteRunApplicationService {
                     syscall_forbidden(op)
                 } else if let (Some(run_id), Some(step_seq)) = (
                     input.args["run_id"].as_str(),
-                    input.args["step_seq"].as_i64(),
+                    syscall_step_seq(&input.args["step_seq"]),
                 ) {
                     match self.store.list_server_run_events(run_id, 0, 100_000) {
                         Ok(events) => syscall_result(
@@ -236,29 +310,25 @@ impl SqliteRunApplicationService {
                     &["workflow.run.write"],
                 ) {
                     syscall_forbidden(op)
-                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
                     let nested = ApiEffectRequest {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
                         path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
-                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        body: resume_syscall_args(&input.args),
                         principal: request.principal.clone(),
                     };
                     syscall_result(&input.version, op, self.resume_runtime_run(run_id, &nested))
                 } else {
                     effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     )
                 }
             }
             "request_approval" => {
-                if !syscall_allowed(request, &self.capabilities, op, true, &["approve_action"]) {
-                    syscall_forbidden(op)
-                } else {
-                    request_approval_syscall(request, &self.capabilities, &input)
-                }
+                request_approval_syscall_effect(request, &self.capabilities, &input)
             }
             _ => unavailable_effect(request.clone()),
         };
@@ -1280,6 +1350,7 @@ impl SqliteRunApplicationService {
             );
         }
         if request.method == "GET"
+            && self.chroma_graph.is_none()
             && latest_snapshot_conversation_id(&request.path_and_query).is_some()
         {
             return effect_error(
@@ -1456,7 +1527,7 @@ impl SqliteRunApplicationService {
                     "Reading resource snapshot requires read_security_scope capability",
                 );
             }
-            // PYTHON_PARITY_NOTE_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
+            // PYTHON_PARITY_NOTE_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
             if matches!(
                 path,
                 "/api/workflow/budget" | "/api/workflow/budget/history"
@@ -1486,7 +1557,7 @@ impl SqliteRunApplicationService {
                     "Reading budget data requires project_view and read_security_scope capabilities",
                 );
             }
-            // PYTHON_PARITY_NOTE_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
+            // PYTHON_PARITY_NOTE_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
             if path == "/api/workflow/scheduler/timeline"
                 && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
                     || !principal_strings(&request.principal, "ns")
@@ -1950,28 +2021,42 @@ impl SqliteRunApplicationService {
             {
                 json_effect(StatusCode::ACCEPTED, server_run_value(run))
             }
-            ("POST", ["cancel"]) => match self.store.request_server_run_cancel(&run_id) {
-                Ok(()) => match self.get_run(&run_id) {
-                    Ok(Some(updated)) => {
-                        json_effect(StatusCode::ACCEPTED, server_run_value(updated))
-                    }
-                    Ok(None) => effect_error(
-                        StatusCode::NOT_FOUND,
-                        "KOGWISTAR_RUN_NOT_FOUND",
-                        format!("Unknown run_id: {run_id}"),
-                    ),
+            ("POST", ["cancel"]) => {
+                let event = self.store.append_server_run_event(
+                    &run_id,
+                    "run.cancelling",
+                    json!({"run_id": run_id, "status": "cancelling"}).to_string(),
+                );
+                match event {
+                    Ok(_) => match self.store.request_server_run_cancel(&run_id) {
+                        Ok(()) => match self.get_run(&run_id) {
+                            Ok(Some(updated)) => {
+                                json_effect(StatusCode::ACCEPTED, server_run_value(updated))
+                            }
+                            Ok(None) => effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Unknown run_id: {run_id}"),
+                            ),
+                            Err(error) => effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error,
+                            ),
+                        },
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    },
                     Err(error) => effect_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "KOGWISTAR_STORE_ERROR",
-                        error,
+                        error.to_string(),
                     ),
-                },
-                Err(error) => effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                ),
-            },
+                }
+            }
             _ => unavailable_effect(request),
         }
     }

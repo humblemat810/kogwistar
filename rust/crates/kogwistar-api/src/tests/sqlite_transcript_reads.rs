@@ -1,15 +1,19 @@
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python=kogwistar/server/auth_middleware.py#get_current_user_id; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_transcript_reads.rs#sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript; python_test=tests/server/test_chat_server_api_conversations.py#test_conversation_list_http_denials_precede_service_read
     #[tokio::test]
     async fn sqlite_chroma_receive_message_returns_scoped_acl_filtered_transcript() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
         use jsonwebtoken::{EncodingKey, Header, encode};
         use sha2::Digest;
+        use std::sync::atomic::{AtomicBool, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tower::ServiceExt;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let endpoint = format!("http://{}", listener.local_addr().unwrap());
         let (stop_chroma, mut stop_chroma_rx) = tokio::sync::oneshot::channel();
+        let large_snapshot_enabled = std::sync::Arc::new(AtomicBool::new(false));
+        let large_snapshot_enabled_for_fake = std::sync::Arc::clone(&large_snapshot_enabled);
         let fake = tokio::spawn(async move {
             let mut requests = Vec::new();
             loop {
@@ -38,6 +42,7 @@
                         if bytes.len() >= split + 4 + length {
                             break (split, length);
                         }
+
                     }
                 };
                 let head = String::from_utf8_lossy(&bytes[..split]).to_string();
@@ -49,14 +54,37 @@
                         "metadata": {"hnsw:space": "cosine"}
                     })
                 } else if head.lines().next().unwrap().contains("collection-nodes/get") {
-                    let nodes = [
+                    let mut nodes = Vec::new();
+                    if large_snapshot_enabled_for_fake.load(Ordering::Relaxed) {
+                        nodes.extend((0..10_001).map(|index| {
+                            (
+                                format!("acl-overflow-{index}"),
+                                json!({
+                                    "entity_type":"conversation_turn",
+                                    "conversation_id":"unrelated-hidden",
+                                    "turn_index":index,
+                                    "role":"assistant",
+                                    "summary":"hidden before visible rows"
+                                }),
+                            )
+                        }));
+                    }
+                    nodes.extend([
                         ("start", json!({"entity_type":"conversation_start","conversation_id":"c1","user_id":"reader-1","status":"active"})),
                         ("turn-2", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":2,"role":"assistant","summary":"second"})),
                         ("turn-1", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":1,"role":"user","summary":"first"})),
+                        ("empty-marker", json!({"entity_type":"context_snapshot","conversation_id":"c-empty"})),
                         ("turn-private", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":3,"role":"assistant","summary":"private"})),
                         ("turn-other-workspace", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":4,"role":"assistant","summary":"other workspace","workspace_id":"workspace-b"})),
                         ("turn-other-graph-space", json!({"entity_type":"conversation_turn","conversation_id":"c1","turn_index":5,"role":"assistant","summary":"other graph space","graph_space":"knowledge"})),
                         ("snapshot", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-a","stage":"answer","snapshot_seq":7})),
+                        ("9553a4db-7963-57ac-97b3-6dbd96366bc5", json!({"entity_type":"context_snapshot","conversation_id":"evidence-conversation","run_id":"evidence-run","run_step_seq":5,"used_node_ids":["evidence-node-1","evidence-node-2"],"lifecycle_status":"active"})),
+                        ("wf_run|evidence-run", json!({"entity_type":"workflow_run","workflow_id":"workflow-evidence","parent_run_id":"lineage-parent","status":"succeeded","wf_invoked":["workflow-parent"],"lifecycle_status":"active"})),
+                        ("wf_run|lineage-child", json!({"entity_type":"workflow_run","workflow_id":"wf-child","parent_run_id":"lineage-parent","status":"completed","wf_invoked":[],"lifecycle_status":"active"})),
+                        ("wf_run|lineage-parent", json!({"entity_type":"workflow_run","workflow_id":"wf-parent","parent_run_id":null,"status":"completed","wf_invoked":[],"lifecycle_status":"active"})),
+                        ("acl-wf_run|evidence-run", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"wf_run|evidence-run","acl_version":1,"acl_mode":"public"})),
+                        ("acl-wf_run|lineage-child", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"wf_run|lineage-child","acl_version":1,"acl_mode":"public"})),
+                        ("acl-wf_run|lineage-parent", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"wf_run|lineage-parent","acl_version":1,"acl_mode":"private","acl_owner_id":"reader-1"})),
                         ("snapshot-private", json!({"entity_type":"context_snapshot","conversation_id":"c1","run_id":"run-private","stage":"answer","snapshot_seq":8})),
                         ("acl-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"start","acl_version":1,"acl_mode":"public"})),
                         ("acl-turn-1", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-1","acl_version":1,"acl_mode":"public"})),
@@ -65,10 +93,11 @@
                         ("acl-turn-other-workspace", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-workspace","acl_version":1,"acl_mode":"public","workspace_id":"workspace-b"})),
                         ("acl-turn-other-graph-space", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"turn-other-graph-space","acl_version":1,"acl_mode":"public","graph_space":"knowledge"})),
                         ("acl-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot","acl_version":1,"acl_mode":"public"})),
+                        ("acl-evidence-snapshot", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"9553a4db-7963-57ac-97b3-6dbd96366bc5","acl_version":1,"acl_mode":"public"})),
                         ("acl-snapshot-private", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"snapshot-private","acl_version":1,"acl_mode":"private","acl_owner_id":"someone-else"})),
                         ("foreign-start", json!({"entity_type":"conversation_start","conversation_id":"c-foreign","user_id":"other-user","status":"active"})),
                         ("acl-foreign-start", json!({"entity_type":"acl_record","acl_truth_graph":"conversation","acl_target_grain":"node","acl_target_entity_id":"foreign-start","acl_version":1,"acl_mode":"public"})),
-                    ];
+                    ].into_iter().map(|(id, metadata)| (id.to_owned(), metadata)));
                     let metadatas = nodes
                         .iter()
                         .map(|(_, metadata)| {
@@ -89,17 +118,35 @@
                             })
                         })
                         .collect::<Vec<_>>();
-                    json!({
-                        "ids": nodes.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
-                        "documents": nodes.iter().map(|(id, _)| {
-                            if *id == "snapshot" {
+                    let ids = nodes
+                        .iter()
+                        .map(|(id, _)| id.clone())
+                        .collect::<Vec<_>>();
+                    let documents = nodes
+                        .iter()
+                        .map(|(id, _)| {
+                            if id == "snapshot" {
                                 r#"{"metadata":{"summary":"stored summary"},"properties":{"references":["evidence-1"]}}"#.to_owned()
+                            } else if id == "9553a4db-7963-57ac-97b3-6dbd96366bc5" {
+                                r#"{"metadata":{"entity_type":"context_snapshot","conversation_id":"evidence-conversation","run_id":"evidence-run","run_step_seq":5,"used_node_ids":["evidence-node-1","evidence-node-2"]},"properties":{"evidence_pack_digest":"{\"items\":2}"}}"#.to_owned()
                             } else {
                                 "{}".to_owned()
                             }
-                        }).collect::<Vec<_>>(),
-                        "metadatas": metadatas,
-                        "embeddings": nodes.iter().map(|_| Value::Null).collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    let embeddings = vec![Value::Null; nodes.len()];
+                    let offset = body["offset"].as_u64().unwrap_or_default() as usize;
+                    let limit = body["limit"]
+                        .as_u64()
+                        .map(|limit| limit as usize)
+                        .unwrap_or(nodes.len());
+                    let start = offset.min(nodes.len());
+                    let end = start.saturating_add(limit).min(nodes.len());
+                    json!({
+                        "ids": &ids[start..end],
+                        "documents": &documents[start..end],
+                        "metadatas": &metadatas[start..end],
+                        "embeddings": &embeddings[start..end]
                     })
                 } else {
                     json!({"ids": [], "documents": [], "metadatas": [], "embeddings": []})
@@ -130,13 +177,42 @@
         )
         .await
         .unwrap();
+        service.store.create_server_run(kogwistar_store::ServerRunCreate {
+            run_id: "evidence-run".to_owned(),
+            conversation_id: "evidence-conversation".to_owned(),
+            workflow_id: "workflow-evidence".to_owned(),
+            user_id: Some("reader-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "succeeded".to_owned(),
+        }).unwrap();
+        service.store.create_server_run(kogwistar_store::ServerRunCreate {
+            run_id: "run-private".to_owned(),
+            conversation_id: "c1".to_owned(),
+            workflow_id: "workflow-private".to_owned(),
+            user_id: Some("reader-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "succeeded".to_owned(),
+        }).unwrap();
+        service.store.create_server_run(kogwistar_store::ServerRunCreate {
+            run_id: "lineage-child".to_owned(),
+            conversation_id: "evidence-conversation".to_owned(),
+            workflow_id: "wf-child".to_owned(),
+            user_id: Some("reader-1".to_owned()),
+            user_turn_node_id: "turn-1".to_owned(),
+            status: "completed".to_owned(),
+        }).unwrap();
         // ACL decisions are canonical SQLite events; Chroma contains only the graph projection.
         for (target, mode, owner) in [
             ("start", "public", None),
             ("turn-1", "public", None),
             ("turn-2", "public", None),
+            ("empty-marker", "public", None),
             ("turn-private", "private", Some("someone-else")),
             ("snapshot", "public", None),
+            ("9553a4db-7963-57ac-97b3-6dbd96366bc5", "public", None),
+            ("wf_run|evidence-run", "public", None),
+            ("wf_run|lineage-child", "public", None),
+            ("wf_run|lineage-parent", "private", Some("reader-1")),
             ("snapshot-private", "private", Some("someone-else")),
             ("foreign-start", "public", None),
         ] {
@@ -185,9 +261,190 @@
             principal,
         };
         let principal = json!({
-            "sub":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
+            "sub":"reader-1", "user_id":"reader-1", "storage_ns":"scope-a", "workspace_id":"workspace-a",
             "graph_space":"conversation", "ns":["conversation"], "capabilities":["read_graph"]
         });
+        let evidence_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-evidence-v1.json"
+        )).unwrap();
+        for (principal, code) in [
+            (
+                json!({"sub":"reader-1","role":"ro","ns":["workflow"],"capabilities":["workflow.run.read"]}),
+                "KOGWISTAR_CAPABILITY_FORBIDDEN",
+            ),
+            (
+                json!({"sub":"reader-1","role":"ro","ns":["conversation"],"capabilities":["workflow.run.read","project_view"]}),
+                "KOGWISTAR_NAMESPACE_FORBIDDEN",
+            ),
+        ] {
+            let denied = service
+                .execute(read_request("/api/workflow/runs/evidence-run/evidence", principal))
+                .await;
+            assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+            assert_eq!(serde_json::from_slice::<Value>(&denied.body).unwrap()["code"], code);
+        }
+        let evidence = service.execute(read_request(
+            "/api/workflow/runs/evidence-run/evidence",
+            json!({
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read","project_view"]
+            }),
+        )).await;
+        assert_eq!(evidence.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&evidence.body));
+        assert_eq!(serde_json::from_slice::<Value>(&evidence.body).unwrap(), evidence_contract);
+        assert!(service.supports_mcp_tool("workflow", "workflow.run_evidence"));
+        assert!(!service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.run_evidence",
+            &json!({"role":"ro","ns":["workflow"],"capabilities":["workflow.run.read"]})
+        ));
+        assert!(service.supports_mcp_tool_for_principal(
+            "workflow",
+            "workflow.run_evidence",
+            &json!({"role":"ro","ns":["workflow"],"capabilities":["workflow.run.read","project_view"]})
+        ));
+        let evidence_token = encode(
+            &Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                "capabilities":["workflow.run.read","project_view"], "exp":4_102_444_800_u64
+            }),
+            &EncodingKey::from_secret(b"sqlite-chroma-transcript-secret"),
+        )
+        .unwrap();
+        let evidence_mcp = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        )
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp/workflow")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {evidence_token}"))
+                .body(Body::from(
+                    r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"workflow.run_evidence","arguments":{"run_id":"evidence-run"}}}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(evidence_mcp.status(), StatusCode::OK);
+        let evidence_mcp_body = to_bytes(evidence_mcp.into_body(), 65_536).await.unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&evidence_mcp_body).unwrap()["result"],
+            evidence_contract
+        );
+        assert!(service.supports_http_operation(
+            "GET",
+            "/api/workflow/runs/{run_id}/lineage"
+        ));
+        assert!(service.supports_mcp_tool("workflow", "workflow.run_lineage"));
+        let lineage = service
+            .execute(read_request(
+                "/api/workflow/runs/lineage-child/lineage",
+                json!({
+                    "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            ))
+            .await;
+        assert_eq!(lineage.status, StatusCode::OK.as_u16(), "{}", String::from_utf8_lossy(&lineage.body));
+        let lineage_contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-lineage-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&lineage.body).unwrap(),
+            lineage_contract["response"]
+        );
+        let missing_lineage = service
+            .execute(read_request(
+                "/api/workflow/runs/missing/lineage",
+                json!({
+                    "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            ))
+            .await;
+        assert_eq!(missing_lineage.status, StatusCode::NOT_FOUND.as_u16());
+        let parent_hidden = service
+            .execute(read_request(
+                "/api/workflow/runs/lineage-child/lineage",
+                json!({
+                    "sub":"bob", "user_id":"bob", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            ))
+            .await;
+        let parent_hidden_payload: Value = serde_json::from_slice(&parent_hidden.body).unwrap();
+        assert_eq!(parent_hidden.status, StatusCode::OK.as_u16());
+        assert_eq!(parent_hidden_payload["lineage"].as_array().unwrap().len(), 1);
+        assert_eq!(parent_hidden_payload["lineage"][0]["run_id"], "lineage-child");
+        let lineage_app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        );
+        let lineage_mcp = lineage_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {evidence_token}"))
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"workflow.run_lineage","arguments":{"run_id":"lineage-child","limit":1}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(lineage_mcp.status(), StatusCode::OK);
+        let lineage_mcp_body = to_bytes(lineage_mcp.into_body(), 65_536).await.unwrap();
+        let lineage_mcp_payload: Value = serde_json::from_slice(&lineage_mcp_body).unwrap();
+        assert_eq!(lineage_mcp_payload["id"], 8);
+        assert_eq!(lineage_mcp_payload["result"]["run_id"], "lineage-child");
+        assert_eq!(lineage_mcp_payload["result"]["lineage"].as_array().unwrap().len(), 1);
+        assert_eq!(lineage_mcp_payload["result"]["truncated"], true);
+        let private_evidence = service
+            .execute(read_request(
+                "/api/workflow/runs/run-private/evidence",
+                json!({
+                    "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                    "workspace_id":"workspace-a", "graph_space":"conversation", "ns":["workflow"],
+                    "capabilities":["workflow.run.read","project_view"]
+                }),
+            ))
+            .await;
+        assert_eq!(private_evidence.status, StatusCode::NOT_FOUND.as_u16());
+        let private_body: Value = serde_json::from_slice(&private_evidence.body).unwrap();
+        assert_eq!(private_body["code"], "KOGWISTAR_CONTEXT_SNAPSHOT_NOT_FOUND");
+        assert!(!private_body.to_string().contains("run-private"));
         let denied = service
             .execute(request(
                 "receive_message",
@@ -244,8 +501,21 @@
         assert_eq!(response["result"]["messages"][0]["node_id"], "turn-1");
         assert_eq!(response["result"]["messages"][1]["node_id"], "turn-2");
 
-        let empty_transcript = service
+        let unknown_conversation = service
             .execute(request("receive_message", json!({"conversation_id":"missing"}), principal.clone()))
+            .await;
+        assert_eq!(unknown_conversation.status, StatusCode::NOT_FOUND.as_u16());
+        let foreign_conversation = service
+            .execute(request("receive_message", json!({"conversation_id":"c-foreign"}), principal.clone()))
+            .await;
+        assert_eq!(foreign_conversation.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&foreign_conversation.body).unwrap()["result"]["messages"],
+            json!([]),
+            "public non-turn node makes conversation visible, but is not a transcript message"
+        );
+        let empty_transcript = service
+            .execute(request("receive_message", json!({"conversation_id":"c-empty"}), principal.clone()))
             .await;
         assert_eq!(empty_transcript.status, StatusCode::OK.as_u16());
         assert_eq!(
@@ -435,13 +705,13 @@
                 .collect::<Vec<_>>()
         };
         let receive_audit = audit_for("receive_message");
-        assert_eq!(receive_audit.len(), 5);
+        assert_eq!(receive_audit.len(), 7);
         assert_eq!(
             receive_audit
                 .iter()
                 .filter(|event| event["status"] == "error")
                 .count(),
-            3
+            4
         );
         let mount_audit = audit_for("mount_memory");
         assert_eq!(mount_audit.len(), 3);
@@ -468,7 +738,7 @@
         let token = encode(
             &Header::new(jsonwebtoken::Algorithm::HS256),
             &json!({
-                "sub":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
                 "workspace_id":"workspace-a", "graph_space":"conversation",
                 "ns":["conversation"], "capabilities":["read_graph","project_view"], "exp":now + 300
             }),
@@ -589,6 +859,93 @@
         assert!(transcript_payload["turns"][0].get("schema_version").is_none());
         assert!(service.supports_http_operation("GET", "/api/conversations/c1/turns"));
 
+        large_snapshot_enabled.store(true, Ordering::Relaxed);
+        let large_transcript = service
+            .execute(read_request(
+                "/api/conversations/c1/turns",
+                principal.clone(),
+            ))
+            .await;
+        assert_eq!(
+            large_transcript.status,
+            StatusCode::OK.as_u16(),
+            "conversation transcript must apply ACL before any result bound"
+        );
+        let large_transcript: Value = serde_json::from_slice(&large_transcript.body).unwrap();
+        assert_eq!(large_transcript, transcript_payload);
+        large_snapshot_enabled.store(false, Ordering::Relaxed);
+
+        assert!(service.supports_http_operation(
+            "GET",
+            "/api/conversations/c1/snapshots/latest?run_id=run-a&stage=answer"
+        ));
+        let workflow_reader = json!({
+            "sub":"reader-1", "user_id":"reader-1", "storage_ns":"scope-a",
+            "workspace_id":"workspace-a", "graph_space":"conversation",
+            "ns":["workflow"], "capabilities":["project_view"]
+        });
+        let latest_snapshot = service
+            .execute(read_request(
+                "/api/conversations/c1/snapshots/latest?run_id=run-a&stage=answer",
+                workflow_reader.clone(),
+            ))
+            .await;
+        assert_eq!(latest_snapshot.status, StatusCode::OK.as_u16());
+        let latest_snapshot: Value = serde_json::from_slice(&latest_snapshot.body).unwrap();
+        assert_eq!(latest_snapshot["snapshot_node_id"], "snapshot");
+        assert_eq!(latest_snapshot["conversation_id"], "c1");
+        assert_eq!(latest_snapshot["metadata"]["summary"], "stored summary");
+        assert_eq!(latest_snapshot["properties"]["references"][0], "evidence-1");
+
+        let private_snapshot = service
+            .execute(read_request(
+                "/api/conversations/c1/snapshots/latest?run_id=run-private&stage=answer",
+                workflow_reader,
+            ))
+            .await;
+        assert_eq!(private_snapshot.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&private_snapshot.body).contains("snapshot-private"));
+
+        let snapshot_token = encode(
+            &Header::new(jsonwebtoken::Algorithm::HS256),
+            &json!({
+                "sub":"reader-1", "user_id":"reader-1", "role":"ro", "storage_ns":"scope-a",
+                "workspace_id":"workspace-a", "graph_space":"conversation",
+                "ns":["workflow"], "capabilities":["project_view"], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(b"sqlite-chroma-transcript-secret"),
+        )
+        .unwrap();
+        let snapshot_http = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "dev".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some("sqlite-chroma-transcript-secret".to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(service.clone()),
+        )
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/conversations/c1/snapshots/latest?run_id=run-a&stage=answer")
+                .header("authorization", format!("Bearer {snapshot_token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(snapshot_http.status(), StatusCode::OK);
+        let snapshot_http_body = to_bytes(snapshot_http.into_body(), 65_536).await.unwrap();
+        let snapshot_http_payload: Value = serde_json::from_slice(&snapshot_http_body).unwrap();
+        assert_eq!(snapshot_http_payload["snapshot_node_id"], "snapshot");
+        assert_eq!(snapshot_http_payload["metadata"]["summary"], "stored summary");
+
         assert!(service.supports_mcp_tool("conversation", "conversation.get_transcript"));
         let mcp_app = router_with_application(
             ApiState {
@@ -648,6 +1005,7 @@
         assert_eq!(mcp_transcript_value["result"]["turns"].as_array().unwrap().len(), 2);
         assert_eq!(mcp_transcript_value["result"]["turns"][0]["node_id"], "turn-1");
 
+        large_snapshot_enabled.store(true, Ordering::Relaxed);
         for (uri, expected_path) in [
             ("/api/conversations/c1", "detail"),
             ("/api/conversations", "list"),
@@ -691,7 +1049,37 @@
                     assert_eq!(payload["turn_count"], 2);
                 }
                 "list" => {
+                    let contract: Value = serde_json::from_str(include_str!(
+                        "../../../../../contracts/golden/conversation-list-http-v1.json"
+                    ))
+                    .unwrap();
+                    let response_fields = contract["response_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|field| field.as_str().unwrap())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    let actual_response_fields = payload
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert_eq!(actual_response_fields, response_fields);
                     assert_eq!(payload["conversations"].as_array().unwrap().len(), 1);
+                    let conversation_fields = contract["conversation_fields"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|field| field.as_str().unwrap())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    let actual_conversation_fields = payload["conversations"][0]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .map(String::as_str)
+                        .collect::<std::collections::BTreeSet<_>>();
+                    assert_eq!(actual_conversation_fields, conversation_fields);
                     assert_eq!(payload["conversations"][0]["id"], "c1");
                     assert_eq!(payload["conversations"][0]["start_node_id"], "start");
                     assert_eq!(payload["conversations"][0]["status"], "active");
@@ -700,6 +1088,7 @@
                 _ => unreachable!(),
             }
         }
+        large_snapshot_enabled.store(false, Ordering::Relaxed);
 
         let detail = service
             .execute(read_request("/api/conversations/c1", principal.clone()))
@@ -710,6 +1099,30 @@
         assert_eq!(detail["user_id"], "reader-1");
         assert_eq!(detail["turn_count"], 2);
         assert!(detail.get("schema_version").is_none());
+
+        let mut no_graph_capability = principal.clone();
+        no_graph_capability["capabilities"] = json!([]);
+        let detail_without_graph_capability = service
+            .execute(read_request(
+                "/api/conversations/c1",
+                no_graph_capability.clone(),
+            ))
+            .await;
+        assert_eq!(detail_without_graph_capability.status, StatusCode::OK.as_u16());
+        let detail_without_graph_capability: Value =
+            serde_json::from_slice(&detail_without_graph_capability.body).unwrap();
+        assert_eq!(detail_without_graph_capability, detail);
+
+        let transcript_without_graph_capability = service
+            .execute(read_request(
+                "/api/conversations/c1/turns",
+                no_graph_capability,
+            ))
+            .await;
+        assert_eq!(transcript_without_graph_capability.status, StatusCode::OK.as_u16());
+        let transcript_without_graph_capability: Value =
+            serde_json::from_slice(&transcript_without_graph_capability.body).unwrap();
+        assert_eq!(transcript_without_graph_capability, transcript_payload);
 
         let conversations = service
             .execute(read_request("/api/conversations", principal.clone()))
@@ -724,13 +1137,26 @@
         assert_eq!(conversations["conversations"].as_array().unwrap().len(), 1);
         assert_eq!(conversations["conversations"][0]["id"], "c1");
         assert_eq!(conversations["conversations"][0]["turn_count"], 2);
+        let mut no_graph_capability = principal.clone();
+        no_graph_capability["capabilities"] = json!([]);
+        let no_graph_capability_list = service
+            .execute(read_request("/api/conversations", no_graph_capability))
+            .await;
+        assert_eq!(
+            no_graph_capability_list.status,
+            StatusCode::OK.as_u16(),
+            "conversation listing follows Python role/namespace/identity policy"
+        );
+        let no_graph_capability_list: Value =
+            serde_json::from_slice(&no_graph_capability_list.body).unwrap();
+        assert_eq!(no_graph_capability_list, conversations);
         assert!(service.supports_http_operation("GET", "/api/conversations/c1"));
         assert!(service.supports_http_operation("GET", "/api/conversations"));
 
         let denied_detail = service
             .execute(read_request(
                 "/api/conversations/c1",
-                json!({"ns":["conversation"],"capabilities":[]}),
+                json!({"ns":["docs"],"capabilities":[]}),
             ))
             .await;
         assert_eq!(denied_detail.status, StatusCode::FORBIDDEN.as_u16());
@@ -748,6 +1174,26 @@
             ))
             .await;
         assert_eq!(no_identity.status, StatusCode::UNAUTHORIZED.as_u16());
+        let denial_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/conversation-list-denied-http-v1.json"
+        ))
+        .unwrap();
+        let missing_user_id = denial_fixture["denial_cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|case| case["case"] == "missing_user_id_claim")
+            .unwrap();
+        let missing_user_id = service
+            .execute(read_request(
+                "/api/conversations",
+                missing_user_id["claims"].clone(),
+            ))
+            .await;
+        assert_eq!(
+            missing_user_id.status,
+            StatusCode::UNAUTHORIZED.as_u16()
+        );
 
         // A read-only syscall retry must keep returning the same canonical result
         // after the SQLite authority is reopened; Chroma remains the graph projection.
@@ -882,4 +1328,369 @@
         assert_eq!(unsupported_tool.status, StatusCode::NOT_IMPLEMENTED.as_u16());
         drop(metadata_only);
         let _ = std::fs::remove_file(metadata_only_path);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a disposable live Chroma service; set KOGWISTAR_TEST_CHROMA_URL"]
+    async fn sqlite_chroma_receive_message_reads_live_chroma_and_matches_shared_fixture() {
+        use kogwistar_store::{GraphEntityKind, GraphRecord, GraphWriteStore};
+
+        let endpoint = std::env::var("KOGWISTAR_TEST_CHROMA_URL")
+            .expect("ignored live Chroma test requires KOGWISTAR_TEST_CHROMA_URL");
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let namespace = format!("rust-receive-{suffix}");
+        let node_collection = format!("kgw-rx-n-{suffix}");
+        let edge_collection = format!("kgw-rx-e-{suffix}");
+        let database = std::env::temp_dir().join(format!("kogwistar-rx-{suffix}.sqlite3"));
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/receive-message-result-v1.json"
+        ))
+        .unwrap();
+        let service = open_sqlite_application_service(
+            &database,
+            Some(SqliteChromaGraphConfig {
+                endpoint: endpoint.clone(),
+                metric: DistanceMetric::Cosine,
+                node_collection: node_collection.clone(),
+                edge_collection: edge_collection.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        let common = kogwistar_store_chroma::ChromaStoreConfig {
+            endpoint,
+            metric: DistanceMetric::Cosine,
+            ..Default::default()
+        };
+        let graph = kogwistar_store_chroma::ChromaGraphStore::connect_entity_collections(
+            kogwistar_store_chroma::ChromaStoreConfig {
+                collection: node_collection,
+                ..common.clone()
+            },
+            kogwistar_store_chroma::ChromaStoreConfig {
+                collection: edge_collection,
+                ..common
+            },
+        )
+        .await
+        .unwrap();
+
+        for message in fixture["messages"].as_array().unwrap() {
+            let id = message["node_id"].as_str().unwrap();
+            let metadata = serde_json::from_value(json!({
+                "entity_type": message["entity_type"],
+                "conversation_id": fixture["conversation_id"],
+                "turn_index": message["turn_index"],
+                "role": message["role"],
+                "summary": message["content"],
+                "workspace_id": "workspace-a",
+                "graph_space": "conversation",
+                "lifecycle_status": "active",
+                "level_from_root": 0
+            }))
+            .unwrap();
+            graph
+                .upsert_graph_record_of_kind(
+                    &namespace,
+                    GraphEntityKind::Node,
+                    GraphRecord {
+                        id: id.to_owned(),
+                        document: Some("{}".to_owned()),
+                        metadata,
+                        embedding: Some(vec![0.6, 0.8]),
+                    },
+                )
+                .await
+                .unwrap();
+            let acl_id = format!("acl-{id}");
+            service
+                .store
+                .append_raw_entity_event(
+                    &namespace,
+                    SqliteNewRawEntityEvent {
+                        event_id: format!("event-{acl_id}"),
+                        entity_kind: "node".to_owned(),
+                        entity_id: acl_id.clone(),
+                        op: "ADD".to_owned(),
+                        payload_json: json!({
+                            "id": acl_id,
+                            "document": null,
+                            "metadata": {
+                                "entity_type": "acl_record",
+                                "acl_truth_graph": "conversation",
+                                "acl_target_grain": "node",
+                                "acl_target_entity_id": id,
+                                "acl_version": 1,
+                                "acl_mode": "public",
+                                "workspace_id": "workspace-a",
+                                "graph_space": "conversation"
+                            }
+                        })
+                        .to_string(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: json!({
+                    "version": "v1",
+                    "op": "receive_message",
+                    "args": {"conversation_id": fixture["conversation_id"]}
+                })
+                .to_string()
+                .into_bytes(),
+                principal: json!({
+                    "sub": "reader-1",
+                    "role": "ro",
+                    "storage_ns": namespace,
+                    "workspace_id": "workspace-a",
+                    "graph_space": "conversation",
+                    "ns": ["conversation"],
+                    "capabilities": ["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let response: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(response["version"], "v1");
+        assert_eq!(response["op"], "receive_message");
+        assert_eq!(response["status"], "ok");
+        assert_eq!(response["result"], fixture);
+
+        let lineage_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/workflow-run-lineage-v1.json"
+        ))
+        .unwrap();
+        let child = &lineage_fixture["response"]["lineage"][0];
+        let child_run_id = child["run_id"].as_str().unwrap();
+        service
+            .store
+            .create_server_run(kogwistar_store::ServerRunCreate {
+                run_id: child_run_id.to_owned(),
+                conversation_id: "lineage-conversation".to_owned(),
+                workflow_id: child["workflow_id"].as_str().unwrap().to_owned(),
+                user_id: Some("reader-1".to_owned()),
+                user_turn_node_id: fixture["messages"][0]["node_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                status: "succeeded".to_owned(),
+            })
+            .unwrap();
+        for run in lineage_fixture["response"]["lineage"].as_array().unwrap() {
+            let run_id = run["run_id"].as_str().unwrap();
+            let node_id = format!("wf_run|{run_id}");
+            graph
+                .upsert_graph_record_of_kind(
+                    &namespace,
+                    GraphEntityKind::Node,
+                    GraphRecord {
+                        id: node_id.clone(),
+                        document: Some("{}".to_owned()),
+                        metadata: serde_json::from_value(json!({
+                            "entity_type":"workflow_run",
+                            "workflow_id":run["workflow_id"],
+                            "parent_run_id":run["parent_run_id"],
+                            "status":run["status"],
+                            "wf_invoked":run["wf_invoked"],
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation",
+                            "lifecycle_status":"active",
+                            "level_from_root":0
+                        }))
+                        .unwrap(),
+                        embedding: Some(vec![0.6, 0.8]),
+                    },
+                )
+                .await
+                .unwrap();
+            let acl_id = format!("acl-{node_id}");
+            service
+                .store
+                .append_raw_entity_event(
+                    &namespace,
+                    SqliteNewRawEntityEvent {
+                        event_id: format!("event-{acl_id}"),
+                        entity_kind: "node".to_owned(),
+                        entity_id: acl_id.clone(),
+                        op: "ADD".to_owned(),
+                        payload_json: json!({
+                            "id":acl_id,
+                            "document":null,
+                            "metadata":{
+                                "entity_type":"acl_record",
+                                "acl_truth_graph":"conversation",
+                                "acl_target_grain":"node",
+                                "acl_target_entity_id":node_id,
+                                "acl_version":1,
+                                "acl_mode":"public",
+                                "workspace_id":"workspace-a",
+                                "graph_space":"conversation"
+                            }
+                        })
+                        .to_string(),
+                    },
+                )
+                .unwrap();
+        }
+        let lineage = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{child_run_id}/lineage"),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"reader-1",
+                    "user_id":"reader-1",
+                    "role":"ro",
+                    "storage_ns":namespace,
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":["workflow"],
+                    "capabilities":["workflow.run.read"]
+                }),
+            })
+            .await;
+        assert_eq!(lineage.status, lineage_fixture["success_status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&lineage.body).unwrap(),
+            lineage_fixture["response"]
+        );
+
+        let evidence_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/run-evidence-v1.json"
+        ))
+        .unwrap();
+        let run_id = evidence_fixture["run_id"].as_str().unwrap();
+        let conversation_id = evidence_fixture["conversation_id"].as_str().unwrap();
+        let snapshot_id = evidence_fixture["snapshot_node_id"].as_str().unwrap();
+        service
+            .store
+            .create_server_run(kogwistar_store::ServerRunCreate {
+                run_id: run_id.to_owned(),
+                conversation_id: conversation_id.to_owned(),
+                workflow_id: "evidence-workflow".to_owned(),
+                user_id: Some("reader-1".to_owned()),
+                user_turn_node_id: fixture["messages"][0]["node_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+                status: "succeeded".to_owned(),
+            })
+            .unwrap();
+        let snapshot_metadata = evidence_fixture["snapshot_metadata"].clone();
+        graph
+            .upsert_graph_record_of_kind(
+                &namespace,
+                GraphEntityKind::Node,
+                GraphRecord {
+                    id: snapshot_id.to_owned(),
+                    document: Some(
+                        json!({
+                            "metadata": snapshot_metadata,
+                            "properties": {
+                                "evidence_pack_digest": evidence_fixture["source_summary"]["evidence_pack_digest"]
+                            }
+                        })
+                        .to_string(),
+                    ),
+                    metadata: serde_json::from_value(json!({
+                        "entity_type":"context_snapshot",
+                        "conversation_id":conversation_id,
+                        "run_id":run_id,
+                        "run_step_seq":evidence_fixture["snapshot_metadata"]["run_step_seq"],
+                        "used_node_ids":evidence_fixture["evidence_refs"],
+                        "workspace_id":"workspace-a",
+                        "graph_space":"conversation",
+                        "lifecycle_status":"active",
+                        "level_from_root":0
+                    }))
+                    .unwrap(),
+                    embedding: Some(vec![0.6, 0.8]),
+                },
+            )
+            .await
+            .unwrap();
+        let acl_id = format!("acl-{snapshot_id}");
+        service
+            .store
+            .append_raw_entity_event(
+                &namespace,
+                SqliteNewRawEntityEvent {
+                    event_id: format!("event-{acl_id}"),
+                    entity_kind: "node".to_owned(),
+                    entity_id: acl_id.clone(),
+                    op: "ADD".to_owned(),
+                    payload_json: json!({
+                        "id":acl_id,
+                        "document":null,
+                        "metadata":{
+                            "entity_type":"acl_record",
+                            "acl_truth_graph":"conversation",
+                            "acl_target_grain":"node",
+                            "acl_target_entity_id":snapshot_id,
+                            "acl_version":1,
+                            "acl_mode":"private",
+                            "owner_id":"reader-1",
+                            "workspace_id":"workspace-a",
+                            "graph_space":"conversation"
+                        }
+                    })
+                    .to_string(),
+                },
+            )
+            .unwrap();
+        let evidence = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/evidence"),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"reader-1",
+                    "user_id":"reader-1",
+                    "role":"ro",
+                    "storage_ns":namespace,
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":["workflow"],
+                    "capabilities":["workflow.run.read","project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(evidence.status, StatusCode::OK.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&evidence.body).unwrap(),
+            evidence_fixture
+        );
+
+        let denied_evidence = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: format!("/api/workflow/runs/{run_id}/evidence"),
+                body: Vec::new(),
+                principal: json!({
+                    "sub":"other-reader",
+                    "user_id":"other-reader",
+                    "role":"ro",
+                    "storage_ns":namespace,
+                    "workspace_id":"workspace-a",
+                    "graph_space":"conversation",
+                    "ns":["workflow"],
+                    "capabilities":["workflow.run.read","project_view"]
+                }),
+            })
+            .await;
+        assert_eq!(denied_evidence.status, StatusCode::NOT_FOUND.as_u16());
+        assert!(!String::from_utf8_lossy(&denied_evidence.body).contains(snapshot_id));
+
+        drop(graph);
+        drop(service);
+        let _ = std::fs::remove_file(database);
     }

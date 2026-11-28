@@ -31,6 +31,23 @@ impl LaneMessageWriteStore for PostgresStore {
             .await
             .map_err(trait_error)
     }
+    async fn compare_and_set_projected_lane_message_status(
+        &self,
+        id: &str,
+        expected_status: &str,
+        status: &str,
+        error: Option<String>,
+    ) -> StoreResult<bool> {
+        PostgresStore::compare_and_set_projected_lane_message_status(
+            self,
+            id,
+            expected_status,
+            status,
+            error,
+        )
+        .await
+        .map_err(trait_error)
+    }
     async fn update_projected_lane_message_links(
         &self,
         id: &str,

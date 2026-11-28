@@ -1,4 +1,31 @@
     #[test]
+    fn ocr_source_map_matches_shared_python_source_map_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-ocr-source-map-v1.json"
+        ))
+        .expect("valid OCR source-map fixture");
+        let input = serde_json::to_string(&fixture["ocr_content"]).unwrap();
+        let (normalized_content, source_map) =
+            normalize_ocr_document_with_source_map(&input).expect("valid OCR document");
+
+        assert_eq!(normalized_content, fixture["expected_content_repr"]);
+        assert_eq!(serde_json::to_value(source_map).unwrap(), fixture["expected_source_map"]);
+
+        for case in fixture["parity_cases"].as_array().unwrap() {
+            let input = serde_json::to_string(&case["ocr_content"]).unwrap();
+            let (content, source_map) =
+                normalize_ocr_document_inner(&input, true).expect("valid OCR parity case");
+            assert_eq!(content, case["expected_content"], "{}", case["name"]);
+            assert_eq!(
+                Value::Object(source_map.unwrap()),
+                case["expected_source_map"],
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
     fn document_graph_validation_matches_provenance_and_pointer_contract() {
         let request = |body: Value| ApiEffectRequest {
             contract_version: 1,
@@ -100,6 +127,53 @@
         );
     }
 
+    #[tokio::test]
+    async fn document_validate_graph_http_route_matches_shared_error_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-graph-validation-error-v1.json"
+        ))
+        .expect("valid document validation error fixture");
+        let service = Arc::new(
+            PostgresRunApplicationService::from_dsn(
+                "postgres://unused:unused@127.0.0.1:1/unused",
+                "document_validate_graph_error_route_contract",
+            )
+            .unwrap(),
+        );
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: Vec::new(),
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig::default(),
+            },
+            service,
+        );
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/document.validate_graph")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&fixture["request"]).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/json")));
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["detail"], fixture["python_detail"]);
+        assert_eq!(body["code"], fixture["rust_legacy_fields"]["code"]);
+        assert_eq!(body["message"], fixture["rust_legacy_fields"]["message"]);
+    }
+
     #[test]
     fn document_graph_validation_missing_nodes_matches_python_error_detail() {
         let fixture: Value = serde_json::from_str(include_str!(
@@ -121,6 +195,284 @@
         assert_eq!(body["detail"], fixture["python_detail"]);
         assert_eq!(body["code"], fixture["rust_legacy_fields"]["code"]);
         assert_eq!(body["message"], fixture["rust_legacy_fields"]["message"]);
+    }
+
+    #[test]
+    fn document_graph_validation_wrong_nodes_type_matches_shared_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-graph-validation-wrong-type-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["code"], fixture["rust_legacy_fields"]["code"]);
+        assert_eq!(body["message"], fixture["rust_legacy_fields"]["message"]);
+    }
+
+    #[test]
+    fn document_graph_validation_ignores_extra_top_level_field() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-graph-validation-extra-field-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, StatusCode::OK.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body, fixture["response"]);
+    }
+
+    #[test]
+    fn document_graph_validation_rejects_null_nodes() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-graph-validation-null-nodes-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, StatusCode::UNPROCESSABLE_ENTITY.as_u16());
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["code"], fixture["rust_legacy_fields"]["code"]);
+        assert_eq!(body["message"], fixture["rust_legacy_fields"]["message"]);
+    }
+
+    #[test]
+    fn document_graph_validation_rejects_non_object_items() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-non-object-items-v1.json"
+        ))
+        .expect("valid non-object item fixture");
+
+        for case in fixture["cases"].as_array().unwrap() {
+            let response = document_graph_validation_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/document.validate_graph".to_owned(),
+                body: serde_json::to_vec(&case["request"]).unwrap(),
+                principal: json!({}),
+            })
+            .unwrap();
+
+            assert_eq!(response.status, case["status"].as_u64().unwrap() as u16);
+            assert_eq!(response.content_type, "application/json");
+        }
+    }
+
+    #[test]
+    fn document_graph_validation_accepts_multimodal_only_grounding() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-multimodal-grounding-v1.json"
+        ))
+        .expect("valid multimodal grounding fixture");
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"].as_u64().unwrap() as u16);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap(),
+            fixture["response"]
+        );
+    }
+
+    #[test]
+    fn document_graph_validation_rejects_malformed_multimodal_evidence() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-multimodal-grounding-v1.json"
+        ))
+        .expect("valid multimodal grounding fixture");
+        let mut requests = Vec::new();
+        let mut invalid_digest = fixture["request"].clone();
+        invalid_digest["nodes"][0]["mentions"][0]["multimodal_spans"][0]["content_sha256"] =
+            json!("not-a-digest");
+        requests.push(invalid_digest);
+
+        let mut incompatible_locator = fixture["request"].clone();
+        incompatible_locator["nodes"][0]["mentions"][0]["multimodal_spans"][0]["locator"] =
+            json!({"kind":"temporal_interval","start_ms":0,"end_ms":1});
+        requests.push(incompatible_locator);
+
+        let mut invalid_text_spans = fixture["request"].clone();
+        invalid_text_spans["nodes"][0]["mentions"][0]["spans"] = json!("not-a-list");
+        requests.push(invalid_text_spans);
+
+        for request in requests {
+            let response = document_graph_validation_effect(&ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/document.validate_graph".to_owned(),
+                body: serde_json::to_vec(&request).unwrap(),
+                principal: json!({}),
+            })
+            .unwrap();
+            let body: Value = serde_json::from_slice(&response.body).unwrap();
+
+            assert_eq!(response.status, fixture["status"].as_u64().unwrap() as u16);
+            assert_eq!(body["ok"], false);
+            assert!(body["node_errors"]["node-image-grounded"].is_string());
+        }
+    }
+
+    #[test]
+    fn document_graph_validation_accepts_u64_max_pointer_offsets() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-u64-offset-v1.json"
+        ))
+        .expect("valid u64 pointer offset fixture");
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap(),
+            fixture["response"]
+        );
+
+        let mut out_of_range_request = fixture["request"].clone();
+        let pointer = &mut out_of_range_request["nodes"][0]["metadata"]["pointers"][0];
+        pointer["start_char"] = json!("18446744073709551616");
+        pointer["end_char"] = json!("18446744073709551617");
+        let rejected = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&out_of_range_request).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+        assert_eq!(rejected.status, fixture["status"]);
+        let rejected: Value = serde_json::from_slice(&rejected.body).unwrap();
+        assert_eq!(rejected["ok"], false);
+        assert!(rejected["node_errors"]["node-u64-offset"].is_string());
+    }
+
+    #[test]
+    fn document_graph_validation_coerces_boolean_pointer_offset_like_python() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-bool-offset-v1.json"
+        ))
+        .expect("valid boolean pointer offset fixture");
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap(),
+            fixture["response"]
+        );
+    }
+
+    #[test]
+    fn document_graph_validation_defaults_omitted_edges_to_empty() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-empty-edges-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body, fixture["response"]);
+    }
+
+    #[test]
+    fn document_graph_validation_rejects_incomplete_pointer_without_route_failure() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-invalid-pointer-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body["ok"], fixture["ok"]);
+        let actual_ids = body["node_errors"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let expected_ids = fixture["node_error_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(actual_ids, expected_ids);
+    }
+
+    #[test]
+    fn document_graph_validation_preserves_integer_string_pointer_coercion() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-validate-graph-integer-string-pointer-v1.json"
+        ))
+        .unwrap();
+        let response = document_graph_validation_effect(&ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: "/api/document.validate_graph".to_owned(),
+            body: serde_json::to_vec(&fixture["request"]).unwrap(),
+            principal: json!({}),
+        })
+        .unwrap();
+
+        assert_eq!(response.status, fixture["status"]);
+        let body: Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(body, fixture["response"]);
     }
 
     #[test]
@@ -168,17 +520,18 @@
             &capabilities,
         )
         .unwrap();
-        assert_eq!(write.record.id, "doc-projection");
-        assert_eq!(write.record.document.as_deref(), Some("hello"));
-        assert_eq!(write.scope.namespace, "docs");
-        assert_eq!(write.record.metadata["doc_type"], "text");
-        assert_eq!(write.record.metadata["insertion_method"], "parser");
+        assert_eq!(write.write.record.id, "doc-projection");
+        assert_eq!(write.write.record.document.as_deref(), Some("hello"));
+        assert_eq!(write.write.scope.namespace, "docs");
+        assert_eq!(write.write.record.metadata["doc_type"], "text");
+        assert_eq!(write.write.record.metadata["insertion_method"], "parser");
 
         let ocr_request = ApiEffectRequest {
             body: serde_json::to_vec(&json!({
                 "doc_id": "doc-ocr",
                 "doc_type": "ocr",
-                "content": "{}"
+                "insertion_method": "ocr-parser",
+                "content": r#"{"scan.pdf":[{"pdf_page_num":1,"OCR_text_clusters":[{"text":"Hello"}],"non_text_objects":[]}]}"#
             }))
             .unwrap(),
             ..request(json!({
@@ -188,8 +541,10 @@
                 "capabilities":["write_graph"]
             }))
         };
-        let ocr = document_projection_write(&ocr_request, &capabilities).unwrap_err();
-        assert_eq!(ocr.status, StatusCode::NOT_IMPLEMENTED);
+        let ocr = document_projection_write(&ocr_request, &capabilities).unwrap();
+        assert_eq!(ocr.write.record.document.as_deref(), Some("{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}"));
+        assert_eq!(ocr.write.record.metadata["doc_type"], "ocr_document");
+        assert_eq!(ocr.write.record.metadata["insertion_method"], "ocr-parser");
     }
 
     #[tokio::test]

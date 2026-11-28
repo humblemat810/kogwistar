@@ -367,8 +367,10 @@
         let token = |registered_identity: Option<Value>| {
             let mut claims = json!({
                 "sub":"identity-worker",
-                "role":"reader",
+                "role":"rw",
+                "roles":["reader"],
                 "capabilities":["spawn_process", "workflow.run.write"],
+                "ns":["workflow"],
                 "iss":"test-worker-registry",
                 "aud":"kogwistar-runtime",
                 "exp": now + 600

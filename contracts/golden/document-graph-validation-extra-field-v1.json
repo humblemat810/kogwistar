@@ -1,0 +1,13 @@
+{
+  "contract_version": "v1",
+  "request": {
+    "doc_id": "doc-extra-field",
+    "nodes": [],
+    "legacy_extension": "ignored"
+  },
+  "response": {
+    "ok": true,
+    "node_errors": {},
+    "edge_errors": {}
+  }
+}

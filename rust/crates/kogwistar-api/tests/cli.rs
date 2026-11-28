@@ -1,0 +1,1503 @@
+use std::process::Command;
+
+// Mirrors kogwistar._rust_bridge.api_cli_health through the shipped CLI binary.
+#[test]
+fn health_command_prints_selected_backend() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args(["health", "sqlite"])
+        .output()
+        .expect("run kogwistar-cli health");
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "ok backend=sqlite\n"
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn health_command_rejects_unsupported_backend() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args(["health", "chroma"])
+        .output()
+        .expect("run kogwistar-cli with unsupported backend");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("KOGWISTAR_BACKEND must be pg, sqlite, or in_memory")
+    );
+}
+
+#[test]
+fn conversation_transcript_missing_id_matches_python_usage_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args(["api", "conversation", "conversation.get_transcript"])
+        .output()
+        .expect("run kogwistar-cli with missing transcript ID");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("--conversation-id")
+    );
+}
+
+#[test]
+fn conversation_transcript_missing_option_value_is_usage_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args([
+            "api",
+            "conversation",
+            "conversation.get_transcript",
+            "--conversation-id",
+            "--base-url",
+            "http://127.0.0.1:1",
+        ])
+        .output()
+        .expect("run kogwistar-cli with a missing option value");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("--conversation-id")
+    );
+}
+
+#[test]
+fn conversation_transcript_unknown_option_is_usage_error() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args([
+            "api",
+            "conversation",
+            "conversation.get_transcript",
+            "--conversation-id",
+            "conversation-1",
+            "--mystery",
+            "value",
+            "--base-url",
+            "http://127.0.0.1:1",
+        ])
+        .output()
+        .expect("run kogwistar-cli with an unknown option");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("--mystery")
+    );
+}
+
+fn run_mock_http_cli(
+    arguments: impl FnOnce(String) -> Vec<String>,
+    response_body: &'static str,
+) -> (std::process::Output, String) {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread;
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock HTTP server");
+    listener
+        .set_nonblocking(true)
+        .expect("make mock accept bounded");
+    let address = listener.local_addr().expect("mock server address");
+    let server = thread::spawn(move || {
+        let (mut stream, _) = (0..200)
+            .find_map(|_| match listener.accept() {
+                Ok(connection) => Some(connection),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(std::time::Duration::from_millis(10));
+                    None
+                }
+                Err(error) => panic!("accept CLI request: {error}"),
+            })
+            .expect("CLI request arrives within two seconds");
+        stream
+            .set_nonblocking(false)
+            .expect("switch accepted mock stream to blocking mode");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("bound request read");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let read = stream.read(&mut buffer).expect("read CLI request");
+            request.extend_from_slice(&buffer[..read]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        let request = String::from_utf8(request).expect("HTTP request is UTF-8");
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response_body.len(),
+            response_body
+        )
+        .expect("write mock response");
+        request
+    });
+
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args(arguments(format!("http://{address}")))
+        .env("KOGWISTAR_API_TOKEN", "cli-test-token")
+        .output()
+        .expect("run kogwistar-cli HTTP command");
+    let request = server.join().expect("mock HTTP server completes");
+    (output, request)
+}
+
+fn assert_cli_json(output: &std::process::Output, expected: serde_json::Value) {
+    assert!(output.status.success());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        expected
+    );
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn conversation_transcript_command_uses_python_http_client_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "conversation",
+                "conversation.get_transcript",
+                "--conversation-id",
+                "c-1",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"conversation_id":"c-1","turns":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/conversations/c-1/turns HTTP/1.1\r\n"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer cli-test-token\r\n")
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"conversation_id": "c-1", "turns": []}),
+    );
+}
+
+#[test]
+fn conversation_create_command_posts_python_compatible_payload() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "conversation",
+                "conversation.create",
+                "--user-id",
+                "alice",
+                "--conversation-id",
+                "c-2",
+                "--start-node-id",
+                "n-start",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"conversation_id":"c-2","user_id":"alice"}"#,
+    );
+    assert!(request.starts_with("POST /api/conversations HTTP/1.1\r\n"));
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer cli-test-token\r\n")
+    );
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"user_id": "alice", "conversation_id": "c-2", "start_node_id": "n-start"})
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"conversation_id": "c-2", "user_id": "alice"}),
+    );
+}
+
+#[test]
+fn conversation_ask_command_uses_python_defaults_and_payload() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "conversation",
+                "conversation.ask",
+                "--conversation-id",
+                "c-3",
+                "--text",
+                "hello",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-3","status":"queued"}"#,
+    );
+    assert!(request.starts_with("POST /api/conversations/c-3/turns:answer HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"text": "hello", "user_id": null, "workflow_id": "agentic_answering.v2"})
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-3", "status": "queued"}),
+    );
+}
+
+#[test]
+fn conversation_run_status_command_gets_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "conversation",
+                "conversation.run_status",
+                "--run-id",
+                "r-4",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-4","status":"completed"}"#,
+    );
+    assert!(request.starts_with("GET /api/runs/r-4 HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-4", "status": "completed"}),
+    );
+}
+
+#[test]
+fn conversation_cancel_run_command_posts_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "conversation",
+                "conversation.cancel_run",
+                "--run-id",
+                "r-5",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-5","status":"cancelling"}"#,
+    );
+    assert!(request.starts_with("POST /api/runs/r-5/cancel HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-5", "status": "cancelling"}),
+    );
+}
+
+#[test]
+fn workflow_run_status_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_status",
+                "--run-id",
+                "r-6",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-6","status":"completed"}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-6 HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-6", "status": "completed"}),
+    );
+}
+
+#[test]
+fn workflow_run_cancel_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_cancel",
+                "--run-id",
+                "r-7",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-7","status":"cancelling"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs/r-7/cancel HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-7", "status": "cancelling"}),
+    );
+}
+
+#[test]
+fn workflow_run_events_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_events",
+                "--run-id",
+                "r-8",
+                "--after-seq",
+                "4",
+                "--limit",
+                "9",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"events":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-8/events?after_seq=4 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"events": []}));
+}
+
+#[test]
+fn workflow_run_checkpoint_get_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_checkpoint_get",
+                "--run-id",
+                "r-11",
+                "--step-seq",
+                "6",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-11","step_seq":6,"state":{"answer":42}}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-11/checkpoints/6 HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-11", "step_seq": 6, "state": {"answer": 42}}),
+    );
+}
+
+#[test]
+fn workflow_run_resume_contract_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_resume_contract",
+                "--run-id",
+                "r-12",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-12","resumable":true}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/runs/r-12/resume-contract HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-12", "resumable": true}),
+    );
+}
+
+#[test]
+fn workflow_run_replay_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_replay",
+                "--run-id",
+                "r-13",
+                "--target-step-seq",
+                "8",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-13","target_step_seq":8,"state":{}}"#,
+    );
+    assert!(
+        request.starts_with("GET /api/workflow/runs/r-13/replay?target_step_seq=8 HTTP/1.1\r\n")
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-13", "target_step_seq": 8, "state": {}}),
+    );
+}
+
+#[test]
+fn workflow_run_resume_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_resume",
+                "--run-id",
+                "r-14",
+                "--suspended-node-id",
+                "node-3",
+                "--suspended-token-id",
+                "token-4",
+                "--workflow-id",
+                "wf-5",
+                "--conversation-id",
+                "c-6",
+                "--turn-node-id",
+                "turn-7",
+                "--client-result",
+                r#"{"approved":true,"count":2}"#,
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-14","status":"queued"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs/r-14/resume HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "suspended_node_id": "node-3",
+            "suspended_token_id": "token-4",
+            "client_result": {"approved": true, "count": 2},
+            "workflow_id": "wf-5",
+            "conversation_id": "c-6",
+            "turn_node_id": "turn-7",
+            "user_id": null
+        })
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-14", "status": "queued"}),
+    );
+}
+
+#[test]
+fn workflow_process_table_command_preserves_python_dashboard_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.process_table",
+                "--status",
+                "completed",
+                "--workflow-id",
+                "wf-15",
+                "--conversation-id",
+                "c-15",
+                "--limit",
+                "23",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[{"run_id":"r-15"}]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/operator/dashboard?limit=23 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": [{"run_id": "r-15"}]}));
+}
+
+#[test]
+fn workflow_run_submit_command_preserves_python_payload_defaults() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_submit",
+                "--workflow-id",
+                "agent.v1",
+                "--conversation-id",
+                "c-9",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-9","status":"queued"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "workflow_id": "agent.v1",
+            "conversation_id": "c-9",
+            "turn_node_id": null,
+            "user_id": null,
+            "initial_state": {},
+            "priority_class": "foreground",
+            "token_budget": null,
+            "time_budget_ms": null
+        })
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-9", "status": "queued"}),
+    );
+}
+
+#[test]
+fn workflow_operator_dashboard_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.operator_dashboard",
+                "--limit",
+                "17",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/operator/dashboard?limit=17 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_visibility_snapshot_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.visibility_snapshot",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"visible":true}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/visibility HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"visible": true}));
+}
+
+#[test]
+fn workflow_scheduler_timeline_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.scheduler_timeline",
+                "--run-id",
+                "r-16",
+                "--limit",
+                "31",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(
+        request
+            .starts_with("GET /api/workflow/scheduler/timeline?run_id=r-16&limit=31 HTTP/1.1\r\n")
+    );
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_budget_snapshot_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            ["api", "workflow", "workflow.budget_snapshot", "--base-url"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([base])
+                .collect()
+        },
+        r#"{"budget":{}}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/budget HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"budget": {}}));
+}
+
+#[test]
+fn workflow_budget_history_command_preserves_python_default_limit() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            ["api", "workflow", "workflow.budget_history", "--base-url"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([base])
+                .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/budget/history?limit=200 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_tool_audit_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.tool_audit",
+                "--conversation-id",
+                "c-16",
+                "--limit",
+                "41",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"events":[]}"#,
+    );
+    assert!(
+        request.starts_with(
+            "GET /api/workflow/tools/audit?conversation_id=c-16&limit=41 HTTP/1.1\r\n"
+        )
+    );
+    assert_cli_json(&output, serde_json::json!({"events": []}));
+}
+
+#[test]
+fn workflow_service_list_command_preserves_python_default_limit() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            ["api", "workflow", "workflow.service_list", "--base-url"]
+                .into_iter()
+                .map(str::to_owned)
+                .chain([base])
+                .collect()
+        },
+        r#"{"services":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/services?limit=200 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"services": []}));
+}
+
+#[test]
+fn workflow_service_get_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_get",
+                "--service-id",
+                "svc-17",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-17","enabled":true}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/services/svc-17 HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"service_id": "svc-17", "enabled": true}),
+    );
+}
+
+#[test]
+fn workflow_service_events_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_events",
+                "--service-id",
+                "svc-18",
+                "--limit",
+                "29",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"events":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/services/svc-18/events?limit=29 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"events": []}));
+}
+
+#[test]
+fn workflow_service_enable_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_enable",
+                "--service-id",
+                "svc-19",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-19","enabled":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-19/enable HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"service_id": "svc-19", "enabled": true}),
+    );
+}
+
+#[test]
+fn workflow_service_disable_command_uses_python_endpoint() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_disable",
+                "--service-id",
+                "svc-20",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-20","enabled":false}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-20/disable HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"service_id": "svc-20", "enabled": false}),
+    );
+}
+
+#[test]
+fn workflow_service_heartbeat_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_heartbeat",
+                "--service-id",
+                "svc-21",
+                "--instance-id",
+                "worker-2",
+                "--payload",
+                r#"{"load":0.4}"#,
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"accepted":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-21/heartbeat HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"instance_id": "worker-2", "payload": {"load": 0.4}})
+    );
+    assert_cli_json(&output, serde_json::json!({"accepted": true}));
+}
+
+#[test]
+fn workflow_service_trigger_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_trigger",
+                "--service-id",
+                "svc-22",
+                "--trigger-type",
+                "manual",
+                "--payload",
+                r#"{"source":"cli"}"#,
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"accepted":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/svc-22/trigger HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"trigger_type": "manual", "payload": {"source": "cli"}})
+    );
+    assert_cli_json(&output, serde_json::json!({"accepted": true}));
+}
+
+#[test]
+fn workflow_services_repair_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.services_repair",
+                "--limit",
+                "37",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"repaired":2}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/services/repair?limit=37 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"repaired": 2}));
+}
+
+#[test]
+fn workflow_message_orphans_repair_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.message_orphans_repair",
+                "--inbox-id",
+                "inbox-23",
+                "--limit",
+                "18",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"repaired":1}"#,
+    );
+    assert!(request.starts_with(
+        "POST /api/workflow/messages/repair-orphans?inbox_id=inbox-23&limit=18 HTTP/1.1\r\n"
+    ));
+    assert_cli_json(&output, serde_json::json!({"repaired": 1}));
+}
+
+#[test]
+fn workflow_blocked_runs_command_rejects_unimplemented_python_operation() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kogwistar-cli"))
+        .args(["api", "workflow", "workflow.blocked_runs"])
+        .output()
+        .expect("run unsupported workflow command");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("usage: kogwistar-cli")
+    );
+}
+
+#[test]
+fn workflow_dead_letters_command_preserves_python_query_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.dead_letters",
+                "--limit",
+                "33",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/dead-letters?limit=33 HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_capabilities_snapshot_command_preserves_python_optional_subject() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.capabilities_snapshot",
+                "--subject",
+                "alice",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"subject":"alice","capabilities":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/capabilities?subject=alice HTTP/1.1\r\n"));
+    assert_cli_json(
+        &output,
+        serde_json::json!({"subject": "alice", "capabilities": []}),
+    );
+}
+
+#[test]
+fn workflow_service_declare_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.service_declare",
+                "--service-id",
+                "svc-31",
+                "--service-kind",
+                "maintenance",
+                "--target-kind",
+                "workflow",
+                "--target-ref",
+                "wf-31",
+                "--target-config",
+                "{\"batch\":4}",
+                "--no-enabled",
+                "--autostart",
+                "--restart-policy",
+                "{\"max_retries\":2}",
+                "--heartbeat-ttl-ms",
+                "45000",
+                "--trigger-specs",
+                "[{\"kind\":\"manual\"}]",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"service_id":"svc-31"}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/services HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "service_id": "svc-31",
+            "service_kind": "maintenance",
+            "target_kind": "workflow",
+            "target_ref": "wf-31",
+            "target_config": {"batch": 4},
+            "enabled": false,
+            "autostart": true,
+            "restart_policy": {"max_retries": 2},
+            "heartbeat_ttl_ms": 45000,
+            "trigger_specs": [{"kind": "manual"}],
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"service_id": "svc-31"}));
+}
+
+#[test]
+fn workflow_dead_letter_replay_command_preserves_python_endpoint_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.dead_letter_replay",
+                "--run-id",
+                "run-32",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"replayed":true}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/dead-letters/run-32/replay HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"replayed": true}));
+}
+
+#[test]
+fn workflow_capability_approve_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.capability_approve",
+                "--action",
+                "workflow.run.submit",
+                "--capabilities",
+                "[\"workflow.run.submit\",\"read_graph\"]",
+                "--subject",
+                "alice",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"approved":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/capabilities/approve HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "action": "workflow.run.submit",
+            "capabilities": ["workflow.run.submit", "read_graph"],
+            "subject": "alice",
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"approved": true}));
+}
+
+#[test]
+fn workflow_capability_revoke_command_preserves_python_nullable_subject() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.capability_revoke",
+                "--capability",
+                "read_graph",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"revoked":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/capabilities/revoke HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"capability": "read_graph", "subject": null})
+    );
+    assert_cli_json(&output, serde_json::json!({"revoked": true}));
+}
+
+#[test]
+fn workflow_design_history_command_preserves_python_endpoint_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_history",
+                "--workflow-id",
+                "wf-41",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"items":[]}"#,
+    );
+    assert!(request.starts_with("GET /api/workflow/design/wf-41/history HTTP/1.1\r\n"));
+    assert_cli_json(&output, serde_json::json!({"items": []}));
+}
+
+#[test]
+fn workflow_design_undo_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_undo",
+                "--workflow-id",
+                "wf-42",
+                "--designer-id",
+                "designer-a",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"undone":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-42/undo HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-a"})
+    );
+    assert_cli_json(&output, serde_json::json!({"undone": true}));
+}
+
+#[test]
+fn workflow_design_redo_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_redo",
+                "--workflow-id",
+                "wf-43",
+                "--designer-id",
+                "designer-b",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"redone":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-43/redo HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-b"})
+    );
+    assert_cli_json(&output, serde_json::json!({"redone": true}));
+}
+
+#[test]
+fn workflow_design_node_upsert_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_node_upsert",
+                "--workflow-id",
+                "wf-44",
+                "--designer-id",
+                "designer-c",
+                "--label",
+                "review",
+                "--node-id",
+                "node-7",
+                "--op",
+                "validate",
+                "--start",
+                "--terminal",
+                "--no-fanout",
+                "--metadata",
+                "{\"color\":\"blue\"}",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"node_id":"node-7"}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-44/nodes HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "designer_id": "designer-c",
+            "node_id": "node-7",
+            "label": "review",
+            "op": "validate",
+            "start": true,
+            "terminal": true,
+            "fanout": false,
+            "metadata": {"color": "blue"},
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"node_id": "node-7"}));
+}
+
+#[test]
+fn workflow_design_edge_upsert_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_edge_upsert",
+                "--workflow-id",
+                "wf-45",
+                "--designer-id",
+                "designer-d",
+                "--src",
+                "node-a",
+                "--dst",
+                "node-b",
+                "--edge-id",
+                "edge-9",
+                "--relation",
+                "wf_branch",
+                "--predicate",
+                "approved",
+                "--priority",
+                "17",
+                "--is-default",
+                "--multiplicity",
+                "many",
+                "--metadata",
+                "{\"reason\":\"test\"}",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"edge_id":"edge-9"}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("POST /api/workflow/design/wf-45/edges HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "designer_id": "designer-d",
+            "edge_id": "edge-9",
+            "src": "node-a",
+            "dst": "node-b",
+            "relation": "wf_branch",
+            "predicate": "approved",
+            "priority": 17,
+            "is_default": true,
+            "multiplicity": "many",
+            "metadata": {"reason": "test"},
+        })
+    );
+    assert_cli_json(&output, serde_json::json!({"edge_id": "edge-9"}));
+}
+
+#[test]
+fn workflow_design_node_delete_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_node_delete",
+                "--workflow-id",
+                "wf-46",
+                "--designer-id",
+                "designer-e",
+                "--node-id",
+                "node-8",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"deleted":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("DELETE /api/workflow/design/wf-46/nodes/node-8 HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-e"})
+    );
+    assert_cli_json(&output, serde_json::json!({"deleted": true}));
+}
+
+#[test]
+fn workflow_design_edge_delete_command_preserves_python_payload_contract() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.design_edge_delete",
+                "--workflow-id",
+                "wf-47",
+                "--designer-id",
+                "designer-f",
+                "--edge-id",
+                "edge-10",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"deleted":true}"#,
+    );
+    let (headers, body) = request.split_once("\r\n\r\n").unwrap();
+    assert!(headers.starts_with("DELETE /api/workflow/design/wf-47/edges/edge-10 HTTP/1.1\r\n"));
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({"designer_id": "designer-f"})
+    );
+    assert_cli_json(&output, serde_json::json!({"deleted": true}));
+}
+
+#[test]
+fn workflow_run_submit_command_preserves_python_explicit_values() {
+    let (output, request) = run_mock_http_cli(
+        |base| {
+            [
+                "api",
+                "workflow",
+                "workflow.run_submit",
+                "--workflow-id",
+                "agent.v1",
+                "--conversation-id",
+                "c-10",
+                "--turn-node-id",
+                "n-10",
+                "--user-id",
+                "alice",
+                "--initial-state",
+                r#"{"answer":7,"nested":[true]}"#,
+                "--priority-class",
+                "background",
+                "--token-budget",
+                "128",
+                "--time-budget-ms",
+                "5000",
+                "--base-url",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .chain([base])
+            .collect()
+        },
+        r#"{"run_id":"r-10","status":"queued"}"#,
+    );
+    assert!(request.starts_with("POST /api/workflow/runs HTTP/1.1\r\n"));
+    let body = request.split_once("\r\n\r\n").unwrap().1;
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(body).unwrap(),
+        serde_json::json!({
+            "workflow_id": "agent.v1",
+            "conversation_id": "c-10",
+            "turn_node_id": "n-10",
+            "user_id": "alice",
+            "initial_state": {"answer": 7, "nested": [true]},
+            "priority_class": "background",
+            "token_budget": 128,
+            "time_budget_ms": 5000
+        })
+    );
+    assert_cli_json(
+        &output,
+        serde_json::json!({"run_id": "r-10", "status": "queued"}),
+    );
+}

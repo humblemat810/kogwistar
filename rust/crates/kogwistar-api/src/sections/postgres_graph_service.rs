@@ -395,7 +395,7 @@ enum NativeEvidenceRecordError {
 }
 
 impl PostgresRunApplicationService {
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_propose_vector_returns_only_acl_visible_pairs
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_propose_vector_effect; python=kogwistar/server/mcp_tools.py#propose_vector; fixture=contracts/golden/graph-vector-proposal-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_propose_vector_returns_only_acl_visible_pairs
     async fn graph_propose_vector_effect(
         &self,
         request: &ApiEffectRequest,
@@ -1649,6 +1649,21 @@ impl PostgresRunApplicationService {
                     error,
                 )
             })?;
+        let conversation_exists = visible_nodes.iter().any(|record| {
+            conversation_record_string(record, "conversation_id").as_deref()
+                == Some(input.conversation_id.as_str())
+                && !matches!(
+                    conversation_record_string(record, "lifecycle_status").as_deref(),
+                    Some("tombstoned" | "deleted")
+                )
+        });
+        if !conversation_exists {
+            return Err(effect_error(
+                StatusCode::NOT_FOUND,
+                "KOGWISTAR_CONVERSATION_NOT_FOUND",
+                format!("Unknown conversation_id: {}", input.conversation_id),
+            ));
+        }
         conversation_transcript_from_visible_records(
             &visible_nodes,
             &input.conversation_id,
@@ -1816,6 +1831,7 @@ impl PostgresRunApplicationService {
         }
     }
 
+    // PYTHON_PARITY_V1: require ro/rw role, conversation namespace, and user identity; owner and ACL filters scope results. rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#conversation_list_effect; python=kogwistar/server/chat_api.py#create_chat_router.list_conversations; fixture=contracts/golden/conversation-list-denied-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/conversation_read_authorization.rs#conversation_list_http_denials_precede_storage_read; python_test=tests/server/test_chat_server_api_conversations.py#test_conversation_list_http_denials_precede_service_read
     async fn conversation_list_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         let namespaces = principal_strings(&request.principal, "ns");
         let namespaces = if namespaces.is_empty() {
@@ -1833,17 +1849,9 @@ impl PostgresRunApplicationService {
                 "Conversation reads require conversation namespace",
             );
         }
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation reads require read_graph capability",
-            );
-        }
         let user_id = request
             .principal
-            .get("sub")
-            .or_else(|| request.principal.get("user_id"))
+            .get("user_id")
             .and_then(Value::as_str)
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -1916,13 +1924,6 @@ impl PostgresRunApplicationService {
                 "Conversation reads require conversation namespace",
             );
         }
-        if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
-            return effect_error(
-                StatusCode::FORBIDDEN,
-                "KOGWISTAR_CAPABILITY_FORBIDDEN",
-                "Conversation reads require read_graph capability",
-            );
-        }
         let Some(conversation_id) = conversation_detail_id(&request.path_and_query) else {
             return effect_error(
                 StatusCode::NOT_FOUND,
@@ -1990,9 +1991,8 @@ impl PostgresRunApplicationService {
                 "Conversation transcript route was not found",
             );
         };
-        let authorization = match self.authorize_conversation_transcript(request) {
-            Ok(value) => value,
-            Err(response) => return response,
+        let authorization = ConversationTranscriptAuthorization {
+            principal: request.principal.clone(),
         };
         match self
             .conversation_transcript_projection(
@@ -2366,7 +2366,7 @@ impl PostgresRunApplicationService {
         )
     }
 
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_vector_query_effect; python=kogwistar/engine_core/subsystems/acl.py#ACLAwareReadSubsystem.query_nodes; fixture=contracts/golden/graph-acl-vector-query-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_tools.py#test_acl_vector_query_matches_shared_python_rust_ranking_fixture
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/postgres_graph_service.rs#graph_vector_query_effect; python=kogwistar/engine_core/subsystems/acl.py#ACLAwareReadSubsystem.query_nodes; fixture=contracts/golden/graph-acl-vector-query-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/graph_query_contracts.rs#postgres_graph_vector_query_is_scoped_acl_filtered_and_rank_stable_when_dsn_available; python_test=tests/mcp/test_chat_mcp_graph_reads.py#test_acl_vector_query_matches_shared_python_rust_ranking_fixture
     async fn graph_vector_query_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
         if !capability_allowed(request, &self.capabilities, "read_graph", &["read_graph"]) {
             return effect_error(
@@ -2920,10 +2920,9 @@ impl PostgresRunApplicationService {
             .filter(|name| !name.is_empty())
             .map(str::to_ascii_lowercase)
         else {
-            return effect_error(
+            return json_effect(
                 StatusCode::BAD_REQUEST,
-                "KOGWISTAR_INVALID_REQUEST",
-                "tool_name is required",
+                json!({"detail": "tool_name is required"}),
             );
         };
 
@@ -3100,10 +3099,9 @@ impl PostgresRunApplicationService {
                 json!({"tool_name": tool_name, "snapshot": snapshot})
             }
             _ => {
-                return effect_error(
+                return json_effect(
                     StatusCode::NOT_FOUND,
-                    "KOGWISTAR_TOOL_NOT_FOUND",
-                    format!("unknown built-in tool: {tool_name}"),
+                    json!({"detail": format!("'unknown tool: {tool_name}'")}),
                 );
             }
         };
@@ -3165,25 +3163,63 @@ impl PostgresRunApplicationService {
                     &["workflow.run.write"],
                 ) {
                     syscall_forbidden(op)
-                } else if let Some(run_id) = input.args["run_id"].as_str() {
-                    match self.store.request_server_run_cancel(run_id).await {
-                        Ok(()) => match self.store.get_server_run(run_id).await {
-                            Ok(Some(run)) => syscall_result(
+                } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
+                    match self.store.get_server_run(run_id).await {
+                        Ok(Some(run))
+                            if matches!(run.status.as_str(), "succeeded" | "failed" | "cancelled") =>
+                        {
+                            syscall_result(
                                 &input.version,
                                 op,
                                 json_effect(StatusCode::ACCEPTED, server_run_value(run)),
-                            ),
-                            Ok(None) => effect_error(
-                                StatusCode::NOT_FOUND,
-                                "KOGWISTAR_RUN_NOT_FOUND",
-                                format!("Unknown run_id: {run_id}"),
-                            ),
+                            )
+                        }
+                        Ok(Some(_)) => match kogwistar_store::ServerRunWriteStore::append_server_run_event(
+                            &self.store,
+                            run_id,
+                            "run.cancelling",
+                            json!({"run_id": run_id, "status": "cancelling"}).to_string(),
+                        )
+                        .await
+                        {
+                            Ok(_) => match self.store.request_server_run_cancel(run_id).await {
+                                Ok(()) => match self.store.get_server_run(run_id).await {
+                                    Ok(Some(run)) => syscall_result(
+                                        &input.version,
+                                        op,
+                                        json_effect(
+                                            StatusCode::ACCEPTED,
+                                            server_run_value(run),
+                                        ),
+                                    ),
+                                    Ok(None) => effect_error(
+                                        StatusCode::NOT_FOUND,
+                                        "KOGWISTAR_RUN_NOT_FOUND",
+                                        format!("Unknown run_id: {run_id}"),
+                                    ),
+                                    Err(error) => effect_error(
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        "KOGWISTAR_STORE_ERROR",
+                                        error.to_string(),
+                                    ),
+                                },
+                                Err(error) => effect_error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "KOGWISTAR_STORE_ERROR",
+                                    error.to_string(),
+                                ),
+                            },
                             Err(error) => effect_error(
                                 StatusCode::INTERNAL_SERVER_ERROR,
                                 "KOGWISTAR_STORE_ERROR",
                                 error.to_string(),
                             ),
                         },
+                        Ok(None) => effect_error(
+                            StatusCode::NOT_FOUND,
+                            "KOGWISTAR_RUN_NOT_FOUND",
+                            format!("Unknown run_id: {run_id}"),
+                        ),
                         Err(error) => effect_error(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "KOGWISTAR_STORE_ERROR",
@@ -3192,7 +3228,7 @@ impl PostgresRunApplicationService {
                     }
                 } else {
                     effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     )
@@ -3209,7 +3245,7 @@ impl PostgresRunApplicationService {
                     syscall_forbidden(op)
                 } else if let (Some(run_id), Some(step_seq)) = (
                     input.args["run_id"].as_str(),
-                    input.args["step_seq"].as_i64(),
+                    syscall_step_seq(&input.args["step_seq"]),
                 ) {
                     match self.store.list_server_run_events(run_id, 0, 100_000).await {
                         Ok(events) => syscall_result(
@@ -3432,33 +3468,31 @@ impl PostgresRunApplicationService {
                     &["workflow.run.write"],
                 ) {
                     syscall_forbidden(op)
-                } else if let Some(run_id) = input.args["run_id"].as_str() {
+                } else if let Some(run_id) = input.args.get("run_id").and_then(Value::as_str) {
                     let nested = ApiEffectRequest {
                         contract_version: request.contract_version,
                         method: "POST".to_owned(),
-                        path_and_query: format!("/api/workflow/runs/{run_id}/resume"),
-                        body: serde_json::to_vec(&input.args).expect("syscall args serialize"),
+                        path_and_query: format!(
+                            "/api/workflow/runs/{run_id}/resume?wait_for_completion=true"
+                        ),
+                        body: resume_syscall_args(&input.args),
                         principal: request.principal.clone(),
                     };
                     syscall_result(
                         &input.version,
                         op,
-                        self.resume_runtime_run(run_id, &nested).await,
+                        self.resume_runtime_run_and_wait(run_id, &nested).await,
                     )
                 } else {
                     effect_error(
-                        StatusCode::BAD_REQUEST,
+                        StatusCode::NOT_FOUND,
                         "KOGWISTAR_INVALID_REQUEST",
                         "run_id is required",
                     )
                 }
             }
             "request_approval" => {
-                if !syscall_allowed(request, &self.capabilities, op, true, &["approve_action"]) {
-                    syscall_forbidden(op)
-                } else {
-                    request_approval_syscall(request, &self.capabilities, &input)
-                }
+                request_approval_syscall_effect(request, &self.capabilities, &input)
             }
             _ => unavailable_effect(request.clone()),
         };

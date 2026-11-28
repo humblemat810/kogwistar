@@ -36,6 +36,29 @@ impl PostgresStore {
         })
         .await
     }
+    pub async fn compare_and_set_projected_lane_message_status(
+        &self,
+        id: &str,
+        expected_status: &str,
+        status: &str,
+        error: Option<String>,
+    ) -> PostgresStoreResult<bool> {
+        let id = id.to_owned();
+        let expected_status = expected_status.to_owned();
+        let status = status.to_owned();
+        self.transaction(move |uow| {
+            Box::pin(async move {
+                uow.compare_and_set_projected_lane_message_status(
+                    &id,
+                    &expected_status,
+                    &status,
+                    error,
+                )
+                .await
+            })
+        })
+        .await
+    }
     pub async fn update_projected_lane_message_links(
         &self,
         id: &str,

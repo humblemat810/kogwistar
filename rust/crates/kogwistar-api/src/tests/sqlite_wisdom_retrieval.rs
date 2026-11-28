@@ -117,6 +117,60 @@ async fn sqlite_chroma_wisdom_upsert_uses_canonical_events_and_acl_before_projec
         },
         Arc::new(service.clone()),
     );
+    let denied_token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub": "alice", "user_id": "alice", "role": "rw", "roles": ["writer"],
+            "ns": ["wisdom"], "storage_ns": "wisdom", "graph_space": "wisdom",
+            "capabilities": ["read_graph"], "exp": 4102444800_u64
+        }),
+        &EncodingKey::from_secret(mcp_secret.as_bytes()),
+    )
+    .unwrap();
+    let denied_response = mcp_app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header("content-type", "application/json")
+                .header("accept", "application/json, text/event-stream")
+                .header("authorization", format!("Bearer {denied_token}"))
+                .body(Body::from(
+                    serde_json::to_vec(&json!({
+                        "jsonrpc": "2.0", "id": "wisdom-upsert-denied",
+                        "method": "tools/call",
+                        "params": {
+                            "name": mcp_contract["operation"],
+                            "arguments": mcp_contract["arguments"]
+                        }
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied_response.status(), StatusCode::OK);
+    let denied_body = axum::body::to_bytes(denied_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    let denied_wire = String::from_utf8(denied_body.to_vec()).unwrap();
+    let denied_json = denied_wire
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .expect("Streamable HTTP wraps the JSON-RPC denial in SSE data");
+    let denied_payload: Value = serde_json::from_str(denied_json).unwrap();
+    assert_eq!(denied_payload["result"]["isError"], true, "{denied_payload}");
+    assert_eq!(
+        denied_payload["result"]["content"][0]["text"],
+        "Tool not advertised by this application service"
+    );
+    assert!(service
+        .store
+        .replay_raw_events("wisdom", 0, 100)
+        .unwrap()
+        .is_empty(), "denied MCP call must not persist graph events");
     let mcp_response = mcp_app
         .oneshot(
             Request::builder()
@@ -822,16 +876,12 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     let body = serde_json::to_vec(&extraction).unwrap();
     let principal = json!({
         "sub": "alice", "user_id": "alice", "role": "rw",
-        "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+        "ns": ["docs"], "storage_ns": "docs", "capabilities": []
     });
     for denied_principal in [
         json!({
             "sub": "alice", "user_id": "alice", "role": "ro",
             "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
-        }),
-        json!({
-            "sub": "alice", "user_id": "alice", "role": "rw",
-            "ns": ["docs"], "storage_ns": "docs", "capabilities": ["read_graph"]
         }),
         json!({
             "role": "rw", "ns": ["docs"], "storage_ns": "docs",
@@ -862,7 +912,7 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         &json!({
             "sub": "alice", "user_id": "alice", "role": "rw",
             "roles": ["reader", "rw"], "ns": ["docs"],
-            "storage_ns": "docs", "capabilities": ["write_graph"],
+            "storage_ns": "docs", "capabilities": [],
             "exp": 4102444800_u64
         }),
         &EncodingKey::from_secret(secret.as_bytes()),
@@ -925,6 +975,43 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
     );
     assert_eq!(payload["nodes_added"], expected_body["nodes_added"]);
     assert_eq!(payload["edges_added"], expected_body["edges_added"]);
+
+    let document_tree_fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/document-upsert-tree-success-v1.json"
+    )))
+    .expect("shared document tree upsert fixture");
+    let document_tree_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(PUBLIC_DOCUMENT_TREE_UPSERT_ROUTE)
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(
+                    &document_tree_fixture["request"],
+                )
+                .unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let document_tree_status = document_tree_response.status();
+    let document_tree_body = to_bytes(document_tree_response.into_body(), 65_536)
+        .await
+        .unwrap();
+    assert_eq!(
+        document_tree_status,
+        StatusCode::OK,
+        "shared document tree upsert failed: {}",
+        String::from_utf8_lossy(&document_tree_body)
+    );
+    let document_tree_result: Value = serde_json::from_slice(&document_tree_body).unwrap();
+    assert_eq!(
+        document_tree_result,
+        document_tree_fixture["expected"]["body"]
+    );
 
     let mut legacy_nodes = extraction["nodes"].as_array().unwrap().clone();
     let mut legacy_edges = extraction["edges"].as_array().unwrap().clone();
@@ -1181,6 +1268,63 @@ async fn sqlite_chroma_public_graph_upsert_uses_shared_extraction_contract() {
         .map(|job| (job.entity_id, job.status))
         .collect::<Vec<_>>();
     assert_eq!(jobs_after_hyperedge_rejection, jobs_before_invalid);
+
+    let ocr_content = "Hello";
+    let ocr_request = json!({
+        "contract_version": 1,
+        "doc_id": "doc-ocr-upsert",
+        "content": ocr_content,
+        "doc_type": "ocr",
+        "insertion_method": "ocr-parser",
+        "nodes": [{
+            "id": "nn:hello",
+            "label": "Hello",
+            "type": "entity",
+            "summary": "OCR source entity",
+            "references": [{
+                "collection_page_url": "document_collection/doc-ocr-upsert",
+                "document_page_url": "document/doc-ocr-upsert",
+                "doc_id": "doc-ocr-upsert",
+                "start_char": 0,
+                "end_char": 5,
+                "excerpt": "Hello"
+            }]
+        }],
+        "edges": []
+    });
+    let ocr_response = service
+        .execute(ApiEffectRequest {
+            contract_version: 1,
+            method: "POST".to_owned(),
+            path_and_query: PUBLIC_GRAPH_UPSERT_ROUTE.to_owned(),
+            body: serde_json::to_vec(&ocr_request).unwrap(),
+            principal: json!({
+                "sub": "alice", "user_id": "alice", "role": "rw",
+                "ns": ["docs"], "storage_ns": "docs", "capabilities": ["write_graph"]
+            }),
+        })
+        .await;
+    assert_eq!(
+        ocr_response.status,
+        StatusCode::OK.as_u16(),
+        "OCR graph upsert failed: {}",
+        String::from_utf8_lossy(&ocr_response.body)
+    );
+    let ocr_projection = service
+        .store
+        .source_document_projection(
+            &GraphScope {
+                namespace: "docs".to_owned(),
+                workspace_id: Some(String::new()),
+                graph_space: Some(String::new()),
+            },
+            "doc-ocr-upsert",
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(ocr_projection.document.as_deref(), Some(ocr_content));
+    assert_eq!(ocr_projection.metadata["doc_type"], "ocr");
+    assert_eq!(ocr_projection.metadata["insertion_method"], "ocr-parser");
 
     drop(service);
     drop(standalone);

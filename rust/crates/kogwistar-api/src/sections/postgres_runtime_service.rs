@@ -586,6 +586,7 @@ impl PostgresRunApplicationService {
             wisdom_embedding_storage_scope,
             chat_completion_provider: None,
             transient_run_deltas: crate::transient_deltas::TransientRunDeltas::default(),
+            change_events: crate::change_events::ChangeEventPublisher::from_env(),
         })
     }
 

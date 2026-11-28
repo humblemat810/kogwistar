@@ -1,0 +1,32 @@
+{
+  "descriptors": [
+    {
+      "aliases": [],
+      "allow_additional_properties": false,
+      "descriptor_id": "Thing",
+      "extensions": {},
+      "kind": "ontology_class",
+      "name": "Thing",
+      "property_ids": [
+        "base:name"
+      ],
+      "summary": ""
+    }
+  ],
+  "manifest": {
+    "content_sha256": "0ea27ebc214ab198d6a62c2fda0172cd52c66348dffd6e23edebe73d5459ed8f",
+    "extensions": {},
+    "imports": [
+      {
+        "content_sha256": "fcdfb2a28130fe7955875f1eb82d14a3a32b241d62ba96cbb7e2ec73915514de",
+        "ontology_id": "base",
+        "version": "1.0.0"
+      }
+    ],
+    "ontology_id": "dependent",
+    "schema_version": 1,
+    "summary": "",
+    "title": "Dependent",
+    "version": "1.0.0"
+  }
+}

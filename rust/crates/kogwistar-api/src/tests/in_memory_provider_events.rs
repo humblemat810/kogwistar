@@ -877,20 +877,22 @@ async fn in_memory_inline_graph_v2_commits_graph_acl_index_and_lane_together() {
         .await
         .unwrap();
     assert!(index_jobs.iter().any(|job| job.entity_id == node_id));
-    assert_eq!(
-        kogwistar_store::LaneMessageReadStore::projected_lane_messages(
-            &service.store,
-            LaneMessageFilter {
-                correlation_id: Some(run_id.to_owned()),
-                limit: 10,
-                ..LaneMessageFilter::default()
-            }
-        )
-        .await
-        .unwrap()[0]
-            .status,
-        "completed"
-    );
+    let run_lanes = kogwistar_store::LaneMessageReadStore::projected_lane_messages(
+        &service.store,
+        LaneMessageFilter {
+            correlation_id: Some(run_id.to_owned()),
+            limit: 10,
+            ..LaneMessageFilter::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(run_lanes.len(), 1);
+    assert_eq!(run_lanes[0].status, "completed");
+    assert_eq!(run_lanes[0].recipient_id, "rust-native-worker");
+    assert!(run_lanes
+        .iter()
+        .all(|lane| !lane.recipient_id.starts_with("python-worker")));
     drop(service);
     let _ = std::fs::remove_file(auth_path);
 }

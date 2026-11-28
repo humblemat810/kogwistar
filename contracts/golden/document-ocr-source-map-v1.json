@@ -1,0 +1,105 @@
+{
+  "contract_version": 1,
+  "doc_id": "doc-ocr",
+  "ocr_content": {
+    "scan.pdf": [
+      {
+        "pdf_page_num": 1,
+        "OCR_text_clusters": [
+          { "text": "Hello" }
+        ],
+        "non_text_objects": []
+      }
+    ]
+  },
+  "expected_content_repr": "{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}",
+  "expected_source_map": {
+    "p1_c0": { "text": "Hello", "id": "p1_c0" }
+  },
+  "parity_cases": [
+    {
+      "name": "text_and_non_text_clusters_share_ids_and_non_text_wins_map",
+      "ocr_content": {
+        "scan.pdf": [
+          {
+            "pdf_page_num": 2,
+            "OCR_text_clusters": [{ "text": "Detected text" }],
+            "non_text_objects": [{ "kind": "figure", "label": "Diagram" }]
+          }
+        ]
+      },
+      "expected_content": {
+        "scan.pdf": [
+          {
+            "pdf_page_num": 2,
+            "OCR_text_clusters": [{ "text": "Detected text", "id": "p2_c0" }],
+            "non_text_objects": [{ "kind": "figure", "label": "Diagram", "id": "p2_c0" }]
+          }
+        ]
+      },
+      "expected_source_map": {
+        "p2_c0": { "kind": "figure", "label": "Diagram", "id": "p2_c0" }
+      }
+    },
+    {
+      "name": "first_filename_in_input_order_is_projected",
+      "ocr_content": {
+        "z-first.pdf": [
+          {
+            "pdf_page_num": 7,
+            "OCR_text_clusters": [{ "text": "First file" }],
+            "non_text_objects": []
+          }
+        ],
+        "a-second.pdf": [
+          {
+            "pdf_page_num": 8,
+            "OCR_text_clusters": [{ "text": "Second file" }],
+            "non_text_objects": []
+          }
+        ]
+      },
+      "expected_content": {
+        "z-first.pdf": [
+          {
+            "pdf_page_num": 7,
+            "OCR_text_clusters": [{ "text": "First file", "id": "p7_c0" }],
+            "non_text_objects": []
+          }
+        ],
+        "a-second.pdf": [
+          {
+            "pdf_page_num": 8,
+            "OCR_text_clusters": [{ "text": "Second file" }],
+            "non_text_objects": []
+          }
+        ]
+      },
+      "expected_source_map": {
+        "p7_c0": { "text": "First file", "id": "p7_c0" }
+      }
+    }
+  ],
+  "expected_change_payload": {
+    "id": "doc-ocr",
+    "content": {
+      "scan.pdf": [
+        {
+          "pdf_page_num": 1,
+          "OCR_text_clusters": [
+            { "text": "Hello", "id": "p1_c0" }
+          ],
+          "non_text_objects": []
+        }
+      ]
+    },
+    "type": "ocr_document",
+    "metadata": {},
+    "domain_id": null,
+    "processed": false,
+    "embeddings": null,
+    "source_map": {
+      "p1_c0": { "text": "Hello", "id": "p1_c0" }
+    }
+  }
+}

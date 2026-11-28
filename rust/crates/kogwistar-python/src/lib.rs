@@ -659,6 +659,38 @@ mod tests {
     }
 
     #[test]
+    fn postgres_bridge_accepts_historical_graph_vector_query_contract() {
+        let operation = json!({
+            "kind": "graph_projection_vector_query",
+            "namespace": "default",
+            "workspace_id": null,
+            "graph_space": null,
+            "table": "gke_nodes",
+            "embedding": [1.0, 0.0],
+            "limit": 3,
+            "metadata": {"team": "red"},
+            "metadata_not_equals": {"entity_type": "acl_record"},
+            "metric": "cosine",
+            "embedding_dim": 2,
+            "as_of_ts": "2025-01-01T00:00:00+00:00",
+            "follow_redirects": true,
+            "max_redirect_hops": 16
+        });
+        validate_postgres_operation(&operation).expect("historical query fields are allowlisted");
+        serde_json::from_value::<PostgresStoreOperation>(operation.clone())
+            .expect("historical query matches the typed Rust contract");
+
+        let mut invalid = operation;
+        invalid["unexpected"] = json!(true);
+        assert_eq!(
+            validate_postgres_operation(&invalid)
+                .expect_err("unknown historical query fields must fail closed")
+                .0,
+            STORE_INVALID_PAYLOAD
+        );
+    }
+
+    #[test]
     fn postgres_bridge_accepts_scoped_source_document_group_delete() {
         let operation = json!({
             "kind": "delete_document_projections_by_source_id",

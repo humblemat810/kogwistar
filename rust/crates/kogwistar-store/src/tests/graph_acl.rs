@@ -1,4 +1,426 @@
 #[test]
+fn graph_acl_traversal_matches_shared_python_contract() {
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-acl-traversal-v1.json"
+    )))
+    .expect("valid graph ACL traversal fixture");
+    assert_eq!(fixture["schema_version"], 1);
+    let truth_graph = fixture["truth_graph"].as_str().expect("truth graph");
+    let edge_spec = &fixture["edge"];
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for node_spec in fixture["nodes"].as_array().expect("nodes") {
+        let id = node_spec["id"].as_str().expect("node ID");
+        let record = node_record(id);
+        nodes.push(record.clone());
+
+        let mut acl = GraphRecord::new(format!("acl-{id}"));
+        acl.metadata
+            .insert("entity_type".into(), "acl_record".into());
+        acl.metadata
+            .insert("acl_truth_graph".into(), truth_graph.into());
+        acl.metadata
+            .insert("acl_target_entity_id".into(), id.into());
+        acl.metadata
+            .insert("acl_target_grain".into(), "node".into());
+        acl.metadata.insert("acl_version".into(), 1.into());
+        acl.metadata
+            .insert("acl_mode".into(), node_spec["mode"].clone());
+        if let Some(owner) = node_spec["owner_id"].as_str() {
+            acl.metadata.insert("owner_id".into(), owner.into());
+        }
+        nodes.push(acl);
+    }
+
+    let edge_id = edge_spec["id"].as_str().expect("edge ID");
+    let edge_document = serde_json::json!({
+        "doc_id": fixture["doc_id"],
+        "relation": edge_spec["relation"],
+        "source_ids": edge_spec["source_ids"],
+        "target_ids": edge_spec["target_ids"],
+        "source_edge_ids": [],
+        "target_edge_ids": []
+    });
+    let edge = edge_record(edge_id, edge_document);
+    edges.push(edge.clone());
+    let mut edge_acl = GraphRecord::new(format!("acl-{edge_id}"));
+    edge_acl
+        .metadata
+        .insert("entity_type".into(), "acl_record".into());
+    edge_acl
+        .metadata
+        .insert("acl_truth_graph".into(), truth_graph.into());
+    edge_acl
+        .metadata
+        .insert("acl_target_entity_id".into(), edge_id.into());
+    edge_acl
+        .metadata
+        .insert("acl_target_grain".into(), "edge".into());
+    edge_acl.metadata.insert("acl_version".into(), 1.into());
+    edge_acl
+        .metadata
+        .insert("acl_mode".into(), edge_spec["mode"].clone());
+    if let Some(owner) = edge_spec["owner_id"].as_str() {
+        edge_acl.metadata.insert("owner_id".into(), owner.into());
+    }
+    nodes.push(edge_acl);
+
+    for principal_spec in fixture["principals"].as_array().expect("principals") {
+        let principal = GraphAclPrincipal {
+            principal_id: principal_spec["id"]
+                .as_str()
+                .expect("principal ID")
+                .to_owned(),
+            ..Default::default()
+        };
+        let (visible_nodes, visible_edges) =
+            graph_records_visible_by_acl(&nodes, &edges, truth_graph, &principal);
+        let neighbors = graph_neighbors_from_records(
+            fixture["nodes"][0]["id"].as_str().expect("source ID"),
+            &visible_nodes,
+            &visible_edges,
+            fixture["doc_id"].as_str(),
+        );
+        let expected_nodes = principal_spec["expected_neighbors"]["nodes"]
+            .as_array()
+            .expect("expected nodes")
+            .iter()
+            .map(|value| value.as_str().expect("node ID").to_owned())
+            .collect::<BTreeSet<_>>();
+        let expected_edges = principal_spec["expected_neighbors"]["edges"]
+            .as_array()
+            .expect("expected edges")
+            .iter()
+            .map(|value| value.as_str().expect("edge ID").to_owned())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(neighbors.nodes, expected_nodes, "{}", principal_spec["id"]);
+        assert_eq!(neighbors.edges, expected_edges, "{}", principal_spec["id"]);
+
+        let k_hop = graph_k_hop_from_records(
+            &GraphKHopQuery {
+                start_ids: vec![
+                    fixture["nodes"][0]["id"]
+                        .as_str()
+                        .expect("source ID")
+                        .to_owned(),
+                ],
+                k: 2,
+                doc_id: fixture["doc_id"].as_str().map(str::to_owned),
+            },
+            &visible_nodes,
+            &visible_edges,
+        );
+        let expected_k_hop = principal_spec["expected_k_hop"]
+            .as_array()
+            .expect("expected k-hop layers")
+            .iter()
+            .map(|layer| {
+                serde_json::json!({
+                    "nodes": layer["nodes"],
+                    "edges": layer["edges"]
+                })
+            })
+            .collect::<Vec<_>>();
+        let actual_k_hop = k_hop
+            .iter()
+            .map(|layer| {
+                serde_json::json!({
+                    "nodes": layer.nodes,
+                    "edges": layer.edges
+                })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual_k_hop, expected_k_hop, "{}", principal_spec["id"]);
+
+        let shortest_path = graph_shortest_path_from_records(
+            &GraphShortestPathQuery {
+                src_id: fixture["nodes"][0]["id"]
+                    .as_str()
+                    .expect("source ID")
+                    .to_owned(),
+                dst_id: fixture["nodes"][1]["id"]
+                    .as_str()
+                    .expect("target ID")
+                    .to_owned(),
+                doc_id: fixture["doc_id"].as_str().map(str::to_owned),
+                max_depth: 8,
+            },
+            &visible_nodes,
+            &visible_edges,
+        );
+        assert_eq!(
+            shortest_path,
+            principal_spec["expected_shortest_path"]
+                .as_array()
+                .expect("expected path")
+                .iter()
+                .map(|value| value.as_str().expect("path ID").to_owned())
+                .collect::<Vec<_>>(),
+            "{}",
+            principal_spec["id"]
+        );
+
+        let find_edges = graph_find_edges_from_records(
+            &GraphFindEdgesQuery {
+                relation: edge_spec["relation"].as_str().map(str::to_owned),
+                doc_id: fixture["doc_id"].as_str().map(str::to_owned),
+                ..Default::default()
+            },
+            &visible_nodes,
+            &visible_edges,
+        );
+        assert_eq!(
+            find_edges,
+            principal_spec["expected_find_edges"]
+                .as_array()
+                .expect("expected matching edges")
+                .iter()
+                .map(|value| value.as_str().expect("edge ID").to_owned())
+                .collect::<Vec<_>>(),
+            "{}",
+            principal_spec["id"]
+        );
+    }
+}
+
+#[test]
+fn graph_record_acl_matches_python_visibility_and_fails_closed() {
+    let mut acl = GraphRecord::new("acl-n1");
+    acl.metadata
+        .insert("entity_type".into(), "acl_record".into());
+    acl.metadata
+        .insert("acl_truth_graph".into(), "knowledge".into());
+    acl.metadata
+        .insert("acl_target_entity_id".into(), "n1".into());
+    acl.metadata
+        .insert("acl_target_grain".into(), "node".into());
+    acl.metadata.insert("acl_version".into(), 1.into());
+    acl.metadata.insert("acl_mode".into(), "shared".into());
+    acl.document = Some(
+        serde_json::json!({
+            "properties": {"shared_with_principals": ["alice"]}
+        })
+        .to_string(),
+    );
+    let nodes = vec![acl, GraphRecord::new("n1"), GraphRecord::new("n2")];
+    let edges = vec![GraphRecord::new("e1")];
+    let alice = GraphAclPrincipal {
+        principal_id: "alice".to_owned(),
+        ..Default::default()
+    };
+    let bob = GraphAclPrincipal {
+        principal_id: "bob".to_owned(),
+        ..Default::default()
+    };
+    let (alice_nodes, alice_edges) =
+        graph_records_visible_by_acl(&nodes, &edges, "knowledge", &alice);
+    assert_eq!(
+        alice_nodes
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect::<Vec<_>>(),
+        ["n1"]
+    );
+    assert!(alice_edges.is_empty());
+    let (bob_nodes, bob_edges) = graph_records_visible_by_acl(&nodes, &edges, "knowledge", &bob);
+    assert!(bob_nodes.is_empty());
+    assert!(bob_edges.is_empty());
+}
+
+#[test]
+fn acl_projection_reuses_index_after_helper_records_are_removed() {
+    let mut acl = GraphRecord::new("acl-n1");
+    acl.metadata.extend(
+        serde_json::json!({
+            "entity_type": "acl_record",
+            "acl_truth_graph": "knowledge",
+            "acl_target_entity_id": "n1",
+            "acl_target_grain": "node",
+            "acl_version": 1,
+            "acl_mode": "shared"
+        })
+        .as_object()
+        .expect("ACL metadata is an object")
+        .clone(),
+    );
+    acl.document = Some(
+        serde_json::json!({
+            "properties": {"shared_with_principals": ["alice"]}
+        })
+        .to_string(),
+    );
+    let complete_snapshot = vec![acl, GraphRecord::new("n1"), GraphRecord::new("n2")];
+    let alice = GraphAclPrincipal {
+        principal_id: "alice".to_owned(),
+        ..Default::default()
+    };
+
+    let projection =
+        GraphAclProjection::from_complete_snapshot(&complete_snapshot, &[], "knowledge", &alice);
+    assert_eq!(
+        projection
+            .nodes()
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>(),
+        ["n1"]
+    );
+    assert!(projection.edges().is_empty());
+
+    // The filtered view deliberately lacks the ACL helper node. A later
+    // projection reuses the full snapshot's index through the wrapper.
+    let reprojected = projection.filter_records(projection.nodes(), &[]);
+    assert_eq!(reprojected.nodes(), projection.nodes());
+
+    // Rebuilding from the filtered view has no ACL rule and correctly
+    // fails closed; services must not mistake that for the canonical ACL.
+    let (incorrectly_rebuilt_nodes, _) =
+        graph_records_visible_by_acl(projection.nodes(), &[], "knowledge", &alice);
+    assert!(incorrectly_rebuilt_nodes.is_empty());
+}
+
+#[test]
+fn paged_conversation_acl_uses_rules_from_other_pages() {
+    let acl_record = |id: &str, target_id: &str| {
+        let mut record = GraphRecord::new(id);
+        record.metadata.extend(
+            serde_json::json!({
+                "entity_type": "acl_record",
+                "acl_truth_graph": "conversation",
+                "acl_target_entity_id": target_id,
+                "acl_target_grain": "node",
+                "acl_version": 1,
+                "acl_mode": "private",
+                "owner_id": "alice"
+            })
+            .as_object()
+            .expect("ACL metadata is an object")
+            .clone(),
+        );
+        record
+    };
+    let mut start = GraphRecord::new("start-alice");
+    start.document = Some(
+        serde_json::json!({
+            "metadata": {
+                "entity_type": "conversation_start",
+                "conversation_id": "conversation-1",
+                "user_id": "alice",
+                "status": "active"
+            }
+        })
+        .to_string(),
+    );
+    let mut turn = GraphRecord::new("turn-1");
+    turn.metadata.extend(
+        serde_json::json!({
+            "entity_type": "conversation_turn",
+            "conversation_id": "conversation-1",
+            "turn_index": 0
+        })
+        .as_object()
+        .expect("turn metadata is an object")
+        .clone(),
+    );
+    let acl_page = [
+        acl_record("acl-start", "start-alice"),
+        acl_record("acl-turn", "turn-1"),
+    ];
+    let data_page = [start, turn];
+
+    let mut acl_index = GraphAclIndex::default();
+    acl_index.extend_from_records(&acl_page, "conversation");
+    let compact = compact_conversation_list_candidates(&data_page);
+    assert!(compact.iter().all(|record| record.document.is_none()));
+
+    let alice = GraphAclPrincipal {
+        principal_id: "alice".to_owned(),
+        ..Default::default()
+    };
+    let bob = GraphAclPrincipal {
+        principal_id: "bob".to_owned(),
+        ..Default::default()
+    };
+    let (visible_alice, _) =
+        graph_records_visible_by_acl_with_index(&compact, &[], &acl_index, &alice);
+    let (visible_bob, _) = graph_records_visible_by_acl_with_index(&compact, &[], &acl_index, &bob);
+    let mut alice_list = ConversationListAccumulator::new("alice");
+    alice_list.extend_visible_records(&visible_alice);
+
+    assert_eq!(
+        alice_list.finish(),
+        vec![ConversationListEntry {
+            id: "conversation-1".to_owned(),
+            start_node_id: "start-alice".to_owned(),
+            status: "active".to_owned(),
+            turn_count: 1,
+        }]
+    );
+    let mut bob_list = ConversationListAccumulator::new("bob");
+    bob_list.extend_visible_records(&visible_bob);
+    assert!(bob_list.finish().is_empty());
+}
+
+#[test]
+fn graph_record_acl_covers_owner_scope_group_private_and_stale_item_rules() {
+    let acl_record = |id: &str, target: &str, mode: &str, version: i64| {
+        let mut record = GraphRecord::new(id);
+        record
+            .metadata
+            .insert("entity_type".into(), "acl_record".into());
+        record
+            .metadata
+            .insert("acl_truth_graph".into(), "knowledge".into());
+        record
+            .metadata
+            .insert("acl_target_entity_id".into(), target.into());
+        record
+            .metadata
+            .insert("acl_target_grain".into(), "node".into());
+        record.metadata.insert("acl_version".into(), version.into());
+        record.metadata.insert("acl_mode".into(), mode.into());
+        record
+    };
+    let mut owner = acl_record("acl-owner", "owner", "private", 1);
+    owner.metadata.insert("owner_id".into(), "alice".into());
+    let mut scoped = acl_record("acl-scope", "scope", "scope", 1);
+    scoped
+        .metadata
+        .insert("security_scope".into(), "team-a".into());
+    let mut grouped = acl_record("acl-group", "group", "group", 1);
+    grouped.document =
+        Some(serde_json::json!({"properties": {"shared_with_groups": ["reviewers"]}}).to_string());
+    let mut stale_item = acl_record("acl-span", "span", "public", 1);
+    stale_item
+        .metadata
+        .insert("acl_target_item_id".into(), "span-1".into());
+    let nodes = vec![
+        owner,
+        scoped,
+        grouped,
+        stale_item,
+        GraphRecord::new("owner"),
+        GraphRecord::new("scope"),
+        GraphRecord::new("group"),
+        GraphRecord::new("span"),
+    ];
+    let principal = GraphAclPrincipal {
+        principal_id: "alice".into(),
+        groups: BTreeSet::from(["reviewers".into()]),
+        security_scope: Some("team-a".into()),
+    };
+    let (visible, _) = graph_records_visible_by_acl(&nodes, &[], "knowledge", &principal);
+    assert_eq!(
+        visible
+            .iter()
+            .map(|record| record.id.as_str())
+            .collect::<Vec<_>>(),
+        ["owner", "scope", "group"]
+    );
+}
+
+#[test]
 fn graph_acl_latest_version_is_scoped_to_selected_truth_graph() {
     let entity_id = "shared-entity-id";
     let acl = |record_id: &str, truth_graph: &str, version: i64, mode: &str| {
@@ -406,9 +828,13 @@ fn graph_node_item_usage_matches_shared_python_contract() {
                 "acl_target_grain".into(),
                 acl_record["grain"].as_str().expect("ACL grain").into(),
             );
-            record
-                .metadata
-                .insert("acl_version".into(), serde_json::json!(1));
+            record.metadata.insert(
+                "acl_version".into(),
+                acl_record
+                    .get("version")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!(1)),
+            );
             record.metadata.insert(
                 "acl_mode".into(),
                 acl_record["mode"].as_str().expect("ACL mode").into(),
@@ -1020,704 +1446,4 @@ fn graph_acl_history_matches_shared_golden_contract() {
     expected_edge_ids.sort_unstable();
     assert_eq!(reordered_node_ids, expected_node_ids);
     assert_eq!(reordered_edge_ids, expected_edge_ids);
-}
-
-#[test]
-fn tool_audit_projection_is_scope_filtered_and_canonical() {
-    let mut call = GraphRecord::new("tool-call-1");
-    call.metadata
-        .insert("entity_type".into(), "tool_call".into());
-    call.metadata
-        .insert("tool_name".into(), "graph.read".into());
-    call.metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    call.metadata.insert("turn_index".into(), 2.into());
-    call.document = Some(
-        serde_json::json!({
-            "properties": {"status": "completed", "count": 1}
-        })
-        .to_string(),
-    );
-
-    let mut result = GraphRecord::new("tool-result-1");
-    result
-        .metadata
-        .insert("entity_type".into(), "tool_result".into());
-    result
-        .metadata
-        .insert("tool_name".into(), "graph.read".into());
-    result
-        .metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    result.document = Some(
-        serde_json::json!({
-            "properties": {"status": "completed"}
-        })
-        .to_string(),
-    );
-
-    let mut other = GraphRecord::new("tool-result-other");
-    other
-        .metadata
-        .insert("entity_type".into(), "tool_result".into());
-    other
-        .metadata
-        .insert("tool_name".into(), "graph.read".into());
-    other
-        .metadata
-        .insert("conversation_id".into(), "conversation-2".into());
-
-    let mut tombstoned = GraphRecord::new("tool-call-deleted");
-    tombstoned
-        .metadata
-        .insert("entity_type".into(), "tool_call".into());
-    tombstoned
-        .metadata
-        .insert("tool_name".into(), "secret".into());
-    tombstoned
-        .metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    tombstoned
-        .metadata
-        .insert("lifecycle_status".into(), "tombstoned".into());
-
-    let items = tool_audit_items_from_visible_records(
-        &[result, call, other, tombstoned],
-        Some("conversation-1"),
-        10,
-    )
-    .unwrap();
-    assert_eq!(items.len(), 2);
-    assert_eq!(items[0].node_id, "tool-call-1");
-    assert_eq!(items[0].turn_index, Some(2));
-    assert_eq!(items[0].properties["status"], "completed");
-    assert_eq!(items[1].node_id, "tool-result-1");
-    assert!(
-        tool_audit_items_from_visible_records(&[GraphRecord::new("ignored")], None, 0)
-            .unwrap()
-            .is_empty()
-    );
-}
-
-#[test]
-fn tool_audit_projection_fails_closed_for_malformed_visible_records() {
-    let mut malformed = GraphRecord::new("tool-call-invalid");
-    malformed
-        .metadata
-        .insert("entity_type".into(), "tool_call".into());
-    malformed
-        .metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    let error = tool_audit_items_from_visible_records(&[malformed], None, 10).unwrap_err();
-    assert_eq!(
-        error,
-        kogwistar_contracts::ToolAuditContractError::EmptyField { field: "tool_name" }
-    );
-}
-
-#[test]
-fn conversation_transcript_projection_is_ordered_and_scope_filtered() {
-    let mut assistant = GraphRecord::new("assistant-1");
-    assistant
-        .metadata
-        .insert("entity_type".into(), "assistant_turn".into());
-    assistant
-        .metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    assistant.metadata.insert("turn_index".into(), 1.into());
-    assistant.metadata.insert("role".into(), "assistant".into());
-    assistant.metadata.insert("summary".into(), "answer".into());
-
-    let mut user = GraphRecord::new("user-0");
-    user.metadata
-        .insert("entity_type".into(), "conversation_turn".into());
-    user.metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    user.metadata.insert("turn_index".into(), 0.into());
-    user.metadata.insert("role".into(), "user".into());
-    user.metadata.insert("summary".into(), "question".into());
-
-    let mut other = user.clone();
-    other.id = "other-user".into();
-    other
-        .metadata
-        .insert("conversation_id".into(), "conversation-2".into());
-
-    let transcript = conversation_transcript_from_visible_records(
-        &[assistant, other, user],
-        "conversation-1",
-        10,
-    )
-    .unwrap();
-    assert_eq!(transcript.turns.len(), 2);
-    assert_eq!(transcript.turns[0].node_id, "user-0");
-    assert_eq!(transcript.turns[1].node_id, "assistant-1");
-}
-
-#[test]
-fn conversation_transcript_projection_rejects_duplicate_turn_indexes() {
-    let mut first = GraphRecord::new("turn-a");
-    first.metadata.extend(
-        serde_json::json!({
-            "entity_type": "conversation_turn",
-            "conversation_id": "conversation-1",
-            "turn_index": 0,
-            "role": "user",
-            "summary": "one"
-        })
-        .as_object()
-        .unwrap()
-        .clone(),
-    );
-    let mut second = first.clone();
-    second.id = "turn-b".into();
-    let error = conversation_transcript_from_visible_records(&[first, second], "conversation-1", 0)
-        .unwrap_err();
-    assert_eq!(error, ConversationContractError::InvalidTurnOrder);
-}
-
-#[test]
-fn conversation_summary_projection_derives_owner_status_and_tail() {
-    let mut start = GraphRecord::new("conversation-start");
-    start.metadata.extend(
-        serde_json::json!({
-            "entity_type": "conversation_start",
-            "conversation_id": "conversation-1",
-            "user_id": "alice",
-            "status": "active"
-        })
-        .as_object()
-        .unwrap()
-        .clone(),
-    );
-    let mut turn = GraphRecord::new("turn-0");
-    turn.metadata.extend(
-        serde_json::json!({
-            "entity_type": "conversation_turn",
-            "conversation_id": "conversation-1",
-            "turn_index": 0,
-            "role": "user",
-            "summary": "question"
-        })
-        .as_object()
-        .unwrap()
-        .clone(),
-    );
-    let summary =
-        conversation_summary_from_visible_records(&[start, turn], "conversation-1").unwrap();
-    assert_eq!(summary.user_id, "alice");
-    assert_eq!(summary.start_node_id, "conversation-start");
-    assert_eq!(summary.tail_node_id, "turn-0");
-    assert_eq!(summary.turn_count, 1);
-}
-
-#[test]
-fn conversation_list_projection_is_user_scoped_and_counts_visible_turns() {
-    let mut start_alice = GraphRecord::new("start-alice");
-    start_alice.metadata.extend(
-        serde_json::json!({
-            "entity_type": "conversation_start",
-            "conversation_id": "conversation-alice",
-            "user_id": "alice",
-            "status": "active"
-        })
-        .as_object()
-        .unwrap()
-        .clone(),
-    );
-    let mut start_bob = start_alice.clone();
-    start_bob.id = "start-bob".to_owned();
-    start_bob
-        .metadata
-        .insert("conversation_id".to_owned(), "conversation-bob".into());
-    start_bob
-        .metadata
-        .insert("user_id".to_owned(), "bob".into());
-    let mut first_turn = GraphRecord::new("turn-1");
-    first_turn.metadata.extend(
-        serde_json::json!({
-            "entity_type": "conversation_turn",
-            "conversation_id": "conversation-alice",
-            "turn_index": 0
-        })
-        .as_object()
-        .unwrap()
-        .clone(),
-    );
-    let mut second_turn = first_turn.clone();
-    second_turn.id = "turn-2".to_owned();
-    second_turn
-        .metadata
-        .insert("entity_type".to_owned(), "assistant_turn".into());
-    second_turn
-        .metadata
-        .insert("turn_index".to_owned(), 1.into());
-
-    let records = [start_alice, start_bob, first_turn, second_turn];
-    let entries = conversation_list_for_user_from_visible_records(&records, "alice");
-    assert_eq!(
-        entries,
-        vec![ConversationListEntry {
-            id: "conversation-alice".to_owned(),
-            start_node_id: "start-alice".to_owned(),
-            status: "active".to_owned(),
-            turn_count: 2,
-        }]
-    );
-
-    let mut chunked = ConversationListAccumulator::new("alice");
-    chunked.extend_visible_records(&records[..1]);
-    chunked.extend_visible_records(&records[1..3]);
-    chunked.extend_visible_records(&records[3..]);
-    assert_eq!(chunked.finish(), entries);
-}
-
-#[test]
-fn context_snapshot_projection_selects_latest_matching_scope() {
-    let mut older = GraphRecord::new("snapshot-old");
-    older
-        .metadata
-        .insert("entity_type".into(), "context_snapshot".into());
-    older
-        .metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    older.metadata.insert("run_id".into(), "run-1".into());
-    older.metadata.insert("stage".into(), "answer".into());
-    older.metadata.insert("snapshot_seq".into(), 3.into());
-    older.document = Some(
-        serde_json::json!({
-            "metadata": {"stage": "answer"},
-            "properties": {"value": "old"}
-        })
-        .to_string(),
-    );
-
-    let mut newer = older.clone();
-    newer.id = "snapshot-new".into();
-    newer.metadata.insert("snapshot_seq".into(), 4.into());
-    newer.document = Some(
-        serde_json::json!({
-            "metadata": {"stage": "answer"},
-            "properties": {"value": "new"}
-        })
-        .to_string(),
-    );
-
-    let snapshot = context_snapshot_from_visible_records(
-        &[older, newer],
-        "conversation-1",
-        Some("run-1"),
-        Some("answer"),
-    )
-    .unwrap();
-    assert_eq!(snapshot.snapshot_node_id, "snapshot-new");
-    assert_eq!(snapshot.properties["value"], "new");
-}
-
-#[test]
-fn context_snapshot_projection_matches_python_run_and_attempt_order_fixture() {
-    let fixture: serde_json::Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../contracts/golden/context-snapshot-order-v1.json"
-    )))
-    .expect("valid shared Python context-snapshot ordering fixture");
-    let conversation_id = fixture["conversation_id"].as_str().unwrap();
-    let run_id = fixture["run_id"].as_str().unwrap();
-    let stage = fixture["stage"].as_str().unwrap();
-    let records = fixture["candidates"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|candidate| {
-            let id = candidate["id"].as_str().unwrap().to_owned();
-            let metadata = serde_json::json!({
-                "entity_type": "context_snapshot",
-                "conversation_id": conversation_id,
-                "run_id": run_id,
-                "stage": stage,
-                "run_step_seq": candidate["run_step_seq"],
-                "attempt_seq": candidate["attempt_seq"]
-            })
-            .as_object()
-            .unwrap()
-            .clone();
-            GraphRecord {
-                id,
-                document: Some(
-                    serde_json::json!({
-                        "metadata": metadata,
-                        "properties": candidate["properties"]
-                    })
-                    .to_string(),
-                ),
-                metadata,
-                embedding: None,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let snapshot =
-        context_snapshot_from_visible_records(&records, conversation_id, Some(run_id), Some(stage))
-            .expect("Python run_step_seq and attempt_seq metadata is orderable");
-    assert_eq!(
-        snapshot.snapshot_node_id,
-        fixture["expected_snapshot_node_id"].as_str().unwrap()
-    );
-    assert_eq!(snapshot.properties["prompt_messages"], "latest retry");
-}
-
-#[test]
-fn context_snapshot_projection_rejects_unordered_candidates() {
-    let mut record = GraphRecord::new("snapshot-invalid");
-    record
-        .metadata
-        .insert("entity_type".into(), "context_snapshot".into());
-    record
-        .metadata
-        .insert("conversation_id".into(), "conversation-1".into());
-    let error =
-        context_snapshot_from_visible_records(&[record], "conversation-1", None, None).unwrap_err();
-    assert_eq!(error, ConversationContractError::MissingSnapshotOrder);
-}
-use kogwistar_contracts::{GraphModelClass, GraphModelEnvelope};
-
-fn fixture_payload(index: usize) -> Value {
-    let fixture: Value = serde_json::from_str(include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../contracts/golden/python-graph-model-payloads-v1.json"
-    )))
-    .expect("valid graph model fixture");
-    fixture["cases"][index]["payload"].clone()
-}
-
-fn typed_mutation(entity_kind: &str, payload: Value) -> GraphMutation {
-    let id = payload["id"].as_str().expect("fixture id").to_owned();
-    GraphMutation {
-        scope: GraphScope {
-            namespace: "ns".to_owned(),
-            workspace_id: Some("ws".to_owned()),
-            graph_space: Some("facts".to_owned()),
-        },
-        table: if entity_kind == "edge" {
-            "gke_edges".to_owned()
-        } else {
-            "gke_nodes".to_owned()
-        },
-        entity_kind: entity_kind.to_owned(),
-        event_id: "event-1".to_owned(),
-        op: "ADD".to_owned(),
-        payload: payload.clone(),
-        record: GraphRecord {
-            id,
-            document: None,
-            metadata: payload["metadata"].as_object().cloned().unwrap_or_default(),
-            embedding: None,
-        },
-        embedding_dim: 0,
-    }
-}
-
-#[test]
-fn runtime_projection_contract_has_one_stable_shape() {
-    let mut payload = Map::new();
-    payload.insert("status".to_owned(), Value::String("running".to_owned()));
-    let projection = runtime_projection_write(payload, 7, "ready");
-    assert_eq!(
-        runtime_checkpoint_namespace("conv"),
-        "conv:workflow_checkpoint_latest"
-    );
-    assert_eq!(runtime_status_namespace("conv"), "conv:workflow_run_status");
-    assert_eq!(projection.last_authoritative_seq, 7);
-    assert_eq!(projection.last_materialized_seq, 7);
-    assert_eq!(
-        projection.projection_schema_version,
-        RUNTIME_PROJECTION_SCHEMA_VERSION
-    );
-    assert_eq!(projection.materialization_status, "ready");
-}
-
-#[test]
-fn typed_graph_mutation_accepts_matching_payload_and_identity() {
-    let payload = fixture_payload(1);
-    let mutation = typed_mutation("edge", payload.clone());
-    let envelope = GraphModelEnvelope::new(GraphModelClass::Edge, payload);
-    validate_typed_graph_mutation(&mutation, &envelope).expect("valid typed mutation");
-}
-
-#[test]
-fn typed_graph_mutation_rejects_kind_and_identity_confusion() {
-    let edge_payload = fixture_payload(1);
-    let edge_mutation = typed_mutation("node", edge_payload.clone());
-    let edge_envelope = GraphModelEnvelope::new(GraphModelClass::Edge, edge_payload);
-    assert!(matches!(
-        validate_typed_graph_mutation(&edge_mutation, &edge_envelope),
-        Err(StoreError::InvalidEntityEventPayload { .. })
-    ));
-
-    let node_payload = fixture_payload(0);
-    let wrong_edge_envelope = GraphModelEnvelope::new(GraphModelClass::Edge, node_payload.clone());
-    let wrong_edge_mutation = typed_mutation("node", node_payload);
-    let error = validate_typed_graph_mutation(&wrong_edge_mutation, &wrong_edge_envelope)
-        .expect_err("malformed edge family must fail before the later kind mismatch");
-    assert!(matches!(
-        error,
-        StoreError::InvalidEntityEventPayload { message } if message.contains("source_ids")
-    ));
-
-    let node_payload = fixture_payload(0);
-    let mut node_mutation = typed_mutation("node", node_payload.clone());
-    node_mutation.record.id = "different-id".to_owned();
-    let node_envelope = GraphModelEnvelope::new(GraphModelClass::Node, node_payload);
-    assert!(matches!(
-        validate_typed_graph_mutation(&node_mutation, &node_envelope),
-        Err(StoreError::InvalidEntityEventPayload { .. })
-    ));
-}
-
-#[test]
-fn typed_graph_mutation_cannot_bypass_base_mutation_validation() {
-    let payload = fixture_payload(0);
-    let envelope = GraphModelEnvelope::new(GraphModelClass::Node, payload.clone());
-    let valid = typed_mutation("node", payload);
-
-    let mut invalid = valid.clone();
-    invalid.table = "gke_edges".to_owned();
-    assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
-
-    let mut invalid = valid.clone();
-    invalid.scope.namespace.clear();
-    assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
-
-    let mut invalid = valid.clone();
-    invalid.op = "DELETE".to_owned();
-    assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
-
-    let mut invalid = valid.clone();
-    invalid.payload = Value::Array(Vec::new());
-    assert!(validate_typed_graph_mutation(&invalid, &envelope).is_err());
-}
-
-#[test]
-fn graph_projection_target_mapping_is_shared_and_exact() {
-    let targets = [
-        ("node", "gke_nodes"),
-        ("edge", "gke_edges"),
-        ("document", "gke_documents"),
-        ("domain", "gke_domains"),
-    ];
-    for (entity_kind, table) in targets {
-        assert_eq!(graph_projection_table(entity_kind), Ok(table));
-        validate_graph_projection_target(table, entity_kind)
-            .expect("matching projection target should be accepted");
-        let mutation = GraphMutation {
-            scope: GraphScope {
-                namespace: "ns".to_owned(),
-                workspace_id: None,
-                graph_space: None,
-            },
-            table: table.to_owned(),
-            entity_kind: entity_kind.to_owned(),
-            event_id: format!("{entity_kind}-event"),
-            op: "ADD".to_owned(),
-            payload: if matches!(entity_kind, "node" | "edge") {
-                serde_json::json!({"id": format!("{entity_kind}-id")})
-            } else {
-                serde_json::json!({})
-            },
-            record: GraphRecord::new(format!("{entity_kind}-id")),
-            embedding_dim: 0,
-        };
-        validate_graph_mutation(&mutation).expect("projection mutation should be valid");
-        for (_, other_table) in targets {
-            if other_table != table {
-                assert!(validate_graph_projection_target(other_table, entity_kind).is_err());
-            }
-        }
-    }
-    assert!(graph_projection_table("unknown").is_err());
-    assert!(validate_graph_lifecycle_target("gke_documents", "document").is_err());
-    assert!(validate_graph_lifecycle_target("gke_domains", "domain").is_err());
-    assert!(validate_graph_lifecycle_target("gke_nodes", "node").is_ok());
-    assert!(validate_graph_lifecycle_target("gke_edges", "edge").is_ok());
-}
-
-#[test]
-fn direct_graph_mutation_validation_rejects_effect_bypass_inputs() {
-    let mut mutation = typed_mutation("node", fixture_payload(0));
-    mutation.table = "gke_edges".to_owned();
-    assert!(matches!(
-        validate_graph_mutation(&mutation),
-        Err(StoreError::InvalidEntityEventPayload { .. })
-    ));
-
-    mutation.table = "gke_nodes".to_owned();
-    mutation.payload = Value::Array(Vec::new());
-    assert!(matches!(
-        validate_graph_mutation(&mutation),
-        Err(StoreError::InvalidEntityEventPayload { .. })
-    ));
-}
-
-#[test]
-fn direct_graph_mutation_validation_rejects_unrequested_scope_dimensions() {
-    let mut mutation = typed_mutation("node", fixture_payload(0));
-    mutation.scope.workspace_id = None;
-    mutation.scope.graph_space = None;
-    mutation.record.metadata.insert(
-        "workspace_id".to_owned(),
-        Value::String("foreign".to_owned()),
-    );
-    assert!(validate_graph_mutation(&mutation).is_err());
-
-    mutation.record.metadata.remove("workspace_id");
-    mutation.payload["metadata"]["graph_space"] = Value::String("foreign".to_owned());
-    assert!(validate_graph_mutation(&mutation).is_err());
-}
-
-#[test]
-fn graph_mutation_replay_requires_identical_effect_identity_and_payload() {
-    let mutation = typed_mutation("node", fixture_payload(0));
-    let event = EntityEvent {
-        namespace: mutation.scope.namespace.clone(),
-        seq: 1,
-        event_id: mutation.event_id.clone(),
-        entity_kind: mutation.entity_kind.clone(),
-        entity_id: mutation.record.id.clone(),
-        op: mutation.op.clone(),
-        payload: mutation.payload.clone(),
-    };
-    assert_eq!(validate_graph_mutation_replay(&mutation, &event), Ok(()));
-
-    let mut altered = event.clone();
-    altered.entity_kind = "edge".to_owned();
-    assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
-    let mut altered = event.clone();
-    altered.entity_id.push_str("-other");
-    assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
-    let mut altered = event.clone();
-    altered.op = "REPLACE".to_owned();
-    assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
-    let mut altered = event.clone();
-    altered.payload["summary"] = Value::String("different".to_owned());
-    assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
-    let mut altered = event.clone();
-    altered.event_id.push_str("-other");
-    assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
-    let mut altered = event;
-    altered.namespace.push_str("-other");
-    assert!(validate_graph_mutation_replay(&mutation, &altered).is_err());
-}
-
-#[test]
-fn graph_mutation_batch_validation_rejects_scope_and_index_drift() {
-    let first = typed_mutation("node", fixture_payload(0));
-    let mut second = typed_mutation("edge", fixture_payload(1));
-    second.scope.namespace = "other".to_owned();
-    assert!(matches!(
-        validate_graph_mutation_batch(&GraphMutationBatch {
-            mutations: vec![first.clone(), second],
-            index_jobs: Vec::new(),
-        }),
-        Err(StoreError::InvalidEntityEventPayload { .. })
-    ));
-
-    assert!(matches!(
-        validate_graph_mutation_batch(&GraphMutationBatch {
-            mutations: vec![first],
-            index_jobs: vec![NewIndexJob {
-                job_id: "job-1".to_owned(),
-                namespace: "other".to_owned(),
-                entity_kind: "node".to_owned(),
-                entity_id: "n-1".to_owned(),
-                index_kind: "doc".to_owned(),
-                op: "UPSERT".to_owned(),
-                payload_json: None,
-                max_retries: 0,
-            }],
-        }),
-        Err(StoreError::InvalidEntityEventPayload { .. })
-    ));
-}
-
-#[test]
-fn opaque_payload_metadata_does_not_select_storage_scope() {
-    // Python's kg_graph_type is engine configuration, not an entity field.
-    // A similarly named payload value must remain opaque to the store.
-    for metadata_value in [
-        "knowledge",
-        "conversation",
-        "workflow",
-        "wisdom",
-        "custom-role",
-    ] {
-        for (entity_kind, fixture_index) in [("node", 0), ("edge", 1)] {
-            let mut mutation = typed_mutation(entity_kind, fixture_payload(fixture_index));
-            mutation.payload["metadata"]["engine_type"] = Value::String(metadata_value.into());
-            mutation.record.metadata.insert(
-                "engine_type".to_owned(),
-                Value::String(metadata_value.into()),
-            );
-
-            assert_eq!(mutation.scope.graph_space.as_deref(), Some("facts"));
-            assert!(
-                validate_graph_mutation_batch(&GraphMutationBatch {
-                    mutations: vec![mutation],
-                    index_jobs: Vec::new(),
-                })
-                .is_ok(),
-                "opaque metadata {metadata_value:?} must not specialize {entity_kind} storage"
-            );
-        }
-    }
-}
-
-#[test]
-fn graph_mutation_batch_rejects_index_retry_counts_outside_portable_range() {
-    let mutation = typed_mutation("node", fixture_payload(0));
-    for max_retries in [-1, i32::MAX as i64 + 1] {
-        let result = validate_graph_mutation_batch(&GraphMutationBatch {
-            mutations: vec![mutation.clone()],
-            index_jobs: vec![NewIndexJob {
-                job_id: "job-1".to_owned(),
-                namespace: mutation.scope.namespace.clone(),
-                entity_kind: "node".to_owned(),
-                entity_id: mutation.record.id.clone(),
-                index_kind: "doc".to_owned(),
-                op: "UPSERT".to_owned(),
-                payload_json: None,
-                max_retries,
-            }],
-        });
-        assert!(matches!(
-            result,
-            Err(StoreError::InvalidEntityEventPayload { .. })
-        ));
-    }
-
-    let boundary = validate_graph_mutation_batch(&GraphMutationBatch {
-        mutations: vec![mutation.clone()],
-        index_jobs: vec![NewIndexJob {
-            job_id: "job-boundary".to_owned(),
-            namespace: mutation.scope.namespace.clone(),
-            entity_kind: "node".to_owned(),
-            entity_id: mutation.record.id.clone(),
-            index_kind: "doc".to_owned(),
-            op: "UPSERT".to_owned(),
-            payload_json: None,
-            max_retries: i32::MAX as i64,
-        }],
-    });
-    assert!(boundary.is_ok());
-}
-
-#[test]
-fn graph_mutation_rejects_payload_and_projection_identity_drift() {
-    let payload = fixture_payload(0);
-    let mut mutation = typed_mutation("node", payload);
-    mutation.record.id = "different-node".to_owned();
-
-    assert!(matches!(
-        validate_graph_mutation(&mutation),
-        Err(StoreError::InvalidEntityEventPayload { .. })
-    ));
 }

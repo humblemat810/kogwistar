@@ -1460,3 +1460,315 @@
         assert_eq!(request.path_and_query, contract["rust_request"]["path_and_query"]);
         assert_eq!(request.body, contract["rust_request"]["body"].as_str().unwrap().as_bytes());
     }
+
+    #[tokio::test]
+    async fn mcp_workflow_capability_approve_denies_before_application_dispatch() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        struct DispatchCounter {
+            inner: SqliteRunApplicationService,
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl ApplicationService for DispatchCounter {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                self.inner.supports_mcp_tool(surface, name)
+            }
+
+            fn supports_mcp_tool_for_principal(
+                &self,
+                surface: &str,
+                name: &str,
+                principal: &Value,
+            ) -> bool {
+                self.inner
+                    .supports_mcp_tool_for_principal(surface, name, principal)
+            }
+
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                self.inner.execute(request)
+            }
+        }
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("kogwistar-mcp-acl-{nonce}.sqlite3"));
+        let secret = "mcp-workflow-capability-test-secret";
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub": "workflow-admin",
+                "role": "rw",
+                "ns": ["workflow"],
+                "capabilities": ["approve_action", "project_view"],
+                "exp": now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(DispatchCounter {
+                inner: SqliteRunApplicationService::open(&db_path).unwrap(),
+                calls: Arc::clone(&calls),
+            }),
+        );
+
+        let list_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::from(
+                        json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list: Value = serde_json::from_slice(
+            &to_bytes(list_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        for tool_name in [
+            "workflow.capability_approve",
+            "workflow.capability_revoke",
+        ] {
+            assert!(!list["result"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["name"] == tool_name));
+
+            let call_response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp/workflow")
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::from(
+                            json!({
+                                "jsonrpc":"2.0",
+                                "id":2,
+                                "method":"tools/call",
+                                "params":{"name":tool_name,"arguments":{}}
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let call: Value = serde_json::from_slice(
+                &to_bytes(call_response.into_body(), 65_536).await.unwrap(),
+            )
+            .unwrap();
+            assert_eq!(call["error"]["code"], -32602, "{tool_name}");
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[tokio::test]
+    async fn mcp_workflow_design_tools_deny_before_application_dispatch() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use tower::ServiceExt;
+
+        struct DispatchCounter {
+            inner: SqliteRunApplicationService,
+            calls: Arc<AtomicUsize>,
+        }
+        impl ApplicationService for DispatchCounter {
+            fn supports_mcp_tool(&self, surface: &str, name: &str) -> bool {
+                self.inner.supports_mcp_tool(surface, name)
+            }
+            fn supports_mcp_tool_for_principal(
+                &self,
+                surface: &str,
+                name: &str,
+                principal: &Value,
+            ) -> bool {
+                self.inner.supports_mcp_tool_for_principal(surface, name, principal)
+            }
+            fn execute(
+                &self,
+                request: ApiEffectRequest,
+            ) -> Pin<Box<dyn Future<Output = ApiEffectResponse> + Send + '_>> {
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                self.inner.execute(request)
+            }
+        }
+
+        let contracts = [
+            include_str!("../../../../../contracts/golden/workflow-design-node-upsert-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-edge-upsert-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-node-delete-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-edge-delete-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-history-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-undo-mcp-v1.json"),
+            include_str!("../../../../../contracts/golden/workflow-design-redo-mcp-v1.json"),
+        ]
+        .map(|fixture| serde_json::from_str::<Value>(fixture).unwrap());
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!("kogwistar-mcp-node-upsert-{nonce}.sqlite3"));
+        let secret = "mcp-workflow-node-upsert-acl-secret";
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token = |role: &str, namespace: &str, capabilities: &[&str]| {
+            encode(
+                &Header::new(Algorithm::HS256),
+                &json!({
+                    "sub":"designer", "role":role, "ns":[namespace],
+                    "capabilities":capabilities, "exp":now + 300
+                }),
+                &EncodingKey::from_secret(secret.as_bytes()),
+            )
+            .unwrap()
+        };
+        let calls = Arc::new(AtomicUsize::new(0));
+        let app = router_with_application(
+            ApiState {
+                health: snapshot(),
+                required_roles: vec![],
+                implementation: ImplementationSnapshot::default(),
+                auth: AuthConfig {
+                    mode: "jwt".to_owned(),
+                    algorithm: Some("HS256".to_owned()),
+                    key: Some(secret.to_owned()),
+                    ..AuthConfig::default()
+                },
+            },
+            Arc::new(DispatchCounter {
+                inner: SqliteRunApplicationService::open(&db_path).unwrap(),
+                calls: Arc::clone(&calls),
+            }),
+        );
+
+        for (role, namespace, capabilities) in [
+            ("rw", "workflow", vec!["approve_action"]),
+            ("ro", "workflow", vec!["workflow.design.write", "write_graph"]),
+            ("rw", "conversation", vec!["workflow.design.write", "write_graph"]),
+        ] {
+            let bearer = token(role, namespace, &capabilities);
+            let list_response = app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {bearer}"))
+                    .body(Body::from(json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}).to_string()))
+                    .unwrap(),
+            ).await.unwrap();
+            let list: Value = serde_json::from_slice(
+                &to_bytes(list_response.into_body(), 65_536).await.unwrap(),
+            ).unwrap();
+            for contract in &contracts {
+                let tool = contract["tool"].as_str().unwrap();
+                assert!(!list["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item["name"] == tool));
+
+                let call_response = app.clone().oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/mcp/workflow")
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .body(Body::from(json!({
+                            "jsonrpc":"2.0", "id":2, "method":"tools/call",
+                            "params":{"name":tool,"arguments":contract["arguments"]}
+                        }).to_string()))
+                        .unwrap(),
+                ).await.unwrap();
+                let call: Value = serde_json::from_slice(
+                    &to_bytes(call_response.into_body(), 65_536).await.unwrap(),
+                ).unwrap();
+                assert_eq!(call["error"]["code"], -32602, "{tool}");
+            }
+        }
+        let forged_marker = encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":"designer", "role":"rw", "ns":["workflow"],
+                "capabilities":["workflow.design.write", "write_graph"],
+                "_kogwistar_rest_design_acl_checked":true, "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap();
+        let undo = contracts
+            .iter()
+            .find(|contract| contract["tool"] == "workflow.design_undo")
+            .unwrap();
+        let forged_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {forged_marker}"))
+                    .body(Body::from(
+                        json!({
+                            "jsonrpc":"2.0", "id":3, "method":"tools/call",
+                            "params":{"name":undo["tool"],"arguments":undo["arguments"]}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let forged: Value = serde_json::from_slice(
+            &to_bytes(forged_response.into_body(), 65_536).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(forged["error"]["code"], -32602);
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let _ = std::fs::remove_file(db_path);
+    }

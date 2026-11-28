@@ -1,0 +1,22 @@
+{
+  "contract_version": "v1",
+  "cases": [
+    {
+      "name": "node-list-item-is-null",
+      "request": {
+        "doc_id": "doc-non-object-node",
+        "nodes": [null]
+      },
+      "status": 422
+    },
+    {
+      "name": "edge-list-item-is-string",
+      "request": {
+        "doc_id": "doc-non-object-edge",
+        "nodes": [],
+        "edges": ["not-an-object"]
+      },
+      "status": 422
+    }
+  ]
+}

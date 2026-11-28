@@ -313,6 +313,10 @@ def test_sqlite_coalesce_claim_tokens_retry_tail_namespace_and_rollback(tmp_path
         _sqlite(path, {"kind": "batch", "operations": [_job("rolled", entity_id="rollback"), {"kind": "raw_append", "namespace": "ns", "event_id": "rollback", "entity_kind": "node", "entity_id": "n", "op": "UPSERT", "payload_json": "{}"}], "abort": True})
     assert aborted.value.code == "KOGWISTAR_STORE_TRANSACTION_ABORTED"
     assert not any(row["job_id"] == "rolled" for row in _sqlite(path, {"kind": "list_index_jobs", "namespace": "ns"}))
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM index_jobs WHERE job_id = ?", ("rolled",)
+        ).fetchone() == (0,)
 
 
 def test_sqlite_rust_result_admission_is_immutable_to_python_retries(tmp_path: Path) -> None:
@@ -665,6 +669,7 @@ def test_postgres_python_rust_queue_differential_live(sa_engine, pg_dsn: str | N
     with pytest.raises(RustParityError) as aborted:
         _pg(dsn, schema, {"kind": "batch", "operations": [_job("rolled", namespace="queue", entity_id="rollback"), {"kind": "raw_append", "namespace": "queue", "event_id": f"rollback-{uuid.uuid4().hex}", "entity_kind": "node", "entity_id": "n", "op": "UPSERT", "payload_json": "{}"}], "abort": True})
     assert aborted.value.code == "KOGWISTAR_STORE_TRANSACTION_ABORTED"
+    assert not any(row.job_id == "rolled" for row in py.list_index_jobs(namespace="queue"))
     with pytest.raises(RustParityError) as invalid:
         _pg(dsn, schema, {"kind": "list_index_jobs", "namespace": "queue", "unexpected": True})
     assert invalid.value.code == "KOGWISTAR_STORE_INVALID_PAYLOAD"

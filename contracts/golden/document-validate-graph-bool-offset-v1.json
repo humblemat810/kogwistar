@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "request": {
+    "doc_id": "doc-bool-offset",
+    "nodes": [
+      {
+        "id": "node-bool-offset",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Pydantic integer coercion accepts boolean pointer offsets",
+        "metadata": {
+          "pointers": [
+            {
+              "source_cluster_id": "cluster-1",
+              "start_char": true,
+              "end_char": 2,
+              "verbatim_text": ""
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "status": 200,
+  "response": {
+    "ok": true,
+    "node_errors": {},
+    "edge_errors": {}
+  }
+}

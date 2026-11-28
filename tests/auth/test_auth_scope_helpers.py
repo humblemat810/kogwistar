@@ -13,6 +13,7 @@ from kogwistar.server.auth_middleware import (
     get_current_acl_principal_id,
     get_current_capabilities,
     get_current_principal_groups,
+    get_current_role,
     get_execution_namespace,
     get_security_scope,
     get_security_scope_parts,
@@ -108,6 +109,20 @@ def test_shared_acl_context_uses_same_group_projection_and_ignores_roles():
         assert context.principal_groups == ("auditors", "ops", "reviewers")
     finally:
         claims_ctx.reset(token)
+
+
+def test_authority_role_uses_only_supported_scalar_role_claim():
+    for claims, expected in (
+        ({"role": "ro", "roles": ["rw", "admin"]}, "ro"),
+        ({"role": "admin", "roles": ["rw"]}, "ro"),
+        ({"roles": ["rw"]}, "ro"),
+        ({"role": "rw", "roles": ["ro"]}, "rw"),
+    ):
+        token = claims_ctx.set(claims)
+        try:
+            assert get_current_role() == expected
+        finally:
+            claims_ctx.reset(token)
 
 
 def test_acl_principal_identity_matches_shared_rust_contract():

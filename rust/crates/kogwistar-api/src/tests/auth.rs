@@ -1,4 +1,41 @@
     #[test]
+    fn actor_id_only_principal_uses_python_capability_subject_fallback() {
+        let principal = json!({"actor_id":"Actor-Only", "capabilities":[]});
+        let mut state = CapabilityState::default();
+        state.approvals.insert(
+            (
+                "actor-only".to_owned(),
+                "workflow.run.write".to_owned(),
+            ),
+            BTreeSet::from(["workflow.run.write".to_owned()]),
+        );
+
+        assert!(effective_capabilities(&principal, &state).contains("workflow.run.write"));
+    }
+
+    #[test]
+    fn request_roles_use_scalar_claim_and_ignore_role_arrays() {
+        for (claims, expected) in [
+            (
+                json!({"role":"ro", "roles":["rw", "admin"]}),
+                vec!["ro", "admin"],
+            ),
+            (json!({"roles":["rw"]}), vec!["ro"]),
+            (json!({"role":"rw", "roles":["ro"]}), vec!["rw"]),
+        ] {
+            assert_eq!(roles_from_claims(&claims), expected);
+        }
+    }
+
+    #[test]
+    fn request_roles_preserve_configured_scalar_role() {
+        assert_eq!(
+            roles_from_claims(&json!({"role":"reader", "roles":["rw"]})),
+            vec!["reader"]
+        );
+    }
+
+    #[test]
     fn delegated_capabilities_are_attenuated_and_reserved_state_wins() {
         let shared = Arc::new(Mutex::new(CapabilityState::default()));
         let principal = json!({
@@ -296,7 +333,27 @@
         assert_eq!(me.status(), StatusCode::OK);
         let me_body = to_bytes(me.into_body(), 8192).await.unwrap();
         let me_value = serde_json::from_slice::<Value>(&me_body).unwrap();
+        let me_contract_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../contracts/golden/auth-me-v1.json");
+        let me_contract: Value = serde_json::from_slice(
+            &std::fs::read(me_contract_path).expect("read shared auth me contract"),
+        )
+        .expect("parse shared auth me contract");
+        let expected_fields = me_contract["response_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|field| field.as_str().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        let actual_fields = me_value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_fields, expected_fields);
         assert_eq!(me_value["email"], "dev@example.com");
+        assert_eq!(me_value["display_name"], Value::Null);
         assert_eq!(me_value["is_active"], true);
         assert_eq!(me_value["role"], "rw");
         assert_eq!(me_value["ns"], json!(["docs", "workflow"]));

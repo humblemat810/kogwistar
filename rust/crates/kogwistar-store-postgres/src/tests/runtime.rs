@@ -3,6 +3,78 @@ use super::*;
 
 #[tokio::test]
 #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+async fn postgres_lane_status_compare_and_set_allows_only_one_replay_transition()
+-> PostgresStoreResult<()> {
+    let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+        .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+    let schema = test_schema("lane_status_cas");
+    let store = PostgresStore::from_dsn(&dsn, &schema)?;
+    store.ensure_schema().await?;
+    store
+        .project_lane_message(NewProjectedLaneMessage {
+            message_id: "dead-letter-cas".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "conversation-cas".to_owned(),
+            recipient_id: "worker".to_owned(),
+            sender_id: "scheduler".to_owned(),
+            msg_type: "workflow.run.execute".to_owned(),
+            status: "dead-letter".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some("run-cas".to_owned()),
+            step_id: None,
+            correlation_id: None,
+            payload_json: None,
+            error_json: None,
+        })
+        .await?;
+
+    let (first, second) = tokio::join!(
+        store.compare_and_set_projected_lane_message_status(
+            "dead-letter-cas",
+            "dead-letter",
+            "pending",
+            None,
+        ),
+        store.compare_and_set_projected_lane_message_status(
+            "dead-letter-cas",
+            "dead-letter",
+            "pending",
+            None,
+        ),
+    );
+    let mut outcomes = [first?, second?];
+    outcomes.sort_unstable();
+    assert_eq!(outcomes, [false, true]);
+    assert_eq!(
+        store
+            .get_projected_lane_message("dead-letter-cas")
+            .await?
+            .unwrap()
+            .status,
+        "pending"
+    );
+    drop(store);
+    let (cleanup, connection) = tokio_postgres::connect(&dsn, tokio_postgres::NoTls)
+        .await
+        .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+    let cleanup_task = tokio::spawn(connection);
+    cleanup
+        .batch_execute(&format!("DROP SCHEMA \"{schema}\" CASCADE"))
+        .await
+        .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+    drop(cleanup);
+    cleanup_task
+        .await
+        .map_err(|error| PostgresStoreError::Backend(error.to_string()))?
+        .map_err(|error| PostgresStoreError::Backend(error.to_string()))?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
 async fn graph_run_event_and_worker_lane_share_one_transaction() -> PostgresStoreResult<()> {
     let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
         .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");

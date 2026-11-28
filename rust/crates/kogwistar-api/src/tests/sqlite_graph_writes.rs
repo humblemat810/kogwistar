@@ -123,7 +123,45 @@ async fn sqlite_run_admission_persists_authenticated_owner_binding() {
 
 #[tokio::test]
 async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
+    use axum::{
+        body::{Body, to_bytes},
+        routing::post,
+        Json, Router,
+        http::Request,
+    };
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower::ServiceExt;
+
+    struct FixedEmbeddingProvider;
+    impl kogwistar_engine::embedding::EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            static PROFILE: std::sync::OnceLock<kogwistar_engine::embedding::EmbeddingProfile> =
+                std::sync::OnceLock::new();
+            PROFILE.get_or_init(|| kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "sqlite-document-fixture".to_owned(),
+                dimension: 3,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: None,
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            })
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move { Ok(texts.iter().map(|_| vec![0.6, 0.8, 0.0]).collect()) })
+        }
+    }
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
@@ -185,10 +223,33 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         "kogwistar-sqlite-chroma-source-document-{}.sqlite",
         uuid::Uuid::new_v4()
     ));
-    let service = SqliteRunApplicationService::open(&path)
+    let (change_sender, mut change_events) = tokio::sync::mpsc::unbounded_channel();
+    let change_app = Router::new().route(
+        "/ingest",
+        post(move |Json(event): Json<Value>| async move {
+            let _ = change_sender.send(event);
+            StatusCode::OK
+        }),
+    );
+    let change_listener = bind_reachable_loopback_listener().await;
+    let change_endpoint = format!("http://{}", change_listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        axum::serve(change_listener, change_app).await.unwrap();
+    });
+    let mut service = SqliteRunApplicationService::open(&path)
         .unwrap()
-        .with_chroma_graph(graph);
+        .with_chroma_graph(graph)
+        .with_embedding_provider(Arc::new(FixedEmbeddingProvider));
+    service.change_events = crate::change_events::ChangeEventPublisher::new(
+        Some(change_endpoint),
+        1,
+    );
     assert!(service.supports_http_operation("POST", "/api/document"));
+    let http_contract: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/document-upsert-http-v1.json"
+    )))
+    .unwrap();
     let body = json!({
         "contract_version": 1,
         "doc_id": "source-doc-1",
@@ -207,16 +268,69 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         "graph_space": "knowledge",
         "capabilities": ["write_graph"]
     });
-    let response = service
-        .execute(ApiEffectRequest {
-            contract_version: 1,
-            method: "POST".to_owned(),
-            path_and_query: "/api/document".to_owned(),
-            body: serde_json::to_vec(&body).unwrap(),
-            principal: principal.clone(),
-        })
+    let secret = "sqlite-chroma-document-http-contract-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let mut claims = principal.clone();
+    claims["iss"] = json!("local");
+    claims["exp"] = json!(now + 300);
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig {
+                mode: "jwt".to_owned(),
+                algorithm: Some("HS256".to_owned()),
+                key: Some(secret.to_owned()),
+                ..AuthConfig::default()
+            },
+        },
+        Arc::new(service.clone()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method(http_contract["method"].as_str().unwrap())
+                .uri(http_contract["path"].as_str().unwrap())
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
         .await;
-    assert_eq!(response.status, StatusCode::OK.as_u16());
+    let response = response.unwrap();
+    assert_eq!(
+        response.status().as_u16(),
+        http_contract["success_status"].as_u64().unwrap() as u16
+    );
+    let response_body = to_bytes(response.into_body(), 4096).await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&response_body).unwrap(),
+        http_contract["success_response"]
+    );
+    let change_event = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        change_events.recv(),
+    )
+    .await
+    .expect("successful document upsert should publish change event")
+    .expect("change event should be delivered");
+    assert_eq!(change_event["op"], "doc.upsert");
+    assert_eq!(change_event["entity"]["id"], "source-doc-1");
+    assert_eq!(change_event["entity"]["kg_graph_type"], "knowledge");
+    assert_eq!(
+        change_event["payload"]["content"],
+        "The authoritative source text."
+    );
     let scope = GraphScope {
         namespace: "docs".to_owned(),
         workspace_id: Some("workspace-a".to_owned()),
@@ -233,6 +347,7 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
     );
     assert_eq!(stored.metadata["origin"], "test");
     assert_eq!(stored.metadata["doc_type"], "text");
+    assert_eq!(stored.embedding.as_deref(), Some(&[0.6, 0.8, 0.0][..]));
     assert!(
         service
             .store
@@ -262,6 +377,7 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
         })
         .await;
     assert_eq!(denied.status, StatusCode::FORBIDDEN.as_u16());
+    assert!(change_events.try_recv().is_err());
     assert!(
         service
             .store

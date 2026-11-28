@@ -1056,11 +1056,15 @@
                     );
                 }
                 assert_eq!(
+                    value["result"]["cost_ledger"],
+                    contract["expected_cost_ledger"]
+                );
+                assert_eq!(
                     value["result"]["budget_model"],
                     contract["budget_model"]
                 );
             }
-            // PYTHON_PARITY_NOTE_V1: Rust MCP returns the dashboard fields declared by the shared contract; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
+            // PYTHON_PARITY_NOTE_V1: Rust MCP returns the dashboard fields declared by the shared contract; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_operator_dashboard; fixture=contracts/golden/operator-dashboard-v1.json; python_test=tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_operator_dashboard_denies_before_reads
             if tool_name == "workflow.operator_dashboard" {
                 let contract: Value = serde_json::from_str(include_str!(
                     "../../../../../contracts/golden/operator-dashboard-v1.json"
@@ -1095,10 +1099,61 @@
                 assert!(value["result"]["state"].is_object());
             }
         }
+        // PYTHON_PARITY_NOTE_V1: MCP dead-letter replay requeues once; a retry does not dispatch again. rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_dead_letter_replay; fixture=contracts/golden/workflow-dead-letter-replay-mcp-v1.json; python_test=tests/mcp/test_chat_mcp_workflow_authority.py#test_mcp_workflow_dead_letter_replay_dispatches_effect_once
         store
             .project_lane_message(dead_lane("dead-mcp-message", "dead-mcp-run"))
             .unwrap();
-        let replay = app
+        let (replay, competing_replay) = tokio::join!(
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"dead-replay-a","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
+                    ))
+                    .unwrap(),
+            ),
+            app.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/mcp/workflow")
+                    .header("content-type", "application/json")
+                    .header("x-kogwistar-roles", "reader,rw")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":"dead-replay-b","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
+                    ))
+                    .unwrap(),
+            ),
+        );
+        let replay = serde_json::from_slice::<Value>(
+            &to_bytes(replay.unwrap().into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        let competing_replay = serde_json::from_slice::<Value>(
+            &to_bytes(competing_replay.unwrap().into_body(), 16_384)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let mut replay_outcomes = [
+            replay["result"]["replayed"].as_bool().unwrap(),
+            competing_replay["result"]["replayed"].as_bool().unwrap(),
+        ];
+        replay_outcomes.sort_unstable();
+        assert_eq!(replay_outcomes, [false, true]);
+        assert_eq!(replay["result"]["run_id"], "dead-mcp-run");
+        assert_eq!(competing_replay["result"]["run_id"], "dead-mcp-run");
+        assert_eq!(
+            store
+                .get_projected_lane_message("dead-mcp-message")
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
+        let replay_retry = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -1107,16 +1162,17 @@
                     .header("content-type", "application/json")
                     .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::from(
-                        r#"{"jsonrpc":"2.0","id":"dead-replay","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
+                        r#"{"jsonrpc":"2.0","id":"dead-replay-retry","method":"tools/call","params":{"name":"workflow.dead_letter_replay","arguments":{"run_id":"dead-mcp-run"}}}"#,
                     ))
                     .unwrap(),
             )
             .await
             .unwrap();
-        let replay =
-            serde_json::from_slice::<Value>(&to_bytes(replay.into_body(), 16_384).await.unwrap())
-                .unwrap();
-        assert_eq!(replay["result"]["replayed"], true);
+        let replay_retry = serde_json::from_slice::<Value>(
+            &to_bytes(replay_retry.into_body(), 16_384).await.unwrap(),
+        )
+        .unwrap();
+        assert_eq!(replay_retry["result"]["replayed"], false);
         assert_eq!(
             store
                 .get_projected_lane_message("dead-mcp-message")
@@ -1129,7 +1185,7 @@
             .update_projected_lane_message_status("dead-mcp-message", "completed", None)
             .unwrap();
 
-        // PYTHON_PARITY_NOTE_V1: MCP orphan repair requeues expired claims and preserves active ones; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_message_orphans_repair_matches_shared_contract
+        // PYTHON_PARITY_NOTE_V1: MCP orphan repair requeues expired claims and preserves active ones; rust=rust/crates/kogwistar-api/src/tests/sqlite_run_service.rs#sqlite_run_service_handles_get_events_and_cancel; python=kogwistar/server/chat_mcp.py#build_workflow_mcp.workflow_message_orphans_repair; fixture=contracts/golden/workflow-repair-orphans-http-v1.json; python_test=tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_message_orphans_repair_matches_shared_contract
         let repair_orphans_contract: Value = serde_json::from_str(include_str!(
             "../../../../../contracts/golden/workflow-repair-orphans-http-v1.json"
         ))
@@ -2440,6 +2496,9 @@
             assert!(event_value["events"][0].get(field).is_some(), "missing {field}");
         }
         assert_eq!(event_value["events"][0]["event_type"], "run.started");
+        assert_eq!(event_value["events"][0]["seq"], 1);
+        assert_eq!(event_value["events"][0]["payload"], json!({"source":"test"}));
+        assert!(event_value["events"][0]["created_at_ms"].as_i64().is_some());
 
         let cancel = app
             .clone()
@@ -2474,9 +2533,8 @@
             .clone()
             .oneshot(
                 Request::builder()
-                    .uri("/api/runs/run-1/events")
+                    .uri("/api/runs/run-1/events?after_seq=0")
                     .header("x-kogwistar-roles", "reader")
-                    .header("last-event-id", "0")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2498,7 +2556,7 @@
             .lines()
             .find_map(|line| line.strip_prefix("id: "))
             .expect("SSE event ID");
-        assert!(event_id.parse::<u64>().is_ok());
+        assert_eq!(event_id, "1");
         let data_line = sse_body
             .lines()
             .find_map(|line| line.strip_prefix("data: "))
@@ -2513,6 +2571,7 @@
         }
         assert_eq!(data["run_id"], "run-1");
         assert_eq!(data["event_type"], event_name);
+        assert_eq!(data["source"], "test");
 
         let workflow_sse = app
             .clone()

@@ -1,0 +1,28 @@
+{
+  "contract_version": 1,
+  "path": "/api/conversations",
+  "denial_cases": [
+    {
+      "case": "wrong_namespace",
+      "claims": {
+        "sub": "alice",
+        "role": "ro",
+        "ns": "docs",
+        "capabilities": ["read_graph"],
+        "exp": 4102444800
+      },
+      "status": 403
+    },
+    {
+      "case": "missing_user_id_claim",
+      "claims": {
+        "sub": "alice",
+        "role": "ro",
+        "ns": "conversation",
+        "capabilities": ["read_graph"],
+        "exp": 4102444800
+      },
+      "status": 401
+    }
+  ]
+}

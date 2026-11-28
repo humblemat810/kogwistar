@@ -183,11 +183,199 @@
                 method: "GET".to_owned(),
                 path_and_query: "/api/workflow/design/wf-pg-write/graph".to_owned(),
                 body: Vec::new(),
-                principal,
+                principal: principal.clone(),
             })
             .await;
         let graph: Value = serde_json::from_slice(&graph.body).unwrap();
         assert!(graph["edges"].as_array().unwrap().is_empty());
+        let redo = service
+            .execute_async(request(
+                "POST",
+                "/api/workflow/design/wf-pg-write/redo",
+                json!({"designer_id":"alice"}),
+            ))
+            .await;
+        assert_eq!(redo.status, 200);
+        let delete = service
+            .execute_async(request(
+                "DELETE",
+                "/api/workflow/design/wf-pg-write/edges/edge",
+                json!({"designer_id":"alice"}),
+            ))
+            .await;
+        assert_eq!(delete.status, 200);
+        let events = snapshot_reader
+            .replay_raw_events("wf_design:wf-pg-write", 0, usize::MAX)
+            .await
+            .unwrap();
+        let tombstone = events
+            .iter()
+            .find(|event| event.entity_kind == "edge" && event.op == "TOMBSTONE")
+            .expect("edge delete writes a canonical tombstone");
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-mutation-events-v1.json"
+        )))
+        .unwrap();
+        let expected_tombstone = &fixture["expected_edge_delete_events"][0]["payload"];
+        assert_eq!(
+            serde_json::from_str::<Value>(&tombstone.payload_json).unwrap(),
+            *expected_tombstone,
+            "PostgreSQL tombstone preserves Python-compatible deletion provenance"
+        );
+
+        let node_delete_contract: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-node-delete-http-v1.json"
+        )))
+        .unwrap();
+        let node_create = service
+            .execute_async(request(
+                "POST",
+                "/api/workflow/design/wf-node-delete-contract/nodes",
+                json!({
+                    "designer_id": node_delete_contract["designer_id"],
+                    "node_id": node_delete_contract["node_id"],
+                    "label": "Start",
+                    "op": "start",
+                    "start": true
+                }),
+            ))
+            .await;
+        assert_eq!(node_create.status, StatusCode::OK);
+        let node_delete = service
+            .execute_async(request(
+                "DELETE",
+                "/api/workflow/design/wf-node-delete-contract/nodes/node-delete-contract",
+                json!({"designer_id": node_delete_contract["designer_id"]}),
+            ))
+            .await;
+        assert_eq!(node_delete.status, node_delete_contract["success_status"]);
+        let node_events = snapshot_reader
+            .replay_raw_events("wf_design:wf-node-delete-contract", 0, usize::MAX)
+            .await
+            .unwrap();
+        let node_tombstone = node_events
+            .iter()
+            .find(|event| {
+                event.entity_kind == "node"
+                    && event.entity_id == node_delete_contract["node_id"]
+                    && event.op == "TOMBSTONE"
+            })
+            .expect("PostgreSQL node delete writes a canonical tombstone");
+        assert_eq!(
+            serde_json::from_str::<Value>(&node_tombstone.payload_json).unwrap(),
+            node_delete_contract["expected_tombstone_payload"],
+            "PostgreSQL node tombstone preserves Python-compatible deletion provenance"
+        );
+        drop(service);
+        let cleanup_dsn = dsn
+            .strip_prefix("postgresql+psycopg://")
+            .map(|rest| format!("postgresql://{rest}"))
+            .or_else(|| {
+                dsn.strip_prefix("postgresql+psycopg2://")
+                    .map(|rest| format!("postgresql://{rest}"))
+            })
+            .unwrap_or(dsn);
+        let (client, connection) = tokio_postgres::connect(&cleanup_dsn, tokio_postgres::NoTls)
+            .await
+            .unwrap();
+        let connection_task = tokio::spawn(connection);
+        client
+            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+            .await
+            .unwrap();
+        drop(client);
+        connection_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires KOGWISTAR_TEST_PG_DSN; run explicitly with --include-ignored"]
+    async fn postgres_workflow_design_graph_matches_shared_mutation_fixture() {
+        let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
+            .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
+        let schema = format!("rust_api_design_fixture_{}", uuid::Uuid::new_v4().simple());
+        let service = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
+        service.ensure_schema().await.unwrap();
+        let principal = json!({"sub":"alice","role":"rw","ns":"workflow","capabilities":["workflow.design.write","workflow.design.inspect","write_graph"]});
+        let fixture: Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../contracts/golden/workflow-design-graph-http-v1.json"
+        )))
+        .unwrap();
+        let workflow_id = fixture["workflow_id"].as_str().unwrap();
+        let execute = |method: &str, path: String, body: Value| ApiEffectRequest {
+            contract_version: 1,
+            method: method.to_owned(),
+            path_and_query: path,
+            body: serde_json::to_vec(&body).unwrap(),
+            principal: principal.clone(),
+        };
+        for node in fixture["node_requests"].as_array().unwrap() {
+            let mut body = node.clone();
+            body["designer_id"] = json!("alice");
+            let response = service
+                .execute_async(execute(
+                    "POST",
+                    format!("/api/workflow/design/{workflow_id}/nodes"),
+                    body,
+                ))
+                .await;
+            assert_eq!(response.status, 200);
+        }
+        let mut edge = fixture["edge_request"].clone();
+        edge["designer_id"] = json!("alice");
+        let response = service
+            .execute_async(execute(
+                "POST",
+                format!("/api/workflow/design/{workflow_id}/edges"),
+                edge,
+            ))
+            .await;
+        assert_eq!(response.status, 200);
+
+        let response = service
+            .execute_async(execute(
+                "GET",
+                format!("/api/workflow/design/{workflow_id}/graph"),
+                json!({}),
+            ))
+            .await;
+        assert_eq!(response.status, 200);
+        let actual: Value = serde_json::from_slice(&response.body).unwrap();
+        let expected = &fixture["expected"];
+        for field in ["current_version", "active_tip_version", "can_undo", "can_redo"] {
+            assert_eq!(actual[field], expected[field], "graph field {field}");
+        }
+        let actual_nodes = actual["nodes"].as_array().unwrap();
+        let expected_nodes = expected["nodes"].as_array().unwrap();
+        assert_eq!(actual_nodes.len(), expected_nodes.len());
+        for expected_node in expected_nodes {
+            let node = actual_nodes
+                .iter()
+                .find(|node| node["id"] == expected_node["id"])
+                .expect("expected PostgreSQL workflow node");
+            assert_eq!(node["label"], expected_node["label"]);
+            for field in ["entity_type", "workflow_id", "wf_op", "wf_start", "wf_terminal", "wf_fanout"] {
+                assert_eq!(node["metadata"][field], expected_node[field], "node field {field}");
+            }
+        }
+        let actual_edges = actual["edges"].as_array().unwrap();
+        let expected_edges = expected["edges"].as_array().unwrap();
+        assert_eq!(actual_edges.len(), expected_edges.len());
+        for expected_edge in expected_edges {
+            let edge = actual_edges
+                .iter()
+                .find(|edge| edge["id"] == expected_edge["id"])
+                .expect("expected PostgreSQL workflow edge");
+            for field in ["source_ids", "target_ids", "relation"] {
+                assert_eq!(edge[field], expected_edge[field], "edge field {field}");
+            }
+            for field in ["entity_type", "workflow_id", "wf_predicate", "wf_priority", "wf_is_default", "wf_multiplicity"] {
+                assert_eq!(edge["metadata"][field], expected_edge[field], "edge field {field}");
+            }
+        }
+
         drop(service);
         let cleanup_dsn = dsn
             .strip_prefix("postgresql+psycopg://")

@@ -5,6 +5,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import pytest
+
 from kogwistar.conversation.models import ConversationNode
 from kogwistar.engine_core.engine import GraphKnowledgeEngine
 from kogwistar.engine_core.models import Grounding, Span
@@ -51,6 +53,23 @@ def test_python_receive_message_result_matches_shared_wire_fixture() -> None:
     }
 
     assert result == fixture
+
+
+def test_python_receive_message_returns_empty_for_existing_conversation_without_turns(
+    monkeypatch,
+) -> None:
+    node = SimpleNamespace(
+        id="snapshot-1",
+        metadata={"entity_type": "context_snapshot", "conversation_id": "c-empty"},
+    )
+    monkeypatch.setattr(
+        _ConversationQueryService,
+        "_conversation_nodes",
+        lambda _self, conversation_id: [node] if conversation_id == "c-empty" else [],
+    )
+    queries = _ConversationQueryService(cast(Any, SimpleNamespace()))
+
+    assert queries.list_transcript("c-empty") == []
 
 
 def test_python_receive_message_applies_engine_acl_before_projection(
@@ -111,6 +130,60 @@ def test_python_receive_message_applies_engine_acl_before_projection(
                         user_id="owner",
                     )
                 )
+            engine.write.add_node(
+                ConversationNode(
+                    id="turn-hidden-conversation",
+                    label="Hidden conversation turn",
+                    type="entity",
+                    summary="must not leak",
+                    mentions=[
+                        Grounding(
+                            spans=[Span.from_dummy_for_conversation("c-hidden")]
+                        )
+                    ],
+                    doc_id="conv:c-hidden",
+                    metadata={
+                        "entity_type": "conversation_turn",
+                        "conversation_id": "c-hidden",
+                        "in_conversation_chain": True,
+                        "visibility": "private",
+                        "owner_agent_id": "owner",
+                        "security_scope": "tenant-a",
+                        "level_from_root": 0,
+                    },
+                    role="user",
+                    turn_index=1,
+                    conversation_id="c-hidden",
+                    user_id="owner",
+                )
+            )
+            engine.write.add_node(
+                ConversationNode(
+                    id="public-conversation-start",
+                    label="Public conversation start",
+                    type="entity",
+                    summary="public marker",
+                    mentions=[
+                        Grounding(
+                            spans=[Span.from_dummy_for_conversation("c-public")]
+                        )
+                    ],
+                    doc_id="conv:c-public",
+                    metadata={
+                        "entity_type": "conversation_start",
+                        "conversation_id": "c-public",
+                        "in_conversation_chain": True,
+                        "visibility": "public",
+                        "owner_agent_id": "other-owner",
+                        "security_scope": "tenant-a",
+                        "level_from_root": 0,
+                    },
+                    role="user",
+                    turn_index=0,
+                    conversation_id="c-public",
+                    user_id="other-owner",
+                )
+            )
         finally:
             claims_ctx.reset(owner_claims)
 
@@ -122,6 +195,9 @@ def test_python_receive_message_applies_engine_acl_before_projection(
                 "conversation_id": "c1",
                 "messages": queries.list_transcript("c1"),
             }
+            with pytest.raises(KeyError, match="Unknown conversation_id: c-hidden"):
+                queries.list_transcript("c-hidden")
+            assert queries.list_transcript("c-public") == []
         finally:
             claims_ctx.reset(reader_claims)
     finally:

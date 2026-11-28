@@ -1,0 +1,20 @@
+{
+  "request": {
+    "version": "v1",
+    "op": "request_approval",
+    "args": {
+      "action": "unrecognized"
+    }
+  },
+  "http_status": 200,
+  "response": {
+    "version": "v1",
+    "op": "request_approval",
+    "status": "ok",
+    "result": {
+      "status": "requested",
+      "reason": "approval pending"
+    },
+    "error": null
+  }
+}

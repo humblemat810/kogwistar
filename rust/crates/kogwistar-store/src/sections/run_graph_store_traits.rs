@@ -152,6 +152,31 @@ pub trait GraphReadStore: Send + Sync {
             })
         }
     }
+    /// Historical node vector search. Backend candidate order and each source
+    /// candidate's distance are preserved; callers still apply authorization.
+    fn vector_query_nodes_as_of(
+        &self,
+        namespace: &str,
+        query: &VectorQuery,
+        as_of_ts: &str,
+        follow_redirects: bool,
+        max_redirect_hops: usize,
+    ) -> impl Future<Output = StoreResult<Vec<VectorMatch>>> + Send {
+        let namespace = namespace.to_owned();
+        let query = query.clone();
+        let as_of_ts = as_of_ts.to_owned();
+        async move {
+            graph_vector_query_nodes_as_of(
+                self,
+                &namespace,
+                &query,
+                &as_of_ts,
+                follow_redirects,
+                max_redirect_hops,
+            )
+            .await
+        }
+    }
     /// Run a typed vector query with an inclusive numeric metadata upper bound.
     /// The default fails closed rather than applying the bound after top-N,
     /// which could silently change the candidate set.

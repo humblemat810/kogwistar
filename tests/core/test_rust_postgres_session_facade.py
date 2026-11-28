@@ -890,9 +890,11 @@ def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
             {"record": valid_record, "distance": 0.0}
         ],
     }
+    operations: list[dict] = []
 
     def fake_store_postgres(*, operation, **kwargs):
         del kwargs
+        operations.append(operation)
         return results[operation["kind"]]
 
     monkeypatch.setattr(
@@ -906,6 +908,20 @@ def test_postgres_meta_facade_validates_native_graph_read_shapes(monkeypatch):
     assert store.graph_projection_vector_query(table="gke_nodes")[0][
         "distance"
     ] == 0.0
+    store.graph_projection_vector_query(
+        namespace="alpha",
+        table="gke_nodes",
+        embedding=[1.0, 0.0],
+        embedding_dim=2,
+        as_of_ts="2025-01-01T00:00:00+00:00",
+        follow_redirects=True,
+        max_redirect_hops=16,
+        metadata_not_equals={"entity_type": "acl_record"},
+    )
+    assert operations[-1]["as_of_ts"] == "2025-01-01T00:00:00+00:00"
+    assert operations[-1]["follow_redirects"] is True
+    assert operations[-1]["max_redirect_hops"] == 16
+    assert operations[-1]["metadata_not_equals"] == {"entity_type": "acl_record"}
 
     results["graph_projection_records"] = {"id": "wrong"}
     with pytest.raises(RuntimeError, match="invalid records"):
@@ -1019,6 +1035,90 @@ def test_postgres_batched_vector_query_crosses_native_boundary_when_dsn_availabl
             limit=1,
         )
         assert [match["record"]["id"] for match in acl_filtered[0]] == ["x-axis"]
+    finally:
+        store.close()
+        with psycopg.connect(dsn, autocommit=True) as connection:
+            connection.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_postgres_historical_vector_query_crosses_native_boundary_when_dsn_available():
+    dsn = os.environ.get("KOGWISTAR_TEST_PG_DSN")
+    if not dsn:
+        pytest.skip("set KOGWISTAR_TEST_PG_DSN to run the native PostgreSQL boundary test")
+    psycopg = pytest.importorskip("psycopg")
+    schema = f"rust_vector_as_of_{uuid.uuid4().hex}"
+    store = RustEnginePostgresMetaStore(dsn=dsn, schema=schema)
+    try:
+        store.ensure_initialized()
+        store._call("create_graph_schema", embedding_dim=2)
+        for entity_id, metadata, embedding in (
+            (
+                "old",
+                {
+                    "entity_type": "node",
+                    "lifecycle_status": "tombstoned",
+                    "deleted_at": "2026-01-10T00:00:00Z",
+                    "redirect_to_id": "target",
+                },
+                [1.0, 0.0],
+            ),
+            (
+                "target",
+                {"entity_type": "node", "lifecycle_status": "active"},
+                [0.8, 0.6],
+            ),
+            (
+                "internal-acl",
+                {"entity_type": "acl_record", "lifecycle_status": "active"},
+                [0.999, 0.001],
+            ),
+        ):
+            store.upsert_graph_projection(
+                namespace="as-of-boundary",
+                workspace_id=None,
+                graph_space=None,
+                table="gke_nodes",
+                record={
+                    "id": entity_id,
+                    "document": entity_id,
+                    "metadata": metadata,
+                    "embedding": embedding,
+                },
+                embedding_dim=2,
+            )
+
+        query = {
+            "namespace": "as-of-boundary",
+            "workspace_id": None,
+            "graph_space": None,
+            "table": "gke_nodes",
+            "embedding": [1.0, 0.0],
+            "embedding_dim": 2,
+            "metadata": {},
+            "metadata_not_equals": {"entity_type": "acl_record"},
+            "metric": "cosine",
+            "limit": 1,
+            "follow_redirects": True,
+            "max_redirect_hops": 16,
+        }
+        before_delete = store.graph_projection_vector_query(
+            **query, as_of_ts="2026-01-09T00:00:00+00:00"
+        )
+        assert [(hit["record"]["id"], hit["distance"]) for hit in before_delete] == [
+            ("old", 0.0)
+        ]
+        after_delete = store.graph_projection_vector_query(
+            **query, as_of_ts="2026-01-11T00:00:00+00:00"
+        )
+        assert [(hit["record"]["id"], hit["distance"]) for hit in after_delete] == [
+            ("target", 0.0)
+        ]
+        ordinary = store.graph_projection_vector_query(
+            **{key: value for key, value in query.items() if key not in {
+                "follow_redirects", "max_redirect_hops"
+            }}
+        )
+        assert all(hit["record"]["id"] != "old" for hit in ordinary)
     finally:
         store.close()
         with psycopg.connect(dsn, autocommit=True) as connection:
@@ -2288,9 +2388,13 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     assert hydrated[0].embedding == [1.0, 0.0, 0.0]
 
     native_query_calls: list[dict] = []
+    native_historical_calls: list[dict] = []
 
     def native_vector_query(**values):
-        native_query_calls.append(values)
+        if "as_of_ts" in values:
+            native_historical_calls.append(values)
+        else:
+            native_query_calls.append(values)
         return [
             {
                 "record": {
@@ -2543,16 +2647,27 @@ def test_read_subsystem_routes_simple_base_reads_to_native_projection(monkeypatc
     assert legacy_query_calls == []
 
     native_query_count = len(native_query_calls)
+    prior_historical_calls = len(native_historical_calls)
     engine.backend.supports_historical_tombstone_query = True
-    with pytest.raises(RuntimeError, match="refusing Python backend fallback"):
-        reader.search_nodes_as_of_scored(
-            query_embeddings=[1.0, 0.0, 0.0],
-            as_of_ts="2025-01-01T00:00:00Z",
-            where={"team": "red"},
-            n_results=1,
-        )
+    historical_hits = reader.search_nodes_as_of_scored(
+        query_embeddings=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        as_of_ts="2025-01-01T00:00:00Z",
+        where={"team": "red"},
+        n_results=1,
+    )
+    assert len(historical_hits) == 1
+    assert historical_hits[0].node.summary == "native"
+    assert historical_hits[0].raw_distance == 0.125
     assert legacy_query_calls == []
     assert len(native_query_calls) == native_query_count
+    current_historical_calls = native_historical_calls[prior_historical_calls:]
+    assert len(current_historical_calls) == 2
+    assert all(
+        call["as_of_ts"].startswith("2025-01-01T00:00:00")
+        and call["follow_redirects"] is True
+        and call["max_redirect_hops"] == 16
+        for call in current_historical_calls
+    ), current_historical_calls
 
     native_edge = build_relationship_edge(
         edge_id="e1",

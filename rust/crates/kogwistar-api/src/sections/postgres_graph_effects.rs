@@ -207,7 +207,7 @@ impl PostgresRunApplicationService {
     }
 
     async fn document_projection_effect(&self, request: &ApiEffectRequest) -> ApiEffectResponse {
-        let write = match document_projection_write(request, &self.capabilities) {
+        let prepared = match document_projection_write(request, &self.capabilities) {
             Ok(write) => write,
             Err(response) => return response,
         };
@@ -221,7 +221,11 @@ impl PostgresRunApplicationService {
                 "The selected Rust store does not own document projections",
             );
         }
-        let write = match embed_document_projection(write, self.embedding_provider.as_deref()).await
+        let write = match embed_document_projection(
+            prepared.write,
+            self.embedding_provider.as_deref(),
+        )
+        .await
         {
             Ok(write) => write,
             Err(()) => {
@@ -233,7 +237,19 @@ impl PostgresRunApplicationService {
             }
         };
         match self.store.upsert_document_projection(write).await {
-            Ok(()) => json_effect(StatusCode::OK, json!({"ok": true})),
+            Ok(()) => {
+                self.change_events.publish(
+                    "doc.upsert",
+                    prepared.change_payload,
+                    json!({
+                        "kind": "doc_node",
+                        "id": prepared.doc_id,
+                        "kg_graph_type": self.graph_role,
+                        "url": null
+                    }),
+                );
+                json_effect(StatusCode::OK, json!({"ok": true}))
+            }
             Err(error) => effect_error(
                 StatusCode::CONFLICT,
                 "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
@@ -725,7 +741,7 @@ impl PostgresRunApplicationService {
                     "Reading resource snapshot requires read_security_scope capability",
                 );
             }
-            // PYTHON_PARITY_NOTE_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
+            // PYTHON_PARITY_NOTE_V1: workflow budget reads require ro/rw, workflow namespace, and explicit capabilities before ledger projection; python=kogwistar/server/chat_mcp.py#workflow_budget_snapshot+workflow_budget_history; service=kogwistar/server/chat_service.py#ChatRunService.budget_snapshot+ChatRunService.budget_history; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_budget_reads_authorization_denies_before_backend_access; python_test=tests/mcp/test_chat_mcp_operator_tools.py#test_mcp_workflow_budget_reads_deny_before_ledger_read
             if matches!(
                 path,
                 "/api/workflow/budget" | "/api/workflow/budget/history"
@@ -755,7 +771,7 @@ impl PostgresRunApplicationService {
                     "Reading budget data requires project_view and read_security_scope capabilities",
                 );
             }
-            // PYTHON_PARITY_NOTE_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_tools.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
+            // PYTHON_PARITY_NOTE_V1: scheduler timeline authorization precedes all operational store reads; python=kogwistar/server/chat_mcp.py#workflow_scheduler_timeline+kogwistar/server/chat_service.py#ChatRunService.list_scheduler_timeline; rust_test=rust/crates/kogwistar-api/src/tests/workflow_mutation_authorization.rs#workflow_scheduler_timeline_authorization_denies_before_store_reads; python_test=tests/mcp/test_chat_mcp_workflow_services.py#test_mcp_workflow_scheduler_timeline_denies_before_reads
             if path == "/api/workflow/scheduler/timeline"
                 && (!matches!(principal_role(&request.principal).as_str(), "ro" | "rw")
                     || !principal_strings(&request.principal, "ns")
@@ -1154,28 +1170,29 @@ impl PostgresRunApplicationService {
             && let (Some(auth_store), Some(user_id)) = (
                 self.owner_auth_store.as_ref(),
                 authenticated_run_owner_id(&request.principal),
-            ) {
-                match auth_store
-                    .workflow_access_allowed(&run.workflow_id, user_id, "ro")
-                    .await
-                {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        return effect_error(
-                            StatusCode::FORBIDDEN,
-                            "KOGWISTAR_WORKFLOW_FORBIDDEN",
-                            "User does not have read access to this workflow",
-                        );
-                    }
-                    Err(error) => {
-                        return effect_error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "KOGWISTAR_AUTH_STORE_ERROR",
-                            error,
-                        );
-                    }
+            ) && !is_mcp_workflow_status_read(&request)
+        {
+            match auth_store
+                .workflow_access_allowed(&run.workflow_id, user_id, "ro")
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    return effect_error(
+                        StatusCode::FORBIDDEN,
+                        "KOGWISTAR_WORKFLOW_FORBIDDEN",
+                        "User does not have read access to this workflow",
+                    );
+                }
+                Err(error) => {
+                    return effect_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "KOGWISTAR_AUTH_STORE_ERROR",
+                        error,
+                    );
                 }
             }
+        }
         if request.method == "GET" && tail == ["lineage"] {
             let user_id = request
                 .principal
@@ -1544,28 +1561,44 @@ impl PostgresRunApplicationService {
             {
                 json_effect(StatusCode::ACCEPTED, server_run_value(run))
             }
-            ("POST", ["cancel"]) => match self.store.request_server_run_cancel(&run_id).await {
-                Ok(()) => match self.store.get_server_run(&run_id).await {
-                    Ok(Some(updated)) => {
-                        json_effect(StatusCode::ACCEPTED, server_run_value(updated))
-                    }
-                    Ok(None) => effect_error(
-                        StatusCode::NOT_FOUND,
-                        "KOGWISTAR_RUN_NOT_FOUND",
-                        format!("Unknown run_id: {run_id}"),
-                    ),
+            ("POST", ["cancel"]) => {
+                let event = kogwistar_store::ServerRunWriteStore::append_server_run_event(
+                    &self.store,
+                    &run_id,
+                    "run.cancelling",
+                    json!({"run_id": run_id, "status": "cancelling"}).to_string(),
+                )
+                .await;
+                match event {
+                    Ok(_) => match self.store.request_server_run_cancel(&run_id).await {
+                        Ok(()) => match self.store.get_server_run(&run_id).await {
+                            Ok(Some(updated)) => {
+                                json_effect(StatusCode::ACCEPTED, server_run_value(updated))
+                            }
+                            Ok(None) => effect_error(
+                                StatusCode::NOT_FOUND,
+                                "KOGWISTAR_RUN_NOT_FOUND",
+                                format!("Unknown run_id: {run_id}"),
+                            ),
+                            Err(error) => effect_error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "KOGWISTAR_STORE_ERROR",
+                                error.to_string(),
+                            ),
+                        },
+                        Err(error) => effect_error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "KOGWISTAR_STORE_ERROR",
+                            error.to_string(),
+                        ),
+                    },
                     Err(error) => effect_error(
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "KOGWISTAR_STORE_ERROR",
                         error.to_string(),
                     ),
-                },
-                Err(error) => effect_error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "KOGWISTAR_STORE_ERROR",
-                    error.to_string(),
-                ),
-            },
+                }
+            }
             _ => unavailable_effect(request),
         }
     }

@@ -86,21 +86,17 @@ where
         }
     }
     let metadata_json = serde_json::to_string(&metadata)?;
-    let embedding_sql = mutation
-        .record
-        .embedding
-        .as_deref()
-        .map(|vector| format!("{}::vector", sql_text_literal(&vector_literal(vector))))
-        .unwrap_or_else(|| "NULL".to_owned());
+    let embedding = mutation.record.embedding.as_deref().map(vector_literal);
+    // Bind JSON/vector text instead of interpolating SQL; TEXT casts let
+    // tokio-postgres infer supported bind types before PostgreSQL casts them.
     client
         .execute(
             &format!(
-                "INSERT INTO {table}(id, document, metadata, embedding) VALUES ($1, $2, {}::JSONB, {embedding_sql}) \
+                "INSERT INTO {table}(id, document, metadata, embedding) VALUES ($1, $2, $3::TEXT::JSONB, $4::TEXT::vector) \
                  ON CONFLICT {GRAPH_SCOPE_IDENTITY_CONFLICT_TARGET} DO UPDATE SET document = EXCLUDED.document, metadata = EXCLUDED.metadata, \
-                 embedding = EXCLUDED.embedding, updated_at = NOW()",
-                sql_text_literal(&metadata_json),
+                 embedding = EXCLUDED.embedding, updated_at = NOW()"
             ),
-            &[&mutation.record.id, &mutation.record.document],
+            &[&mutation.record.id, &mutation.record.document, &metadata_json, &embedding],
         )
         .await
         .map_err(|error| PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}")))?;

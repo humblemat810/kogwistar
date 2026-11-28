@@ -347,7 +347,8 @@ class ChromaBackend:
         coll = self._c(collection_key)
         fn = getattr(coll, method)
         result = run_awaitable_blocking(fn(**_chroma_safe_kwargs(kwargs)))
-        return _awaitable_result(_restore_chroma_result(result))
+        restored = _restore_chroma_result(result)
+        return _awaitable_result(restored)
 
     # --- node_index ---
     def node_index_get(self, **kwargs: object) -> object:
@@ -536,7 +537,8 @@ class AsyncChromaBackend(ChromaBackend):
         result = getattr(coll, method)(**_chroma_safe_kwargs(kwargs))
         if hasattr(result, "__await__"):
             result = await result
-        return _restore_chroma_result(result)
+        restored = _restore_chroma_result(result)
+        return restored
 
     async def async_node_get(self, **kwargs: object) -> object:
         return await self.async_call("node", "get", **kwargs)

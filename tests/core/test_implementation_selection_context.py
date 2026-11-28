@@ -820,7 +820,7 @@ def test_conversation_query_uses_conversation_engine_selection(
         turn_index=0,
     )
 
-    def conversation_nodes(_conversation_id: str) -> list[SimpleNamespace]:
+    def conversation_nodes(_conversation_id: str, **_kwargs: object) -> list[SimpleNamespace]:
         observed.append(runtime_implementation_mode())
         monkeypatch.setenv("KOGWISTAR_IMPL_RUNTIME", "rust")
         return [start_node]

@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "request": {
+    "doc_id": "doc-u64-offset",
+    "nodes": [
+      {
+        "id": "node-u64-offset",
+        "label": "Node",
+        "type": "entity",
+        "summary": "Persistent span offset reaches unsigned 64-bit maximum",
+        "metadata": {
+          "pointers": [
+            {
+              "source_cluster_id": "cluster-1",
+              "start_char": 18446744073709551614,
+              "end_char": 18446744073709551615,
+              "verbatim_text": ""
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "status": 200,
+  "response": {
+    "ok": true,
+    "node_errors": {},
+    "edge_errors": {}
+  }
+}

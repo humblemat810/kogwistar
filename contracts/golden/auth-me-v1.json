@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "method": "GET",
+  "path": "/api/auth/me",
+  "success_status": 200,
+  "response_fields": [
+    "user_id",
+    "email",
+    "display_name",
+    "is_active",
+    "role",
+    "ns"
+  ],
+  "identity_fields": ["user_id", "email", "display_name", "is_active"],
+  "claim_projection_fields": ["role", "ns"]
+}

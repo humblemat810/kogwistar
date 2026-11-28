@@ -17,7 +17,7 @@ from kogwistar.server import service_daemon
 from kogwistar.server.auth_middleware import claims_ctx
 from kogwistar.server.service_daemon import SERVICE_PROJECTION_NAMESPACE
 from tests._helpers.fake_backend import build_fake_backend
-from tests.server.test_chat_server_api import (
+from tests.server.chat_server_api_support import (
     FakeEmbeddingFunction,
     _configure_server,
     _runtime_success_runner,

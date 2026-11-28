@@ -92,6 +92,29 @@ where
     c.execute(&format!("UPDATE {} SET status=$1,error_json=COALESCE($2,error_json),claimed_by=CASE WHEN $1 IN ('completed','failed','cancelled') THEN NULL ELSE claimed_by END,lease_until=CASE WHEN $1 IN ('completed','failed','cancelled') THEN NULL ELSE lease_until END WHERE message_id=$3",t.projected_lane_messages),&[&status,&error,&id]).await.map_err(backend)?;
     Ok(())
 }
+pub(crate) async fn compare_and_set_projected_lane_message_status<C>(
+    c: &C,
+    t: &Tables,
+    id: &str,
+    expected_status: &str,
+    status: &str,
+    error: Option<String>,
+) -> PostgresStoreResult<bool>
+where
+    C: GenericClient + Sync,
+{
+    let changed = c
+        .execute(
+            &format!(
+                "UPDATE {} SET status=$1,error_json=COALESCE($2,error_json),claimed_by=CASE WHEN $1 IN ('completed','failed','cancelled') THEN NULL ELSE claimed_by END,lease_until=CASE WHEN $1 IN ('completed','failed','cancelled') THEN NULL ELSE lease_until END WHERE message_id=$3 AND status=$4",
+                t.projected_lane_messages
+            ),
+            &[&status, &error, &id, &expected_status],
+        )
+        .await
+        .map_err(backend)?;
+    Ok(changed == 1)
+}
 pub(crate) async fn update_projected_lane_message_links<C>(
     c: &C,
     t: &Tables,

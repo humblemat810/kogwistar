@@ -5,7 +5,8 @@ param(
     [int]$Samples = 5,
     [switch]$EndpointOnly,
     [switch]$RuntimeSeamOnly,
-    [int[]]$EndpointItems = @(1000, 2000)
+    [int[]]$EndpointItems = @(1000, 2000),
+    [int]$ConcurrentItems = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -151,10 +152,12 @@ foreach ($entry in $matrix) {
             --output /results/runtime-seam-report.json --expected-cpus $CpuLimit `
             --expected-memory-bytes $memoryBytes
     } elseif ($EndpointOnly) {
+        $concurrentArgs = @()
+        if ($ConcurrentItems -gt 0) { $concurrentArgs = @("--concurrent-items", "$ConcurrentItems") }
         docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `
             --mount "type=bind,source=$resolvedOutput,target=/results" `
             $tag --output /results --samples $Samples `
-            --expected-cpus $CpuLimit --expected-memory-bytes $memoryBytes @itemArgs
+            --expected-cpus $CpuLimit --expected-memory-bytes $memoryBytes @itemArgs @concurrentArgs
     } else {
         $authority = if ($entry.Authority) { $entry.Authority } else { "python" }
         docker run --rm --network none --cpus $CpuLimit --memory $MemoryLimit --memory-swap $MemoryLimit `

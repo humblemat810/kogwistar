@@ -60,6 +60,7 @@ use kogwistar_store_sqlite::{
     SqliteAuthStore, SqliteStore, SqliteStoreError, SqliteUnitOfWork,
 };
 
+mod change_events;
 mod cutover;
 mod native_answer_generation;
 mod native_answer_lifecycle;
@@ -121,7 +122,10 @@ include!("sections/provider_event_publication.rs");
 include!("sections/application_services.rs");
 include!("sections/sqlite_application_service.rs");
 include!("sections/sqlite_automation_services.rs");
-include!("sections/in_memory_service.rs");
+#[path = "sections/in_memory_service.rs"]
+mod in_memory_service;
+use in_memory_service::InMemoryGraphApplicationService;
+use in_memory_service::graph_operations::{graph_vector_proposal_pairs, invalid_graph_request};
 include!("sections/auth_state.rs");
 include!("sections/auth_handlers.rs");
 include!("sections/http_transport.rs");
@@ -188,6 +192,7 @@ mod tests {
     include!("tests/postgres_configuration.rs");
     include!("tests/sqlite_service_events.rs");
     include!("tests/document_validation.rs");
+    include!("tests/document_change_events.rs");
     include!("tests/graph_mutation_contracts.rs");
     include!("tests/visualization_routes.rs");
     include!("tests/runtime_wire_contracts.rs");
@@ -264,6 +269,7 @@ mod tests {
     include!("tests/in_memory_semantic_retrieval.rs");
     include!("tests/inline_owner_authority.rs");
     include!("tests/in_memory_graph_routes.rs");
+    include!("tests/visualization_hyperedge_routes.rs");
     include!("tests/postgres_visualization.rs");
     include!("tests/vector_query_acl.rs");
     include!("tests/postgres_graph_types.rs");

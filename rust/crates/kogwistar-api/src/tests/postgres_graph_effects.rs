@@ -51,6 +51,13 @@
             .await
             .unwrap();
         drop(auth_store);
+        let auth = rusqlite::Connection::open(&auth_path).unwrap();
+        auth.execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES ('wf', 'alice', 'rw')",
+            [],
+        )
+        .unwrap();
+        drop(auth);
         let owner_auth_config = AuthConfig {
             auth_db_url: Some(format!("sqlite:///{}", auth_path.display())),
             ..AuthConfig::default()
@@ -90,7 +97,7 @@
         let secret = "native-graph-test-secret";
         let token = |subject: &str, namespace: &str, caps: &[&str]| encode(
             &Header::new(Algorithm::HS256),
-            &json!({"sub": subject, "role": "rw", "roles": ["reader"], "ns": namespace,
+            &json!({"sub": subject, "role": "rw", "roles": ["reader"], "ns": [namespace, "workflow"],
                 "storage_ns": namespace, "capabilities": caps, "exp": 4102444800_u64}),
             &EncodingKey::from_secret(secret.as_bytes()),
         ).unwrap();

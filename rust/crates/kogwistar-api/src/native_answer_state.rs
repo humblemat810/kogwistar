@@ -324,12 +324,10 @@ fn tokens(text: &str) -> std::collections::BTreeSet<String> {
     for character in lowercase.chars() {
         if character.is_ascii_alphanumeric() || character == '_' {
             current.push(character);
+        } else if current.len() >= 3 {
+            tokens.insert(std::mem::take(&mut current));
         } else {
-            if current.len() >= 3 {
-                tokens.insert(std::mem::take(&mut current));
-            } else {
-                current.clear();
-            }
+            current.clear();
         }
     }
     if current.len() >= 3 {

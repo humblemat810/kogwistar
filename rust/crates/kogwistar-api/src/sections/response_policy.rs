@@ -8,6 +8,19 @@ fn json_effect(status: StatusCode, value: Value) -> ApiEffectResponse {
     }
 }
 
+fn syscall_success(version: &str, op: &str, result: Value) -> ApiEffectResponse {
+    json_effect(
+        StatusCode::OK,
+        json!({"version": version, "op": op, "status": "ok", "result": result, "error": null}),
+    )
+}
+
+fn syscall_step_seq(value: &Value) -> Option<i64> {
+    value
+        .as_i64()
+        .or_else(|| value.as_str().and_then(|raw| raw.trim().parse::<i64>().ok()))
+}
+
 fn public_context_snapshot_value(snapshot: ContextSnapshotV1) -> Value {
     let mut payload = serde_json::to_value(snapshot).expect("snapshot serializes");
     payload
@@ -520,6 +533,27 @@ const SQLITE_UNSUPPORTED_HTTP_ROUTES: &[(&str, &str)] = &[
 ];
 
 fn principal_strings(principal: &Value, name: &str) -> Vec<String> {
+    if name == "ns" {
+        return match principal.get(name) {
+            Some(Value::String(raw)) if raw.is_empty() => Vec::new(),
+            Some(Value::String(raw)) => vec![raw.to_lowercase()],
+            Some(Value::Array(values)) => values
+                .iter()
+                .map(|value| match value {
+                    Value::String(raw) => raw.to_lowercase(),
+                    Value::Bool(raw) => raw.to_string(),
+                    Value::Number(raw) => raw.to_string(),
+                    Value::Null | Value::Object(_) | Value::Array(_) => {
+                        "\0invalid-namespace-claim".to_owned()
+                    }
+                })
+                .collect(),
+            Some(Value::Bool(false) | Value::Null) | None => Vec::new(),
+            Some(Value::Number(raw)) if raw.as_f64() == Some(0.0) => Vec::new(),
+            Some(Value::Object(raw)) if raw.is_empty() => Vec::new(),
+            Some(_) => vec!["\0invalid-namespace-claim".to_owned()],
+        };
+    }
     match principal.get(name) {
         Some(Value::String(raw)) => raw
             .split(',')
@@ -557,7 +591,7 @@ fn graph_acl_principal_from_claims(
 }
 
 fn principal_subject(principal: &Value) -> String {
-    ["sub", "user_id", "agent_id"]
+    ["sub", "user_id", "agent_id", "actor_id"]
         .into_iter()
         .find_map(|name| principal.get(name).and_then(Value::as_str))
         .map(str::trim)
@@ -594,21 +628,34 @@ fn principal_role(principal: &Value) -> String {
 }
 
 fn base_capabilities(principal: &Value) -> BTreeSet<String> {
-    let explicit = principal
-        .get("capabilities")
-        .or_else(|| principal.get("caps"));
-    if explicit.is_some() {
-        return principal_strings(
-            principal,
-            if principal.get("capabilities").is_some() {
-                "capabilities"
-            } else {
-                "caps"
-            },
-        )
-        .into_iter()
-        .filter(|capability| capability != "*")
-        .collect();
+    let capabilities = principal.get("capabilities");
+    let explicit = capabilities
+        .filter(|value| match value {
+            Value::Null => false,
+            Value::Bool(value) => *value,
+            Value::Number(value) => value.as_f64().is_some_and(|value| value != 0.0),
+            Value::String(value) => !value.is_empty(),
+            Value::Array(value) => !value.is_empty(),
+            Value::Object(value) => !value.is_empty(),
+        })
+        .map(|value| ("capabilities", value))
+        .or_else(|| principal.get("caps").map(|value| ("caps", value)))
+        .or_else(|| capabilities.map(|value| ("capabilities", value)));
+    if let Some((field, _)) = explicit {
+        let raw_values = match principal.get(field) {
+            Some(Value::String(value)) => vec![value.clone()],
+            Some(Value::Array(values)) => values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect(),
+            _ => Vec::new(),
+        };
+        return raw_values
+            .into_iter()
+            .map(|capability| capability.trim().to_ascii_lowercase())
+            .filter(|capability| !capability.is_empty() && capability != "*")
+            .collect();
     }
     if principal_role(principal) == "rw" {
         CAPABILITY_SPECS
@@ -936,7 +983,7 @@ fn conversation_graph_scope_and_acl_principal(
     (scope, acl_principal)
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#capability_effect; python=kogwistar/server/chat_service.py#ChatRunService.visibility_snapshot; fixture=contracts/golden/workflow-visibility-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api.py#test_view_layer_hardening_endpoints
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#capability_effect; python=kogwistar/server/chat_service.py#ChatRunService.visibility_snapshot; fixture=contracts/golden/workflow-visibility-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_visibility_acl.rs#sqlite_visibility_and_capabilities_enforce_claims_across_rest_and_mcp; python_test=tests/server/test_chat_server_api_runtime_workflow.py#test_view_layer_hardening_endpoints
 fn capability_effect(
     request: &ApiEffectRequest,
     shared: &SharedCapabilityState,
@@ -1205,15 +1252,27 @@ fn syscall_input(
     Ok(input)
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/response_policy.rs#resume_syscall_args; python=kogwistar/server/syscall_api.py#create_syscall_router.dispatch; fixture=contracts/golden/workflow-run-resume-result-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/sqlite_runtime/worker_lifecycle.rs#sqlite_metadata_resume_syscall_resumes_persisted_suspended_token; python_test=tests/server/test_syscall_api.py#test_syscall_resume_returns_completed_result_contract
+fn resume_syscall_args(args: &Map<String, Value>) -> Vec<u8> {
+    let mut body = args.clone();
+    body.remove("run_id");
+    serde_json::to_vec(&body).expect("syscall resume args serialize")
+}
+
 fn syscall_result(version: &str, op: &str, response: ApiEffectResponse) -> ApiEffectResponse {
     if !(200..300).contains(&response.status) {
         return response;
     }
-    let result = serde_json::from_slice::<Value>(&response.body).unwrap_or_else(|_| json!({}));
-    json_effect(
-        StatusCode::OK,
-        json!({"version": version, "op": op, "status": "ok", "result": result}),
-    )
+    let mut result = serde_json::from_slice::<Value>(&response.body).unwrap_or_else(|_| json!({}));
+    if op == "send_message"
+        && let Some(object) = result.as_object_mut()
+        && let Some(turn_node_id) = object.get("turn_node_id").cloned()
+    {
+        object
+            .entry("user_turn_node_id".to_owned())
+            .or_insert(turn_node_id);
+    }
+    syscall_success(version, op, result)
 }
 
 fn syscall_audit(shared: &SharedCapabilityState, version: &str, op: &str, status: &str) {
@@ -1249,7 +1308,9 @@ fn syscall_allowed(
     write: bool,
     required: &[&str],
 ) -> bool {
+    // Python configures both workflow and conversation as workflow syscall namespaces; retain the same role/capability checks for either.
     syscall_allowed_in_namespace(request, shared, op, write, required, "workflow")
+        || syscall_allowed_in_namespace(request, shared, op, write, required, "conversation")
 }
 
 fn syscall_allowed_in_namespace(
@@ -1522,6 +1583,15 @@ fn default_document_insertion_method() -> String {
     "document_parser_v1".to_owned()
 }
 
+fn graph_pointer_integer(value: &Value) -> Option<i128> {
+    value
+        .as_i64()
+        .map(i128::from)
+        .or_else(|| value.as_u64().map(i128::from))
+        .or_else(|| value.as_bool().map(|value| if value { 1 } else { 0 }))
+        .or_else(|| value.as_str().and_then(|text| text.parse::<i128>().ok()))
+}
+
 fn graph_validation_error(message: impl Into<String>) -> String {
     json!([{"type":"value_error","msg":message.into()}]).to_string()
 }
@@ -1542,14 +1612,18 @@ fn validate_graph_span(value: &Value) -> Result<(), String> {
     }
     let start = span
         .get("start_char")
-        .and_then(Value::as_i64)
+        .and_then(graph_pointer_integer)
         .ok_or_else(|| "mention span start_char must be an integer".to_owned())?;
     let end = span
         .get("end_char")
-        .and_then(Value::as_i64)
+        .and_then(graph_pointer_integer)
         .ok_or_else(|| "mention span end_char must be an integer".to_owned())?;
-    if start < 0 {
+    let max_offset = i128::from(u64::MAX);
+    if !(0..=max_offset).contains(&start) {
         return Err("mention span start_char must be >= 0".to_owned());
+    }
+    if end != -1 && !(0..=max_offset).contains(&end) {
+        return Err("mention span end_char must be within persistent offset range".to_owned());
     }
     if end != -1 && end <= start {
         return Err("mention span end_char must be > start_char".to_owned());
@@ -1569,14 +1643,177 @@ fn validate_graph_mentions(value: Option<&Value>) -> Result<(), String> {
             validate_graph_span(mention)?;
             continue;
         }
-        let spans = mention
+        if mention
             .get("spans")
-            .and_then(Value::as_array)
-            .filter(|values| !values.is_empty())
-            .ok_or_else(|| "grounding spans must be a non-empty array".to_owned())?;
-        for span in spans {
-            validate_graph_span(span)?;
+            .is_some_and(|value| !value.is_null() && !value.is_array())
+        {
+            return Err("grounding spans must be an array".to_owned());
         }
+        if mention
+            .get("multimodal_spans")
+            .is_some_and(|value| !value.is_array())
+        {
+            return Err("grounding multimodal_spans must be an array".to_owned());
+        }
+        let spans = mention.get("spans").and_then(Value::as_array);
+        let multimodal_spans = mention.get("multimodal_spans").and_then(Value::as_array);
+        let has_text = spans.is_some_and(|values| !values.is_empty());
+        let has_multimodal = multimodal_spans.is_some_and(|values| !values.is_empty());
+        if !has_text && !has_multimodal {
+            return Err("grounding requires text or multimodal evidence".to_owned());
+        }
+        if let Some(spans) = spans {
+            for span in spans {
+                validate_graph_span(span)?;
+            }
+        }
+        if let Some(spans) = multimodal_spans {
+            for span in spans {
+                validate_graph_multimodal_span(span)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+// Mirrors Python MultimodalSpan's source identity, digest, locator compatibility,
+// and range checks without creating a second persisted Rust representation.
+fn validate_graph_multimodal_span(value: &Value) -> Result<(), String> {
+    let span = value
+        .as_object()
+        .ok_or_else(|| "multimodal span must be an object".to_owned())?;
+    if span
+        .get("schema_version")
+        .is_some_and(|value| value.as_u64() != Some(1))
+    {
+        return Err("multimodal schema_version must be 1".to_owned());
+    }
+    for name in ["source_namespace", "resource_id", "resource_revision_id"] {
+        if !span
+            .get(name)
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+        {
+            return Err(format!("multimodal {name} must be a non-empty string"));
+        }
+    }
+    let digest = span
+        .get("content_sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "multimodal content_sha256 must be a string".to_owned())?;
+    if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("multimodal content_sha256 must be 64 hexadecimal characters".to_owned());
+    }
+    let modality = span
+        .get("modality")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "multimodal modality must be a string".to_owned())?;
+    let locator = span
+        .get("locator")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "multimodal locator must be an object".to_owned())?;
+    let kind = locator
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "multimodal locator kind must be a string".to_owned())?;
+    let compatible = match modality {
+        "text" => matches!(kind, "text_range" | "legacy"),
+        "image" => matches!(kind, "spatial_region" | "legacy"),
+        "audio" => matches!(kind, "temporal_interval" | "legacy"),
+        "video" => matches!(kind, "temporal_interval" | "spatial_region" | "video_region_track" | "legacy"),
+        "pdf_page" | "table" | "webpage" => matches!(kind, "text_range" | "spatial_region" | "legacy"),
+        "chart" => matches!(kind, "spatial_region" | "legacy"),
+        _ => false,
+    };
+    if !compatible {
+        return Err("multimodal modality and locator kind are incompatible".to_owned());
+    }
+    let integer = |key: &str| locator.get(key).and_then(graph_pointer_integer);
+    match kind {
+        "text_range" => {
+            let start = integer("start_char");
+            let end = integer("end_char");
+            if !start.is_some_and(|value| value >= 0)
+                || !end.zip(start).is_some_and(|(end, start)| end > start)
+            {
+                return Err("multimodal text range bounds are invalid".to_owned());
+            }
+            if locator.get("page_number").is_some_and(|value| {
+                !value.is_null()
+                    && !graph_pointer_integer(value).is_some_and(|page| page > 0)
+            }) {
+                return Err("multimodal text range page_number must be positive".to_owned());
+            }
+        }
+        "temporal_interval" => {
+            let start = integer("start_ms");
+            let end = integer("end_ms");
+            if !start.is_some_and(|value| value >= 0)
+                || !end.zip(start).is_some_and(|(end, start)| end > start)
+            {
+                return Err("multimodal temporal interval bounds are invalid".to_owned());
+            }
+        }
+        "spatial_region" => {
+            let coordinate_system = locator
+                .get("coordinate_system")
+                .and_then(Value::as_str)
+                .unwrap_or("normalized_0_1");
+            let number = |key: &str| {
+                locator.get(key).and_then(|value| {
+                    value
+                        .as_f64()
+                        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+                        .or_else(|| value.as_bool().map(|value| if value { 1.0 } else { 0.0 }))
+                })
+            };
+            let (Some(x), Some(y), Some(width), Some(height)) = (
+                number("x"),
+                number("y"),
+                number("width"),
+                number("height"),
+            ) else {
+                return Err("multimodal spatial region requires numeric bounds".to_owned());
+            };
+            if !matches!(coordinate_system, "normalized_0_1" | "pixels")
+                || x < 0.0
+                || y < 0.0
+                || width <= 0.0
+                || height <= 0.0
+                || (coordinate_system == "normalized_0_1" && (x + width > 1.0 || y + height > 1.0))
+            {
+                return Err("multimodal spatial region bounds are invalid".to_owned());
+            }
+        }
+        "video_region_track" => {
+            let start = integer("start_ms");
+            let end = integer("end_ms");
+            let manifest_digest = locator
+                .get("track_manifest_sha256")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let manifest_schema_version = locator
+                .get("manifest_schema_version")
+                .map(graph_pointer_integer)
+                .unwrap_or(Some(1));
+            if !start.is_some_and(|value| value >= 0)
+                || !end.zip(start).is_some_and(|(end, start)| end > start)
+                || !manifest_schema_version.is_some_and(|version| version >= 1)
+                || !locator
+                    .get("track_manifest_ref")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                || manifest_digest.len() != 64
+                || !manifest_digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                return Err("multimodal video track locator is invalid".to_owned());
+            }
+        }
+        "legacy" if !locator.get("payload").is_some_and(Value::is_object) => {
+            return Err("multimodal legacy locator payload must be an object".to_owned());
+        }
+        "legacy" => {}
+        _ => return Err("multimodal locator kind is unsupported".to_owned()),
     }
     Ok(())
 }
@@ -1603,20 +1840,36 @@ fn lift_graph_pointer_mentions(
         let source_cluster_id = pointer["source_cluster_id"]
             .as_str()
             .ok_or_else(|| "pointer source_cluster_id must be a string".to_owned())?;
-        let start_char = pointer["start_char"]
-            .as_i64()
+        let start_char = graph_pointer_integer(&pointer["start_char"])
             .ok_or_else(|| "pointer start_char must be an integer".to_owned())?;
-        let end_char = pointer["end_char"]
-            .as_i64()
+        let raw_end_char = &pointer["end_char"];
+        let end_char = graph_pointer_integer(raw_end_char)
             .ok_or_else(|| "pointer end_char must be an integer".to_owned())?;
+        if end_char == -1 && raw_end_char.as_i64() != Some(-1) {
+            return Err("pointer end_char must use numeric -1 for the open-ended sentinel".to_owned());
+        }
+        if !(0..=i128::from(u64::MAX)).contains(&start_char)
+            || (end_char != -1 && !(0..=i128::from(u64::MAX)).contains(&end_char))
+        {
+            return Err("pointer offsets must be within persistent offset range".to_owned());
+        }
+        let excerpt = pointer
+            .get("verbatim_text")
+            .map(|value| {
+                value
+                    .as_str()
+                    .ok_or_else(|| "pointer verbatim_text must be a string".to_owned())
+            })
+            .transpose()?
+            .unwrap_or_default();
         mentions.push(json!({
             "doc_id": doc_id,
             "collection_page_url": format!("doc://{doc_id}"),
             "document_page_url": format!("doc://{doc_id}#{source_cluster_id}"),
             "insertion_method": insertion_method,
             "start_char": start_char,
-            "end_char": if end_char == -1 { 1_000_000_000_i64 } else { end_char },
-            "excerpt": pointer["verbatim_text"].as_str().unwrap_or_default().chars().take(400).collect::<String>(),
+            "end_char": if raw_end_char.as_i64() == Some(-1) { 1_000_000_000_i128 } else { end_char },
+            "excerpt": excerpt.chars().take(400).collect::<String>(),
         }));
     }
     entity.insert("mentions".to_owned(), Value::Array(mentions));

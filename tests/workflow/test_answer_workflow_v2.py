@@ -20,6 +20,7 @@ from kogwistar.conversation.agentic_answering import (
     EvidenceSelection,
     SpanRef,
 )
+
 from kogwistar.conversation.models import (
     FilteringResult,
     MetaFromLastSummary,
@@ -37,6 +38,8 @@ from kogwistar.llm_tasks import (
     RepairCitationsTaskResult,
     SummarizeContextTaskResult,
 )
+
+AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS = 0.1
 
 pytestmark = pytest.mark.ci_full
 
@@ -231,7 +234,9 @@ def test_answer_workflow_v2_runs_end_to_end(
 
 @pytest.mark.manual
 @pytest.mark.parametrize("backend_kind", ["pg"], indirect=True)
-@pytest.mark.parametrize("sample_id", ["warmup", "sample-1", "sample-2"])
+@pytest.mark.parametrize(
+    "sample_id", ["warmup", "sample-1", "sample-2", "sample-3"]
+)
 def test_python_agent_postgres_2k_request_profile(
     engine,
     conversation_engine,
@@ -384,7 +389,7 @@ def test_python_agent_postgres_2k_request_profile(
     # Match the native HTTP profile's TCP request boundary; runner remains Python.
     import httpx
 
-    from tests.server.test_chat_server_api import (
+    from tests.server.chat_server_api_support import (
         _configure_server,
         server as chat_server,
     )
@@ -442,7 +447,9 @@ def test_python_agent_postgres_2k_request_profile(
         submitted.raise_for_status()
         http_run_id = submitted.json()["run_id"]
         deadline = time.monotonic() + 300.0
+        http_run_status_poll_count = 0
         while True:
+            http_run_status_poll_count += 1
             run_response = client.get(
                 f"/api/runs/{http_run_id}", headers=headers
             )
@@ -454,7 +461,7 @@ def test_python_agent_postgres_2k_request_profile(
                 raise AssertionError(
                     f"Python HTTP answer run {http_run_id} did not terminate"
                 )
-            time.sleep(0.1)
+            time.sleep(AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS)
         http_request_ms = (time.perf_counter() - http_started) * 1_000
         assert run_state["status"] == "succeeded", run_state
         http_out = run_state["result"]
@@ -477,12 +484,19 @@ def test_python_agent_postgres_2k_request_profile(
         + json.dumps(
             {
                 "sample_id": sample_id,
+                "execution_mode": "python-http",
+                "backend_profile": "postgres_pgvector",
                 "fixture_nodes": fixture_size + 1,
                 "request_boundary": "in_process_answer_workflow_v2",
                 "seed_ms": round(seed_ms, 3),
                 "request_ms": round(request_ms, 3),
                 "http_request_boundary": "tcp_conversation_answer_to_terminal_run",
                 "http_request_ms": round(http_request_ms, 3),
+                "tcp_request_ms": round(http_request_ms, 3),
+                "run_status_poll_interval_ms": int(
+                    AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS * 1_000
+                ),
+                "run_status_poll_count": http_run_status_poll_count,
                 "canonical_state_sha256": digest,
             },
             sort_keys=True,

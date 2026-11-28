@@ -410,10 +410,26 @@ def _exercise_postgres_transport(
             replay.raise_for_status()
             assert replay.json()["state"]["fanout_join"] is True
 
+        budget_contract = json.loads(
+            (ROOT / "contracts" / "golden" / "workflow-budget-http-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        budget_history_contract = json.loads(
+            (
+                ROOT
+                / "contracts"
+                / "golden"
+                / "workflow-budget-history-http-v1.json"
+            ).read_text(encoding="utf-8")
+        )
         for path, expected_key in (
             ("/api/workflow/resources", "migration"),
             ("/api/workflow/budget", "cost_ledger"),
-            ("/api/workflow/budget/history", "events"),
+            (
+                f"/api/workflow/budget/history?limit={budget_history_contract['limit']}",
+                "events",
+            ),
             (
                 "/api/workflow/lane/progress?conversation_id=pg-fanout-conversation",
                 "items",
@@ -422,7 +438,23 @@ def _exercise_postgres_transport(
         ):
             response = httpx.get(f"{base}{path}", headers=headers, timeout=10)
             assert response.status_code == 200, response.text
-            assert expected_key in response.json()
+            payload = response.json()
+            assert expected_key in payload
+            if path == "/api/workflow/budget":
+                assert set(budget_contract["required_cost_ledger_fields"]).issubset(
+                    payload["cost_ledger"]
+                )
+                assert payload["budget_model"] == budget_contract["budget_model"]
+            elif path.startswith("/api/workflow/budget/history?"):
+                assert set(budget_history_contract["required_fields"]).issubset(payload)
+                assert set(
+                    budget_history_contract["required_cost_ledger_fields"]
+                ).issubset(payload["cost_ledger"])
+                assert len(payload["events"]) <= budget_history_contract["limit"]
+                assert all(
+                    set(budget_history_contract["required_event_fields"]).issubset(event)
+                    for event in payload["events"]
+                )
         resources = httpx.get(
             f"{base}/api/workflow/resources", headers=headers, timeout=10
         ).json()

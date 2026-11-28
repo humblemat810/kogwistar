@@ -865,6 +865,32 @@ pub struct ApiEffectRequest {
     pub principal: Value,
 }
 
+const INTERNAL_MCP_TRANSPORT_CLAIM: &str = "_kogwistar_internal_transport";
+
+fn mcp_workflow_status_principal(principal: &Value) -> Value {
+    let mut principal = principal.clone();
+    if let Some(claims) = principal.as_object_mut() {
+        claims.insert(
+            INTERNAL_MCP_TRANSPORT_CLAIM.to_owned(),
+            json!("mcp"),
+        );
+    }
+    principal
+}
+
+fn is_mcp_workflow_status_read(request: &ApiEffectRequest) -> bool {
+    request.method == "GET"
+        && request.principal.get(INTERNAL_MCP_TRANSPORT_CLAIM).and_then(Value::as_str)
+            == Some("mcp")
+        && request
+            .path_and_query
+            .split('?')
+            .next()
+            .is_some_and(|path| path.starts_with("/api/workflow/runs/"))
+        && runtime_run_route(&request.path_and_query)
+            .is_some_and(|(_, tail)| tail.is_empty())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct ApiEffectResponse {
     pub status: u16,
@@ -915,6 +941,27 @@ pub trait ApplicationService: Send + Sync + 'static {
     /// partially wired backend from claiming the static catalog's operations.
     fn supports_mcp_tool(&self, _surface: &str, _name: &str) -> bool {
         false
+    }
+
+    /// Check the authenticated actor's workflow ACL at public request ingress.
+    /// Internal runtime effects do not call this transport policy hook.
+    fn workflow_run_submit_allowed(
+        &self,
+        _workflow_id: String,
+        _user_id: Option<String>,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(true) })
+    }
+
+    /// Check configured workflow ACL for an authenticated REST actor.
+    /// Services without an ACL store preserve the unconfigured-server behavior.
+    fn workflow_access_allowed(
+        &self,
+        _workflow_id: String,
+        _user_id: String,
+        _required_role: String,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, String>> + Send + '_>> {
+        Box::pin(async { Ok(true) })
     }
 
     fn supports_mcp_tool_for_principal(
@@ -1523,6 +1570,7 @@ fn server_run_event_value(event: ServerRunEvent) -> Value {
 struct RecordedInspectionSnapshot {
     event_seq: i64,
     created_at_ms: i64,
+    #[allow(dead_code)] // Required event field is validated and asserted by contract tests.
     transition_id: String,
     transition_kind: String,
     step_seq: i64,
@@ -1590,7 +1638,7 @@ fn recorded_inspection_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedIns
         .collect()
 }
 
-// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#recorded_step_snapshots; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-trace-context-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/inline_owner_authority.rs#recorded_step_snapshots_matches_python_fixture; python_test=tests/server/test_chat_server_api.py#test_chat_debug_endpoints_namespace_and_workflow_viz
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/contracts_and_runtime.rs#runtime_inspection_effect; python=kogwistar/server/chat_service_run_inspection.py#_RunInspectionService.list_steps; fixture=contracts/golden/workflow-step-inspection-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/workflow_run_access.rs#in_memory_run_steps_route_matches_shared_python_projection; python_test=tests/server/test_chat_server_api_run_inspection.py#test_run_steps_matches_shared_rust_projection_fixture
 fn recorded_step_snapshots(events: Vec<ServerRunEvent>) -> Vec<RecordedInspectionSnapshot> {
     let trace_events = events
         .iter()
@@ -1723,9 +1771,6 @@ fn runtime_inspection_effect(
                         "status": if step.errors.is_empty() { "ok" } else { "error" },
                         "duration_ms": step.duration_ms.unwrap_or(0),
                         "result": result,
-                        "event_seq": step.event_seq,
-                        "created_at_ms": step.created_at_ms,
-                        "transition_id": step.transition_id,
                     });
                     if let Some(trace_context) = step.trace_context {
                         value["trace_context"] = trace_context;

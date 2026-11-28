@@ -20,6 +20,7 @@ mod graph_mutation;
 mod graph_read;
 mod graph_slice;
 mod native_seam;
+mod ontology;
 mod projection_checkpoint;
 mod provider_event;
 mod provider_request;
@@ -82,6 +83,12 @@ pub use native_seam::{
     RUST_NATIVE_IMPLEMENTATION_AUTHORITY, attach_native_seam_attestation,
     attach_rust_native_executor_attestation, attach_rust_native_seam_attestation,
     attach_typed_native_seam_attestation, native_seam_attestation_is_valid,
+};
+pub use ontology::{
+    ComposedOntologyDescriptorV1, ComposedOntologyViewV1, OntologyContractError,
+    OntologyDescriptorV1, OntologyEndpointV1, OntologyImportV1, OntologyManifestV1,
+    OntologyPackageV1, OntologyRoleV1, compose_ontology_packages, validate_ontology_edge_roles,
+    validate_ontology_payload,
 };
 pub use projection_checkpoint::{
     PROJECTION_CHECKPOINT_WIRE_VERSION, ProjectionCheckpointV1, ProjectionCheckpointValidationError,

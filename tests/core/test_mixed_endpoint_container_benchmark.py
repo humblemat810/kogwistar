@@ -3,10 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
 from scripts import mixed_endpoint_container_benchmark
+
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _fake_endpoint_run(output, *, items: int, samples: int, modes: tuple[str, ...]):
@@ -49,9 +53,7 @@ def _fake_endpoint_run(output, *, items: int, samples: int, modes: tuple[str, ..
             "seam_metrics": {
                 "tool_dispatches": expected_operations,
                 "transport_requests": expected_operations,
-                "ffi_calls": 0
-                if mode != "rust_authority_http"
-                else expected_operations,
+                "ffi_calls": 0 if mode != "rust_authority_http" else expected_operations,
             },
             "trace_join": {
                 "run_id": run_id,
@@ -83,11 +85,141 @@ def _fake_endpoint_run(output, *, items: int, samples: int, modes: tuple[str, ..
         "run_id": run_id,
         "trace_sha256": trace_sha,
         "items": items,
+        "storage_backend": "sqlite_event_projection",
         "samples_per_mode": samples,
         "warmup_samples_per_mode": 1,
         "state_digest_equal": True,
         "modes": mode_reports,
     }
+
+
+def _fake_concurrent_report(output, *, items: int, samples: int):
+    run_id = "concurrent-fixture"
+    mix = "balanced"
+    trace = {
+        "schema": "kogwistar-mixed-rewrite-concurrent-trace/v3",
+        "profile": "concurrent_balanced",
+        "readers": 4,
+        "phases": [],
+    }
+    trace_dir = output / "fixture-run" / "concurrent" / run_id
+    trace_dir.mkdir(parents=True)
+    trace_path = trace_dir / "concurrent_balanced.trace.v3.json"
+    trace_path.write_text(json.dumps(trace, sort_keys=True), encoding="utf-8")
+    trace_sha = hashlib.sha256(trace_path.read_bytes()).hexdigest()
+    digest = "same-concurrent-state"
+    modes = {}
+    for mode, throughput in (("python_http", 100.0), ("rust_native_http", 105.0)):
+        sample = {
+            "authority": "python" if mode == "python_http" else "rust_native",
+            "transport": "http",
+            "operations": items * 5,
+            "elapsed_ms": 100.0,
+            "startup_ms": 5.0,
+            "throughput_ops_per_sec": throughput,
+            "host_process_cpu_elapsed_ms": 80.0,
+            "host_process_rss_delta_bytes": 128,
+            "per_operation": {
+                "write_record": {
+                    "count": items,
+                    "p50_ms": 1.0,
+                    "p95_ms": 2.0,
+                    "p99_ms": 3.0,
+                },
+                "read_head": {
+                    "count": items * 4,
+                    "p50_ms": 1.0,
+                    "p95_ms": 2.0,
+                    "p99_ms": 3.0,
+                },
+            },
+        }
+        if mode == "rust_native_http":
+            sample["native_cpu_elapsed_ms"] = 60.0
+            sample["native_peak_rss_bytes"] = 4096
+            sample["seam_metrics"] = {"ffi_calls": 0}
+        modes[mode] = {
+            "state_digest": digest,
+            "warmup": {**sample, "state_digest": digest},
+            "samples": [{**sample, "state_digest": digest} for _ in range(samples)],
+            "median_throughput_ops_per_sec": throughput,
+        }
+    return {
+        "schema": "kogwistar-mixed-mcp-concurrent-report/v3",
+        "run_id": run_id,
+        "storage_backend": "sqlite_event_projection",
+        "items": items,
+        "samples_per_mode": samples,
+        "warmup_samples_per_mode": 1,
+        "workers": {"writers": 1, "readers": 4},
+        "mixes": {
+            mix: {
+                "trace_sha256": trace_sha,
+                "state_digest_equal": True,
+                "modes": modes,
+            }
+        },
+    }
+
+
+def test_concurrent_endpoint_report_verifier_checks_digest_and_performance(tmp_path) -> None:
+    output = tmp_path / "results"
+    report = {
+        "run_id": "fixture-run",
+        "concurrent": _fake_concurrent_report(output / "2", items=2, samples=2),
+    }
+    verification = mixed_endpoint_container_benchmark._verify_concurrent_endpoint_reports(
+        [report], output=output, items=[2], samples=2, concurrent_items=2
+    )
+
+    assert verification["passed"] is True
+    assert verification["performance_gate"]["passed"] is True
+    assert verification["performance_gate"]["fixtures"]["2"]["throughput_ratio"] == 1.05
+
+
+def test_concurrent_endpoint_report_verifier_rejects_mismatched_state(tmp_path) -> None:
+    output = tmp_path / "results"
+    concurrent = _fake_concurrent_report(output / "2", items=2, samples=2)
+    concurrent["mixes"]["balanced"]["modes"]["rust_native_http"]["state_digest"] = "wrong"
+    verification = (
+        mixed_endpoint_container_benchmark._verify_concurrent_endpoint_reports(
+            [{"run_id": "fixture-run", "concurrent": concurrent}],
+            output=output,
+            items=[2],
+            samples=2,
+            concurrent_items=2,
+        )
+    )
+
+    assert verification["passed"] is False
+    assert any("digest" in error for error in verification["errors"])
+
+
+@pytest.mark.parametrize(
+    "storage_backend", (None, "postgres_pgvector", "chroma_sqlite_metadata")
+)
+def test_concurrent_verifier_rejects_missing_or_misclaimed_backend(
+    tmp_path, storage_backend: str | None
+) -> None:
+    output = tmp_path / "results"
+    concurrent = _fake_concurrent_report(output / "2", items=2, samples=2)
+    if storage_backend is None:
+        concurrent.pop("storage_backend")
+    else:
+        concurrent["storage_backend"] = storage_backend
+
+    verification = (
+        mixed_endpoint_container_benchmark._verify_concurrent_endpoint_reports(
+            [{"run_id": "fixture-run", "concurrent": concurrent}],
+            output=output,
+            items=[2],
+            samples=2,
+            concurrent_items=2,
+        )
+    )
+
+    assert verification["passed"] is False
+    assert any("storage_backend" in error for error in verification["errors"])
 
 
 @pytest.mark.ci
@@ -98,12 +230,19 @@ def test_endpoint_runner_compares_python_mixed_and_rust_http_modes(
 
     def fake_run_benchmark(output, **kwargs):
         calls.append({"output": output, **kwargs})
-        return _fake_endpoint_run(
+        report = _fake_endpoint_run(
             output,
             items=kwargs["items"],
             samples=kwargs["samples"],
             modes=kwargs["modes"],
         )
+        if kwargs["include_concurrent"]:
+            report["concurrent"] = _fake_concurrent_report(
+                output,
+                items=kwargs["concurrent_items"],
+                samples=kwargs["samples"],
+            )
+        return report
 
     monkeypatch.setattr(
         mixed_endpoint_container_benchmark, "run_benchmark", fake_run_benchmark
@@ -138,6 +277,8 @@ def test_endpoint_runner_compares_python_mixed_and_rust_http_modes(
             "4",
             "--expected-memory-bytes",
             "8589934592",
+            "--concurrent-items",
+            "2",
         ],
     )
 
@@ -147,16 +288,20 @@ def test_endpoint_runner_compares_python_mixed_and_rust_http_modes(
         "rust_authority_http",
         "rust_native",
     )
-    assert calls[0]["include_concurrent"] is False
+    assert calls[0]["include_concurrent"] is True
+    assert calls[0]["concurrent_modes"] == ("python_http",)
+    assert calls[0]["concurrent_mixes"] == ("balanced",)
     assert calls[0]["output"] != tmp_path / "2"
     assert (tmp_path / "2" / "progress.v3.json").is_file()
     assert (tmp_path / "2" / "fixture-run" / "mcp_trace.v1.json").is_file()
     assert not list(tmp_path.rglob("*.sqlite3"))
     report = json.loads((tmp_path / "endpoint-report.v1.json").read_text())
     assert report["status"] == "complete"
+    assert report["storage_backends"] == ["sqlite_event_projection"]
     assert report["modes"] == ["http", "rust_authority_http", "rust_native"]
     assert report["state_digest_equal"] is True
     assert report["verification"]["passed"] is True
+    assert report["verification"]["concurrent"]["passed"] is True
     assert report["verification"]["failed_samples"] == 0
     assert (
         report["verification"]["latency_summary_ms"]["2"]["rust_native"][
@@ -186,6 +331,166 @@ def test_endpoint_report_verifier_rejects_cross_mode_digest_mismatch(tmp_path) -
     assert verification["passed"] is False
     assert (
         "2: canonical state digests differ or are incomplete" in verification["errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    "storage_backend", (None, "postgres_pgvector", "chroma_sqlite_metadata")
+)
+def test_endpoint_report_verifier_rejects_missing_or_misclaimed_storage_backend(
+    tmp_path, storage_backend: str | None
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    if storage_backend is None:
+        report.pop("storage_backend")
+    else:
+        report["storage_backend"] = storage_backend
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any("storage_backend" in error for error in verification["errors"])
+
+
+def test_endpoint_performance_gate_rejects_rust_native_throughput_regression(
+    tmp_path,
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+    rust_native = report["modes"]["rust_native"]
+    for sample in rust_native["samples"]:
+        sample["throughput_ops_per_sec"] *= 0.9
+    rust_native["median_throughput_ops_per_sec"] *= 0.9
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any(
+        "rust_native: throughput ratio" in error for error in verification["errors"]
+    )
+
+
+def test_endpoint_performance_gate_rejects_rust_native_operation_tail_regression(
+    tmp_path,
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+    rust_native = report["modes"]["rust_native"]
+    for sample in rust_native["samples"]:
+        sample["per_operation"]["write_record"]["p95_ms"] = 2.3
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any(
+        "rust_native/write_record: p95 latency ratio" in error
+        for error in verification["errors"]
+    )
+
+
+def test_endpoint_performance_gate_accepts_values_at_declared_limits(tmp_path) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+    rust_native = report["modes"]["rust_native"]
+    for sample in rust_native["samples"]:
+        sample["throughput_ops_per_sec"] *= 0.95
+        for metrics in sample["per_operation"].values():
+            metrics["p95_ms"] = 2.2
+    rust_native["median_throughput_ops_per_sec"] *= 0.95
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is True
+    assert verification["performance_gate"]["passed"] is True
+
+
+def test_endpoint_performance_gate_is_unassessed_without_both_pure_modes(
+    tmp_path,
+) -> None:
+    modes = ("http",)
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(
+        (source / "fixture-run" / "mcp_trace.v1.json").read_bytes()
+    )
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is True
+    assert verification["performance_gate"]["applicable"] is False
+    assert verification["performance_gate"]["passed"] is None
+
+
+@pytest.mark.ci
+@pytest.mark.parametrize("pure_mode", ("http", "rust_native"))
+def test_endpoint_report_verifier_rejects_ffi_in_pure_mode(
+    tmp_path, pure_mode: str
+) -> None:
+    modes = ("http", "rust_authority_http", "rust_native")
+    source = tmp_path / "source"
+    report = _fake_endpoint_run(source, items=2, samples=2, modes=modes)
+    destination = tmp_path / "results"
+    trace_source = source / "fixture-run" / "mcp_trace.v1.json"
+    trace_target = destination / "2" / "fixture-run" / "mcp_trace.v1.json"
+    trace_target.parent.mkdir(parents=True)
+    trace_target.write_bytes(trace_source.read_bytes())
+
+    for sample in [
+        report["modes"][pure_mode]["warmup"],
+        *report["modes"][pure_mode]["samples"],
+    ]:
+        sample["seam_metrics"]["ffi_calls"] = 1
+
+    verification = mixed_endpoint_container_benchmark._verify_endpoint_reports(
+        [report], output=destination, items=[2], samples=2, modes=modes
+    )
+
+    assert verification["passed"] is False
+    assert any(
+        f"2/{pure_mode}: pure mode reports FFI calls" in error
+        for error in verification["errors"]
     )
 
 
@@ -234,3 +539,25 @@ def test_endpoint_runner_preserves_json_evidence_when_mode_fails(
     assert (tmp_path / "2" / "progress.v3.json").is_file()
     assert (tmp_path / "2" / "mcp_trace.v1.json").is_file()
     assert not list(tmp_path.rglob("*.sqlite3"))
+
+
+def test_authenticated_agent_benchmarks_share_polling_and_report_it() -> None:
+    python_source = (ROOT / "tests/workflow/test_answer_workflow_v2.py").read_text(
+        encoding="utf-8"
+    )
+    rust_source = (
+        ROOT
+        / "rust/crates/kogwistar-api/src/tests/postgres_agentic_answer.rs"
+    ).read_text(encoding="utf-8")
+
+    assert "AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS = 0.1" in python_source
+    assert "time.sleep(AGENT_BENCH_RUN_POLL_INTERVAL_SECONDS)" in python_source
+    assert '"run_status_poll_interval_ms": int(' in python_source
+    assert '"run_status_poll_count": http_run_status_poll_count' in python_source
+
+    rust_profile = rust_source.split("let mut terminal_status", maxsplit=1)[1].split(
+        "let run = service", maxsplit=1
+    )[0]
+    assert "Duration::from_millis(100)" in rust_profile
+    assert '"run_status_poll_interval_ms"' in rust_profile
+    assert '"run_status_poll_count"' in rust_profile

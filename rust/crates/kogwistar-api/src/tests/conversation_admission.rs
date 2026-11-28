@@ -124,6 +124,11 @@
         use axum::http::Request;
         use tower::ServiceExt;
 
+        let send_fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/send-message-syscall-result-v1.json"
+        ))
+        .unwrap();
+
         let dsn = std::env::var("KOGWISTAR_TEST_PG_DSN")
             .expect("ignored PostgreSQL test requires KOGWISTAR_TEST_PG_DSN");
         let schema = format!("rust_send_message_{}", uuid::Uuid::new_v4().simple());
@@ -541,6 +546,69 @@
         let retry_value: Value = serde_json::from_slice(&retry_body).unwrap();
         assert_eq!(retry_value["result"]["run_id"], run_id);
         assert_eq!(retry_value["result"]["user_turn_node_id"], turn_id);
+        let rest_replay = app
+            .clone()
+            .oneshot(rest_send(&token))
+            .await
+            .unwrap();
+        assert_eq!(rest_replay.status(), StatusCode::OK);
+        let rest_replay_body = to_bytes(rest_replay.into_body(), 65_536).await.unwrap();
+        let rest_replay_value: Value = serde_json::from_slice(&rest_replay_body).unwrap();
+        for (key, value) in send_fixture["envelope"].as_object().unwrap() {
+            assert_eq!(rest_replay_value[key], *value);
+        }
+        for field in send_fixture["common_result_fields"].as_array().unwrap() {
+            assert!(rest_replay_value["result"].get(field.as_str().unwrap()).is_some());
+        }
+        for (key, value) in send_fixture["common_result_values"].as_object().unwrap() {
+            assert_eq!(rest_replay_value["result"][key], *value);
+        }
+        assert_eq!(rest_replay_value["result"]["run_id"], run_id);
+        assert_eq!(rest_replay_value["result"]["turn_node_id"], turn_id);
+        assert_eq!(rest_replay_value["result"]["user_turn_node_id"], turn_id);
+        assert_eq!(rest_replay_value["result"]["idempotent"], true);
+        for (field, expected) in send_fixture["rust_replay_additive_result"].as_object().unwrap() {
+            let expected = if expected.as_str() == Some("user_turn_node_id") {
+                rest_replay_value["result"]["user_turn_node_id"].clone()
+            } else {
+                expected.clone()
+            };
+            assert_eq!(rest_replay_value["result"][field], expected);
+        }
+        let received = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "POST".to_owned(),
+                path_and_query: "/api/syscall/v1/receive_message".to_owned(),
+                body: serde_json::to_vec(&json!({
+                    "version":"v1",
+                    "op":"receive_message",
+                    "args":{"conversation_id":conversation_id}
+                }))
+                .unwrap(),
+                principal: json!({
+                    "sub":"conversation-owner@example.test",
+                    "user_id":"conversation-owner",
+                    "actor_id":"conversation-owner",
+                    "role":"ro",
+                    "ns":"conversation",
+                    "storage_ns":"alpha",
+                    "workspace":"workspace-a",
+                    "graph_space":"conversation",
+                    "security_scope":"team-alpha",
+                    "capabilities":["read_graph"]
+                }),
+            })
+            .await;
+        assert_eq!(received.status, StatusCode::OK.as_u16());
+        let received: Value = serde_json::from_slice(&received.body).unwrap();
+        assert_eq!(received["result"]["conversation_id"], conversation_id);
+        let received_messages = received["result"]["messages"].as_array().unwrap();
+        assert_eq!(received_messages.len(), 1);
+        assert_eq!(received_messages[0]["node_id"], turn_id);
+        assert_eq!(received_messages[0]["role"], "user");
+        assert_eq!(received_messages[0]["entity_type"], "conversation_turn");
+        assert_eq!(received_messages[0]["content"], "A user question");
         let changed = app
             .clone()
             .oneshot(mcp_ask(&token, "send-message-conflict", "Changed question"))

@@ -187,8 +187,8 @@ These are intentionally broader than one bijection semantic case.
 | `tests/runtime/test_workflow_suspend_resume.py::test_sandbox_recoverable_error_can_suspend_then_resume_success` | Sandbox + suspend/resume integration. |
 | `tests/workflow/test_tracing_e2e.py::test_tracing_routing_decision_end_to_end` | Trace E2E integration. |
 | `tests/workflow/test_tracing_e2e.py::test_tracing_join_events_end_to_end` | Trace E2E integration. |
-| `tests/server/test_chat_server_api.py::test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync` | Server runtime selection integration. |
-| `tests/server/test_chat_server_api.py::test_default_runtime_runner_uses_async_or_sync_runtime_by_kind` | Server runtime runner integration. |
+| `tests/server/test_chat_server_api_admission.py::test_workflow_run_submit_accepts_runtime_kind_and_defaults_to_sync` | Server runtime selection integration. |
+| `tests/server/test_chat_server_api_admission.py::test_default_runtime_runner_uses_async_or_sync_runtime_by_kind` | Server runtime runner integration. |
 | `tests/server/test_chat_server_async_events.py::test_chat_rest_events_poll_sees_live_updates_for_async_backends` | Server progress event integration. |
 
 ## Backend E2E Smoke Matrix

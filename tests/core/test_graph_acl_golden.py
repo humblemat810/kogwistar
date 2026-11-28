@@ -183,6 +183,10 @@ def test_python_node_item_usage_matches_shared_golden_contract() -> None:
     )
     principal = fixture["principal"]
     for case in fixture["cases"]:
+        if case.get("resolver_contract") == "engine_legacy_acl_migration":
+            # Engine ACLSubsystem resolves v2 IDs against legacy persisted IDs;
+            # the lower-level ACLGraph contract has no typed-ID migration.
+            continue
         acl = ACLGraph(cache_enabled=True)
         for record in case["acl_records"]:
             acl.add_record(

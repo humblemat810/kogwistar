@@ -1918,7 +1918,7 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         );
     }
 
-    for (groups, expected_group_nodes) in [(&[][..], false), (fixture_groups.as_slice(), true)] {
+    for groups in [&[][..], fixture_groups.as_slice()] {
         let shared_response = application
             .graph_read_effect(&visualization_request(
                 acl_fixture["truth_graph"].as_str().unwrap(),
@@ -1932,7 +1932,24 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
         let shared_payload: Value = serde_json::from_slice(&shared_response.body).unwrap();
         let visible_nodes = shared_payload["nodes"].to_string();
         for share_policy in &share_policies {
-            let should_be_visible = share_policy["mode"] == "shared" || expected_group_nodes;
+            let principal_id = acl_fixture["principal"]["id"].as_str().unwrap();
+            let shared_with_principals = share_policy["shared_with_principals"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_is_shared = shared_with_principals
+                .into_iter()
+                .any(|shared_principal| shared_principal == principal_id);
+            let shared_with_groups = share_policy["shared_with_groups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_matches_group = shared_with_groups
+                .into_iter()
+                .any(|shared_group| groups.iter().any(|group| group == shared_group));
+            let should_be_visible = principal_is_shared || principal_matches_group;
             assert_eq!(
                 visible_nodes.contains(share_policy["id"].as_str().unwrap()),
                 should_be_visible,
@@ -1940,7 +1957,24 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
             );
         }
         for share_policy in &edge_share_policies {
-            let should_be_visible = share_policy["mode"] == "shared" || expected_group_nodes;
+            let principal_id = acl_fixture["principal"]["id"].as_str().unwrap();
+            let shared_with_principals = share_policy["shared_with_principals"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_is_shared = shared_with_principals
+                .into_iter()
+                .any(|shared_principal| shared_principal == principal_id);
+            let shared_with_groups = share_policy["shared_with_groups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str);
+            let principal_matches_group = shared_with_groups
+                .into_iter()
+                .any(|shared_group| groups.iter().any(|group| group == shared_group));
+            let should_be_visible = principal_is_shared || principal_matches_group;
             assert_eq!(
                 visible_nodes.contains(share_policy["id"].as_str().unwrap()),
                 should_be_visible,
@@ -2415,6 +2449,370 @@ async fn in_memory_backend_routes_authenticated_graph_write_and_mcp_read() {
     assert_eq!(vector_query["distances"][0].as_array().unwrap().len(), 1);
     assert_eq!(vector_query["distances"][1].as_array().unwrap().len(), 1);
     assert!(vector_query.get("documents").is_none());
+}
+
+#[tokio::test]
+async fn in_memory_document_tree_upsert_matches_graph_extraction_contract() {
+    use kogwistar_store::{
+        DocumentProjectionUpsert, DocumentStore, EventReadStore, GraphProjectionRead,
+        GraphRecord, GraphScope, MetadataFilter,
+    };
+
+    let service = InMemoryGraphApplicationService::default();
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/graph-extraction-v1.json"
+    )))
+    .unwrap();
+    let doc_id = fixture["doc_id"].as_str().unwrap();
+    let insertion_method = fixture["insertion_method"].as_str().unwrap();
+    let scope = GraphScope {
+        namespace: "docs".to_owned(),
+        workspace_id: Some(String::new()),
+        graph_space: Some(String::new()),
+    };
+    service
+        .store
+        .upsert_document_projection(DocumentProjectionUpsert {
+            scope: scope.clone(),
+            record: GraphRecord {
+                id: doc_id.to_owned(),
+                document: Some(fixture["content"].as_str().unwrap().to_owned()),
+                metadata: json!({"insertion_method":insertion_method})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                embedding: None,
+            },
+            embedding_dim: 0,
+        })
+        .await
+        .unwrap();
+    let extraction = json!({
+        "doc_id":doc_id,
+        "insertion_method":insertion_method,
+        "nodes":fixture["nodes"],
+        "edges":fixture["edges"]
+    });
+    let body = serde_json::to_vec(&extraction).unwrap();
+    let mut stable_extraction = extraction.clone();
+    let stable_nodes = [
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    ];
+    let stable_edge = "33333333-3333-4333-8333-333333333333";
+    for (index, id) in stable_nodes.iter().enumerate() {
+        stable_extraction["nodes"][index]["id"] = json!(id);
+        stable_extraction["nodes"][index]["local_id"] = json!(id);
+    }
+    stable_extraction["edges"][0]["id"] = json!(stable_edge);
+    stable_extraction["edges"][0]["local_id"] = json!(stable_edge);
+    stable_extraction["edges"][0]["source_ids"] = json!([stable_nodes[0]]);
+    stable_extraction["edges"][0]["target_ids"] = json!([stable_nodes[1]]);
+    let stable_body = serde_json::to_vec(&stable_extraction).unwrap();
+    let secret = "in-memory-document-tree-test-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let token = |user_id: &str, role: &str| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":user_id, "user_id":user_id, "role":role,
+                "ns":["docs"], "storage_ns":"docs",
+                "capabilities":["write_graph"], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let token_without_capabilities = |user_id: &str| {
+        encode(
+            &Header::new(Algorithm::HS256),
+            &json!({
+                "sub":user_id, "user_id":user_id, "role":"rw",
+                "ns":["docs"], "storage_ns":"docs",
+                "capabilities":[], "exp":now + 300
+            }),
+            &EncodingKey::from_secret(secret.as_bytes()),
+        )
+        .unwrap()
+    };
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service.clone()),
+    );
+    let denied = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("alice", "ro")))
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    assert!(service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap()
+        .is_empty());
+
+    assert!(service.supports_http_operation("POST", "/api/document.upsert_tree"));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", token_without_capabilities("bob")),
+                )
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await;
+    let response = response.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let result: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(result["status"], "ok");
+    assert_eq!(result["inserted_nodes"], 2);
+    assert_eq!(result["inserted_edges"], 1);
+    let stable_owner_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("bob", "rw")))
+                .body(Body::from(stable_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stable_owner_write.status(), StatusCode::OK);
+    let event_count_after_owner_write = service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap()
+        .len();
+    let mut external_extraction = stable_extraction.clone();
+    let external_node = "44444444-4444-4444-8444-444444444444";
+    external_extraction["nodes"] = json!([stable_extraction["nodes"][1].clone()]);
+    external_extraction["nodes"][0]["id"] = json!(external_node);
+    external_extraction["nodes"][0]["local_id"] = json!(external_node);
+    external_extraction["edges"][0]["id"] = json!("55555555-5555-4555-8555-555555555555");
+    external_extraction["edges"][0]["local_id"] = json!("55555555-5555-4555-8555-555555555555");
+    external_extraction["edges"][0]["source_ids"] = json!([stable_nodes[0]]);
+    external_extraction["edges"][0]["target_ids"] = json!([external_node]);
+    let external_endpoint_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("alice", "rw")))
+                .body(Body::from(serde_json::to_vec(&external_extraction).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(external_endpoint_write.status(), StatusCode::OK);
+    let other_writer_write = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {}", token("alice", "rw")))
+                .body(Body::from(stable_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(other_writer_write.status(), StatusCode::OK);
+    assert!(
+        service
+            .store
+            .replay_events("docs", 0, usize::MAX)
+            .await
+            .unwrap()
+            .len()
+            > event_count_after_owner_write,
+        "authorized rw writes follow Python's existing upsert contract"
+    );
+    let events = service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap();
+    let node_ids = result["engine_result"]["node_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    let edge_ids = result["engine_result"]["edge_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| id.as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    for id in node_ids.iter().chain(&edge_ids) {
+        assert!(events.iter().any(|event| event.entity_id == *id));
+        let mut acl_filter = MetadataFilter::default();
+        acl_filter
+            .equals
+            .insert("entity_type".to_owned(), json!("acl_record"));
+        acl_filter
+            .equals
+            .insert("acl_truth_graph".to_owned(), json!("knowledge"));
+        acl_filter
+            .equals
+            .insert("acl_target_entity_id".to_owned(), json!(id));
+        let acl_records = service
+            .store
+            .graph_projection_records(GraphProjectionRead {
+                scope: scope.clone(),
+                table: "gke_nodes".to_owned(),
+                ids: None,
+                metadata: acl_filter,
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert!(!acl_records.is_empty(), "missing owner ACL for {id}");
+    }
+    let persisted_nodes = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope: scope.clone(),
+            table: "gke_nodes".to_owned(),
+            ids: Some(node_ids.clone()),
+            metadata: MetadataFilter::default(),
+            limit: node_ids.len(),
+        })
+        .await
+        .unwrap();
+    let persisted_node_ids = persisted_nodes
+        .iter()
+        .map(|node| node.id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    let persisted_edges = service
+        .store
+        .graph_projection_records(GraphProjectionRead {
+            scope,
+            table: "gke_edges".to_owned(),
+            ids: Some(edge_ids.clone()),
+            metadata: MetadataFilter::default(),
+            limit: edge_ids.len(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(persisted_nodes.len(), node_ids.len());
+    assert_eq!(persisted_edges.len(), edge_ids.len());
+    for edge in persisted_edges {
+        let payload: Value = serde_json::from_str(edge.document.as_deref().unwrap()).unwrap();
+        for endpoint in ["source_ids", "target_ids"]
+            .into_iter()
+            .flat_map(|field| payload[field].as_array().into_iter().flatten())
+            .filter_map(Value::as_str)
+        {
+            assert!(persisted_node_ids.contains(endpoint));
+        }
+    }
+}
+
+#[tokio::test]
+async fn in_memory_document_upsert_empty_tree_matches_shared_success_contract() {
+    use kogwistar_store::EventReadStore;
+
+    let fixture: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/golden/document-upsert-tree-success-v1.json"
+    )))
+    .unwrap();
+    let service = InMemoryGraphApplicationService::default();
+    let secret = "in-memory-empty-document-tree-test-secret";
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let auth = AuthConfig {
+        mode: "jwt".to_owned(),
+        algorithm: Some("HS256".to_owned()),
+        key: Some(secret.to_owned()),
+        ..AuthConfig::default()
+    };
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &json!({
+            "sub":"alice", "user_id":"alice", "role":"rw",
+            "ns":["docs"], "storage_ns":"docs",
+            "capabilities":["write_graph"], "exp":now + 300
+        }),
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap();
+    let app = router_with_application(
+        ApiState {
+            health: snapshot(),
+            required_roles: Vec::new(),
+            implementation: ImplementationSnapshot::default(),
+            auth,
+        },
+        Arc::new(service.clone()),
+    );
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/document.upsert_tree")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(serde_json::to_vec(&fixture["request"]).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), 65_536).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(body, fixture["expected"]["body"]);
+    assert!(service
+        .store
+        .replay_events("docs", 0, usize::MAX)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/tests/postgres_visualization.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python=kogwistar/server_mcp_with_admin.py#api_viz_d3; fixture=contracts/golden/graph-acl-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_visualization.rs#postgres_visualization_read_matches_shared_python_selection_and_acl; python_test=tests/test_visualization.py#test_visualization_uses_acl_policy_for_selected_python_graph_type

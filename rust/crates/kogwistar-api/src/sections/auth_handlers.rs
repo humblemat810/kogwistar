@@ -517,6 +517,7 @@ async fn dev_token_handler(
     }
 }
 
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/auth_handlers.rs#auth_me_handler; python=kogwistar/server/auth/router.py#me; fixture=contracts/golden/auth-me-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/auth.rs#dev_token_me_and_logout_share_verified_jwt_contract; python_test=tests/auth/test_auth_router.py#test_auth_me_authorized
 async fn auth_me_handler(State(state): State<Arc<ServerState>>, headers: HeaderMap) -> Response {
     if !state.api.auth.configured() {
         return auth_error(StatusCode::UNAUTHORIZED, "Not authenticated");

@@ -78,7 +78,7 @@
       "rust_port_manifest_id": "sqlite-meta",
       "conformance_profile": "sqlite-meta",
       "rust_coverage": "cutover-ready",
-      "mixed_coverage": "partial; Windows CPython/Rust cross-process ownership, hard-link alias rejection, and bidirectional persisted-data handoff verified; POSIX runtime and supported-runtime matrix remain open",
+      "mixed_coverage": "Windows CPython/Rust cross-process ownership, hard-link alias rejection, and bidirectional persisted-data handoff verified; POSIX CPython matrix (Ubuntu 3.12-3.14, macOS 3.13) passed CI #859; PyPy 3.11 Rust-server/Python-worker HTTP interoperability passed CI #860 for SQLite, SQLite+Chroma, and PostgreSQL. Direct in-process PyO3 SQLite-meta binding remains unsupported and excluded from the PyPy dependency profile; no PyO3-on-PyPy claim",
       "native_python_path": "not-verified",
       "native_rust_path": "not-verified"
     },
@@ -117,7 +117,7 @@
       "mixed_coverage": "merged-candidate CI #859 passed typed Rust graph/document contracts, ACL/scope, transaction, recovery, vector, and Python/Rust interoperability checks against Docker-backed PostgreSQL",
       "native_python_path": "not-verified",
       "native_rust_path": "verified-by-CI-859",
-      "evidence_note": "Internal pre-indexed graph mutation and normalized-text document projection only; public ingestion, OCR/source-map handling, indexing, recovery, and full ACL parity remain open"
+      "evidence_note": "Internal pre-indexed graph mutation, text/basic OCR document projection, and graph-upsert text|ocr request types; public ingestion, OCR change-event/source-map parity, indexing, recovery, and full ACL parity remain open"
     },
     {
       "id": "chroma-adapter",
@@ -142,20 +142,15 @@
       "rust_port_manifest_id": "server-rest-sse-mcp-cli",
       "conformance_profile": "server-rest-sse-mcp-cli",
       "rust_coverage": "cutover-ready",
-      "mixed_coverage": "merged-candidate CI #859 passed Rust REST/SSE/MCP/CLI contract, authentication, authorization, interoperability, and performance checks",
+      "mixed_coverage": "Current-source Phase-5 gate plus named Rust syscall tests verify REST/SSE/MCP/CLI contracts, authenticated conversation admission and reads, scoped snapshot access, tool capability checks, retry/idempotency, restart, and backend behavior. No server route or syscall remains deferred; broader whole-surface parity remains tracked separately.",
       "native_python_path": "not-verified",
       "native_rust_path": "verified-by-CI-859"
     }
   ],
   "rust_server_gaps": {
-    "status": "intentionally-deferred",
+    "status": "closed",
     "pending_routes": [],
-    "pending_syscalls": [
-      "send_message",
-      "receive_message",
-      "mount_memory",
-      "invoke_tool"
-    ]
+    "pending_syscalls": []
   },
   "rust_to_python_worker": {
     "status": "implemented-seam; production parity remains incomplete",

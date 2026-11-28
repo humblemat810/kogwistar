@@ -552,6 +552,87 @@ fn recorded_step_snapshots_matches_python_fixture() {
     assert_eq!(steps[0].transition_id, "transition-1");
 }
 
+#[test]
+fn runtime_step_inspection_matches_shared_python_projection_fixture() {
+    let contract: Value = serde_json::from_str(include_str!(
+        "../../../../../contracts/golden/workflow-step-inspection-v1.json"
+    ))
+    .unwrap();
+    let seed = &contract["parity_seed"];
+    let run_id = seed["run_id"].as_str().unwrap();
+    let workflow_id = seed["workflow_id"].as_str().unwrap();
+    let step_seq = seed["step_seq"].as_i64().unwrap();
+    let operation = seed["op"].as_str().unwrap();
+    let workflow_node_id = format!("wf:{workflow_id}:{operation}");
+    let recorded = ServerRunEvent {
+        seq: 4,
+        run_id: run_id.to_owned(),
+        event_type: "workflow.recorded_transition.v1".to_owned(),
+        payload_json: json!({
+            "transition_id": "transition-1",
+            "reduced": {
+                "state": {
+                    "last_step_seq": step_seq,
+                    "workflow_id": workflow_id,
+                    "last_node_id": workflow_node_id.clone(),
+                    "state": {
+                        "_rt_node_ops": {workflow_node_id.clone(): operation},
+                        "frontier": {"pending": []}
+                    }
+                },
+                "state_update": seed["state_update"],
+                "update": null,
+                "result": seed["result_fields"],
+                "errors": [],
+                "server_status": "running"
+            }
+        })
+        .to_string(),
+        created_at_ms: 10,
+    };
+    let trace = ServerRunEvent {
+        seq: 5,
+        run_id: run_id.to_owned(),
+        event_type: "workflow.trace.v1".to_owned(),
+        payload_json: json!({
+            "trace": {
+                "event": "runtime.native.step.completed",
+                "step_seq": step_seq,
+                "node_id": workflow_node_id.clone(),
+                "operation": operation,
+                "duration_ms": 1,
+                "trace_id": seed["trace_context"]["trace_id"],
+                "span_id": seed["trace_context"]["span_id"],
+                "parent_span_id": seed["trace_context"]["parent_span_id"],
+                "attempt": seed["trace_context"]["attempt"]
+            }
+        })
+        .to_string(),
+        created_at_ms: 11,
+    };
+    let request = ApiEffectRequest {
+        contract_version: 1,
+        method: "GET".to_owned(),
+        path_and_query: format!("/api/runs/{run_id}/steps"),
+        body: Vec::new(),
+        principal: json!({}),
+    };
+
+    let response = runtime_inspection_effect(&request, run_id, &["steps"], vec![recorded, trace]);
+    assert_eq!(response.status as u64, contract["success_status"]);
+    let body: Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["run_id"], run_id);
+    let actual = &body["steps"][0];
+    let expected = &contract["parity_step"];
+    let normalized = expected
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|field| (field.clone(), actual[field].clone()))
+        .collect::<serde_json::Map<String, Value>>();
+    assert_eq!(Value::Object(normalized), *expected);
+}
+
 #[tokio::test]
 async fn sqlite_legacy_step_without_trace_survives_reopen_without_invented_context() {
     use axum::body::{to_bytes, Body};

@@ -1130,6 +1130,29 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         &jsonwebtoken::EncodingKey::from_secret(http_secret.as_bytes()),
     )
     .unwrap();
+    let run_status_without_acl = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/workflow/runs/{run_id}"))
+                .header(
+                    "authorization",
+                    format!("Bearer {workflow_read_token}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(run_status_without_acl.status(), StatusCode::FORBIDDEN);
+    rusqlite::Connection::open(&auth_path)
+        .unwrap()
+        .execute(
+            "INSERT INTO workflow_acl (workflow_id, user_id, role) VALUES (?1, ?2, 'ro')",
+            rusqlite::params![workflow_id, "conversation-owner"],
+        )
+        .unwrap();
     let run_status = app
         .clone()
         .oneshot(
@@ -1199,6 +1222,25 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
     }
     assert_eq!(direct_run_status_body["run_id"], run_id);
     assert_eq!(direct_run_status_body["status"], "succeeded");
+    assert_eq!(direct_run_status_body["cancel_requested"], false);
+    assert_eq!(direct_run_status_body["user_id"], "conversation-owner");
+    assert_eq!(direct_run_status_body["assistant_turn_node_id"], assistant_id);
+    let stored_result = completed_run
+        .result_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null);
+    let stored_error = completed_run
+        .error_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
+        .unwrap_or(Value::Null);
+    assert_eq!(direct_run_status_body["result"], stored_result);
+    assert_eq!(direct_run_status_body["error"], stored_error);
+    assert!(direct_run_status_body["created_at_ms"].is_i64());
+    assert!(direct_run_status_body["updated_at_ms"].is_i64());
+    assert_eq!(direct_run_status_body["started_at_ms"], json!(completed_run.started_at_ms));
+    assert_eq!(direct_run_status_body["finished_at_ms"], json!(completed_run.finished_at_ms));
     let terminal_statuses = run_status_contract["terminal_statuses"]
         .as_array()
         .unwrap();
@@ -1208,6 +1250,22 @@ async fn sqlite_chroma_conversation_create_and_turn_admission_are_canonical_and_
         direct_run_status_body["user_turn_node_id"],
         send_response["user_turn_node_id"]
     );
+    let missing_run_status = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/runs/missing-run-status")
+                .header(
+                    "authorization",
+                    format!("Bearer {conversation_run_read_token}"),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(missing_run_status.status(), StatusCode::NOT_FOUND);
 
     let transcript_snapshot = service
         .chroma_graph_snapshot(&request(), "conversation")

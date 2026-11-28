@@ -454,6 +454,12 @@
             uuid::Uuid::new_v4().simple()
         ));
         let ready_path_literal = serde_json::to_string(&ready_path.to_string_lossy()).unwrap();
+        let stream_ready_path = std::env::temp_dir().join(format!(
+            "kogwistar-mcp-sdk-get-stream-{}.txt",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let stream_ready_path_literal =
+            serde_json::to_string(&stream_ready_path.to_string_lossy()).unwrap();
         let script = format!(
             r#"
 import asyncio
@@ -464,20 +470,35 @@ from mcp.client.streamable_http import streamable_http_client
 
 ENDPOINT = {endpoint:?}
 READY = Path({ready_path_literal})
+READY_STREAM = Path({stream_ready_path_literal})
 received = asyncio.Event()
-received_methods = []
+received_notifications = []
 
 async def on_message(message):
     method = getattr(message, "method", None)
     if method == "notifications/message":
-        received_methods.append(method)
-    if received_methods:
+        params = getattr(message, "params", None)
+        received_notifications.append((
+            method,
+            getattr(params, "level", None),
+            getattr(params, "logger", None),
+            getattr(params, "data", None),
+        ))
+    if len(received_notifications) == 2:
         received.set()
 
 async def record_session(response):
     session_id = response.headers.get("mcp-session-id")
     if session_id:
         READY.write_text(session_id, encoding="utf-8")
+    if (
+        response.request.method == "GET"
+        and response.headers.get("content-type", "").startswith("text/event-stream")
+    ):
+        READY_STREAM.write_text(
+            response.headers.get("mcp-session-id") or "",
+            encoding="utf-8",
+        )
 
 async def main():
     async with httpx.AsyncClient(
@@ -489,8 +510,11 @@ async def main():
             async with ClientSession(read, write, message_handler=on_message) as session:
                 await session.initialize()
                 await asyncio.wait_for(received.wait(), timeout=20)
-                assert received_methods == ["notifications/message"], received_methods
-                print("python-sdk-server-notification-received")
+                assert received_notifications == [
+                    ("notifications/message", "info", "rust-interoperability-smoke", "rust-sdk-interoperability-marker-1"),
+                    ("notifications/message", "warning", "rust-interoperability-smoke", "rust-sdk-interoperability-marker-2"),
+                ], received_notifications
+                print("python-sdk-server-notification-order-and-payload-passed")
 
 asyncio.run(main())
 "#
@@ -520,20 +544,28 @@ asyncio.run(main())
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         };
+        let stream_deadline = Instant::now() + Duration::from_secs(25);
+        while !stream_ready_path.exists() {
+            if child.try_wait().unwrap().is_some() || Instant::now() >= stream_deadline {
+                let _ = child.kill();
+                let output = child.wait_with_output().unwrap();
+                let _ = std::fs::remove_file(&ready_path);
+                let _ = std::fs::remove_file(&stream_ready_path);
+                server.abort();
+                panic!(
+                    "Python SDK failed before server-initiated stream readiness; stdout={} stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         let session_owner = json!({
             "sub": "anonymous",
             "role": "ro",
             "roles": ["reader"],
             "ns": "workflow"
         });
-        let stream_deadline = Instant::now() + Duration::from_secs(10);
-        while !mcp_sessions.has_active_get(&session_id) && Instant::now() < stream_deadline {
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-        assert!(
-            mcp_sessions.has_active_get(&session_id),
-            "Python MCP SDK did not establish the server-initiated GET stream"
-        );
         let logging_event_id = mcp_sessions
             .publish(
                 &session_id,
@@ -545,12 +577,29 @@ asyncio.run(main())
                     "params": {
                         "level": "info",
                         "logger": "rust-interoperability-smoke",
-                        "data": "rust-sdk-interoperability-marker"
+                        "data": "rust-sdk-interoperability-marker-1"
                     }
                 }),
             )
             .unwrap();
         assert_eq!(logging_event_id, "1");
+        let next_logging_event_id = mcp_sessions
+            .publish(
+                &session_id,
+                &session_owner,
+                Some("2025-11-25"),
+                json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/message",
+                    "params": {
+                        "level": "warning",
+                        "logger": "rust-interoperability-smoke",
+                        "data": "rust-sdk-interoperability-marker-2"
+                    }
+                }),
+            )
+            .unwrap();
+        assert_eq!(next_logging_event_id, "2");
         let child_deadline = Instant::now() + Duration::from_secs(25);
         while child.try_wait().unwrap().is_none() && Instant::now() < child_deadline {
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -560,6 +609,7 @@ asyncio.run(main())
         }
         let output = child.wait_with_output().unwrap();
         let _ = std::fs::remove_file(&ready_path);
+        let _ = std::fs::remove_file(&stream_ready_path);
         server.abort();
         assert!(
             output.status.success(),
@@ -568,7 +618,7 @@ asyncio.run(main())
             String::from_utf8_lossy(&output.stderr)
         );
         assert!(String::from_utf8_lossy(&output.stdout)
-            .contains("python-sdk-server-notification-received"));
+            .contains("python-sdk-server-notification-order-and-payload-passed"));
     }
 
     #[test]

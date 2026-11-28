@@ -203,6 +203,54 @@
     }
 
     #[tokio::test]
+    async fn health_route_matches_shared_python_contract() {
+        use axum::body::{Body, to_bytes};
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let app = router(ApiState {
+            health: snapshot(),
+            required_roles: vec!["reader".to_owned()],
+            implementation: ImplementationSnapshot::default(),
+            auth: AuthConfig::default(),
+        });
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let contract: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/health-v1.json"
+        ))
+        .unwrap();
+
+        assert_eq!(
+            response.status().as_u16(),
+            contract["success_status"].as_u64().unwrap() as u16
+        );
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["ok"], contract["ok"]);
+        for field in contract["required_fields"].as_array().unwrap() {
+            assert!(payload.get(field.as_str().unwrap()).is_some());
+        }
+        for field in [
+            "backend",
+            "persist_directory",
+            "conversation_persist_directory",
+            "workflow_persist_directory",
+            "wisdom_persist_directory",
+        ] {
+            assert!(payload[field].is_string(), "{field} must be a string");
+        }
+        assert!(payload["pg_schema_base"].is_null() || payload["pg_schema_base"].is_string());
+    }
+
+    #[tokio::test]
     async fn router_serves_health_auth_sse_and_mcp() {
         use axum::body::{Body, to_bytes};
         use axum::http::Request;
@@ -681,7 +729,7 @@
                 Request::builder()
                     .method("POST")
                     .uri("/api/workflow/runs")
-                    .header("x-kogwistar-roles", "reader")
+                    .header("x-kogwistar-roles", "reader,rw")
                     .body(Body::empty())
                     .unwrap(),
             )

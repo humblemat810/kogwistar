@@ -1,0 +1,22 @@
+{
+  "cases": [
+    {
+      "name": "missing-tool-name",
+      "request": {"version":"v1","op":"invoke_tool","args":{}},
+      "http_status": 400,
+      "response": {"detail":"tool_name is required"}
+    },
+    {
+      "name": "blank-tool-name",
+      "request": {"version":"v1","op":"invoke_tool","args":{"tool_name":" "}},
+      "http_status": 400,
+      "response": {"detail":"tool_name is required"}
+    },
+    {
+      "name": "unknown-tool",
+      "request": {"version":"v1","op":"invoke_tool","args":{"tool_name":"not_registered"}},
+      "http_status": 404,
+      "response": {"detail":"'unknown tool: not_registered'"}
+    }
+  ]
+}

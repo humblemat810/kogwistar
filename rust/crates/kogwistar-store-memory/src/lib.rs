@@ -376,6 +376,30 @@ impl LaneMessageWriteStore for InMemoryStore {
         }
         Ok(())
     }
+    async fn compare_and_set_projected_lane_message_status(
+        &self,
+        message_id: &str,
+        expected_status: &str,
+        status: &str,
+        error_json: Option<String>,
+    ) -> StoreResult<bool> {
+        let mut state = self.state.write().expect("in-memory store lock poisoned");
+        let Some(row) = state.lane_messages.get_mut(message_id) else {
+            return Ok(false);
+        };
+        if row.status != expected_status {
+            return Ok(false);
+        }
+        row.status = status.to_owned();
+        if error_json.is_some() {
+            row.error_json = error_json;
+        }
+        if matches!(status, "completed" | "failed" | "cancelled") {
+            row.claimed_by = None;
+            row.lease_until = None;
+        }
+        Ok(true)
+    }
     async fn update_projected_lane_message_links(
         &self,
         message_id: &str,
@@ -570,10 +594,10 @@ impl LaneMessageWriteStore for InMemoryStore {
         };
         if row.status != "claimed"
             || row.claimed_by.as_deref() != Some(claimed_by)
-            || !row
+            || row
                 .lease_until
                 .as_ref()
-                .is_some_and(|lease_until| timestamp_i64(lease_until) >= now)
+                .is_none_or(|lease_until| timestamp_i64(lease_until) < now)
         {
             return Ok(false);
         }
@@ -1554,15 +1578,7 @@ impl ServerRunWriteStore for InMemoryStore {
     }
 
     async fn request_server_run_cancel(&self, run_id: &str) -> StoreResult<()> {
-        let mut state = self.state.write().expect("in-memory store lock poisoned");
-        if let Some(row) = state.server_runs.get_mut(run_id) {
-            row.cancel_requested = true;
-            if !matches!(row.status.as_str(), "cancelled" | "failed" | "succeeded") {
-                row.status = "cancelling".to_owned();
-            }
-            row.updated_at_ms = now_ms();
-        }
-        Ok(())
+        self.cancel_recorded_runtime_run(run_id)
     }
 }
 fn namespace(ns: &str) -> StoreResult<()> {
@@ -3339,6 +3355,66 @@ mod tests {
     }
 
     #[test]
+    fn graph_vector_query_as_of_preserves_backend_order_and_redirect_scores() {
+        let store = InMemoryStore::new();
+        let mut old_nearest = record("old-nearest", "team", &[1.0, 0.0]);
+        old_nearest
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        old_nearest
+            .metadata
+            .insert("deleted_at".to_owned(), json!("2026-01-01T00:00:00Z"));
+        old_nearest
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("current"));
+        let mut old_next = record("old-next", "team", &[0.8, 0.6]);
+        old_next
+            .metadata
+            .insert("lifecycle_status".to_owned(), json!("tombstoned"));
+        old_next
+            .metadata
+            .insert("deleted_at".to_owned(), json!("2026-01-01T00:00:00Z"));
+        old_next
+            .metadata
+            .insert("redirect_to_id".to_owned(), json!("current"));
+        for node in [
+            old_nearest,
+            record("current", "team", &[0.5, 0.8660254]),
+            record("live", "team", &[0.0, 1.0]),
+            old_next,
+        ] {
+            block_on(store.upsert_graph_record_of_kind("as-of-query", GraphEntityKind::Node, node))
+                .unwrap();
+        }
+
+        let hits = block_on(store.vector_query_nodes_as_of(
+            "as-of-query",
+            &VectorQuery {
+                embedding: vec![1.0, 0.0],
+                limit: 10,
+                metadata: MetadataFilter::default(),
+                metric: DistanceMetric::Cosine,
+            },
+            "2026-01-02T00:00:00Z",
+            true,
+            16,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            hits.iter()
+                .map(|hit| hit.record.id.as_str())
+                .collect::<Vec<_>>(),
+            ["current", "live"]
+        );
+        assert_eq!(
+            hits[0].distance, 0.0,
+            "redirect keeps source candidate score"
+        );
+        assert!((hits[1].distance - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn numeric_lte_vector_filter_is_applied_before_top_n() {
         let store = InMemoryStore::new();
         for (id, level, embedding) in [
@@ -3525,6 +3601,56 @@ mod tests {
             record: record(id, "red", embedding),
             embedding_dim: embedding.len(),
         }
+    }
+
+    #[test]
+    fn lane_status_compare_and_set_allows_only_one_replay_transition() {
+        let store = InMemoryStore::new();
+        block_on(store.project_lane_message(NewProjectedLaneMessage {
+            message_id: "dead-letter-cas".to_owned(),
+            namespace: "workflow".to_owned(),
+            purpose: "system".to_owned(),
+            inbox_id: "workflow-runtime".to_owned(),
+            conversation_id: "conversation-cas".to_owned(),
+            recipient_id: "worker".to_owned(),
+            sender_id: "scheduler".to_owned(),
+            msg_type: "workflow.run.execute".to_owned(),
+            status: "dead-letter".to_owned(),
+            created_at: 1,
+            available_at: 1,
+            run_id: Some("run-cas".to_owned()),
+            step_id: None,
+            correlation_id: None,
+            payload_json: None,
+            error_json: None,
+        }))
+        .unwrap();
+
+        assert!(
+            block_on(store.compare_and_set_projected_lane_message_status(
+                "dead-letter-cas",
+                "dead-letter",
+                "pending",
+                None,
+            ))
+            .unwrap()
+        );
+        assert!(
+            !block_on(store.compare_and_set_projected_lane_message_status(
+                "dead-letter-cas",
+                "dead-letter",
+                "pending",
+                None,
+            ))
+            .unwrap()
+        );
+        assert_eq!(
+            block_on(store.projected_lane_message("dead-letter-cas"))
+                .unwrap()
+                .unwrap()
+                .status,
+            "pending"
+        );
     }
 
     #[test]
@@ -3884,7 +4010,7 @@ mod tests {
     }
 
     #[test]
-    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract; fixture=contracts/golden/graph-mutation-scope-memory-v1.json
+    // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract; fixture=contracts/golden/graph-mutation-scope-memory-v1.json; rust_test=rust/crates/kogwistar-store-memory/src/lib.rs#memory_mutation_scope_matches_shared_python_contract; python_test=tests/core/test_backend_contract.py#test_in_memory_vector_mutation_scope_matches_shared_rust_contract
     fn memory_mutation_scope_matches_shared_python_contract() {
         block_on(async {
             let fixture: Value = serde_json::from_str(include_str!(concat!(

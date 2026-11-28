@@ -21,8 +21,14 @@ except ModuleNotFoundError:  # imported as a repository module in unit tests
 ROOT = Path(__file__).resolve().parents[1]
 SUPPORT_MATRIX_PATH = ROOT / "contracts" / "dual-language-support-matrix-v1.json"
 LAYERS = ("core", "parser", "sink", "application")
-SERVER_DEFERRAL_ROUTE_COUNT_V1 = 0
-SERVER_DEFERRAL_SYSCALL_COUNT_V1 = 4
+SERVER_DEFERRAL_ROUTE_COUNT_V2 = 0
+SERVER_DEFERRAL_SYSCALL_COUNT_V2 = 0
+VERIFIED_SERVER_SYSCALLS_V2 = {
+    "send_message",
+    "receive_message",
+    "mount_memory",
+    "invoke_tool",
+}
 REQUIRED_RUST_OWNERS = {
     "deterministic-contracts",
     "sqlite-meta",
@@ -371,23 +377,17 @@ def validate_dual_language_support(
 
 
 def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
-    """Validate Phase-5 Python rollback deferrals before release promotion.
-
-    Rust's frozen inventories are checked against this manifest in the contract
-    suite. This release-side check independently prevents a malformed or
-    incomplete manifest from satisfying a readiness report merely because all
-    capability flags and canaries were changed to green.
-    """
+    """Require the reviewed server inventory to contain no deferred operations."""
     errors: list[str] = []
     deferrals = manifest.get("server_operation_deferrals")
     if not isinstance(deferrals, dict):
         return ["server_operation_deferrals is required"]
-    if deferrals.get("contract_version") != 1:
-        errors.append("contract_version must be 1")
-    if deferrals.get("status") != "versioned-intentionally-deferred":
-        errors.append("status must be versioned-intentionally-deferred")
-    if deferrals.get("owner") != "python-rollback-deployment":
-        errors.append("owner must be python-rollback-deployment")
+    if deferrals.get("contract_version") != 2:
+        errors.append("contract_version must be 2")
+    if deferrals.get("status") != "closed-no-active-deferrals":
+        errors.append("status must be closed-no-active-deferrals")
+    if deferrals.get("owner") != "kogwistar-rust-server":
+        errors.append("owner must be kogwistar-rust-server")
     if not isinstance(deferrals.get("rule"), str) or not deferrals["rule"].strip():
         errors.append("rule must be non-empty")
 
@@ -401,7 +401,6 @@ def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
         if not isinstance(group, dict):
             errors.append(f"{prefix} must be an object")
             continue
-        _validate_deferred_group(group, prefix, errors)
         operations = group.get("operations")
         if not isinstance(operations, list) or not operations:
             errors.append(f"{prefix}.operations must be a non-empty array")
@@ -423,27 +422,46 @@ def validate_server_operation_deferrals(manifest: dict[str, Any]) -> list[str]:
             if key in routes:
                 errors.append(f"duplicate deferred route {method} {path}")
             routes.add(key)
-    if len(routes) != SERVER_DEFERRAL_ROUTE_COUNT_V1:
+    if len(routes) != SERVER_DEFERRAL_ROUTE_COUNT_V2:
         errors.append(
-            f"route_groups must contain {SERVER_DEFERRAL_ROUTE_COUNT_V1} unique operations"
+            f"route_groups must contain {SERVER_DEFERRAL_ROUTE_COUNT_V2} unique operations"
         )
 
     syscall_group = deferrals.get("syscall_group")
     if not isinstance(syscall_group, dict):
         errors.append("syscall_group must be an object")
         return errors
-    _validate_deferred_group(syscall_group, "syscall_group", errors)
+    if syscall_group.get("owner") != "kogwistar-rust-server":
+        errors.append("syscall_group.owner must be kogwistar-rust-server")
+    if syscall_group.get("status") != "verified":
+        errors.append("syscall_group.status must be verified")
+    if syscall_group.get("required_authority") != []:
+        errors.append("syscall_group.required_authority must be empty after closure")
+    if not isinstance(syscall_group.get("exit_evidence"), str) or not syscall_group[
+        "exit_evidence"
+    ].strip():
+        errors.append("syscall_group.exit_evidence must be non-empty")
     syscalls = syscall_group.get("operations")
-    if not isinstance(syscalls, list) or not all(
-        isinstance(operation, str) and operation for operation in syscalls
-    ):
-        errors.append("syscall_group.operations must be non-empty strings")
-    elif len(set(syscalls)) != len(syscalls):
-        errors.append("syscall_group.operations must not contain duplicates")
-    elif len(syscalls) != SERVER_DEFERRAL_SYSCALL_COUNT_V1:
-        errors.append(
-            f"syscall_group must contain {SERVER_DEFERRAL_SYSCALL_COUNT_V1} operations"
-        )
+    if not isinstance(syscalls, list) or syscalls:
+        errors.append("syscall_group.operations must be empty after cutover closure")
+    verified = syscall_group.get("verified_operations")
+    if not isinstance(verified, list):
+        errors.append("syscall_group.verified_operations must be an array")
+    else:
+        names = [
+            item.get("name")
+            for item in verified
+            if isinstance(item, dict)
+        ]
+        if len(names) != len(verified) or set(names) != VERIFIED_SERVER_SYSCALLS_V2:
+            errors.append("syscall_group.verified_operations must cover all four syscalls exactly once")
+        if any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("test_selector"), str)
+            or not item["test_selector"].strip()
+            for item in verified
+        ):
+            errors.append("each verified syscall must name a test_selector")
     return errors
 
 
@@ -952,20 +970,6 @@ def validate_phase4_runtime_evidence(
     return errors
 
 
-def _validate_deferred_group(group: dict[str, Any], prefix: str, errors: list[str]) -> None:
-    if group.get("owner") != "python":
-        errors.append(f"{prefix}.owner must be python")
-    if group.get("status") != "intentionally-deferred":
-        errors.append(f"{prefix}.status must be intentionally-deferred")
-    authority = group.get("required_authority")
-    if not isinstance(authority, list) or not all(
-        isinstance(capability, str) and capability for capability in authority
-    ):
-        errors.append(f"{prefix}.required_authority must be non-empty strings")
-    if not isinstance(group.get("exit_evidence"), str) or not group["exit_evidence"].strip():
-        errors.append(f"{prefix}.exit_evidence must be non-empty")
-
-
 def _compatibility_layer_errors(layer: dict[str, Any]) -> list[str]:
     """Require a passing layer summary to reconcile to its exact test-group runs."""
     name = layer.get("name")
@@ -1202,6 +1206,8 @@ def evaluate_release_gate(
         "reports": len(uat_candidates),
     }
     deferred_capabilities: set[str] = set()
+    deferred_route_operations: list[str] = []
+    deferred_syscall_operations: list[str] = []
     deferrals = manifest.get("server_operation_deferrals", {})
     if isinstance(deferrals, dict):
         deferred_groups = [*deferrals.get("route_groups", [])]
@@ -1211,6 +1217,22 @@ def evaluate_release_gate(
         for group in deferred_groups:
             if not isinstance(group, dict) or not group.get("operations"):
                 continue
+            operations = group.get("operations")
+            if isinstance(operations, list):
+                if group is syscall_group:
+                    deferred_syscall_operations.extend(
+                        operation
+                        for operation in operations
+                        if isinstance(operation, str)
+                    )
+                else:
+                    deferred_route_operations.extend(
+                        f"{operation['method']} {operation['path']}"
+                        for operation in operations
+                        if isinstance(operation, dict)
+                        and isinstance(operation.get("method"), str)
+                        and isinstance(operation.get("path"), str)
+                    )
             authority = group.get("required_authority", [])
             if isinstance(authority, list):
                 deferred_capabilities.update(
@@ -1266,7 +1288,14 @@ def evaluate_release_gate(
         ),
         "dual_language_support": {"status": "passed" if not support_errors else "blocked"},
         "server_operation_deferrals": {
-            "status": "passed" if not validate_server_operation_deferrals(manifest) else "blocked"
+            "validation_status": "passed" if not server_deferral_errors else "blocked",
+            "cutover_status": (
+                "blocked"
+                if deferred_route_operations or deferred_syscall_operations
+                else "clear"
+            ),
+            "pending_routes": deferred_route_operations,
+            "pending_syscalls": deferred_syscall_operations,
         },
         "phase5_server_evidence": {
             "status": (
