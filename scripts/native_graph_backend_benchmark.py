@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 MIN_RUST_THROUGHPUT_RATIO = 0.95
 MAX_RUST_P95_LATENCY_RATIO = 1.10
+MAX_RUST_PEAK_RSS_RATIO = 1.10
 BACKENDS = frozenset({"postgres_pgvector", "chroma_sqlite_metadata"})
 MODES = frozenset({"python", "rust_native"})
 
@@ -118,6 +119,9 @@ def run_trace_sample(
         raise ValueError("backend snapshot must provide a canonical state digest")
     if not isinstance(event_count, int) or event_count < 0:
         raise ValueError("backend snapshot must provide a non-negative event count")
+    peak_rss_bytes = snapshot.get("peak_rss_bytes")
+    if not isinstance(peak_rss_bytes, int) or peak_rss_bytes <= 0:
+        raise ValueError("backend snapshot must provide a positive peak RSS measurement")
     projection_converged = snapshot.get("projection_converged")
     if not isinstance(projection_converged, bool):
         raise ValueError("backend snapshot must report projection convergence")
@@ -127,6 +131,7 @@ def run_trace_sample(
         "trace_sha256": trace_sha256,
         "state_digest": state_digest,
         "canonical_event_count": event_count,
+        "peak_rss_bytes": peak_rss_bytes,
         "projection_converged": projection_converged,
         "elapsed_ms": elapsed_ms,
         "cpu_ms": cpu_ms,
@@ -202,6 +207,7 @@ def verify_backend_report(
         mode: {} for mode in MODES
     }
     median_throughput: dict[str, float] = {}
+    median_peak_rss: dict[str, float] = {}
     for mode in sorted(MODES):
         mode_report = modes.get(mode)
         if not isinstance(mode_report, Mapping):
@@ -233,6 +239,9 @@ def verify_backend_report(
             event_count = sample.get("canonical_event_count")
             if not isinstance(event_count, int) or event_count < 0:
                 errors.append(f"{mode}/{label}: canonical event count is invalid")
+            peak_rss_bytes = sample.get("peak_rss_bytes")
+            if not isinstance(peak_rss_bytes, (int, float)) or peak_rss_bytes <= 0:
+                errors.append(f"{mode}/{label}: peak RSS measurement is invalid")
             if expected_backend == "chroma_sqlite_metadata" and sample.get(
                 "projection_converged"
             ) is not True:
@@ -264,6 +273,14 @@ def verify_backend_report(
                     operation_p95[mode].setdefault(str(operation), []).append(float(value))
         if throughputs:
             median_throughput[mode] = statistics.median(throughputs)
+        rss_values = [
+            float(row["peak_rss_bytes"])
+            for row in rows
+            if isinstance(row.get("peak_rss_bytes"), (int, float))
+            and row["peak_rss_bytes"] > 0
+        ]
+        if len(rss_values) == expected_samples + 1:
+            median_peak_rss[mode] = statistics.median(rss_values[1:])
 
     if len(digests) != 1:
         errors.append("Python/Rust trace state digests differ or are incomplete")
@@ -314,6 +331,18 @@ def verify_backend_report(
                 f"{operation}: p95 latency ratio exceeds {MAX_RUST_P95_LATENCY_RATIO:.2f}"
             )
 
+    python_peak_rss = median_peak_rss.get("python")
+    rust_peak_rss = median_peak_rss.get("rust_native")
+    peak_rss_ratio = (
+        None
+        if python_peak_rss is None or rust_peak_rss is None or python_peak_rss <= 0
+        else rust_peak_rss / python_peak_rss
+    )
+    if peak_rss_ratio is None or peak_rss_ratio > MAX_RUST_PEAK_RSS_RATIO:
+        performance_errors.append(
+            f"peak RSS ratio {peak_rss_ratio!r} exceeds {MAX_RUST_PEAK_RSS_RATIO:.2f} or is incomplete"
+        )
+
     errors.extend(performance_errors)
     return {
         "passed": not errors,
@@ -322,5 +351,6 @@ def verify_backend_report(
             "passed": not performance_errors,
             "throughput_ratio": throughput_ratio,
             "operation_p95_latency_ratios": p95_ratios,
+            "peak_rss_ratio": peak_rss_ratio,
         },
     }

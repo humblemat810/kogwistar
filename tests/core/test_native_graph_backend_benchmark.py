@@ -41,6 +41,7 @@ class TraceAdapter:
             "state_digest": "same-state",
             "canonical_event_count": 1,
             "projection_converged": True,
+            "peak_rss_bytes": 1024,
         }
 
 
@@ -76,6 +77,7 @@ def test_run_trace_sample_executes_each_operation_and_records_native_evidence() 
     assert sample["canonical_event_count"] == 1
     assert sample["state_digest"] == "same-state"
     assert sample["resource_limits_verified"] is True
+    assert sample["peak_rss_bytes"] == 1024
     assert sample["ffi_calls"] == 0
     assert set(sample["operation_p95_ms"]) == {"write_record", "read_event", "read_projection"}
     assert sample["elapsed_ms"] > 0
@@ -187,6 +189,7 @@ def valid_report() -> dict[str, object]:
         "projection_converged": True,
         "elapsed_ms": 100.0,
         "throughput_ops_per_sec": 60.0,
+        "peak_rss_bytes": 1024,
         "operation_p95_ms": {"write": 2.0, "read": 1.0},
         "resource_limits_verified": True,
         "ffi_calls": 0,
@@ -295,3 +298,32 @@ def test_backend_report_applies_declared_throughput_and_tail_thresholds(valid_re
     assert result["performance_gate"]["passed"] is False
     assert any("throughput" in error for error in result["errors"])
     assert any("p95" in error for error in result["errors"])
+
+
+def test_backend_report_rejects_rust_peak_rss_above_declared_ratio(valid_report) -> None:
+    for sample in valid_report["modes"]["rust_native"]["samples"]:
+        sample["peak_rss_bytes"] = 1127
+
+    result = verify_backend_report(
+        valid_report,
+        expected_backend="postgres_pgvector",
+        expected_samples=2,
+    )
+
+    assert result["passed"] is False
+    assert result["performance_gate"]["passed"] is False
+    assert result["performance_gate"]["peak_rss_ratio"] > 1.10
+    assert any("rss" in error.lower() for error in result["errors"])
+
+
+def test_backend_report_rejects_missing_peak_rss_measurement(valid_report) -> None:
+    del valid_report["modes"]["rust_native"]["samples"][0]["peak_rss_bytes"]
+
+    result = verify_backend_report(
+        valid_report,
+        expected_backend="postgres_pgvector",
+        expected_samples=2,
+    )
+
+    assert result["passed"] is False
+    assert any("rss" in error.lower() for error in result["errors"])
