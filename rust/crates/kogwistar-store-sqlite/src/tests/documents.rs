@@ -16,6 +16,121 @@ fn source_document(scope: GraphScope, id: &str, text: &str) -> DocumentProjectio
     }
 }
 
+fn document_vector_job() -> NewIndexJob {
+    NewIndexJob {
+        job_id: "document-vector-doc-1".to_owned(),
+        namespace: "tenant-a".to_owned(),
+        entity_kind: "document".to_owned(),
+        entity_id: "doc-1".to_owned(),
+        index_kind: "document_embedding".to_owned(),
+        op: "UPSERT".to_owned(),
+        payload_json: Some(r#"{"schema_version":1}"#.to_owned()),
+        max_retries: 5,
+    }
+}
+
+#[test]
+fn source_document_and_vector_job_commit_and_reopen_together() {
+    let (store, path) = store("source-document-vector-job");
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let mut write = source_document(scope.clone(), "doc-1", "OCR text");
+    write.record.embedding = Some(vec![0.6, 0.8, 0.0]);
+    write.embedding_dim = 3;
+
+    store
+        .upsert_source_document_projection_with_index_job(write, document_vector_job())
+        .unwrap();
+    let jobs = block_on(IndexJobReadStore::index_jobs(
+        &store,
+        Some("tenant-a"),
+        Some("PENDING"),
+        Some("document"),
+        Some("doc-1"),
+        Some("document_embedding"),
+        10,
+    ))
+    .unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].job_id, "document-vector-doc-1");
+    assert_eq!(
+        jobs[0].payload_json.as_deref(),
+        Some(r#"{"schema_version":1}"#)
+    );
+
+    drop(store);
+    let reopened = SqliteStore::open(&path).unwrap();
+    let record = reopened
+        .source_document_projection(&scope, "doc-1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.embedding.as_deref(), Some(&[0.6, 0.8, 0.0][..]));
+    let reopened_jobs = block_on(IndexJobReadStore::index_jobs(
+        &reopened,
+        Some("tenant-a"),
+        Some("PENDING"),
+        Some("document"),
+        Some("doc-1"),
+        Some("document_embedding"),
+        10,
+    ))
+    .unwrap();
+    assert_eq!(reopened_jobs.len(), 1);
+
+    drop(reopened);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn failed_document_vector_job_enqueue_rolls_back_source_projection() {
+    let (store, path) = store("source-document-vector-job-rollback");
+    let scope = GraphScope {
+        namespace: "tenant-a".to_owned(),
+        workspace_id: Some("workspace-a".to_owned()),
+        graph_space: Some("knowledge".to_owned()),
+    };
+    let connection = rusqlite::Connection::open(&path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TRIGGER reject_document_vector_job BEFORE INSERT ON index_jobs
+             WHEN NEW.index_kind = 'document_embedding'
+             BEGIN SELECT RAISE(ABORT, 'synthetic document index queue failure'); END;",
+        )
+        .unwrap();
+    drop(connection);
+
+    let result = store.upsert_source_document_projection_with_index_job(
+        source_document(scope.clone(), "doc-1", "OCR text"),
+        document_vector_job(),
+    );
+    assert!(result.is_err());
+    assert!(
+        store
+            .source_document_projection(&scope, "doc-1")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        block_on(IndexJobReadStore::index_jobs(
+            &store,
+            Some("tenant-a"),
+            None,
+            Some("document"),
+            Some("doc-1"),
+            Some("document_embedding"),
+            10,
+        ))
+        .unwrap()
+        .is_empty()
+    );
+
+    drop(store);
+    fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn source_documents_round_trip_and_remain_storage_scope_isolated() {
     let (store, path) = store("source-document-scope");

@@ -16,6 +16,28 @@ impl SqliteUnitOfWork<'_> {
         replace_source_document_projection(self.transaction, write)
     }
 
+    pub fn upsert_source_document_projection_with_index_job(
+        &mut self,
+        write: DocumentProjectionUpsert,
+        job: NewIndexJob,
+    ) -> SqliteStoreResult<()> {
+        if job.namespace != write.scope.namespace
+            || job.entity_kind != "document"
+            || job.entity_id != write.record.id
+            || job.index_kind != "document_embedding"
+            || !matches!(
+                job.op.to_ascii_uppercase().as_str(),
+                "UPSERT" | "ADD" | "REPLACE"
+            )
+        {
+            return Err(SqliteStoreError::TransactionAborted(
+                "document vector job identity does not match its source projection".to_owned(),
+            ));
+        }
+        self.upsert_source_document_projection(write)?;
+        self.enqueue_index_job(job).map(|_| ())
+    }
+
     pub fn delete_source_document_projection(
         &mut self,
         scope: &GraphScope,

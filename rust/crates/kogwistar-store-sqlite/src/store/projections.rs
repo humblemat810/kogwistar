@@ -18,6 +18,18 @@ impl SqliteStore {
         self.immediate_transaction(|uow| uow.upsert_source_document_projection(write))
     }
 
+    /// Atomically persist a source document and its eventual vector-index job.
+    /// The caller opts into this only when a vector projection is configured.
+    pub fn upsert_source_document_projection_with_index_job(
+        &self,
+        write: DocumentProjectionUpsert,
+        job: NewIndexJob,
+    ) -> SqliteStoreResult<()> {
+        self.immediate_transaction(|uow| {
+            uow.upsert_source_document_projection_with_index_job(write, job)
+        })
+    }
+
     pub fn delete_source_document_projection(
         &self,
         scope: &GraphScope,
