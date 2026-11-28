@@ -2616,3 +2616,23 @@ Raw report and source manifest are retained under
 `.tmp/mixed-runtime-goal09-current-20261125-rerun/`. This refreshes SQLite
 evidence only; PostgreSQL/pgvector, SQLite+Chroma, and authenticated
 workflow/graph performance gates remain open.
+
+#### 2026-11-28 current-source capped SQLite endpoint rerun
+
+Rebuilt commit `e256249c29dd487f0bb10d1fbafe962fc09eefa2` through the existing
+Docker harness. CPython 3.15.1t cgroup verified at 2 CPU / 4 GiB; network
+disabled. Each 100- and 500-record fixture used one warm-up and three measured
+samples for Python HTTP, diagnostic Rust-authority HTTP, and Rust-native HTTP.
+All Python/Rust-native traces matched canonical state digests; the verifier
+reported `complete`, zero failed samples, and zero validation errors.
+
+| Fixture | Python ops/s | Rust-native ops/s | Throughput ratio | Event p95 ratio | Projection p95 ratio | Write p95 ratio | Digest |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 100 records | 54.19 | 558.53 | 10.31x | 0.102 | 0.100 | 0.086 | `a2713532374fe5995a8dcc68e4951bfcda5e74955e122de67f744291fec945d7` |
+| 500 records | 52.88 | 514.60 | 9.73x | 0.108 | 0.106 | 0.096 | `627d7adf7569b5678e60229141a94ec77e859464c3940ee565c21b38a558e9c8` |
+
+Both traces pass the declared SQLite endpoint thresholds. Raw report:
+`.tmp/goal09-dlfc18-e256249c-sqlite/endpoint/endpoint-report.v1.json`;
+manifest records the source revision and verified limits. This refreshes the
+SQLite endpoint cell only; authenticated-agent fixed-resource comparison and
+PostgreSQL/SQLite+Chroma traces remain unverified.
