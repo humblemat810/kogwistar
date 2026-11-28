@@ -1,6 +1,6 @@
 # ADR-022 Dual-Language Goal Closure Checklist
 
-**Updated:** 2026-11-27
+**Updated:** 2026-11-28
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
 **Status summary:** **9 bounded criteria PASS; 0 PARTIAL; 0 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
@@ -22,7 +22,18 @@
 
 ## Pivoted Test-Case Status
 
-One row per listed test case, including pytest parameter cases; this case-level view does not change the 18-tasklet denominator. Current: **176 PASS / 1 IN PROGRESS / 0 NOT STARTED / 177 listed cases**. Four passing REST workflow-design ACL selectors and three operator-inbox read-filter selectors are recorded under existing DLFC-05/06 scope; no new gate/tasklet added. The repository has no Full-Parity Test Matrix artifact: remaining operation/backend cells are not fully enumerated by this pivot, so its 177 listed cases do not imply goal completion or complete backend applicability coverage. The remaining non-PASS row is the PostgreSQL/pgvector GOAL-09 performance trace.
+One row per listed test case, including pytest parameter cases; this case-level view does not change the 18-tasklet denominator. Current: **177 PASS / 0 IN PROGRESS / 0 NOT STARTED / 177 listed cases**. Four passing REST workflow-design ACL selectors and three operator-inbox read-filter selectors are recorded under existing DLFC-05/06 scope; no new gate/tasklet added. The repository has no Full-Parity Test Matrix artifact: remaining operation/backend cells are not fully enumerated by this pivot, so its 177 listed cases do not imply goal completion or complete backend applicability coverage.
+
+## Known Parity Gaps Outside Closed Tasklets
+
+The fixed fine checklist remains **18/18 PASS** for its declared acceptance tests. These known gaps are already called out by evidence row `DL-16BH`, but have no mapped executable tasklet/test selectors yet; they remain part of the broader full-parity objective and are not evidence that a closed DLFC failed. Do not change the closed tasklet denominator or claim OCR parity from the bounded projection tests.
+
+| Existing evidence anchor | Unclosed parity slice | Current evidence boundary |
+| --- | --- | --- |
+| DL-16BH | OCR cluster `source_map` semantics | Rust `SourceMapV1` covers text chunks; OCR cluster/source-map equivalence to Python `Document.from_ocr` is unverified. No parity test selector mapped. |
+| DL-16BH | OCR `doc.upsert` change-event behavior | Python emits the `doc.upsert` change notification; Rust equivalent behavior is unverified. Preserve its best-effort/CDC semantics; do not infer durable-event equivalence. No parity test selector mapped. |
+| DL-16BH | OCR embedding/indexing across supported backends | Projection-level tests do not prove OCR vector creation, metadata propagation, or retrieval/index visibility across backends. No parity test selector mapped. |
+| DL-16BH | OCR lifecycle and rollback | Text/document rollback evidence does not establish OCR cluster/source-map cleanup and lifecycle parity across backends. No parity test selector mapped. |
 
 Focused verification 2026-11-25: CPython 3.13.3 on Windows. Batch A ran the GOAL-01 Python-only matrix, GOAL-02 MCP denial, and GOAL-05 fake-backend and pending-embedding tests with `.venv\Scripts\python.exe -m pytest -q -p no:cacheprovider`; **15 passed** (12 parameter cases plus 3 tests, 13.59s). Batch B ran the GOAL-02/04 SQLite cases and GOAL-05 Chroma/PostgreSQL cases listed below with the same command flags; **8 passed** (18.12s), including disposable PostgreSQL testcontainers. Batch C built the Rust API server (`cargo build --manifest-path rust/Cargo.toml -p kogwistar-api --bin kogwistar-server`, **passed**, 1m34s), ran both live Rust/Python Chroma interoperability tests (**2 passed**, 68.92s), and verified native workflow routes: five non-PostgreSQL variants passed in the focused pytest run, then both PostgreSQL variants passed against the local pgvector container (**7/7 parameter cases passed**). Live PostgreSQL queue differential passed (**1 passed**); Rust inline graph/ACL/index/lane atomic-write test passed (**1 passed**). PostgreSQL variants used disposable/random schemas and completed teardown. No full-suite or whole-surface parity claim follows from these selected cases.
 
