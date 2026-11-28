@@ -128,22 +128,22 @@ themselves proof of full backend or endpoint parity.
 ```mermaid
 flowchart LR
     C[REST / MCP / SDK caller] -->|O1 request handling · Python OPT-IN · DL-17| API[Public API]
-    C -->|O1 request handling · Rust OPT-IN · DL-03| API
+    C -->|O1 request handling · Rust ENABLED · DL-03| API
 
     API -->|O2 workflow execution · Python ENABLED · DL-14A| RT[Workflow runtime]
-    API -->|O2 workflow execution · Rust OPT-IN · DL-13| RT
+    API -->|O2 workflow execution · Rust ENABLED · DL-13| RT
 
     RT -->|O3 PostgreSQL graph / vector ops · Python ENABLED · DL-16| G[PostgreSQL graph / vector operations]
-    RT -->|O3 PostgreSQL graph / vector ops · Rust OPT-IN · DL-16I| G
+    RT -->|O3 PostgreSQL graph / vector ops · Rust ENABLED · DL-16I| G
 
     G -->|O4 SQLite metadata · Python ENABLED · DL-07A| SQ[(SQLite metadata store)]
     G -->|O4 SQLite metadata · Rust OPT-IN · DL-18| SQ
 
     G -->|O5 PostgreSQL event log · Python ENABLED · DL-07B| PG[(PostgreSQL graph store)]
-    G -->|O5 PostgreSQL event log · Rust OPT-IN · DL-07B| PG
+    G -->|O5 PostgreSQL event log · Rust ENABLED · DL-07B| PG
 
     RT -->|O6 run projections / registry · Python ENABLED · DL-09| PR[Run projections / registry]
-    RT -->|O6 run projections / registry · Rust DISABLED · DL-09| PR
+    RT -->|O6 run projections / registry · Rust ENABLED · DL-09| PR
 
     RT -->|O7 provider invocation · Python UNVERIFIED| P[LLM / tool provider]
     RT -->|O7 provider invocation · Rust UNVERIFIED| P
@@ -158,9 +158,9 @@ Statuses and evidence IDs mirror
 `contracts/dual-language-support-matrix-v1.json`: `ENABLED` is the enabled
 profile; `OPT-IN` is implemented only for an explicitly selected profile;
 `DISABLED` is not currently selectable; `UNVERIFIED` has no matching evidence
-in that matrix. Thus O6 is Python-only today; O7 remains unknown. These labels
-are capability-level, not claims that every operation or backend within a
-capability has parity. Both `ENABLED` and `OPT-IN` mean the capability is
+in that matrix. O6 is enabled in both languages; O7 remains unverified. These
+labels are capability-level, not claims that every operation or backend within
+a capability has parity. Both `ENABLED` and `OPT-IN` mean the capability is
 available under its declared selection policy; they do not imply identical
 behavior or production cutover. A mixed deployment follows explicitly
 selected edges and crosses languages only at a declared seam. Update the source
