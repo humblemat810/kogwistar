@@ -2666,3 +2666,26 @@ the bound. The focused Rust test then passed warm-up plus all three samples.
 This closes authenticated-agent performance trace only. General PostgreSQL/
 pgvector graph traces and SQLite+Chroma eventual-projection traces remain
 unverified; no whole-stack performance claim follows.
+
+#### 2026-11-28 PostgreSQL metadata-facade diagnostic (hybrid; non-gating)
+
+Ran the existing `scripts/postgres_authority_benchmark.py` inside the capped
+CPython client against the same disposable PostgreSQL service: 1,000 items,
+one warm-up and three measured samples per mode, six existing storage
+workloads. Client cap was 3 CPU / 6 GiB; PostgreSQL cap was 1 CPU / 2 GiB.
+Every paired Python/Rust-facade workload produced equal per-sample digests.
+
+| Workload | Rust/Python throughput | Rust/Python p95 elapsed |
+| --- | ---: | ---: |
+| Individual event append | 0.692x | 1.441x |
+| Grouped event append | 0.720x | 1.376x |
+| Atomic conversation record | 0.955x | 1.044x |
+| Grouped conversation record | 0.893x | 1.115x |
+| Batch event replay | 0.757x | 1.285x |
+| Projection listing | 1.038x | 0.897x |
+
+This is a Python-hosted Rust PostgreSQL facade comparison, not a Rust-native
+server request; it is diagnostic only and does not close or fail the
+seam-free DLFC-18 gate. It does show that Rust-facade performance varies by
+operation, so no broad speed claim is justified. Raw JSON is retained locally
+at `.tmp/dlfc18-pg-authority-report.json` (ignored).
