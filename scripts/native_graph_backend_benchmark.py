@@ -13,6 +13,23 @@ MAX_RUST_P95_LATENCY_RATIO = 1.10
 BACKENDS = frozenset({"postgres_pgvector", "chroma_sqlite_metadata"})
 MODES = frozenset({"python", "rust_native"})
 
+try:
+    from .mixed_workload import (
+        VECTOR_DIMENSION,
+        build_graph_payloads,
+        build_normalized_vector,
+        build_read_after_write_trace,
+        normalized_vector_digest,
+    )
+except ImportError:
+    from mixed_workload import (
+        VECTOR_DIMENSION,
+        build_graph_payloads,
+        build_normalized_vector,
+        build_read_after_write_trace,
+        normalized_vector_digest,
+    )
+
 
 class TraceBackendAdapter(Protocol):
     def write_record(self, operation: Mapping[str, Any]) -> None: ...
@@ -27,6 +44,32 @@ class TraceBackendAdapter(Protocol):
 def _p95(values: list[float]) -> float:
     ordered = sorted(values)
     return ordered[max(0, int(len(ordered) * 0.95 + 0.999999) - 1)]
+
+
+def build_backend_trace(items: int) -> list[dict[str, Any]]:
+    """Build one repeatable graph trace before either implementation is timed."""
+    if items < 1:
+        raise ValueError("items must be positive")
+    trace: list[dict[str, Any]] = []
+    for operation in build_read_after_write_trace(items):
+        row = dict(operation)
+        if operation["operation"] == "write_record":
+            index = operation["index"]
+            vector = build_normalized_vector(index)
+            node, edge = build_graph_payloads(
+                index,
+                vector_sha256=normalized_vector_digest(vector),
+            )
+            row.update(
+                {
+                    "node_payload": node,
+                    "edge_payload": edge,
+                    "vector": vector,
+                    "vector_dimension": VECTOR_DIMENSION,
+                }
+            )
+        trace.append(row)
+    return trace
 
 
 def run_trace_sample(
