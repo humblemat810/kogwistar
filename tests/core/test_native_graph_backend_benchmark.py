@@ -361,6 +361,7 @@ def test_python_trace_adapter_supports_sqlite_metadata_with_chroma_projection(tm
                 self.records[kind][entity_id] = {
                     "document": docs[index],
                     "metadata": metadata[index],
+                    "embedding": values.get("embeddings", [None] * len(ids))[index],
                 }
 
         def get(self, kind: str, *, ids: list[str], include: list[str]) -> dict[str, object]:
@@ -399,7 +400,7 @@ def test_python_trace_adapter_supports_sqlite_metadata_with_chroma_projection(tm
         eventual_projection=True,
     )
 
-    adapter.seed_root(trace["root_payload"])
+    adapter.seed_root(trace["root_payload"], vector=trace["operations"][0]["vector"])
     adapter.write_record(trace["operations"][0])
     snapshot = adapter.snapshot()
     assert adapter.read_event(trace["operations"][1]) == adapter.read_projection(
@@ -417,6 +418,7 @@ def test_python_trace_adapter_supports_sqlite_metadata_with_chroma_projection(tm
     assert snapshot["canonical_event_count"] == 3
     assert snapshot["projection_converged"] is True
     assert snapshot["state_digest"] == expected_digest
+    assert chroma.records["node"]["mixed-node-root"]["embedding"] == trace["operations"][0]["vector"]
 
 
 @pytest.fixture

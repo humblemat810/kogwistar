@@ -141,7 +141,12 @@ class PostgresGraphTraceAdapter:
             vector=vector,
         )
 
-    def seed_root(self, root_payload: Mapping[str, Any]) -> None:
+    def seed_root(
+        self,
+        root_payload: Mapping[str, Any],
+        *,
+        vector: list[float] | None = None,
+    ) -> None:
         root_id = root_payload.get("id")
         if not isinstance(root_id, str) or not root_id:
             raise ValueError("root payload id is required")
@@ -155,11 +160,13 @@ class PostgresGraphTraceAdapter:
                 entity_id=root_id,
                 payload_json=payload_json,
                 metadata=metadata,
-                vector=None,
+                vector=vector,
             )
             return
         with self.metadata_store.transaction():
-            self._write_entity(kind="node", entity_id=root_id, payload=root_payload, vector=None)
+            self._write_entity(
+                kind="node", entity_id=root_id, payload=root_payload, vector=vector
+            )
 
     def write_record(self, operation: Mapping[str, Any]) -> None:
         node = operation.get("node_payload")
