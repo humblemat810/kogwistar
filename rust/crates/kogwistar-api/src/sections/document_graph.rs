@@ -315,6 +315,121 @@ fn document_projection_input(
 }
 
 // PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#document_projection_write; python=kogwistar/server_mcp_with_admin.py#document_upsert; fixture=contracts/golden/document-upsert-http-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/postgres_document_projection.rs#postgres_document_projection_route_persists_reopens_and_retries_when_dsn_available; python_test=tests/server/test_document_api_auth.py#test_document_upsert_keeps_rw_write_path
+fn python_repr_string(value: &str) -> String {
+    let quote = if value.contains('\'') && !value.contains('"') {
+        '"'
+    } else {
+        '\''
+    };
+    let mut output = String::with_capacity(value.len() + 2);
+    output.push(quote);
+    for character in value.chars() {
+        match character {
+            '\\' => output.push_str("\\\\"),
+            '\n' => output.push_str("\\n"),
+            '\r' => output.push_str("\\r"),
+            '\t' => output.push_str("\\t"),
+            value if value == quote => {
+                output.push('\\');
+                output.push(value);
+            }
+            value if value.is_control() && (value as u32) <= 0xff => {
+                output.push_str(&format!("\\x{:02x}", value as u32));
+            }
+            value if value.is_control() && (value as u32) <= 0xffff => {
+                output.push_str(&format!("\\u{:04x}", value as u32));
+            }
+            value if value.is_control() => {
+                output.push_str(&format!("\\U{:08x}", value as u32));
+            }
+            value => output.push(value),
+        }
+    }
+    output.push(quote);
+    output
+}
+
+fn python_repr(value: &Value) -> String {
+    match value {
+        Value::Null => "None".to_owned(),
+        Value::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => python_repr_string(value),
+        Value::Array(values) => format!(
+            "[{}]",
+            values.iter().map(python_repr).collect::<Vec<_>>().join(", ")
+        ),
+        Value::Object(values) => format!(
+            "{{{}}}",
+            values
+                .iter()
+                .map(|(key, value)| format!("{}: {}", python_repr_string(key), python_repr(value)) )
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+fn python_string_value(value: &Value) -> String {
+    match value {
+        Value::String(value) => value.clone(),
+        Value::Null => "None".to_owned(),
+        Value::Bool(value) => if *value { "True" } else { "False" }.to_owned(),
+        _ => python_repr(value),
+    }
+}
+
+fn normalize_ocr_document(content: &str) -> Result<String, String> {
+    let mut document: Value = serde_json::from_str(content).map_err(|error| error.to_string())?;
+    let pages = document
+        .as_object_mut()
+        .and_then(|object| {
+            let filename = object.keys().next()?.clone();
+            object.get_mut(&filename)?.as_array_mut()
+        })
+        .ok_or_else(|| "OCR content must be a non-empty object whose first value is a page list".to_owned())?;
+
+    for page in pages {
+        let Some(page) = page.as_object_mut() else {
+            return Err("OCR page must be an object".to_owned());
+        };
+        let (Some(page_number), Some(clusters)) =
+            (page.get("pdf_page_num").cloned(), page.get_mut("OCR_text_clusters"))
+        else {
+            continue;
+        };
+        let page_number = python_string_value(&page_number);
+        let clusters = clusters
+            .as_array_mut()
+            .ok_or_else(|| "OCR_text_clusters must be a list".to_owned())?;
+        for (index, cluster) in clusters.iter_mut().enumerate() {
+            let cluster = cluster
+                .as_object_mut()
+                .ok_or_else(|| "OCR text cluster must be an object".to_owned())?;
+            cluster.insert(
+                "id".to_owned(),
+                Value::String(format!("p{page_number}_c{index}")),
+            );
+        }
+        let non_text_objects = page
+            .get_mut("non_text_objects")
+            .ok_or_else(|| "OCR page is missing non_text_objects".to_owned())?
+            .as_array_mut()
+            .ok_or_else(|| "non_text_objects must be a list".to_owned())?;
+        for (index, object) in non_text_objects.iter_mut().enumerate() {
+            let object = object
+                .as_object_mut()
+                .ok_or_else(|| "OCR non-text object must be an object".to_owned())?;
+            object.insert(
+                "id".to_owned(),
+                Value::String(format!("p{page_number}_c{index}")),
+            );
+        }
+    }
+
+    Ok(python_repr(&document))
+}
+
 fn document_projection_write(
     request: &ApiEffectRequest,
     capabilities: &SharedCapabilityState,
@@ -327,16 +442,23 @@ fn document_projection_write(
         ));
     }
     let input = document_projection_input(request)?;
-    if input.doc_type != "text" {
-        return Err(effect_error(
-            StatusCode::NOT_IMPLEMENTED,
-            "KOGWISTAR_DOCUMENT_PROJECTION_UNSUPPORTED",
-            "Rust document upsert currently supports normalized text content only",
-        ));
-    }
+    let (document_type, document_content) = match input.doc_type.as_str() {
+        "text" => ("text", input.content.clone()),
+        "ocr" => (
+            "ocr_document",
+            normalize_ocr_document(&input.content).map_err(|error| {
+                effect_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "KOGWISTAR_DOCUMENT_PROJECTION_FAILED",
+                    error,
+                )
+            })?,
+        ),
+        _ => unreachable!("document wire contract validates document type"),
+    };
     let scope = security_scope_value(&request.principal);
     let mut metadata = input.metadata;
-    metadata.insert("doc_type".to_owned(), Value::String(input.doc_type));
+    metadata.insert("doc_type".to_owned(), Value::String(document_type.to_owned()));
     metadata.insert(
         "insertion_method".to_owned(),
         Value::String(input.insertion_method),
@@ -352,7 +474,7 @@ fn document_projection_write(
         },
         record: GraphRecord {
             id: input.doc_id,
-            document: Some(input.content),
+            document: Some(document_content),
             metadata,
             embedding: None,
         },

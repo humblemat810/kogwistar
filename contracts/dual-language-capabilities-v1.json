@@ -117,7 +117,7 @@
       "mixed_coverage": "merged-candidate CI #859 passed typed Rust graph/document contracts, ACL/scope, transaction, recovery, vector, and Python/Rust interoperability checks against Docker-backed PostgreSQL",
       "native_python_path": "not-verified",
       "native_rust_path": "verified-by-CI-859",
-      "evidence_note": "Internal pre-indexed graph mutation and normalized-text document projection only; public ingestion, OCR/source-map handling, indexing, recovery, and full ACL parity remain open"
+      "evidence_note": "Internal pre-indexed graph mutation and text/basic OCR document projection; public ingestion, OCR source-map parity, OCR graph-upsert parity, indexing, recovery, and full ACL parity remain open"
     },
     {
       "id": "chroma-adapter",

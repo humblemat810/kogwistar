@@ -83,6 +83,37 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
     assert written[0].content == fixture["content"]
     assert written[0].metadata["insertion_method"] == fixture["insertion_method"]
 
+    ocr_content = {
+        "scan.pdf": [
+            {
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"text": "Hello"}],
+                "non_text_objects": [],
+            }
+        ]
+    }
+    ocr_payload = server.DocumentUpsert(
+        doc_id="doc-ocr",
+        doc_type="ocr",
+        content=json.dumps(ocr_content),
+        insertion_method="ocr-parser",
+    )
+    token = claims_ctx.set({"role": "rw"})
+    try:
+        ocr_result = server.document_upsert(ocr_payload)
+    finally:
+        claims_ctx.reset(token)
+
+    assert ocr_result.status == "ok"
+    assert len(written) == 2
+    ocr_document = written[1]
+    assert ocr_document.type == "ocr_document"
+    assert ocr_document.content["scan.pdf"][0]["OCR_text_clusters"][0]["id"] == "p1_c0"
+    assert ocr_document.source_map == {
+        "p1_c0": {"text": "Hello", "id": "p1_c0"}
+    }
+    assert ocr_document.metadata["insertion_method"] == "ocr-parser"
+
     @asynccontextmanager
     async def noop_lifespan(_app):
         yield
@@ -121,6 +152,6 @@ def test_document_upsert_keeps_rw_write_path(monkeypatch: pytest.MonkeyPatch) ->
 
     assert response.status_code == http_contract["success_status"]
     assert response.json() == http_contract["success_response"]
-    assert len(written) == 2
-    assert written[1].id == fixture["doc_id"]
+    assert len(written) == 3
+    assert written[2].id == fixture["doc_id"]
     server.app.state.auth_jwt_settings = _saved_jwt_settings

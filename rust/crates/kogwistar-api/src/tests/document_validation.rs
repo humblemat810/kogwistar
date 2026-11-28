@@ -503,7 +503,8 @@
             body: serde_json::to_vec(&json!({
                 "doc_id": "doc-ocr",
                 "doc_type": "ocr",
-                "content": "{}"
+                "insertion_method": "ocr-parser",
+                "content": r#"{"scan.pdf":[{"pdf_page_num":1,"OCR_text_clusters":[{"text":"Hello"}],"non_text_objects":[]}]}"#
             }))
             .unwrap(),
             ..request(json!({
@@ -513,8 +514,10 @@
                 "capabilities":["write_graph"]
             }))
         };
-        let ocr = document_projection_write(&ocr_request, &capabilities).unwrap_err();
-        assert_eq!(ocr.status, StatusCode::NOT_IMPLEMENTED);
+        let ocr = document_projection_write(&ocr_request, &capabilities).unwrap();
+        assert_eq!(ocr.record.document.as_deref(), Some("{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}"));
+        assert_eq!(ocr.record.metadata["doc_type"], "ocr_document");
+        assert_eq!(ocr.record.metadata["insertion_method"], "ocr-parser");
     }
 
     #[tokio::test]

@@ -200,6 +200,29 @@
         let retry = send(make_app(), retry_payload).await;
         assert_eq!(retry.status(), StatusCode::OK);
 
+        let ocr_content = json!({
+            "scan.pdf": [{
+                "pdf_page_num": 1,
+                "OCR_text_clusters": [{"text": "Hello"}],
+                "non_text_objects": []
+            }]
+        });
+        let ocr_payload = json!({
+            "doc_id": "ocr-document-route-test",
+            "doc_type": "ocr",
+            "insertion_method": "ocr-parser",
+            "content": serde_json::to_string(&ocr_content).unwrap()
+        });
+        let ocr_response = send(make_app(), ocr_payload).await;
+        let ocr_status = ocr_response.status();
+        let ocr_body = to_bytes(ocr_response.into_body(), 4096).await.unwrap();
+        assert_eq!(
+            ocr_status,
+            StatusCode::OK,
+            "OCR document upsert failed: {}",
+            String::from_utf8_lossy(&ocr_body)
+        );
+
         let reopened = PostgresRunApplicationService::from_dsn(&dsn, &schema).unwrap();
         let rows = reopened
             .store
@@ -226,11 +249,34 @@
             first_payload["insertion_method"]
         );
         assert_eq!(rows[0].embedding.as_deref(), Some(&[0.6, 0.8, 0.0][..]));
+        let ocr_rows = reopened
+            .store
+            .graph_projection_records(kogwistar_store::GraphProjectionRead {
+                scope: GraphScope {
+                    namespace: "docs".to_owned(),
+                    workspace_id: Some("workspace-a".to_owned()),
+                    graph_space: Some("knowledge".to_owned()),
+                },
+                table: "gke_documents".to_owned(),
+                ids: Some(vec!["ocr-document-route-test".to_owned()]),
+                metadata: MetadataFilter::default(),
+                limit: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(ocr_rows.len(), 1);
+        assert_eq!(
+            ocr_rows[0].document.as_deref(),
+            Some("{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}")
+        );
+        assert_eq!(ocr_rows[0].metadata["doc_type"], "ocr_document");
+        assert_eq!(ocr_rows[0].metadata["insertion_method"], "ocr-parser");
         assert_eq!(
             *embedding_inputs.lock().unwrap(),
             vec![
                 first_payload["content"].as_str().unwrap().to_owned(),
-                "updated body".to_owned()
+                "updated body".to_owned(),
+                "{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}".to_owned()
             ]
         );
 
