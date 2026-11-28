@@ -133,6 +133,36 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
 
+    struct FixedEmbeddingProvider;
+    impl kogwistar_engine::embedding::EmbeddingProvider for FixedEmbeddingProvider {
+        fn profile(&self) -> &kogwistar_engine::embedding::EmbeddingProfile {
+            static PROFILE: std::sync::OnceLock<kogwistar_engine::embedding::EmbeddingProfile> =
+                std::sync::OnceLock::new();
+            PROFILE.get_or_init(|| kogwistar_engine::embedding::EmbeddingProfile {
+                provider: "test".to_owned(),
+                model: "sqlite-document-fixture".to_owned(),
+                dimension: 3,
+                similarity_metric: "cosine".to_owned(),
+                endpoint_fingerprint: None,
+                max_sequence_length: None,
+                crop_token_budget: None,
+                tokenizer_fingerprint: None,
+                crop_policy: None,
+                embedding_kind: None,
+                model_revision: None,
+                preprocessing_fingerprint: None,
+                max_image_patches: None,
+            })
+        }
+
+        fn embed<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> kogwistar_engine::embedding::EmbeddingFuture<'a> {
+            Box::pin(async move { Ok(texts.iter().map(|_| vec![0.6, 0.8, 0.0]).collect()) })
+        }
+    }
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("http://{}", listener.local_addr().unwrap());
     let chroma_setup = tokio::spawn(async move {
@@ -208,7 +238,8 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
     });
     let mut service = SqliteRunApplicationService::open(&path)
         .unwrap()
-        .with_chroma_graph(graph);
+        .with_chroma_graph(graph)
+        .with_embedding_provider(Arc::new(FixedEmbeddingProvider));
     service.change_events = crate::change_events::ChangeEventPublisher::new(
         Some(change_endpoint),
         1,
@@ -316,6 +347,7 @@ async fn sqlite_chroma_public_document_upsert_is_scope_isolated_and_durable() {
     );
     assert_eq!(stored.metadata["origin"], "test");
     assert_eq!(stored.metadata["doc_type"], "text");
+    assert_eq!(stored.embedding.as_deref(), Some(&[0.6, 0.8, 0.0][..]));
     assert!(
         service
             .store

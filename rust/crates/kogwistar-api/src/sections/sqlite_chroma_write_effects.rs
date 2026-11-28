@@ -248,7 +248,22 @@ impl SqliteRunApplicationService {
             Ok(write) => write,
             Err(response) => return response,
         };
-        match self.store.upsert_document_projection(prepared.write).await {
+        let write = match embed_document_projection(
+            prepared.write,
+            self.embedding_provider.as_deref(),
+        )
+        .await
+        {
+            Ok(write) => write,
+            Err(()) => {
+                return effect_error(
+                    StatusCode::BAD_GATEWAY,
+                    "KOGWISTAR_EMBEDDING_FAILED",
+                    "The configured embedding provider returned an invalid result or failed",
+                );
+            }
+        };
+        match self.store.upsert_document_projection(write).await {
             Ok(()) => {
                 self.change_events.publish(
                     "doc.upsert",

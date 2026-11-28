@@ -354,6 +354,7 @@
         );
         assert_eq!(ocr_rows[0].metadata["doc_type"], "ocr_document");
         assert_eq!(ocr_rows[0].metadata["insertion_method"], "ocr-parser");
+        assert_eq!(ocr_rows[0].embedding.as_deref(), Some(&[0.6, 0.8, 0.0][..]));
         assert_eq!(
             *embedding_inputs.lock().unwrap(),
             vec![
