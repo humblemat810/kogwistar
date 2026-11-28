@@ -2636,3 +2636,33 @@ Both traces pass the declared SQLite endpoint thresholds. Raw report:
 manifest records the source revision and verified limits. This refreshes the
 SQLite endpoint cell only; authenticated-agent fixed-resource comparison and
 PostgreSQL/SQLite+Chroma traces remain unverified.
+
+#### 2026-11-28 fixed-resource authenticated PostgreSQL agent request
+
+Re-ran the existing authenticated conversation-answer request profile at source
+`05ab4eeb54181402d505146b064e19f3273cd2f1`, using matched Linux Docker clients
+(CPython 3.13 and Rust, each 3 CPU / 6 GiB) against disposable pgvector
+(1 CPU / 2 GiB). Each mode used one warm-up plus three fresh-schema measured
+samples, a 2,001-node fixture, 100 ms polling, and identical digest
+`b2a15e78654e98dcaf8819dd8430db975b3b3b10e8831cbce1fb6f239d40d741`.
+Docker inspection and database readiness probes verified limits and backend.
+
+| Mode | Median request | p95 request | Throughput |
+| --- | ---: | ---: | ---: |
+| Python | 22,055.939 ms | 26,198.545 ms | 0.045339 req/s |
+| Rust-native | 15,168.055 ms | 15,209.321 ms | 0.065928 req/s |
+
+Rust/Python throughput ratio was 1.454; p95 ratio was 0.581. The verifier
+reported `pass`, zero FFI calls on Rust-native route, zero Python workers, and
+no errors. Raw ignored logs and report are under
+`.tmp/dlfc18-{python,rust}-agent.log`,
+`.tmp/dlfc18-agent-postgres-report.json`, and
+`.tmp/dlfc18-resource-evidence.json`.
+
+The first Rust attempt exposed an existing 120-second mock-provider accept
+timeout, shorter than fixture seeding under these caps. The existing test
+harness now waits for provider acceptance; enclosing run-status polling remains
+the bound. The focused Rust test then passed warm-up plus all three samples.
+This closes authenticated-agent performance trace only. General PostgreSQL/
+pgvector graph traces and SQLite+Chroma eventual-projection traces remain
+unverified; no whole-stack performance claim follows.

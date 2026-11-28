@@ -72,11 +72,9 @@
         let snapshot_schema = knowledge_schema.clone();
         let conversation_graph_schema = conversation_schema.clone();
         let chat_server = tokio::spawn(async move {
-            let (mut stream, _) =
-                tokio::time::timeout(std::time::Duration::from_secs(120), listener.accept())
-                    .await
-                    .unwrap()
-                    .unwrap();
+            // Fixture seeding can exceed two minutes under the benchmark's
+            // resource caps; the enclosing run-status loop bounds this wait.
+            let (mut stream, _) = listener.accept().await.unwrap();
             let mut bytes = Vec::new();
             let header_end = loop {
                 let mut chunk = [0_u8; 4096];
