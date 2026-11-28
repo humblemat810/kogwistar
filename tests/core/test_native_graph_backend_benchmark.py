@@ -320,16 +320,38 @@ def test_python_postgres_trace_adapter_matches_shared_event_and_projection_contr
 
 
 def test_python_trace_adapter_supports_sqlite_metadata_with_chroma_projection(tmp_path) -> None:
+    from contextlib import contextmanager
+
     from kogwistar.engine_core.engine_sqlite import EngineSQLite
+
+    class ObservedSQLite:
+        def __init__(self) -> None:
+            self.store = EngineSQLite(tmp_path)
+            self.transaction_active = False
+            self.store.ensure_initialized()
+
+        @contextmanager
+        def transaction(self):
+            with self.store.transaction():
+                self.transaction_active = True
+                try:
+                    yield
+                finally:
+                    self.transaction_active = False
+
+        def __getattr__(self, name: str):
+            return getattr(self.store, name)
 
     class FakeChroma:
         def __init__(self) -> None:
+            self.metadata: ObservedSQLite | None = None
             self.records: dict[str, dict[str, dict[str, object]]] = {
                 "node": {},
                 "edge": {},
             }
 
         def upsert(self, kind: str, **values: object) -> None:
+            assert self.metadata is not None and not self.metadata.transaction_active
             ids = values["ids"]
             docs = values["documents"]
             metadata = values["metadatas"]
@@ -366,14 +388,15 @@ def test_python_trace_adapter_supports_sqlite_metadata_with_chroma_projection(tm
             del values
 
     trace = build_backend_trace_document(1)
-    metadata = EngineSQLite(tmp_path)
-    metadata.ensure_initialized()
+    metadata = ObservedSQLite()
     chroma = FakeChroma()
+    chroma.metadata = metadata
     adapter = PostgresGraphTraceAdapter(
         metadata,
         chroma,
         namespace="benchmark-native-graph",
         trace_id=trace["trace_id"],
+        eventual_projection=True,
     )
 
     adapter.seed_root(trace["root_payload"])

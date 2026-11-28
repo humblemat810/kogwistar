@@ -56,6 +56,7 @@ class PostgresGraphTraceAdapter:
         *,
         namespace: str,
         trace_id: str,
+        eventual_projection: bool = False,
     ) -> None:
         if not namespace or not trace_id:
             raise ValueError("trace namespace and id are required")
@@ -63,6 +64,7 @@ class PostgresGraphTraceAdapter:
         self.vector_backend = vector_backend
         self.namespace = namespace
         self.trace_id = trace_id
+        self.eventual_projection = eventual_projection
         self._node_ids: set[str] = set()
         self._edge_ids: set[str] = set()
 
@@ -70,14 +72,13 @@ class PostgresGraphTraceAdapter:
     def _canonical_json(value: Mapping[str, Any]) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
-    def _write_entity(
+    def _append_entity_event(
         self,
         *,
         kind: str,
         entity_id: str,
         payload: Mapping[str, Any],
-        vector: list[float] | None,
-    ) -> None:
+    ) -> tuple[str, dict[str, Any]]:
         if payload.get("id") != entity_id:
             raise ValueError(f"{kind} payload id differs from requested id")
         metadata = payload.get("metadata", {})
@@ -92,6 +93,17 @@ class PostgresGraphTraceAdapter:
             op="ADD",
             payload_json=payload_json,
         )
+        return payload_json, metadata
+
+    def _project_entity(
+        self,
+        *,
+        kind: str,
+        entity_id: str,
+        payload_json: str,
+        metadata: dict[str, Any],
+        vector: list[float] | None,
+    ) -> None:
         upsert = (
             self.vector_backend.node_upsert
             if kind == "node"
@@ -110,14 +122,44 @@ class PostgresGraphTraceAdapter:
             self.vector_backend.edge_endpoints_delete(where={"edge_id": entity_id})
         (self._node_ids if kind == "node" else self._edge_ids).add(entity_id)
 
+    def _write_entity(
+        self,
+        *,
+        kind: str,
+        entity_id: str,
+        payload: Mapping[str, Any],
+        vector: list[float] | None,
+    ) -> None:
+        payload_json, metadata = self._append_entity_event(
+            kind=kind, entity_id=entity_id, payload=payload
+        )
+        self._project_entity(
+            kind=kind,
+            entity_id=entity_id,
+            payload_json=payload_json,
+            metadata=metadata,
+            vector=vector,
+        )
+
     def seed_root(self, root_payload: Mapping[str, Any]) -> None:
         root_id = root_payload.get("id")
         if not isinstance(root_id, str) or not root_id:
             raise ValueError("root payload id is required")
-        with self.metadata_store.transaction():
-            self._write_entity(
-                kind="node", entity_id=root_id, payload=root_payload, vector=None
+        if self.eventual_projection:
+            with self.metadata_store.transaction():
+                payload_json, metadata = self._append_entity_event(
+                    kind="node", entity_id=root_id, payload=root_payload
+                )
+            self._project_entity(
+                kind="node",
+                entity_id=root_id,
+                payload_json=payload_json,
+                metadata=metadata,
+                vector=None,
             )
+            return
+        with self.metadata_store.transaction():
+            self._write_entity(kind="node", entity_id=root_id, payload=root_payload, vector=None)
 
     def write_record(self, operation: Mapping[str, Any]) -> None:
         node = operation.get("node_payload")
@@ -131,6 +173,29 @@ class PostgresGraphTraceAdapter:
         edge_id = operation.get("expected_edge_id")
         if not isinstance(node_id, str) or not isinstance(edge_id, str):
             raise ValueError("write_record requires expected node and edge ids")
+        if self.eventual_projection:
+            with self.metadata_store.transaction():
+                node_payload_json, node_metadata = self._append_entity_event(
+                    kind="node", entity_id=node_id, payload=node
+                )
+                edge_payload_json, edge_metadata = self._append_entity_event(
+                    kind="edge", entity_id=edge_id, payload=edge
+                )
+            self._project_entity(
+                kind="node",
+                entity_id=node_id,
+                payload_json=node_payload_json,
+                metadata=node_metadata,
+                vector=vector,
+            )
+            self._project_entity(
+                kind="edge",
+                entity_id=edge_id,
+                payload_json=edge_payload_json,
+                metadata=edge_metadata,
+                vector=vector,
+            )
+            return
         with self.metadata_store.transaction():
             self._write_entity(kind="node", entity_id=node_id, payload=node, vector=vector)
             self._write_entity(kind="edge", entity_id=edge_id, payload=edge, vector=vector)
