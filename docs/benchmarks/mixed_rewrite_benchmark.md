@@ -2712,7 +2712,7 @@ Thus it cannot close either missing DLFC-18 comparison. Reports and fresh
 sample data are ignored under `.tmp/dlfc18-python-{pg,chroma}-baseline/`; run
 IDs are `d70af036c7d5` and `195a226f3bca`.
 
-#### 2026-11-28 capped PostgreSQL native graph trace (matched effects; gate failed)
+#### 2026-11-28 capped PostgreSQL native graph trace (matched effects; gate passed)
 
 Compared the shared versioned 100-record read-after-write trace through
 `PostgresGraphTraceAdapter` and the Rust `native_graph_trace_benchmark`
@@ -2730,18 +2730,18 @@ Rust reported zero FFI calls.
 | Mode | Median throughput | Median operation p95: event read | projection read | write | Median peak RSS |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Python | 24.79 ops/s | 13.00 ms | 26.39 ms | 67.74 ms | 168,058,880 B |
-| Rust-native | 19.55 ops/s | 22.02 ms | 12.74 ms | 126.94 ms | 19,599,360 B |
-| Rust/Python ratio | 0.789 | 1.694 | 0.483 | 1.874 | 0.117 |
+| Rust-native | 35.47 ops/s | 6.19 ms | 12.82 ms | 70.81 ms | 19,705,856 B |
+| Rust/Python ratio | 1.431 | 0.476 | 0.486 | 1.045 | 0.117 |
 
-The report verifier failed the existing thresholds: throughput must be at
-least 0.95; each operation p95 and peak RSS ratios must be at most 1.10.
-Projection-read latency and RSS passed; throughput, event-read p95, and write
-p95 did not. An earlier run omitted Python edge-endpoint cleanup and had
-different write transaction boundaries; its timings are superseded and are not
-gate evidence. The Rust runner now reads the node+edge event pair with one
-bounded ordered replay, matching Python's single range read. This improved
-Rust median throughput from 19.07 to 19.55 ops/s, but did not meet the gate.
-This corrected run aligns trace effects and boundaries, but remains a bounded
-sequential microtrace, not full request-path or concurrent evidence. DLFC-18
-and GOAL-09 remain open; do not lower thresholds. The generated trace is
-ignored at `.tmp/dlfc18-pg-trace-100.json`.
+The report verifier passed the existing thresholds: throughput must be at
+least 0.95; each operation p95 and peak RSS ratios must be at most 1.10. All
+three fresh-schema samples matched the trace digest, produced 201 canonical
+events and converged projections; Rust reported zero FFI calls. The Rust
+upsert no longer performs a redundant scoped pre-read: Python-compatible
+global `id` primary-key conflict still rejects cross-scope ID reuse, while
+the scoped conflict arbiter handles same-scope updates. The existing live
+PostgreSQL scope test passed (**1 passed**) and the Rust benchmark contract
+tests passed (**3 passed**). This is a bounded sequential microtrace, not
+full request-path or concurrent evidence. SQLite+Chroma performance remains
+unverified, so DLFC-18 and GOAL-09 remain open; thresholds were not lowered.
+The generated trace is ignored at `.tmp/dlfc18-pg-trace-100.json`.

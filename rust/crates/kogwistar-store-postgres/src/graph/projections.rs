@@ -31,30 +31,6 @@ where
         }
     }
     let table = graph_table(tables, &write.table)?;
-    if let Some(row) = client
-        .query_opt(
-            &format!(
-                "SELECT metadata::TEXT FROM {table} WHERE id = $1 AND {} FOR UPDATE",
-                graph_scope_identity_predicate(2)
-            ),
-            &[
-                &write.record.id,
-                &write.scope.namespace,
-                &write.scope.workspace_id.as_deref().unwrap_or(""),
-                &write.scope.graph_space.as_deref().unwrap_or(""),
-            ],
-        )
-        .await
-        .map_err(backend)?
-    {
-        let current_json: String = row.try_get(0).map_err(backend)?;
-        let current: Map<String, Value> = serde_json::from_str(&current_json)?;
-        if !graph_scope_matches_or_legacy_default(&write.scope, &current)? {
-            return Err(PostgresStoreError::Backend(
-                "graph record id belongs to a different scope".to_owned(),
-            ));
-        }
-    }
     let metadata_json = serde_json::to_string(&metadata)?;
     let embedding_sql = write
         .record
@@ -74,7 +50,16 @@ where
         )
         .await
         .map_err(|error| {
-            PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}"))
+            if error.code() == Some(&tokio_postgres::error::SqlState::UNIQUE_VIOLATION) {
+                // Python graph tables retain a global id primary key. The
+                // scoped arbiter handles same-scope updates; a primary-key
+                // conflict therefore means the id belongs to another scope.
+                PostgresStoreError::Backend(
+                    "graph record id belongs to a different scope".to_owned(),
+                )
+            } else {
+                PostgresStoreError::Backend(format!("graph projection upsert failed: {error:?}"))
+            }
         })?;
     if write.table == "gke_edges" {
         if metadata.get("_kogwistar_stage2_ready") == Some(&Value::Bool(true)) {
