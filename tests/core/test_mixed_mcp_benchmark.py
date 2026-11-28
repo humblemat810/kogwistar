@@ -910,6 +910,24 @@ def test_progress_json_checkpoint_replaces_atomically(tmp_path) -> None:
     assert not concurrent_path.with_suffix(".json.tmp").exists()
 
 
+@pytest.mark.parametrize("backend", ("chroma_sqlite_metadata", "postgres_pgvector"))
+def test_concurrent_benchmark_rejects_rust_only_mode_for_python_vector_backends(
+    tmp_path, backend: str
+) -> None:
+    output = tmp_path / backend
+
+    with pytest.raises(ValueError, match="Rust mode is unavailable"):
+        mixed_concurrent_benchmark.run_benchmark(
+            output,
+            items=2,
+            samples=2,
+            modes=("rust",),
+            backends=(backend,),
+        )
+
+    assert not output.exists()
+
+
 @pytest.mark.parametrize(
     "writer",
     [

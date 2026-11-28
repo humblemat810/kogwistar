@@ -685,6 +685,15 @@ def run_benchmark(
     postgres_dsn: str | None = None,
     vector_query_indexes: set[int] | None = None,
 ) -> dict[str, Any]:
+    if "rust" in modes and "python" not in modes:
+        unsupported_rust_backends = sorted(
+            set(backends) - {"sqlite_event_projection"}
+        )
+        if unsupported_rust_backends:
+            raise ValueError(
+                "Rust mode is unavailable for backend(s): "
+                + ", ".join(unsupported_rust_backends)
+            )
     output.mkdir(parents=True, exist_ok=True)
     report: dict[str, Any] = {
         "schema": "kogwistar-mixed-concurrent-report/v3",
