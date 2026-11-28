@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import statistics
 from collections.abc import Mapping
 from time import perf_counter, process_time
@@ -18,6 +20,7 @@ try:
     from .mixed_workload import (
         VECTOR_DIMENSION,
         build_graph_payloads,
+        build_root_graph_payload,
         build_normalized_vector,
         build_read_after_write_trace,
         normalized_vector_digest,
@@ -26,6 +29,7 @@ except ImportError:
     from mixed_workload import (
         VECTOR_DIMENSION,
         build_graph_payloads,
+        build_root_graph_payload,
         build_normalized_vector,
         build_read_after_write_trace,
         normalized_vector_digest,
@@ -71,6 +75,23 @@ def build_backend_trace(items: int) -> list[dict[str, Any]]:
             )
         trace.append(row)
     return trace
+
+
+def build_backend_trace_document(items: int) -> dict[str, Any]:
+    """Serialize one versioned trace contract shared by Python and Rust runners."""
+    operations = build_backend_trace(items)
+    body: dict[str, Any] = {
+        "schema": "kogwistar-native-graph-backend-trace/v1",
+        "trace_id": f"native-graph-{items}",
+        "root_payload": build_root_graph_payload(),
+        "operations": operations,
+    }
+    body["trace_sha256"] = hashlib.sha256(
+        json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+    ).hexdigest()
+    return body
 
 
 def run_trace_sample(

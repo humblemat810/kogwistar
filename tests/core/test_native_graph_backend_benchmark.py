@@ -6,6 +6,7 @@ import pytest
 
 from scripts.native_graph_backend_benchmark import (
     build_backend_trace,
+    build_backend_trace_document,
     run_trace_sample,
     verify_backend_report,
 )
@@ -177,6 +178,23 @@ def test_build_backend_trace_is_repeatable_and_contains_graph_and_vector_payload
 def test_build_backend_trace_rejects_empty_workload() -> None:
     with pytest.raises(ValueError, match="positive"):
         build_backend_trace(0)
+
+
+def test_backend_trace_document_is_deterministic_and_has_a_shared_root() -> None:
+    first = build_backend_trace_document(2)
+    second = build_backend_trace_document(2)
+
+    assert first == second
+    assert first["schema"] == "kogwistar-native-graph-backend-trace/v1"
+    assert first["trace_sha256"]
+    assert first["root_payload"]["id"] == "mixed-node-root"
+    assert len(first["operations"]) == 6
+    assert first["operations"][0]["node_payload"]["id"] == "mixed-node-00000"
+
+
+def test_backend_trace_document_rejects_empty_workload() -> None:
+    with pytest.raises(ValueError, match="positive"):
+        build_backend_trace_document(0)
 
 
 @pytest.fixture
