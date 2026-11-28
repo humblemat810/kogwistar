@@ -17,6 +17,27 @@ from kogwistar.server.auth_middleware import claims_ctx
 from tests.auth_env import TEST_JWT_ALG, TEST_JWT_SECRET
 
 
+def test_ocr_document_payload_matches_shared_source_map_contract() -> None:
+    from kogwistar.engine_core.models import Document
+    from kogwistar.engine_core.subsystems.write import _entity_payload
+
+    fixture = json.loads(
+        (
+            Path(__file__).resolve().parents[2]
+            / "contracts/golden/document-ocr-source-map-v1.json"
+        ).read_text(encoding="utf-8")
+    )
+    document = Document.from_ocr(
+        id=fixture["doc_id"],
+        ocr_content=fixture["ocr_content"],
+        type="ocr",
+    )
+
+    assert str(document.content) == fixture["expected_content_repr"]
+    assert document.source_map == fixture["expected_source_map"]
+    assert _entity_payload(document) == fixture["expected_change_payload"]
+
+
 @pytest.mark.ci
 @pytest.mark.parametrize(
     "route_name",

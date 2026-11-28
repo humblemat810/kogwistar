@@ -1,4 +1,18 @@
     #[test]
+    fn ocr_source_map_matches_shared_python_source_map_contract() {
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../../../contracts/golden/document-ocr-source-map-v1.json"
+        ))
+        .expect("valid OCR source-map fixture");
+        let input = serde_json::to_string(&fixture["ocr_content"]).unwrap();
+        let (normalized_content, source_map) =
+            normalize_ocr_document_with_source_map(&input).expect("valid OCR document");
+
+        assert_eq!(normalized_content, fixture["expected_content_repr"]);
+        assert_eq!(serde_json::to_value(source_map).unwrap(), fixture["expected_source_map"]);
+    }
+
+    #[test]
     fn document_graph_validation_matches_provenance_and_pointer_contract() {
         let request = |body: Value| ApiEffectRequest {
             contract_version: 1,

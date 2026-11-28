@@ -380,7 +380,28 @@ fn python_string_value(value: &Value) -> String {
 }
 
 fn normalize_ocr_document(content: &str) -> Result<String, String> {
+    normalize_ocr_document_inner(content, false).map(|(normalized, _)| normalized)
+}
+
+#[cfg(test)]
+// PYTHON_PARITY_V1: rust=rust/crates/kogwistar-api/src/sections/document_graph.rs#normalize_ocr_document_with_source_map; python=kogwistar/engine_core/models.py#Document.from_ocr; fixture=contracts/golden/document-ocr-source-map-v1.json; rust_test=rust/crates/kogwistar-api/src/tests/document_validation.rs#ocr_source_map_matches_shared_python_source_map_contract; python_test=tests/server/test_document_api_auth.py#test_ocr_document_payload_matches_shared_source_map_contract
+fn normalize_ocr_document_with_source_map(
+    content: &str,
+) -> Result<(String, serde_json::Map<String, Value>), String> {
+    normalize_ocr_document_inner(content, true).map(|(normalized, source_map)| {
+        (
+            normalized,
+            source_map.expect("source map requested for OCR parity projection"),
+        )
+    })
+}
+
+fn normalize_ocr_document_inner(
+    content: &str,
+    include_source_map: bool,
+) -> Result<(String, Option<serde_json::Map<String, Value>>), String> {
     let mut document: Value = serde_json::from_str(content).map_err(|error| error.to_string())?;
+    let mut source_map = include_source_map.then(serde_json::Map::new);
     let pages = document
         .as_object_mut()
         .and_then(|object| {
@@ -410,6 +431,12 @@ fn normalize_ocr_document(content: &str) -> Result<String, String> {
                 "id".to_owned(),
                 Value::String(format!("p{page_number}_c{index}")),
             );
+            if let Some(source_map) = &mut source_map {
+                source_map.insert(
+                    format!("p{page_number}_c{index}"),
+                    Value::Object(cluster.clone()),
+                );
+            }
         }
         let non_text_objects = page
             .get_mut("non_text_objects")
@@ -424,10 +451,16 @@ fn normalize_ocr_document(content: &str) -> Result<String, String> {
                 "id".to_owned(),
                 Value::String(format!("p{page_number}_c{index}")),
             );
+            if let Some(source_map) = &mut source_map {
+                source_map.insert(
+                    format!("p{page_number}_c{index}"),
+                    Value::Object(object.clone()),
+                );
+            }
         }
     }
 
-    Ok(python_repr(&document))
+    Ok((python_repr(&document), source_map))
 }
 
 fn document_projection_write(

@@ -30,7 +30,7 @@ The fixed fine checklist remains **18/18 PASS** for its declared acceptance test
 
 | Existing evidence anchor | Unclosed parity slice | Current evidence boundary |
 | --- | --- | --- |
-| DL-16BH | OCR cluster `source_map` semantics | Rust `SourceMapV1` covers text chunks; OCR cluster/source-map equivalence to Python `Document.from_ocr` is unverified. No parity test selector mapped. |
+| DL-16BH | OCR cluster `source_map` semantics | Basic single text-cluster derivation now matches a shared Python/Rust fixture: Python `test_ocr_document_payload_matches_shared_source_map_contract`; Rust `ocr_source_map_matches_shared_python_source_map_contract` (1 passed each), plus annotation crosswalk (1 passed). Non-text clusters, repeated-ID collisions, and downstream OCR source-span resolution remain unverified. |
 | DL-16BH | OCR `doc.upsert` change-event behavior | Python emits the `doc.upsert` change notification; Rust equivalent behavior is unverified. Preserve its best-effort/CDC semantics; do not infer durable-event equivalence. No parity test selector mapped. |
 | DL-16BH | OCR embedding/indexing across supported backends | Projection-level tests do not prove OCR vector creation, metadata propagation, or retrieval/index visibility across backends. No parity test selector mapped. |
 | DL-16BH | OCR lifecycle and rollback | Text/document rollback evidence does not establish OCR cluster/source-map cleanup and lifecycle parity across backends. No parity test selector mapped. |

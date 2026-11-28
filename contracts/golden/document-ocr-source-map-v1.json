@@ -1,0 +1,41 @@
+{
+  "contract_version": 1,
+  "doc_id": "doc-ocr",
+  "ocr_content": {
+    "scan.pdf": [
+      {
+        "pdf_page_num": 1,
+        "OCR_text_clusters": [
+          { "text": "Hello" }
+        ],
+        "non_text_objects": []
+      }
+    ]
+  },
+  "expected_content_repr": "{'scan.pdf': [{'pdf_page_num': 1, 'OCR_text_clusters': [{'text': 'Hello', 'id': 'p1_c0'}], 'non_text_objects': []}]}",
+  "expected_source_map": {
+    "p1_c0": { "text": "Hello", "id": "p1_c0" }
+  },
+  "expected_change_payload": {
+    "id": "doc-ocr",
+    "content": {
+      "scan.pdf": [
+        {
+          "pdf_page_num": 1,
+          "OCR_text_clusters": [
+            { "text": "Hello", "id": "p1_c0" }
+          ],
+          "non_text_objects": []
+        }
+      ]
+    },
+    "type": "ocr_document",
+    "metadata": {},
+    "domain_id": null,
+    "processed": false,
+    "embeddings": null,
+    "source_map": {
+      "p1_c0": { "text": "Hello", "id": "p1_c0" }
+    }
+  }
+}
