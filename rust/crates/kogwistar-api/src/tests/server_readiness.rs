@@ -54,6 +54,81 @@
     }
 
     #[test]
+    fn dlfc06_read_route_backend_applicability_matrix_is_explicit() {
+        let memory = InMemoryGraphApplicationService::default();
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-dlfc06-read-matrix-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let sqlite = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        let postgres = PostgresRunApplicationService::from_dsn(
+            "postgres://unused:unused@127.0.0.1:1/unused",
+            "dlfc06_read_matrix_contract",
+        )
+        .unwrap();
+
+        // Python parity: runtime_api conversation reads and service-list routes.
+        // Plain SQLite is metadata-only; it must not claim conversation graph reads.
+        let cases = [
+            ("GET", "/api/conversations", true, false, true),
+            ("GET", "/api/workflow/services", false, true, true),
+        ];
+        for (method, path, memory_expected, sqlite_expected, postgres_expected) in cases {
+            assert_eq!(
+                memory.supports_http_operation(method, path),
+                memory_expected,
+                "InMemory applicability for {method} {path}"
+            );
+            assert_eq!(
+                sqlite.supports_http_operation(method, path),
+                sqlite_expected,
+                "SQLite metadata applicability for {method} {path}"
+            );
+            assert_eq!(
+                postgres.supports_http_operation(method, path),
+                postgres_expected,
+                "PostgreSQL applicability for {method} {path}"
+            );
+        }
+
+        drop(sqlite);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[tokio::test]
+    async fn dlfc06_unsupported_sqlite_conversation_read_fails_closed_without_writes() {
+        let sqlite_path = std::env::temp_dir().join(format!(
+            "kogwistar-api-dlfc06-read-deny-{}.sqlite",
+            uuid::Uuid::new_v4()
+        ));
+        let service = SqliteRunApplicationService::open(&sqlite_path).unwrap();
+        assert!(!service.supports_http_operation("GET", "/api/conversations"));
+
+        let before = service.store.list_named_projections("conversation").unwrap();
+        let response = service
+            .execute(ApiEffectRequest {
+                contract_version: 1,
+                method: "GET".to_owned(),
+                path_and_query: "/api/conversations".to_owned(),
+                body: Vec::new(),
+                principal: json!({"sub":"reader", "role":"ro", "ns":["conversation"]}),
+            })
+            .await;
+        assert_eq!(response.status, StatusCode::NOT_IMPLEMENTED.as_u16());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&response.body).unwrap()["code"],
+            "KOGWISTAR_API_CAPABILITY_NOT_CUT_OVER"
+        );
+        assert_eq!(
+            service.store.list_named_projections("conversation").unwrap(),
+            before
+        );
+
+        drop(service);
+        remove_test_sqlite(&sqlite_path);
+    }
+
+    #[test]
     fn mcp_advertisement_requires_concrete_authority() {
         let postgres = PostgresRunApplicationService::from_dsn(
             "postgres://unused:unused@127.0.0.1:1/unused",
