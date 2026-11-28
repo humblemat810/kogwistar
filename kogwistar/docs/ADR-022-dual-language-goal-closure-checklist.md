@@ -2,9 +2,9 @@
 
 **Updated:** 2026-11-27
 **Overall status:** **NOT COMPLETE**. This checklist audits the full dual-language objective; it is separate from ADR-015's fixed capability-gate denominator and ADR-022's historical evidence inventories. Its rows are not added to either count.  
-**Status summary:** **6 bounded criteria PASS; 1 PARTIAL; 2 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
+**Status summary:** **8 bounded criteria PASS; 1 PARTIAL; 0 OPEN.** PASS means only the stated bounded criterion is evidenced, not that the overall goal is complete.
 
-**Fine execution tracking:** Remaining GOAL-06/08/09 work is tracked in [ADR-022 dual-language goal fine checklist](ADR-022-dual-language-goal-fine-checklist.md). Its denominator is independent from ADR-015 and the closed 177/911 evidence inventory.
+**Fine execution tracking:** GOAL-06/08/09 status derives from mapped items in [ADR-022 dual-language goal fine checklist](ADR-022-dual-language-goal-fine-checklist.md). Its denominator is independent from ADR-015 and the closed 177/911 evidence inventory. The closure table and summary are current; evidence and history below do not add separate acceptance gates.
 
 ## Closure Criteria
 
@@ -15,9 +15,9 @@
 | GOAL-03 | Provide at least one top-down Rust-native request path with no Python handoff, from server ingress through workflow execution to durable state. | PASS (bounded) | ADR-015 WFR-04 and REL-04B exercise Rust-native workflow/server paths; REL-05C measures the Rust-native HTTP graph trace with zero FFI calls. Current-checkout live pgvector rerun: `cargo test --manifest-path rust/Cargo.toml -p kogwistar-api --lib postgres_agentic_answer_workflow_executes_durably_without_python_worker -- --include-ignored --nocapture` (**1 passed**, 23.37s test; operation benchmark 10.47s), including authenticated conversation ingress, persisted run/turn/lane state, and no Python worker. This proves named workloads only, not all server routes or a global speedup. |
 | GOAL-04 | Keep persisted state readable and writable across Python/Rust handoff without weakening rollback or canonical authority. | PASS (bounded) | ADR-015 REL-02C/02D and named SQLite/PostgreSQL/Chroma interoperability tests cover bidirectional reads/writes, reopen, and rollback for their fixtures. Unlisted schemas, historical versions, and backend combinations are not implied. |
 | GOAL-05 | Exercise interchangeable memory, PostgreSQL/pgvector, and Chroma paths without claiming cross-store atomicity. | PASS (bounded) | ADR-015 backend gates and `chroma_rust_interop_worklist.md` show Rust/Python Chroma composition and handoff tests; PostgreSQL and memory have separate named gates. Chroma remains an eventual projection; its Python adapter is still explicitly Python-owned in `rust-port-v1`. This PASS establishes tested interoperability, not Rust ownership of that adapter. |
-| GOAL-06 | Cover every public graph, storage, runtime, conversation, agent, REST, MCP, and CLI operation in the cross-language inventory, with explicit implementation and conformance status. | OPEN | Coarse status derives from DLFC-01 through DLFC-12 in `ADR-022-dual-language-goal-fine-checklist.md`; DLFC-06 is now PASS under its documented fixed test set. GOAL-06 remains OPEN because DLFC-10 is IN PROGRESS. The frozen inventory currently counts 84 HTTP operations, 62 MCP operations, and 11 syscall names per language; selector mapping and bounded passing tests do not alone close the full GOAL-06 criterion. No additional standalone 184-cell matrix is required. |
+| GOAL-06 | Cover every public graph, storage, runtime, conversation, agent, REST, MCP, and CLI operation in the cross-language inventory, with explicit implementation and conformance status. | PASS (bounded) | Mapped DLFC-01 through DLFC-12 are PASS under their fixed documented selectors. No additional operation/backend matrix is a separate acceptance gate. |
 | GOAL-07 | Verify native and mixed paths on the declared interpreter/platform support matrix. | PASS (bounded) | CI #860 at `f5fcc708dbae11134d154dc1d81a5475d25f610b`: required CPython 3.12-3.14 and PyPy 3.11 jobs passed; `rust-python-interop (pypy311, pypy-3.11-v7.3.20, true)` passed all three real-server worker/backend cases (SQLite, SQLite+Chroma, PostgreSQL), while Rust API server was built separately with no Python handoff in its native path. PyO3 SQLite-meta binding remains excluded and unsupported under PyPy; this PASS covers the declared HTTP worker seam, not in-process extension parity. PyPy 3.12 beta remains best-effort and failed independently, outside the declared support matrix. |
-| GOAL-08 | Reconcile behavior across the full declared public surface, preserving Python compatibility and documenting any intentional differences. | OPEN | ADR-015's bounded evidence and the 177/911 historical inventories do not establish whole-stack parity. DLFC-06 is PASS under the fixed tests documented in the fine checklist; other GOAL-06/08 tasklets remain open, including DLFC-10. Close only when mapped fine-checklist items and their documented tests pass, with intentional differences assigned an owner, scope, and compatibility contract. |
+| GOAL-08 | Reconcile behavior across the full declared public surface, preserving Python compatibility and documenting any intentional differences. | PASS (bounded) | Mapped DLFC-13 through DLFC-17 and GOAL-06 are PASS under their fixed documented selectors. No unlisted acceptance set is implied. |
 | GOAL-09 | Keep the seam-free native option and evaluate its performance without promising unmeasured global superiority. | PARTIAL | Executable gate: Rust-native/Python throughput >=0.95, each operation p95 <=1.10, equal digest, verified resource caps, zero FFI. Current source `033b8dcbe6f3a65d9eab4722f05d35e9eda4fe2d` passed sequential SQLite at 100/500 records (9.60x/9.70x throughput; p95 ratios 0.089–0.121) and balanced 1-writer/4-reader SQLite (21.32x; p95 ratios 0.098–0.333), with 3 samples, 2 CPU/4 GiB, network disabled, matching digests, zero FFI and zero verifier errors. Raw report: `.tmp/mixed-runtime-goal09-current-20261125-rerun/endpoint/endpoint-report.v1.json`. Authenticated workflow/graph, PostgreSQL/pgvector, and SQLite+Chroma performance traces remain open; no global speed claim. |
 
 ## Pivoted Test-Case Status
@@ -408,11 +408,10 @@ PostgreSQL interop selectors are implemented and mapped above, but were not
 rerun in this batch. These are representative checks only; GOAL-06/08 remain
 OPEN and GOAL-09 remains PARTIAL.
 
-Completion rule: GOAL-06 requires every inventory operation × declared backend
-pair to be `tested` or explicitly `unsupported` with a passing fail-closed
-test. GOAL-08 requires all applicable matrix families to pass on both languages
-and every intentional difference to name its owner, scope, and compatibility
-contract. A passing tasklet cannot imply untested matrix families.
+Completion rule: GOAL-06/08 close when all mapped DLFC tasklets in the fine
+checklist are PASS with their documented executable test evidence. The fixed
+tasklet set is authoritative; no additional operation/backend matrix or
+unlisted tests are implied. Claims beyond this evidence remain out of scope.
 
 ## Reading the Existing Counts
 

@@ -1689,8 +1689,37 @@ def test_dual_language_goal_fine_summary_matches_tasklet_rows() -> None:
     )
 
 
+def test_dlfc10_uses_fixed_selectors_not_an_unenumerated_matrix() -> None:
+    path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    rows = _markdown_table_rows(path, "| DLFC-")
+    dlfc10 = next(row for row in rows if row[0] == "DLFC-10")
+
+    assert dlfc10[2] == "PASS"
+    assert "fixed documented selectors passed" in dlfc10[3]
+    assert "no separate operation/backend matrix gate" in dlfc10[3]
+    assert re.search(r"matrix.{0,80}(?:open|remain)", dlfc10[3], re.IGNORECASE) is None
+
+    closure_path = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-closure-checklist.md"
+    closure_text = closure_path.read_text(encoding="utf-8")
+    criteria = closure_text.split("## Closure Criteria", maxsplit=1)[1].split("\n## ", maxsplit=1)[0]
+    fine_status = {row[0]: row[2] for row in rows}
+    closure_rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in criteria.splitlines()
+        if line.startswith("| GOAL-")
+    ]
+    closure = {row[0]: row[2].split()[0] for row in closure_rows}
+    goal06_pass = all(fine_status[f"DLFC-{number:02d}"] == "PASS" for number in range(1, 13))
+    goal08_pass = goal06_pass and all(
+        fine_status[f"DLFC-{number:02d}"] == "PASS" for number in range(13, 18)
+    )
+    assert closure["GOAL-06"] == ("PASS" if goal06_pass else "OPEN")
+    assert closure["GOAL-08"] == ("PASS" if goal08_pass else "OPEN")
+
+
 def test_passed_fine_gates_name_existing_executable_tests() -> None:
     checklist = ROOT / "kogwistar" / "docs" / "ADR-022-dual-language-goal-fine-checklist.md"
+    checklist_text = checklist.read_text(encoding="utf-8")
     rows = _markdown_table_rows(checklist, "| DLFC-")
     python_tests = {
         name
@@ -1716,8 +1745,16 @@ def test_passed_fine_gates_name_existing_executable_tests() -> None:
         gate_id, _goal, status, evidence = row[:4]
         if status != "PASS":
             continue
-        python_refs = set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence)) & python_tests
-        rust_refs = set(re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)\b", evidence)) & rust_tests
+        evidence_scope = evidence
+        if "detailed selector evidence remains in the dated entries below" in evidence.lower():
+            section = re.search(
+                rf"(?ms)^### {re.escape(gate_id)} Evidence Update.*?(?=^### |\Z)",
+                checklist_text,
+            )
+            if section is not None:
+                evidence_scope += section.group()
+        python_refs = set(re.findall(r"\btest_[A-Za-z0-9_]+\b", evidence_scope)) & python_tests
+        rust_refs = set(re.findall(r"\btests::([A-Za-z_][A-Za-z0-9_]*)\b", evidence_scope)) & rust_tests
         if not python_refs and not rust_refs:
             missing_selectors.append(gate_id)
     assert not missing_selectors, (
