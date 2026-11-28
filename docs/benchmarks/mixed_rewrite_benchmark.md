@@ -2689,3 +2689,25 @@ server request; it is diagnostic only and does not close or fail the
 seam-free DLFC-18 gate. It does show that Rust-facade performance varies by
 operation, so no broad speed claim is justified. Raw JSON is retained locally
 at `.tmp/dlfc18-pg-authority-report.json` (ignored).
+
+#### 2026-11-28 Python backend trace baselines (diagnostic; non-gating)
+
+Ran `scripts/mixed_backend_benchmark.py` against the same fixed 100-item,
+read-after-write trace for `postgres_pgvector` and
+`chroma_sqlite_metadata`. Each backend had one warm-up and two fresh measured
+samples, 10 vector queries, and 384-dimensional precomputed normalized vectors;
+no embedding inference ran. Both reports produced trace SHA-256
+`179b8ea2fd925487dce6ea9088b879045a1ed2b97ae8d8a83efad2f65672b2d9` and
+state digest `554b983fb431eb7c728085f368a89ca08c8549909fb97592526218e4ad4b4a4c`.
+
+| Python backend | Median trace | p95 trace | Throughput | Startup | CPU time | Vectors persisted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| PostgreSQL/pgvector | 10,374.5 ms | 10,407.6 ms | 28.92 ops/s | 636.8 ms | 8,289.1 ms | 100 |
+| SQLite metadata + Chroma PersistentClient | 11,262.7 ms | 11,286.7 ms | 26.64 ops/s | 170.0 ms | 10,437.5 ms | 100 |
+
+This is a Python-only backend baseline, not a Rust comparison. The Chroma
+profile uses Python `PersistentClient` in the sample directory; it does not
+measure the running Chroma HTTP container or Rust's eventual-projection worker.
+Thus it cannot close either missing DLFC-18 comparison. Reports and fresh
+sample data are ignored under `.tmp/dlfc18-python-{pg,chroma}-baseline/`; run
+IDs are `d70af036c7d5` and `195a226f3bca`.
