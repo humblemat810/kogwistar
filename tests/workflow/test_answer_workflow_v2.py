@@ -485,6 +485,7 @@ def test_python_agent_postgres_2k_request_profile(
             {
                 "sample_id": sample_id,
                 "execution_mode": "python-http",
+                "backend_profile": "postgres_pgvector",
                 "fixture_nodes": fixture_size + 1,
                 "request_boundary": "in_process_answer_workflow_v2",
                 "seed_ms": round(seed_ms, 3),

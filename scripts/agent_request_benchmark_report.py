@@ -15,6 +15,11 @@ MIN_MEASURED_SAMPLES = 3
 EXPECTED_POLL_INTERVAL_MS = 100
 MAX_RUST_THROUGHPUT_RATIO = 0.95
 MAX_RUST_P95_LATENCY_RATIO = 1.10
+BACKEND_PROFILES = {
+    "sqlite_event_projection",
+    "chroma_sqlite_metadata",
+    "postgres_pgvector",
+}
 
 
 def _parse_samples(output: str, marker: str, expected_mode: str) -> list[dict[str, Any]]:
@@ -35,6 +40,12 @@ def _parse_samples(output: str, marker: str, expected_mode: str) -> list[dict[st
         raise ValueError(f"no {marker} samples found")
     if any(sample.get("execution_mode") != expected_mode for sample in samples):
         raise ValueError(f"execution mode mismatch: expected {expected_mode}")
+    if any(
+        not isinstance(sample.get("backend_profile"), str)
+        or not sample["backend_profile"]
+        for sample in samples
+    ):
+        raise ValueError("backend profile missing")
     identifiers = [sample.get("sample_id") for sample in samples]
     if identifiers.count("warmup") != 1:
         raise ValueError("requires exactly one warm-up sample")
@@ -100,6 +111,7 @@ def summarize_agent_samples(
     *,
     python_output: str,
     rust_output: str,
+    expected_backend_profile: str,
     expected_fixture_nodes: int,
     expected_digest: str,
     resource_evidence: dict[str, Any],
@@ -107,6 +119,8 @@ def summarize_agent_samples(
     rust_python_worker_count: int,
 ) -> dict[str, Any]:
     """Compare full authenticated HTTP traces; never infer missing isolation evidence."""
+    if expected_backend_profile not in BACKEND_PROFILES:
+        raise ValueError(f"unsupported backend profile: {expected_backend_profile}")
     python_samples = _parse_samples(python_output, PYTHON_MARKER, "python-http")
     rust_samples = _parse_samples(rust_output, RUST_MARKER, "rust-native-http")
     errors: list[str] = []
@@ -117,8 +131,14 @@ def summarize_agent_samples(
     expected_ids = {"warmup", *(f"sample-{index}" for index in range(1, len(python_ids)))}
     if python_ids != expected_ids:
         raise ValueError("sample IDs must be warmup and contiguous sample-1..N")
+    if {sample["backend_profile"] for sample in python_samples} != {
+        sample["backend_profile"] for sample in rust_samples
+    }:
+        raise ValueError("backend profile mismatch between runtimes")
     combined = python_samples + rust_samples
     for sample in combined:
+        if sample["backend_profile"] != expected_backend_profile:
+            raise ValueError("backend profile mismatch between samples and requested profile")
         if sample.get("fixture_nodes") != expected_fixture_nodes:
             raise ValueError("fixture size mismatch")
         if sample.get("canonical_state_sha256") != expected_digest:
@@ -155,8 +175,9 @@ def summarize_agent_samples(
     errors.extend(performance_errors)
     status = "not_assessed" if evidence_missing else "fail" if performance_errors else "pass"
     return {
-        "schema": "kogwistar-agent-request-benchmark/v1",
+        "schema": "kogwistar-agent-request-benchmark/v2",
         "status": status,
+        "backend_profile": expected_backend_profile,
         "samples_per_mode": len(python_samples) - 1,
         "fixture_nodes": expected_fixture_nodes,
         "canonical_state_sha256": expected_digest,
@@ -175,6 +196,7 @@ def main() -> int:
     parser.add_argument("--python-log", type=Path, required=True)
     parser.add_argument("--rust-log", type=Path, required=True)
     parser.add_argument("--fixture-nodes", type=int, required=True)
+    parser.add_argument("--backend-profile", choices=sorted(BACKEND_PROFILES), required=True)
     parser.add_argument("--digest", required=True)
     parser.add_argument("--resource-evidence", type=Path, required=True)
     parser.add_argument("--rust-ffi-calls", type=int, required=True)
@@ -184,6 +206,7 @@ def main() -> int:
     report = summarize_agent_samples(
         python_output=args.python_log.read_text(encoding="utf-8"),
         rust_output=args.rust_log.read_text(encoding="utf-8"),
+        expected_backend_profile=args.backend_profile,
         expected_fixture_nodes=args.fixture_nodes,
         expected_digest=args.digest,
         resource_evidence=json.loads(args.resource_evidence.read_text(encoding="utf-8")),

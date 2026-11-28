@@ -2291,16 +2291,18 @@ in its existing fixed-resource profile. Python JUnit with captured sample
 records: `.tmp/fw19-replay-capped-container/python-tcp-junit.xml`.
 
 The benchmark hooks now emit a common machine-readable TCP sample contract:
-sample ID, execution mode, seeded fixture size, TCP request latency, polling
-interval, and canonical result digest. Python retains its separate in-process
+sample ID, execution mode, backend profile, seeded fixture size, TCP request
+latency, polling interval, and canonical result digest. Python retains its separate in-process
 latency field; the comparator uses only `tcp_request_ms`. Both profiles now use
 one warm-up plus three measured samples and 100 ms polling. Rust emits a sample
 only after its durability, digest, and native-path assertions complete. The
-unit-tested verifier is `scripts/agent_request_benchmark_report.py`; it rejects
-unequal IDs/digests/poll intervals/fixture sizes, missing resource or isolation
+unit-tested verifier is `scripts/agent_request_benchmark_report.py`; it requires
+the expected backend profile and rejects cross-runtime backend mismatch, unequal
+IDs/digests/poll intervals/fixture sizes, missing resource or isolation
 evidence, and fails thresholds below 0.95x throughput or above 1.10x p95. Its
-contract tests pass, but the resource-matched live run has not yet been repeated
-with this updated harness, so prior timings remain historical evidence only.
+12 contract/artifact tests pass, but the resource-matched live run has not yet
+been repeated with this updated harness, so prior timings remain historical
+evidence only.
 
 On 2026-11-26, the updated sample hooks were smoke-tested against a disposable
 local pgvector:pg16 instance with 10 seeded distractors (11 total fixture

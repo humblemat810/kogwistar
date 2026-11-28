@@ -2460,6 +2460,7 @@
             serde_json::json!({
                 "sample_id": benchmark_sample_id,
                 "execution_mode": "rust-native-http",
+                "backend_profile": "postgres_pgvector",
                 "fixture_nodes": benchmark_fixture_size + 1,
                 "request_ms": agent_request_ms,
                 "tcp_request_ms": agent_request_ms,
